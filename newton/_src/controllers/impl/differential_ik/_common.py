@@ -10,9 +10,12 @@ for how per-axis weighting (``axis_weight``) is applied and why a zero-weighted
 axis is excluded structurally rather than multiplied by zero.
 
 The inverse-Jacobian solve is isolated to its own group of kernels (see the
-section comment above ``_build_jjt_plus_damping_kernel``) so that a solver
-can be selected per instance via :class:`DifferentialIKMethod` without touching
-pose-error, null-space, or integration code.
+section comment above ``_svd_one_sided_jacobi``) so that a solver can be
+selected per instance via :class:`DifferentialIKMethod` without touching
+pose-error, null-space, or integration code. Every method but ``TRANSPOSE``
+(which needs no matrix inversion at all) shares one SVD of the task
+Jacobian -- see that section comment for why, and how each method's own
+per-singular-direction gain differs.
 """
 
 from __future__ import annotations
@@ -21,12 +24,14 @@ import enum
 from typing import Any
 
 import warp as wp
-from warp.fem.linalg import symmetric_eigenvalues_qr
 
-# Tolerance passed to symmetric_eigenvalues_qr: the QR algorithm iterates
-# until the off-diagonal terms of the tridiagonalized matrix fall below this,
-# relative to the diagonal terms.
-_EIGENVALUE_QR_TOL = wp.constant(wp.float32(1.0e-6))
+# Tolerance/sweep cap passed to _svd_one_sided_jacobi: a sweep is converged
+# once every column pair's off-diagonal-to-diagonal ratio drops below this;
+# max_sweeps is a safety cap, not a tuning knob -- see _svd_one_sided_jacobi's
+# own docstring for why convergence is expected well before it for a matrix
+# this small.
+_JACOBI_SVD_TOL = wp.constant(wp.float32(1.0e-6))
+_JACOBI_SVD_MAX_SWEEPS = 30
 
 
 class DifferentialIKMethod(enum.Enum):
@@ -150,45 +155,218 @@ def _gather_task_error_kernel(
 
 
 @wp.kernel
-def _build_jjt_plus_damping_kernel(
+def _gather_and_weight_jacobian_kernel(
     jacobian_tool_world: wp.array3d[
         float
     ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords, canonical axis order
-    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
-    damping: wp.array[wp.float32],  # (robot_count,) DLS damping λ, added as λ² on the diagonal
     task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
     active_axis_of_slot: wp.array2d[wp.int32],  # (robot_count, 6) compact slot -> canonical axis, slot < task_dim
     axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
     # outputs
-    jjt_plus_damping: wp.array3d[
+    jacobian_weighted: wp.array3d[
         float
-    ],  # (robot_count, 6, 6) top-left task_dim x task_dim = J_w @ J_wᵀ + λ² * I; untouched elsewhere
+    ],  # (robot_count, 6, max_dofs) = diag(w) @ J, gathered to compact slot rows; rows >= task_dim exactly zero
 ):
-    """Build the damped-least-squares normal-equations matrix, ``J_w J_wᵀ + λ²I`` (``J_w = diag(w) @ J``), in compact slot space.
+    """Gather+weight a Jacobian's active-axis rows into compact slot order, ``J_w = diag(w) @ J``.
 
-    Only writes the top-left ``task_dim x task_dim`` corner. Row/col
-    ``slot`` comes from Jacobian axis ``active_axis_of_slot[slot]``,
-    weighted by that axis's own ``axis_weight`` — so active axes can be any
-    combination of the 6 canonical ones, not just a leading prefix. ``λ²``
-    (unweighted) is added on the diagonal to keep the corner invertible even
-    where ``J_w J_wᵀ`` alone is singular or rank-deficient.
+    Feeds :func:`_svd_one_sided_jacobi`, which requires an all-zero row
+    beyond a robot's own ``task_dim`` (unlike its column padding, which is
+    bounded by an explicit ``n_columns`` instead) — this kernel writes that
+    zero explicitly rather than relying on ``jacobian_weighted`` having been
+    pre-zeroed, since it is reused, unzeroed, across every step.
     """
     robot_idx, row, col = wp.tid()
-    if row >= task_dim[robot_idx] or col >= task_dim[robot_idx]:
+    if row >= task_dim[robot_idx]:
+        jacobian_weighted[robot_idx, row, col] = 0.0
         return
-    axis_row = active_axis_of_slot[robot_idx, row]
-    axis_col = active_axis_of_slot[robot_idx, col]
-    weight_row = axis_weight[robot_idx][axis_row]
-    weight_col = axis_weight[robot_idx][axis_col]
-    robot_dof_count = dof_count[robot_idx]
+    axis = active_axis_of_slot[robot_idx, row]
+    jacobian_weighted[robot_idx, row, col] = axis_weight[robot_idx][axis] * jacobian_tool_world[robot_idx, axis, col]
+
+
+@wp.kernel
+def _svd_apply_damped_z_kernel(
+    u: wp.array3d[float],  # (robot_count, 6, 6) from _svd_one_sided_jacobi_kernel on J_w
+    s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J_w, sorted descending
+    pose_error_active: wp.array[wp.spatial_vector],  # (robot_count,) e_w = diag(w) @ e, compact slot order
+    damping: wp.array[wp.float32],  # (robot_count,) DLS damping λ; 0 for DifferentialIKMethod.PSEUDO_INVERSE
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    z: wp.array2d[
+        float
+    ],  # (robot_count, max_dofs) = diag(sigma_i / (sigma_i^2 + λ^2)) @ Uᵀ @ e_w; 0 beyond min(task_dim, dof_count)
+):
+    """Per-singular-direction damped scale of ``Uᵀe_w``, ``z_i = (sigma_i / (sigma_i^2 + λ^2)) * (Uᵀe_w)_i``.
+
+    Feeds :func:`_qd_from_svd_z_kernel` to finish ``q̇ = bandwidth · V @ z``,
+    which is algebraically ``bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e_w`` (the same
+    damped-least-squares law as ``DifferentialIKMethod.DAMPED_LEAST_SQUARES``'s
+    docstring), derived from ``J_w``'s own SVD rather than an explicit
+    ``J_w J_wᵀ`` inverse -- see the section comment above
+    ``_svd_one_sided_jacobi`` for why. At most ``min(task_dim, dof_count)``
+    of the ``max_dofs`` singular directions are genuine (the rest are
+    padding, either from ``J_w``'s own zero-column padding or from a
+    structurally rank-deficient ``J_w``); every other entry is left exactly
+    zero, so a caller summing over all ``max_dofs`` columns adds nothing
+    from them.
+    """
+    robot_idx, i = wp.tid()
+    genuine_count = wp.min(task_dim[robot_idx], dof_count[robot_idx])
+    if i >= genuine_count:
+        z[robot_idx, i] = 0.0
+        return
+    error = pose_error_active[robot_idx]
+    ut_e = float(0.0)
+    for row in range(6):
+        ut_e += u[robot_idx, row, i] * error[row]
+    sigma = s[robot_idx, i]
+    lam = damping[robot_idx]
+    denominator = sigma * sigma + lam * lam
+    gain = wp.where(denominator > 1.0e-12, sigma / denominator, 0.0)
+    z[robot_idx, i] = gain * ut_e
+
+
+@wp.kernel
+def _svd_apply_truncated_z_kernel(
+    u: wp.array3d[float],  # (robot_count, 6, 6) from _svd_one_sided_jacobi_kernel on J_w
+    s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J_w, sorted descending
+    pose_error_active: wp.array[wp.spatial_vector],  # (robot_count,) e_w = diag(w) @ e, compact slot order
+    singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    z: wp.array2d[float],  # (robot_count, max_dofs) = diag(g(sigma_i)) @ Uᵀ @ e_w, g(s) = 1/s if s > threshold else 0
+):
+    """Per-singular-direction truncated scale of ``Uᵀe_w`` for :class:`DifferentialIKMethod.TRUNCATED_SVD`.
+
+    Same role as :func:`_svd_apply_damped_z_kernel`, but each direction is
+    either inverted exactly (``1/sigma_i``) or dropped entirely (``0``),
+    depending on whether its own singular value clears
+    ``singular_value_threshold`` -- unlike that kernel's Tikhonov damping,
+    which shifts every direction by the same ``λ²`` and never truncates any
+    of them, this has no smooth transition between the two regimes. See
+    :func:`_svd_apply_damped_z_kernel` for the genuine-vs-padding singular
+    direction count.
+    """
+    robot_idx, i = wp.tid()
+    genuine_count = wp.min(task_dim[robot_idx], dof_count[robot_idx])
+    if i >= genuine_count:
+        z[robot_idx, i] = 0.0
+        return
+    error = pose_error_active[robot_idx]
+    ut_e = float(0.0)
+    for row in range(6):
+        ut_e += u[robot_idx, row, i] * error[row]
+    sigma = s[robot_idx, i]
+    threshold = singular_value_threshold[robot_idx]
+    gain = wp.where(sigma > threshold, 1.0 / sigma, 0.0)
+    z[robot_idx, i] = gain * ut_e
+
+
+@wp.kernel
+def _svd_damped_g_kernel(
+    s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J, sorted descending
+    damping: wp.array[wp.float32],  # (robot_count,) damping λ
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    g: wp.array2d[float],  # (robot_count, max_dofs) = sigma_i / (sigma_i^2 + λ^2); 0 beyond min(task_dim, dof_count)
+):
+    """Bare per-singular-direction damped gain, for reconstructing a damped pseudo-inverse-transpose (null-space projector).
+
+    Same ``sigma_i / (sigma_i^2 + λ^2)`` gain as :func:`_svd_apply_damped_z_kernel`,
+    without also folding in ``Uᵀe`` -- :func:`_svd_reconstruct_scaled_kernel`
+    combines this with ``U``/``V`` directly into a matrix, rather than
+    applying it to a single task-space vector.
+    """
+    robot_idx, i = wp.tid()
+    genuine_count = wp.min(task_dim[robot_idx], dof_count[robot_idx])
+    if i >= genuine_count:
+        g[robot_idx, i] = 0.0
+        return
+    sigma = s[robot_idx, i]
+    lam = damping[robot_idx]
+    denominator = sigma * sigma + lam * lam
+    g[robot_idx, i] = wp.where(denominator > 1.0e-12, sigma / denominator, 0.0)
+
+
+@wp.kernel
+def _svd_reconstruct_scaled_kernel(
+    u: wp.array3d[float],  # (robot_count, 6, 6)
+    g: wp.array2d[float],  # (robot_count, max_dofs) per-direction gain, e.g. from _svd_damped_g_kernel
+    v: wp.array3d[float],  # (robot_count, max_dofs, max_dofs)
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    reconstructed: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) = U @ diag(g) @ Vᵀ, i.e. Jᵀ(JJᵀ + λ²I)⁻¹ transposed; 0 beyond dof_count
+):
+    """Reassemble ``U @ diag(g) @ Vᵀ`` from an SVD and a per-direction gain ``g``.
+
+    With ``g_i = sigma_i / (sigma_i^2 + λ^2)`` (:func:`_svd_damped_g_kernel`),
+    this is ``(JJᵀ + λ²I)⁻¹ @ J`` -- the damped pseudo-inverse-transpose
+    :func:`_null_space_projector_kernel` needs, computed directly from
+    ``J``'s own SVD rather than by inverting ``JJᵀ + λ²I``.
+    """
+    robot_idx, row, col = wp.tid()
+    if col >= dof_count[robot_idx]:
+        reconstructed[robot_idx, row, col] = 0.0
+        return
     total = float(0.0)
-    for dof in range(robot_dof_count):
-        total += jacobian_tool_world[robot_idx, axis_row, dof] * jacobian_tool_world[robot_idx, axis_col, dof]
-    total *= weight_row * weight_col
-    if row == col:
-        lam = damping[robot_idx]
-        total += lam * lam
-    jjt_plus_damping[robot_idx, row, col] = total
+    for i in range(6):
+        total += u[robot_idx, row, i] * g[robot_idx, i] * v[robot_idx, col, i]
+    reconstructed[robot_idx, row, col] = total
+
+
+@wp.kernel
+def _smallest_singular_value_squared_kernel(
+    s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J_w, sorted descending
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) sigma_min² of JJᵀ's own task_dim x task_dim block
+):
+    """Smallest singular value of ``J_w``, squared, over its own ``task_dim`` task directions, for :class:`DifferentialIKMethod.ADAPTIVE_DAMPING`.
+
+    Deliberately indexes by ``task_dim``, not ``min(task_dim, dof_count)``:
+    a robot with fewer controlled DOFs than its own task dimension
+    (``dof_count < task_dim``) cannot reach every task direction at all,
+    which is itself a (structural, permanent) singularity -- adaptive
+    damping must see that as ``sigma_min = 0``. That branch returns before
+    touching ``s`` at all: ``s``'s own column count is ``max_dofs`` (the
+    largest ``dof_count`` across the whole batch, not padded up to 6), so
+    ``task_dim - 1`` is only ever a valid index into it once this check has
+    confirmed ``dof_count >= task_dim`` -- reading it unconditionally would
+    be an out-of-bounds access whenever some robot's ``dof_count`` (and so
+    the whole batch's ``max_dofs``) is smaller than its own ``task_dim``.
+    """
+    robot_idx = wp.tid()
+    if dof_count[robot_idx] < task_dim[robot_idx]:
+        smallest_eigenvalue[robot_idx] = 0.0
+        return
+    sigma_min = s[robot_idx, task_dim[robot_idx] - 1]
+    smallest_eigenvalue[robot_idx] = sigma_min * sigma_min
+
+
+@wp.kernel
+def _qd_from_svd_z_kernel(
+    v: wp.array3d[float],  # (robot_count, max_dofs, max_dofs) from _svd_one_sided_jacobi_kernel on J_w
+    z: wp.array2d[float],  # (robot_count, max_dofs) from _svd_apply_damped_z_kernel/_svd_apply_truncated_z_kernel
+    bandwidth: wp.array[wp.float32],  # (total_controlled_dofs,) output scale gain
+    robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
+    slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    joint_qd_target: wp.array[wp.float32],  # (total_controlled_dofs,) compact = bandwidth * V @ z
+):
+    """Finish an SVD-based solve, ``q̇_target = bandwidth · V @ z``, into the compact per-DOF layout."""
+    dof = wp.tid()
+    robot = robot_of_dof[dof]
+    slot = slot_of_dof[dof]
+    total = float(0.0)
+    for i in range(dof_count[robot]):
+        total += v[robot, slot, i] * z[robot, i]
+    joint_qd_target[dof] = bandwidth[dof] * total
 
 
 @wp.kernel
@@ -211,12 +389,11 @@ def _qd_from_y_kernel(
     Row ``slot`` of ``J_wᵀ`` is gathered from Jacobian axis
     ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
     The dot product with ``y`` is summed only over ``slot < task_dim``:
-    every producer of ``y`` (``_gather_task_error_kernel`` for
-    ``DifferentialIKMethod.TRANSPOSE``, ``_apply_spatial_matrix_kernel`` for every
-    matrix-inverting method) does leave ``y``'s slots beyond ``task_dim``
-    exactly zero, but this kernel does not rely on that -- it stops at
-    ``task_dim`` itself, so a future solver path that forgot to zero-pad
-    would still be summed correctly here, not silently corrupted.
+    ``_gather_task_error_kernel`` (this kernel's only caller, via
+    ``DifferentialIKMethod.TRANSPOSE``) does leave ``y``'s slots beyond
+    ``task_dim`` exactly zero, but this kernel does not rely on that -- it
+    stops at ``task_dim`` itself, so a future caller that forgot to
+    zero-pad would still be summed correctly here, not silently corrupted.
     """
     dof = wp.tid()
     robot = robot_of_dof[dof]
@@ -236,63 +413,25 @@ def _qd_from_y_kernel(
 
 # ---------------------------------------------------------------------------
 # Adaptive damping (DifferentialIKMethod.ADAPTIVE_DAMPING): λ is computed each step from
-# the smallest eigenvalue of the (undamped) JJᵀ, instead of being a fixed
+# J_w's own smallest singular value (via _smallest_singular_value_squared_kernel,
+# fed by the same SVD as every other matrix-inverting method -- see the
+# section comment above _svd_one_sided_jacobi), instead of being a fixed
 # input, so damping stays near ``adaptive_damping_min`` away from a
 # singularity and ramps up toward ``adaptive_damping_max`` only as the robot
-# approaches one. Feeds into the same _build_jjt_plus_damping_kernel used by
-# every other method.
+# approaches one.
 # ---------------------------------------------------------------------------
 
 
 @wp.kernel
-def _smallest_eigenvalue_spd6_kernel(
-    matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric matrix, e.g. undamped JJᵀ
-    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes, 1-6
-    # outputs
-    smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) smallest real eigenvalue, clamped to >= 0
-):
-    """Smallest eigenvalue among a symmetric 6x6 matrix's ``task_dim`` real ones, skipping padding.
-
-    For ``matrix = JJᵀ``, this is ``sigma_min²`` — zero exactly at a
-    kinematic singularity. The ``6 - task_dim`` padding entries outside the
-    real top-left corner are exactly zero, and a PSD matrix's eigenvalues
-    are never negative, so sorting those out from the smallest end recovers
-    the true smallest eigenvalue. Clamped to non-negative since float32
-    error can land a fully degenerate eigenvalue just below zero.
-    """
-    robot_idx = wp.tid()
-
-    local_matrix = wp.spatial_matrix()
-    for row in range(6):
-        for col in range(6):
-            local_matrix[row, col] = matrix[robot_idx, row, col]
-
-    eigenvalues, _ = symmetric_eigenvalues_qr(local_matrix, _EIGENVALUE_QR_TOL)
-
-    padding_count = 6 - task_dim[robot_idx]
-    for _ in range(padding_count):
-        smallest_idx = int(0)
-        smallest_val = eigenvalues[0]
-        for i in range(1, 6):
-            if eigenvalues[i] < smallest_val:
-                smallest_val = eigenvalues[i]
-                smallest_idx = i
-        eigenvalues[smallest_idx] = 1.0e30  # excluded from every later pass, including the final reduction below
-
-    smallest = eigenvalues[0]
-    for i in range(1, 6):
-        smallest = wp.min(smallest, eigenvalues[i])
-    smallest_eigenvalue[robot_idx] = wp.max(smallest, 0.0)
-
-
-@wp.kernel
 def _adaptive_damping_kernel(
-    smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) sigma_min² of the undamped JJᵀ
+    smallest_eigenvalue: wp.array[
+        wp.float32
+    ],  # (robot_count,) sigma_min² of J_w, from _smallest_singular_value_squared_kernel
     damping_min: wp.array[wp.float32],  # (robot_count,) λ far from any singularity
     damping_max: wp.array[wp.float32],  # (robot_count,) λ at a full singularity (sigma_min = 0)
     singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma_min below which damping starts ramping up
     # outputs
-    damping: wp.array[wp.float32],  # (robot_count,) λ to pass into _build_jjt_plus_damping_kernel
+    damping: wp.array[wp.float32],  # (robot_count,) λ to pass into _svd_apply_damped_z_kernel/_svd_damped_g_kernel
 ):
     """Maciejewski-Klein singularity-robust damping, ``λ²(sigma_min)``.
 
@@ -309,69 +448,27 @@ def _adaptive_damping_kernel(
     damping[robot_idx] = wp.sqrt(lam_sq)
 
 
-@wp.kernel(enable_backward=False)
-def _truncated_pinv_matrix_kernel(
-    matrix: wp.array3d[float],  # (robot_count, 6, 6) undamped JJᵀ
-    singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
-    # outputs
-    pinv_matrix: wp.array3d[float],  # (robot_count, 6, 6) = U diag(g(sigma_i)) Uᵀ, g(s) = 1/s^2 if s > threshold else 0
-):
-    """Truncated-SVD pseudo-inverse of ``JJᵀ``, filtered per singular value rather than damped as a whole.
-
-    ``matrix`` is ``JJᵀ`` itself; its eigenvalues are ``sigma_i²``, the
-    squared singular values of ``J``, so inverting it exactly takes
-    ``1/sigma_i²`` per direction. Each of the (at most 6) task-space
-    directions is either inverted exactly or dropped entirely (``0``),
-    depending on whether its own singular value clears
-    ``singular_value_threshold`` — unlike ``_build_jjt_plus_damping_kernel``'s
-    Tikhonov damping, which shifts every direction by the same ``λ²`` and
-    never truncates any of them, this has no smooth transition between the
-    two regimes.
-
-    Backward disabled: its analytic gradient (via ``symmetric_eigenvalues_qr``
-    plus an in-kernel selection/threshold loop over the eigenpairs) disagrees
-    with a finite difference by orders of magnitude, not just numerical
-    noise. Any caller under an active tape gets an exact-zero gradient
-    contribution from this kernel instead. Root cause not yet isolated;
-    deferred to a follow-up.
-    """
-    robot_idx = wp.tid()
-
-    local_matrix = wp.spatial_matrix()
-    for row in range(6):
-        for col in range(6):
-            local_matrix[row, col] = matrix[robot_idx, row, col]
-
-    eigenvalues, eigenvectors_by_row = symmetric_eigenvalues_qr(local_matrix, _EIGENVALUE_QR_TOL)
-    threshold = singular_value_threshold[robot_idx]
-
-    for row in range(6):
-        for col in range(6):
-            total = float(0.0)
-            for i in range(6):
-                eigenvalue = wp.max(eigenvalues[i], 0.0)
-                sigma = wp.sqrt(eigenvalue)
-                if sigma > threshold:
-                    total += eigenvectors_by_row[i, row] * eigenvectors_by_row[i, col] / eigenvalue
-            pinv_matrix[robot_idx, row, col] = total
-
-
 # ---------------------------------------------------------------------------
 # Null-space secondary objectives.
 #
-# The null-space projector and its damped pseudo-inverse-transpose
-# ``(JJᵀ + λ_null²I)⁻¹ @ J`` reuse kernels shared with other controller
-# families (``_invert_spd_block_kernel``, ``_task_matrix_times_jacobian_kernel``,
-# ``_null_space_projector_kernel`` in ``controllers/impl/_common.py``), not
-# dedicated kernels here. ``λ_null`` is independent of the primary task's DLS
-# damping; it keeps ``JJᵀ + λ_null²I`` SPD even for a rank-deficient Jacobian
-# (e.g. a redundant low-DOF arm with a lower-than-6D task), at the cost of a
-# ``J @ N`` residual of order ``λ_null²`` instead of exactly zero.
+# The null-space projector, ``_null_space_projector_kernel`` in
+# ``controllers/impl/_common.py`` (shared with other controller families),
+# needs the damped pseudo-inverse-transpose ``(JJᵀ + λ_null²I)⁻¹ @ J``. Built
+# the same SVD-of-``J``-only way as the primary task solve (see the section
+# comment above ``_svd_one_sided_jacobi``): SVD the (unweighted) Jacobian,
+# then ``_svd_damped_g_kernel`` + ``_svd_reconstruct_scaled_kernel`` reassemble
+# it, instead of inverting ``JJᵀ + λ_null²I`` directly. ``λ_null`` is
+# independent of the primary task's DLS damping; it keeps ``JJᵀ + λ_null²I``
+# SPD even for a rank-deficient Jacobian (e.g. a redundant low-DOF arm with a
+# lower-than-6D task), at the cost of a ``J @ N`` residual of order
+# ``λ_null²`` instead of exactly zero.
 #
-# Those shared kernels expect the Jacobian in canonical axis order and know
-# nothing about ``axis_weight``, so ``_gather_jacobian_by_axis_kernel``/
+# ``_null_space_projector_kernel`` expects the Jacobian in canonical axis
+# order and knows nothing about ``axis_weight``, so ``_gather_jacobian_by_axis_kernel``/
 # ``_scatter_pinv_transpose_by_axis_kernel`` below convert to and from
-# compact slot order around them.
+# compact slot order around it -- the null-space projector's own
+# regularization stays deliberately unweighted (every axis weight 1), unlike
+# the primary task solve's ``J_w``.
 #
 # The kernels below produce a joint-space bias, projected through that
 # projector so it never disturbs the primary task; joint-limit avoidance and
@@ -389,7 +486,7 @@ def _gather_jacobian_by_axis_kernel(
         float
     ],  # (robot_count, 6, max_dofs) compact slot order; rows >= task_dim untouched (zero)
 ):
-    """Gather a Jacobian's active-axis rows into compact slot order, for ``_task_matrix_times_jacobian_kernel``."""
+    """Gather a Jacobian's active-axis rows into compact slot order, for the null-space projector's own SVD."""
     robot_idx, slot, col = wp.tid()
     if slot >= task_dim[robot_idx]:
         return
@@ -480,20 +577,28 @@ def _integrate_position_kernel(
 
 
 # ---------------------------------------------------------------------------
-# One-sided Jacobi SVD -- NOT YET WIRED INTO ``IkMethod.TRUNCATED_SVD``.
+# One-sided Jacobi SVD -- the shared basis for every matrix-inverting
+# DifferentialIKMethod (everything but TRANSPOSE, which needs no inversion).
 #
-# ``_truncated_pinv_matrix_kernel`` currently derives its pseudo-inverse from
-# ``symmetric_eigenvalues_qr`` on JJᵀ, which squares J's condition number
-# before any float32 arithmetic happens, so a small-but-retained singular
-# value of J can come back badly corrupted (confirmed: relative error in the
-# thousands on a Jacobian with singular values spanning [1, 1e-4]).
-# ``_svd_one_sided_jacobi`` below operates on J's own columns directly and
-# never forms JJᵀ, avoiding that squaring. It is validated in isolation here
-# (two small square-matrix kernels below, exercised by
-# ``test_svd_one_sided_jacobi_*`` in the test suite) but not yet used by any
-# controller; wiring it into ``TRUNCATED_SVD`` needs its own follow-up, since
-# ``TRUNCATED_SVD``'s real input is 6 rows by up to a robot's full DOF count
-# of columns, not the small square matrices tested here.
+# Deriving a pseudo-inverse from an eigendecomposition of JJᵀ (e.g. via
+# Warp's ``symmetric_eigenvalues_qr``) squares J's condition number before
+# any float32 arithmetic happens, so a small-but-retained
+# singular value of J can come back badly corrupted (confirmed: relative
+# error in the thousands on a Jacobian with singular values spanning
+# [1, 1e-4]). ``_svd_one_sided_jacobi`` below operates on J's own columns
+# directly and never forms JJᵀ, avoiding that squaring -- validated in
+# isolation by ``test_svd_one_sided_jacobi_*`` in the test suite.
+#
+# The primary task solve (``_gather_and_weight_jacobian_kernel`` +
+# ``_svd_one_sided_jacobi_kernel`` on ``J_w = diag(w) @ J``) and the
+# null-space projector's own solve (``_gather_jacobian_by_axis_kernel`` +
+# ``_svd_one_sided_jacobi_kernel`` on the unweighted ``J``) each run one SVD
+# per step; every method-specific gain (damped least squares, the zero-
+# damping Moore-Penrose pseudo-inverse, adaptive damping, truncated SVD) is
+# then just a different per-singular-direction scale applied to that same
+# ``U``/``S``/``V`` -- see ``_svd_apply_damped_z_kernel``,
+# ``_svd_apply_truncated_z_kernel``, ``_svd_damped_g_kernel``, and
+# ``_smallest_singular_value_squared_kernel``.
 # ---------------------------------------------------------------------------
 
 
@@ -654,7 +759,7 @@ def _svd_one_sided_jacobi_kernel(
     s: wp.array[Any],  # (batch_count,) length n
     v: wp.array[Any],  # (batch_count,) n x n
 ):
-    """Batched, size-generic instantiation of :func:`_svd_one_sided_jacobi`, for isolated testing only.
+    """Batched, size-generic instantiation of :func:`_svd_one_sided_jacobi`.
 
     Generic over ``matrix``'s (and so ``u``/``s``/``v``'s) concrete element
     type -- Warp compiles one specialization per distinct matrix shape

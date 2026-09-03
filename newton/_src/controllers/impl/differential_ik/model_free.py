@@ -59,28 +59,32 @@ from ...controller import ControllerBase
 from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
-    _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
-    _invert_spd_block_kernel,
     _null_space_projector_kernel,
     _pose_error_kernel,
     _read_port,
     _scatter_port_kernel,
-    _task_matrix_times_jacobian_kernel,
 )
 from ._common import (
+    _JACOBI_SVD_MAX_SWEEPS,
+    _JACOBI_SVD_TOL,
     DifferentialIKMethod,
     _adaptive_damping_kernel,
-    _build_jjt_plus_damping_kernel,
+    _gather_and_weight_jacobian_kernel,
     _gather_jacobian_by_axis_kernel,
     _gather_task_error_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
+    _qd_from_svd_z_kernel,
     _qd_from_y_kernel,
     _scatter_pinv_transpose_by_axis_kernel,
-    _smallest_eigenvalue_spd6_kernel,
-    _truncated_pinv_matrix_kernel,
+    _smallest_singular_value_squared_kernel,
+    _svd_apply_damped_z_kernel,
+    _svd_apply_truncated_z_kernel,
+    _svd_damped_g_kernel,
+    _svd_one_sided_jacobi_kernel,
+    _svd_reconstruct_scaled_kernel,
 )
 
 _CANONICAL_TASK_AXIS_COUNT = 6
@@ -376,9 +380,10 @@ class ControllerDifferentialIKModelFree(ControllerBase):
 
         # Only zero vs. nonzero matters for which axes enter the solve at
         # all: an axis is either in it (its error and Jacobian rows gathered
-        # and weighted, see _build_jjt_plus_damping_kernel) or structurally
-        # excluded from it. A nonzero weight's magnitude still matters once
-        # its axis has been gathered -- it is a genuine soft weight there.
+        # and weighted, see _gather_and_weight_jacobian_kernel) or
+        # structurally excluded from it. A nonzero weight's magnitude still
+        # matters once its axis has been gathered -- it is a genuine soft
+        # weight there.
         axis_active_np = axis_weight_np > 0.0
         task_dim_np = axis_active_np.sum(axis=1).astype(np.int32)
         if task_dim_np.min() < 1:
@@ -710,25 +715,58 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._pose_error_active_buf = wp.zeros(
             controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
-        self._jjt_buf = wp.zeros(
+
+        # Matrix/vector types for .view()-ing the plain wp.array3d[float]/
+        # array2d[float] storage below into the shapes _svd_one_sided_jacobi_kernel
+        # needs -- a zero-copy reinterpret, not a separate allocation/layout
+        # (see the section comment above _svd_one_sided_jacobi in _common.py).
+        # Reused for both the primary task solve's SVD and (when enabled)
+        # the null-space projector's own SVD, since both are the same 6 x
+        # max_controlled_dofs shape.
+        svd_mat_u = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
+        svd_mat_j = wp.types.matrix(shape=(6, max_controlled_dofs), dtype=wp.float32)
+        svd_mat_v = wp.types.matrix(shape=(max_controlled_dofs, max_controlled_dofs), dtype=wp.float32)
+        svd_vec_s = wp.types.vector(length=max_controlled_dofs, dtype=wp.float32)
+
+        # Primary task solve: J_w = diag(w) @ J is gathered+weighted into
+        # compact slot order, then decomposed once per step; every
+        # matrix-inverting DifferentialIKMethod (all but TRANSPOSE) shares this
+        # single SVD, differing only in the per-singular-direction gain
+        # applied to it below.
+        self._jacobian_weighted_buf = wp.zeros(
+            (controlled_robot_count, 6, max_controlled_dofs),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
+        )
+        self._jacobian_weighted_view = self._jacobian_weighted_buf.view(svd_mat_j).reshape((controlled_robot_count,))
+        self._svd_u_buf = wp.zeros(
             (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
-        self._jjt_inv_buf = wp.zeros(
-            (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        self._svd_u_view = self._svd_u_buf.view(svd_mat_u).reshape((controlled_robot_count,))
+        self._svd_s_buf = wp.zeros(
+            (controlled_robot_count, max_controlled_dofs),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
         )
-        self._cholesky_scratch = wp.zeros(
-            (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        self._svd_s_view = self._svd_s_buf.view(svd_vec_s).reshape((controlled_robot_count,))
+        self._svd_v_buf = wp.zeros(
+            (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
         )
-        if self._use_adaptive_damping or self._use_truncated_svd:
-            # Both methods need JJᵀ undamped, to read its own eigenvalues
-            # rather than a Tikhonov-shifted version of them.
-            self._zero_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
+        self._svd_v_view = self._svd_v_buf.view(svd_mat_v).reshape((controlled_robot_count,))
+        self._svd_z_buf = wp.zeros(
+            (controlled_robot_count, max_controlled_dofs),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
+        )
         if self._use_adaptive_damping:
             self._smallest_eigenvalue_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
             self._adaptive_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
-        self._y_buf = wp.zeros(
-            controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
-        )
         self._qd_buf = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
@@ -741,28 +779,34 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
             offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
             self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
-            # The null-space projector's own regularization stays
-            # unweighted -- it only needs to avoid disturbing whichever
-            # axes are active, not replicate the primary solve's soft
-            # per-axis trust, and _null_space_projector_kernel (shared with
-            # other controller families) multiplies its result against the
-            # raw, unweighted jacobian_tool_world directly.
-            self._null_space_axis_weight = wp.full(
-                controlled_robot_count,
-                wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-                dtype=wp.spatial_vector,
-                device=self._device,
-            )
             self._null_space_damping_buf: wp.array[wp.float32] | None = (
                 wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
                 if self._null_space_damping_baked is None
                 else None
             )
-            self._jjt_null_space_buf = wp.zeros(
+            self._svd_u_null_buf = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
-            self._jjt_null_space_inv_buf = wp.zeros(
-                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            self._svd_u_null_view = self._svd_u_null_buf.view(svd_mat_u).reshape((controlled_robot_count,))
+            self._svd_s_null_buf = wp.zeros(
+                (controlled_robot_count, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._svd_s_null_view = self._svd_s_null_buf.view(svd_vec_s).reshape((controlled_robot_count,))
+            self._svd_v_null_buf = wp.zeros(
+                (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._svd_v_null_view = self._svd_v_null_buf.view(svd_mat_v).reshape((controlled_robot_count,))
+            self._svd_g_null_buf = wp.zeros(
+                (controlled_robot_count, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
             )
             self._jacobian_active_buf = wp.zeros(
                 (controlled_robot_count, 6, max_controlled_dofs),
@@ -770,6 +814,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
                 requires_grad=requires_grad,
             )
+            # jacobian_active_buf is unweighted (every axis weight 1), so it
+            # doubles as the "A" input to the null-space projector's own SVD
+            # directly, with no separate weighting step (unlike the primary
+            # task solve's J_w).
+            self._jacobian_active_view = self._jacobian_active_buf.view(svd_mat_j).reshape((controlled_robot_count,))
             self._jacobian_pinv_transpose_slot_buf = wp.zeros(
                 (controlled_robot_count, 6, max_controlled_dofs),
                 dtype=wp.float32,
@@ -1035,57 +1084,51 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # q̇ = bandwidth · Jᵀe: no matrix to invert, so the (compact,
             # active-axes-only) pose error itself stands in for y in the
             # shared finishing kernel.
-            y = self._pose_error_active_buf
-        elif self._use_truncated_svd:
             wp.launch(
-                _build_jjt_plus_damping_kernel,
-                dim=(controlled_robot_count, 6, 6),
+                _qd_from_y_kernel,
+                dim=total_controlled_dofs,
                 inputs=[
                     self._jacobian_buf,
-                    self._controlled_dofs_per_robot,
-                    self._zero_damping_buf,
+                    self._pose_error_active_buf,
+                    bandwidth,
+                    self._robot_of_dof,
+                    self._slot_of_dof,
                     self._task_dim,
                     self._active_axis_of_slot,
                     self._axis_weight,
                 ],
-                outputs=[self._jjt_buf],
+                outputs=[self._qd_buf],
                 device=self._device,
             )
-            wp.launch(
-                _truncated_pinv_matrix_kernel,
-                dim=controlled_robot_count,
-                inputs=[self._jjt_buf, self._truncated_svd_threshold_baked],
-                outputs=[self._jjt_inv_buf],
-                device=self._device,
-            )
-            wp.launch(
-                _apply_spatial_matrix_kernel,
-                dim=controlled_robot_count,
-                inputs=[self._jjt_inv_buf, self._pose_error_active_buf],
-                outputs=[self._y_buf],
-                device=self._device,
-            )
-            y = self._y_buf
         else:
+            # Every other method shares one SVD of J_w = diag(w) @ J -- see
+            # the section comment above _svd_one_sided_jacobi in _common.py
+            # -- differing only in the per-singular-direction gain (g) each
+            # applies to it below.
+            wp.launch(
+                _gather_and_weight_jacobian_kernel,
+                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                inputs=[self._jacobian_buf, self._task_dim, self._active_axis_of_slot, self._axis_weight],
+                outputs=[self._jacobian_weighted_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _svd_one_sided_jacobi_kernel,
+                dim=controlled_robot_count,
+                inputs=[
+                    self._jacobian_weighted_view,
+                    self._controlled_dofs_per_robot,
+                    _JACOBI_SVD_TOL,
+                    _JACOBI_SVD_MAX_SWEEPS,
+                ],
+                outputs=[self._svd_u_view, self._svd_s_view, self._svd_v_view],
+                device=self._device,
+            )
             if self._use_adaptive_damping:
                 wp.launch(
-                    _build_jjt_plus_damping_kernel,
-                    dim=(controlled_robot_count, 6, 6),
-                    inputs=[
-                        self._jacobian_buf,
-                        self._controlled_dofs_per_robot,
-                        self._zero_damping_buf,
-                        self._task_dim,
-                        self._active_axis_of_slot,
-                        self._axis_weight,
-                    ],
-                    outputs=[self._jjt_buf],
-                    device=self._device,
-                )
-                wp.launch(
-                    _smallest_eigenvalue_spd6_kernel,
+                    _smallest_singular_value_squared_kernel,
                     dim=controlled_robot_count,
-                    inputs=[self._jjt_buf, self._task_dim],
+                    inputs=[self._svd_s_buf, self._task_dim, self._controlled_dofs_per_robot],
                     outputs=[self._smallest_eigenvalue_buf],
                     device=self._device,
                 )
@@ -1102,51 +1145,50 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     device=self._device,
                 )
                 damping = self._adaptive_damping_buf
+            if self._use_truncated_svd:
+                wp.launch(
+                    _svd_apply_truncated_z_kernel,
+                    dim=(controlled_robot_count, self._max_controlled_dofs),
+                    inputs=[
+                        self._svd_u_buf,
+                        self._svd_s_buf,
+                        self._pose_error_active_buf,
+                        self._truncated_svd_threshold_baked,
+                        self._task_dim,
+                        self._controlled_dofs_per_robot,
+                    ],
+                    outputs=[self._svd_z_buf],
+                    device=self._device,
+                )
+            else:
+                wp.launch(
+                    _svd_apply_damped_z_kernel,
+                    dim=(controlled_robot_count, self._max_controlled_dofs),
+                    inputs=[
+                        self._svd_u_buf,
+                        self._svd_s_buf,
+                        self._pose_error_active_buf,
+                        damping,
+                        self._task_dim,
+                        self._controlled_dofs_per_robot,
+                    ],
+                    outputs=[self._svd_z_buf],
+                    device=self._device,
+                )
             wp.launch(
-                _build_jjt_plus_damping_kernel,
-                dim=(controlled_robot_count, 6, 6),
+                _qd_from_svd_z_kernel,
+                dim=total_controlled_dofs,
                 inputs=[
-                    self._jacobian_buf,
+                    self._svd_v_buf,
+                    self._svd_z_buf,
+                    bandwidth,
+                    self._robot_of_dof,
+                    self._slot_of_dof,
                     self._controlled_dofs_per_robot,
-                    damping,
-                    self._task_dim,
-                    self._active_axis_of_slot,
-                    self._axis_weight,
                 ],
-                outputs=[self._jjt_buf],
+                outputs=[self._qd_buf],
                 device=self._device,
             )
-            wp.launch(
-                _invert_spd_block_kernel,
-                dim=controlled_robot_count,
-                inputs=[self._jjt_buf, self._task_dim, self._cholesky_scratch],
-                outputs=[self._jjt_inv_buf],
-                device=self._device,
-            )
-            wp.launch(
-                _apply_spatial_matrix_kernel,
-                dim=controlled_robot_count,
-                inputs=[self._jjt_inv_buf, self._pose_error_active_buf],
-                outputs=[self._y_buf],
-                device=self._device,
-            )
-            y = self._y_buf
-        wp.launch(
-            _qd_from_y_kernel,
-            dim=total_controlled_dofs,
-            inputs=[
-                self._jacobian_buf,
-                y,
-                bandwidth,
-                self._robot_of_dof,
-                self._slot_of_dof,
-                self._task_dim,
-                self._active_axis_of_slot,
-                self._axis_weight,
-            ],
-            outputs=[self._qd_buf],
-            device=self._device,
-        )
 
         if self._use_null_space:
             null_space_damping = (
@@ -1154,34 +1196,15 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 if self._null_space_damping_baked is not None
                 else self._null_space_damping_buf
             )
-            wp.launch(
-                _build_jjt_plus_damping_kernel,
-                dim=(controlled_robot_count, 6, 6),
-                inputs=[
-                    self._jacobian_buf,
-                    self._controlled_dofs_per_robot,
-                    null_space_damping,
-                    self._task_dim,
-                    self._active_axis_of_slot,
-                    self._null_space_axis_weight,
-                ],
-                outputs=[self._jjt_null_space_buf],
-                device=self._device,
-            )
-            wp.launch(
-                _invert_spd_block_kernel,
-                dim=controlled_robot_count,
-                inputs=[self._jjt_null_space_buf, self._task_dim, self._cholesky_scratch],
-                outputs=[self._jjt_null_space_inv_buf],
-                device=self._device,
-            )
-            # The two shared kernels below (also used by other controller
-            # families) know nothing about axis_weight -- gather the Jacobian
-            # into compact slot order before feeding them, then scatter
-            # their compact-slot-order result back to canonical axis order
-            # afterward, so _null_space_projector_kernel (which reads
-            # jacobian_tool_world directly, in canonical order) sees a
-            # consistent pair of inputs.
+            # _null_space_projector_kernel (shared with other controller
+            # families) knows nothing about axis_weight -- gather the
+            # Jacobian into compact slot order before feeding it, then
+            # scatter the reconstructed pinv-transpose back to canonical
+            # axis order afterward, so it sees a consistent pair of inputs.
+            # The null-space projector's own regularization stays
+            # deliberately unweighted (every axis weight 1), so
+            # jacobian_active_buf itself -- not a separately weighted
+            # buffer -- is the SVD's own input.
             wp.launch(
                 _gather_jacobian_by_axis_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
@@ -1190,9 +1213,33 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _task_matrix_times_jacobian_kernel,
+                _svd_one_sided_jacobi_kernel,
+                dim=controlled_robot_count,
+                inputs=[
+                    self._jacobian_active_view,
+                    self._controlled_dofs_per_robot,
+                    _JACOBI_SVD_TOL,
+                    _JACOBI_SVD_MAX_SWEEPS,
+                ],
+                outputs=[self._svd_u_null_view, self._svd_s_null_view, self._svd_v_null_view],
+                device=self._device,
+            )
+            wp.launch(
+                _svd_damped_g_kernel,
+                dim=(controlled_robot_count, self._max_controlled_dofs),
+                inputs=[self._svd_s_null_buf, null_space_damping, self._task_dim, self._controlled_dofs_per_robot],
+                outputs=[self._svd_g_null_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _svd_reconstruct_scaled_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[self._jjt_null_space_inv_buf, self._jacobian_active_buf, self._controlled_dofs_per_robot],
+                inputs=[
+                    self._svd_u_null_buf,
+                    self._svd_g_null_buf,
+                    self._svd_v_null_buf,
+                    self._controlled_dofs_per_robot,
+                ],
                 outputs=[self._jacobian_pinv_transpose_slot_buf],
                 device=self._device,
             )

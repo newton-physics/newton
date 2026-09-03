@@ -3,13 +3,28 @@
 
 """Tests for the differential-kinematics controllers.
 
-Kernel-level tests (:class:`TestDiffIkKernels`) exercise each Warp kernel in
+Kernel-level tests (:class:`TestDiffIkKernels`) exercise a Warp kernel in
 ``newton._src.controllers.impl.differential_ik._common`` directly against a
 hand-derived numpy reference, with no :class:`Controller` involved.
 Controller-class-level tests (:class:`TestControllerDifferentialIKModelFree`)
 exercise :class:`~newton.controllers.ControllerDifferentialIKModelFree` — the
 construction/validation/port-plumbing layer built on top of those kernels.
 ``model_based.py`` tests are added alongside it in a later chunk.
+
+A kernel-level test is a private-API test: it churns whenever the internal
+kernel graph is refactored, even when the controller's own public behavior
+hasn't changed. To keep that churn worthwhile, a kernel-level test earns its
+place only when it covers
+something the controller-level, public-API tests structurally cannot reach
+-- e.g. an arbitrary 6D error including the orientation rows (the public
+``desired_tool_pose_world`` input can only produce one via a quaternion
+log-map, not an arbitrary vector), a ground-truth ``np.linalg.pinv``
+comparison on a random Jacobian (vs. two solve methods merely agreeing with
+each other), or an internal contract like the SVD's own column-padding
+semantics. A closed-form/golden-value check reachable through the
+controller's own ``step()`` belongs in :class:`TestControllerDifferentialIKModelFree`
+instead, since that's the layer whose behavior is actually promised to
+callers, and it is what should stay green across an internal solver rewrite.
 """
 
 from __future__ import annotations
@@ -23,24 +38,18 @@ import warp as wp
 import newton
 from newton._src.controllers.impl._common import (
     _add_term_kernel,
-    _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
-    _invert_spd_block_kernel,
-    _pose_error_kernel,
 )
 from newton._src.controllers.impl.differential_ik._common import (
     DifferentialIKMethod,
     _adaptive_damping_kernel,
-    _build_jjt_plus_damping_kernel,
-    _gather_jacobian_by_axis_kernel,
-    _gather_task_error_kernel,
-    _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
+    _qd_from_svd_z_kernel,
     _qd_from_y_kernel,
-    _scatter_pinv_transpose_by_axis_kernel,
-    _smallest_eigenvalue_spd6_kernel,
-    _truncated_pinv_matrix_kernel,
+    _svd_apply_damped_z_kernel,
+    _svd_apply_truncated_z_kernel,
+    _svd_one_sided_jacobi_kernel,
 )
 from newton._src.controllers.impl.differential_ik.model_based import ControllerDifferentialIK
 from newton._src.controllers.impl.differential_ik.model_free import ControllerDifferentialIKModelFree
@@ -49,225 +58,143 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 devices = get_test_devices()
 
 
-def _solve6(jjt, error, device):
-    """Solve ``jjt @ y = error`` via ``_invert_spd_block_kernel`` + ``_apply_spatial_matrix_kernel``."""
-    robot_count = jjt.shape[0]
-    block_dim = wp.full(robot_count, 6, dtype=wp.int32, device=device)
-    cholesky_factor = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
-    jjt_inv = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _invert_spd_block_kernel,
-        dim=robot_count,
-        inputs=[jjt, block_dim, cholesky_factor],
-        outputs=[jjt_inv],
-        device=device,
-    )
-    y = wp.zeros(robot_count, dtype=wp.spatial_vector, device=device)
-    wp.launch(_apply_spatial_matrix_kernel, dim=robot_count, inputs=[jjt_inv, error], outputs=[y], device=device)
-    return y
+def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np, device, task_dim_val=6):
+    """Run the SVD-based solve end to end (_svd_one_sided_jacobi_kernel + _svd_apply_damped_z_kernel +
+    _qd_from_svd_z_kernel), returning ``joint_qd_target`` as numpy.
 
+    ``jacobian_np`` is already ``J_w`` (every test in this section uses
+    ``axis_weight`` all-ones, so ``J_w == J``); ``task_dim_val`` defaults to
+    6 (every test here also uses the full task), scalar or per-robot.
+    """
+    robot_count, m, max_dofs = jacobian_np.shape
+    assert m == 6
+    dof_counts = np.atleast_1d(dof_counts).astype(np.int32)
+    task_dim_np = np.full(robot_count, task_dim_val, dtype=np.int32) if np.isscalar(task_dim_val) else task_dim_val
+    damping_np = np.full(robot_count, damping_val, dtype=np.float32) if np.isscalar(damping_val) else damping_val
+    error_np = np.atleast_2d(error_np)
 
-# ---------------------------------------------------------------------------
-# _pose_error_kernel
-# ---------------------------------------------------------------------------
+    mat_j = wp.types.matrix(shape=(6, max_dofs), dtype=wp.float32)
+    mat_v = wp.types.matrix(shape=(max_dofs, max_dofs), dtype=wp.float32)
+    mat_u = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
+    vec_s = wp.types.vector(length=max_dofs, dtype=wp.float32)
 
-
-def test_pose_error_zero_when_poses_match(test: unittest.TestCase, device):
-    """Identical current and desired poses give an exactly zero 6D pose error."""
-    pose = wp.array(
-        [wp.transform(p=wp.vec3(1.0, 2.0, 3.0), q=wp.quat_rpy(0.3, -0.2, 0.5))], dtype=wp.transform, device=device
-    )
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[pose, pose], outputs=[error], device=device)
-    np.testing.assert_allclose(error.numpy(), np.zeros((1, 6)), atol=1e-6)
-
-
-def test_pose_error_small_angle_is_finite(test: unittest.TestCase, device):
-    """A near-identical orientation must not divide-by-zero into NaN."""
-    identity_quat = wp.quat_identity()
-    tiny_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1e-7)
-    current = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat)], dtype=wp.transform, device=device)
-    desired = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=tiny_quat)], dtype=wp.transform, device=device)
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[current, desired], outputs=[error], device=device)
-    result = error.numpy()[0]
-    test.assertTrue(np.all(np.isfinite(result)))
-    np.testing.assert_allclose(result[3:], [0.0, 0.0, 1e-7], atol=1e-8)
-
-
-def test_pose_error_multiple_robots_independent(test: unittest.TestCase, device):
-    """Each robot's pose error is computed independently, with no cross-talk between batch entries."""
-    identity_quat = wp.quat_identity()
-    current = wp.array(
-        [
-            wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat),
-            wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat),
-        ],
-        dtype=wp.transform,
-        device=device,
-    )
-    desired = wp.array(
-        [
-            wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=identity_quat),
-            wp.transform(p=wp.vec3(0.0, 2.0, 0.0), q=identity_quat),
-        ],
-        dtype=wp.transform,
-        device=device,
-    )
-    error = wp.zeros(2, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=2, inputs=[current, desired], outputs=[error], device=device)
-    np.testing.assert_allclose(error.numpy()[:, :3], [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]], atol=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# DLS solve: _build_jjt_plus_damping_kernel + _solve6 (_invert_spd_block_kernel + _apply_spatial_matrix_kernel) + _qd_from_y_kernel
-# ---------------------------------------------------------------------------
-
-
-def test_build_jjt_plus_damping_matches_formula(test: unittest.TestCase, device):
-    """A full task_dim=6 build matches the closed-form J @ Jᵀ + λ²I."""
-    rng = np.random.default_rng(0)
-    max_dofs = 4
-    dof_count_val = 4
-    jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([dof_count_val], dtype=wp.int32, device=device)
-    damping = wp.array([0.1], dtype=wp.float32, device=device)
-    out = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[out],
-        device=device,
-    )
-
-    j = jacobian_np[0]
-    expected = j @ j.T + 0.1**2 * np.eye(6)
-    np.testing.assert_allclose(out.numpy()[0], expected, atol=1e-4)
-
-
-def test_build_jjt_plus_damping_task_dim_3_confines_to_top_left_block(test: unittest.TestCase, device):
-    """task_dim=3 writes only the top-left 3x3 block; every other row/column stays exactly zero."""
-    rng = np.random.default_rng(1)
-    jacobian_np = rng.normal(size=(1, 6, 4)).astype(np.float32)
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([4], dtype=wp.int32, device=device)
-    damping = wp.array([0.1], dtype=wp.float32, device=device)
-    task_dim = wp.array([3], dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.array([[0, 1, 2, 0, 0, 0]], dtype=np.int32), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    out = wp.zeros((1, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[out],
-        device=device,
-    )
-    out_np = out.numpy()[0]
-    expected_top_left = jacobian_np[0, :3, :] @ jacobian_np[0, :3, :].T + 0.1**2 * np.eye(3)
-    np.testing.assert_allclose(out_np[:3, :3], expected_top_left, atol=1e-4)
-    np.testing.assert_allclose(out_np[3:, :], 0.0, atol=0)
-    np.testing.assert_allclose(out_np[:, 3:], 0.0, atol=0)
-
-
-def test_gather_task_error_matches_active_axis_and_weight(test: unittest.TestCase, device):
-    """The gathered, compact task error equals the active axes of pose_error scaled by axis_weight."""
-    pose_error = wp.array(
-        [wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0), wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
-        dtype=wp.spatial_vector,
-        device=device,
-    )
-    task_dim = wp.array([3, 6], dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (2, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.array(
-        [wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), wp.spatial_vector(1.0, 2.0, 1.0, 1.0, 1.0, 1.0)],
-        dtype=wp.spatial_vector,
-        device=device,
-    )  # robot 1: also check a nonzero, non-unit weight
-    pose_error_active = wp.zeros(2, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _gather_task_error_kernel,
-        dim=2,
-        inputs=[pose_error, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[pose_error_active],
-        device=device,
-    )
-    out = pose_error_active.numpy()
-    np.testing.assert_allclose(out[0], [1.0, 2.0, 3.0, 0.0, 0.0, 0.0])
-    np.testing.assert_allclose(out[1], [1.0, 4.0, 3.0, 4.0, 5.0, 6.0])
-
-
-def test_gather_jacobian_by_axis_matches_expected_rows(test: unittest.TestCase, device):
-    """Null-space path: gathering an arbitrary (non-prefix) axis combo into compact slot order, unweighted."""
-    rng = np.random.default_rng(14)
-    jacobian_np = rng.normal(size=(1, 6, 4)).astype(np.float32)
     jacobian = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
-    active_axes = [0, 2, 3, 4]  # drop axis 1 (Y position) and axis 5 (yaw) -- a non-prefix combo
-    task_dim = wp.array([len(active_axes)], dtype=wp.int32, device=device)
-    active_axis_of_slot_np = np.zeros((1, 6), dtype=np.int32)
-    active_axis_of_slot_np[0, : len(active_axes)] = active_axes
-    active_axis_of_slot = wp.array2d(active_axis_of_slot_np, dtype=wp.int32, device=device)
-    jacobian_active = wp.zeros((1, 6, 4), dtype=wp.float32, device=device)
+    dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
+    task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
+    damping = wp.array(damping_np, dtype=wp.float32, device=device)
+    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+
+    u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
+    s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
+    v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _gather_jacobian_by_axis_kernel,
-        dim=(1, 6, 4),
-        inputs=[jacobian, active_axis_of_slot, task_dim],
-        outputs=[jacobian_active],
+        _svd_one_sided_jacobi_kernel,
+        dim=robot_count,
+        inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
+        outputs=[
+            u.view(mat_u).reshape((robot_count,)),
+            s.view(vec_s).reshape((robot_count,)),
+            v.view(mat_v).reshape((robot_count,)),
+        ],
         device=device,
     )
-    out = jacobian_active.numpy()[0]
-    np.testing.assert_allclose(out[: len(active_axes)], jacobian_np[0, active_axes, :], atol=1e-5)
-    np.testing.assert_allclose(out[len(active_axes) :], 0.0, atol=0)
 
-
-def test_scatter_pinv_transpose_by_axis_matches_expected_rows(test: unittest.TestCase, device):
-    """Null-space path: scattering a compact-slot-order result back to its own canonical axis rows."""
-    rng = np.random.default_rng(15)
-    active_axes = [0, 2, 3, 4]
-    task_dim = wp.array([len(active_axes)], dtype=wp.int32, device=device)
-    active_axis_of_slot_np = np.zeros((1, 6), dtype=np.int32)
-    active_axis_of_slot_np[0, : len(active_axes)] = active_axes
-    active_axis_of_slot = wp.array2d(active_axis_of_slot_np, dtype=wp.int32, device=device)
-    dof_count = wp.array([4], dtype=wp.int32, device=device)
-
-    pinv_slot_np = np.zeros((1, 6, 4), dtype=np.float32)
-    pinv_slot_np[0, : len(active_axes), :] = rng.normal(size=(len(active_axes), 4))
-    pinv_slot = wp.array3d(pinv_slot_np, dtype=wp.float32, device=device)
-    pinv_axis = wp.zeros((1, 6, 4), dtype=wp.float32, device=device)
+    z = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _scatter_pinv_transpose_by_axis_kernel,
-        dim=(1, 6, 4),
-        inputs=[pinv_slot, active_axis_of_slot, task_dim, dof_count],
-        outputs=[pinv_axis],
+        _svd_apply_damped_z_kernel,
+        dim=(robot_count, max_dofs),
+        inputs=[u, s, error, damping, task_dim, dof_count],
+        outputs=[z],
         device=device,
     )
-    out = pinv_axis.numpy()[0]
-    for slot, axis in enumerate(active_axes):
-        np.testing.assert_allclose(out[axis], pinv_slot_np[0, slot], atol=1e-6)
-    for axis in [1, 5]:
-        np.testing.assert_allclose(out[axis], 0.0, atol=0)
+
+    total_dofs = int(dof_counts.sum())
+    bandwidth = wp.array(bandwidth_np, dtype=wp.float32, device=device)
+    robot_of_dof = wp.array(
+        np.repeat(np.arange(robot_count, dtype=np.int32), dof_counts), dtype=wp.int32, device=device
+    )
+    slot_of_dof = wp.array(
+        np.concatenate([np.arange(n, dtype=np.int32) for n in dof_counts]), dtype=wp.int32, device=device
+    )
+    joint_qd_target = wp.zeros(total_dofs, dtype=wp.float32, device=device)
+    wp.launch(
+        _qd_from_svd_z_kernel,
+        dim=total_dofs,
+        inputs=[v, z, bandwidth, robot_of_dof, slot_of_dof, dof_count],
+        outputs=[joint_qd_target],
+        device=device,
+    )
+    return joint_qd_target.numpy()
 
 
-def test_smallest_eigenvalue_spd6_task_dim_3_skips_padding_zeros(test: unittest.TestCase, device):
-    """A JJᵀ built with task_dim=3 has 3 guaranteed-zero padding eigenvalues; the real smallest must be found
-    among the other 3, not the trivial global minimum (always 0 from the padding)."""
-    rng = np.random.default_rng(12)
-    j = rng.normal(size=(3, 4)).astype(np.float32)
-    jjt3_np = (j @ j.T).astype(np.float32)
-    padded = np.zeros((6, 6), dtype=np.float32)
-    padded[:3, :3] = jjt3_np
+def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandwidth_np, device, task_dim_val=6):
+    """Like :func:`_solve_dls_svd`, but through ``_svd_apply_truncated_z_kernel`` (``DifferentialIKMethod.TRUNCATED_SVD``)."""
+    robot_count, m, max_dofs = jacobian_np.shape
+    assert m == 6
+    dof_counts = np.atleast_1d(dof_counts).astype(np.int32)
+    task_dim_np = np.full(robot_count, task_dim_val, dtype=np.int32) if np.isscalar(task_dim_val) else task_dim_val
+    threshold_np = (
+        np.full(robot_count, threshold_val, dtype=np.float32) if np.isscalar(threshold_val) else threshold_val
+    )
+    error_np = np.atleast_2d(error_np)
 
-    matrix = wp.array3d(padded[None], dtype=wp.float32, device=device)
-    task_dim = wp.array([3], dtype=wp.int32, device=device)
-    smallest = wp.zeros(1, dtype=wp.float32, device=device)
-    wp.launch(_smallest_eigenvalue_spd6_kernel, dim=1, inputs=[matrix, task_dim], outputs=[smallest], device=device)
-    expected = max(np.linalg.eigvalsh(jjt3_np.astype(np.float64)).min(), 0.0)
-    np.testing.assert_allclose(smallest.numpy()[0], expected, atol=1e-3)
+    mat_j = wp.types.matrix(shape=(6, max_dofs), dtype=wp.float32)
+    mat_v = wp.types.matrix(shape=(max_dofs, max_dofs), dtype=wp.float32)
+    mat_u = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
+    vec_s = wp.types.vector(length=max_dofs, dtype=wp.float32)
+
+    jacobian = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+    dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
+    task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
+    threshold = wp.array(threshold_np, dtype=wp.float32, device=device)
+    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+
+    u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
+    s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
+    v = wp.zeros((robot_count, max_dofs, max_dofs), dtype=wp.float32, device=device)
+    wp.launch(
+        _svd_one_sided_jacobi_kernel,
+        dim=robot_count,
+        inputs=[jacobian.view(mat_j).reshape((robot_count,)), dof_count, 1.0e-6, 30],
+        outputs=[
+            u.view(mat_u).reshape((robot_count,)),
+            s.view(vec_s).reshape((robot_count,)),
+            v.view(mat_v).reshape((robot_count,)),
+        ],
+        device=device,
+    )
+
+    z = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
+    wp.launch(
+        _svd_apply_truncated_z_kernel,
+        dim=(robot_count, max_dofs),
+        inputs=[u, s, error, threshold, task_dim, dof_count],
+        outputs=[z],
+        device=device,
+    )
+
+    total_dofs = int(dof_counts.sum())
+    bandwidth = wp.array(bandwidth_np, dtype=wp.float32, device=device)
+    robot_of_dof = wp.array(
+        np.repeat(np.arange(robot_count, dtype=np.int32), dof_counts), dtype=wp.int32, device=device
+    )
+    slot_of_dof = wp.array(
+        np.concatenate([np.arange(n, dtype=np.int32) for n in dof_counts]), dtype=wp.int32, device=device
+    )
+    joint_qd_target = wp.zeros(total_dofs, dtype=wp.float32, device=device)
+    wp.launch(
+        _qd_from_svd_z_kernel,
+        dim=total_dofs,
+        inputs=[v, z, bandwidth, robot_of_dof, slot_of_dof, dof_count],
+        outputs=[joint_qd_target],
+        device=device,
+    )
+    return joint_qd_target.numpy()
+
+
+# ---------------------------------------------------------------------------
+# _qd_from_y_kernel (DifferentialIKMethod.TRANSPOSE's own finishing kernel)
+# ---------------------------------------------------------------------------
 
 
 def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
@@ -301,12 +228,12 @@ def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
 def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, device):
     """Slots of y at or beyond task_dim must not affect the result, even if they hold garbage, not zero.
 
-    Every real producer of y (_gather_task_error_kernel,
-    _apply_spatial_matrix_kernel) leaves those slots exactly zero, but
-    _qd_from_y_kernel does not rely on that -- it stops summing at
-    task_dim itself. Regression test: construct y with large nonzero
-    values past task_dim=3 and confirm the result is identical to the
-    same y with those slots genuinely zeroed.
+    ``_qd_from_y_kernel``'s only remaining caller (``DifferentialIKMethod.TRANSPOSE``)
+    feeds it ``_gather_task_error_kernel``'s output, which leaves those
+    slots exactly zero, but ``_qd_from_y_kernel`` does not rely on that --
+    it stops summing at task_dim itself. Regression test: construct y with
+    large nonzero values past task_dim=3 and confirm the result is
+    identical to the same y with those slots genuinely zeroed.
     """
     rng = np.random.default_rng(7)
     max_dofs = 3
@@ -339,12 +266,26 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
     np.testing.assert_array_equal(run(y_zero_padded), run(y_garbage_padded))
 
 
+# ---------------------------------------------------------------------------
+# The SVD-based solve: _svd_one_sided_jacobi_kernel + _svd_apply_damped_z_kernel
+# + _qd_from_svd_z_kernel (see _solve_dls_svd above) -- see the section
+# comment above _svd_one_sided_jacobi in _common.py for why it's SVD-based.
+# ---------------------------------------------------------------------------
+
+
 def test_dls_matches_ridge_regression_for_underactuated_robot(test: unittest.TestCase, device):
-    """The fixed 6x6 JJᵀ+λ²I solve must equal the n x n JᵀJ+λ²I ridge solution when n < 6.
+    """The SVD-based solve must equal the n x n JᵀJ+λ²I ridge solution when n < 6.
 
     This is the push-through identity Jᵀ(JJᵀ+λ²I)⁻¹ == (JᵀJ+λ²I)⁻¹Jᵀ, which
     holds for any shape of J as long as λ > 0 — so a robot with fewer than 6
     controlled DOFs does not need a different code path.
+
+    Kernel-level, not controller-level: needs an arbitrary 6D error
+    (including the orientation rows), which the controller's pose-based
+    ``desired_tool_pose_world`` input can't produce directly (orientation
+    error comes out of a quaternion log-map, not a linear vector) -- same
+    reasoning as ``TestControllerDifferentialIKModelFree.test_heterogeneous_dof_counts``,
+    which is restricted to position-only error for exactly this reason.
     """
     rng = np.random.default_rng(5)
     n_joints = 3
@@ -354,44 +295,23 @@ def test_dls_matches_ridge_regression_for_underactuated_robot(test: unittest.Tes
     error_np = rng.normal(size=6).astype(np.float32)
     damping_val = 0.2
 
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([n_joints], dtype=wp.int32, device=device)
-    damping = wp.array([damping_val], dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*error_np)], dtype=wp.spatial_vector, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-
-    bandwidth = wp.ones(n_joints, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0] * n_joints, dtype=wp.int32, device=device)
-    slot_of_dof = wp.array(np.arange(n_joints, dtype=np.int32), dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(n_joints, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=n_joints,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
+    joint_qd_target = _solve_dls_svd(
+        jacobian_np, error_np, damping_val, n_joints, np.ones(n_joints, dtype=np.float32), device
     )
 
     j64 = jacobian_np[0, :, :n_joints].astype(np.float64)
     e64 = error_np.astype(np.float64)
     ridge_expected = np.linalg.solve(j64.T @ j64 + damping_val**2 * np.eye(n_joints), j64.T @ e64)
-    np.testing.assert_allclose(joint_qd_target.numpy(), ridge_expected, atol=1e-3)
+    np.testing.assert_allclose(joint_qd_target, ridge_expected, atol=1e-3)
 
 
 def test_dls_heterogeneous_dof_counts_independent(test: unittest.TestCase, device):
-    """A batch mixing a 3-DOF and a 7-DOF robot solves each correctly, with no cross-talk."""
+    """A batch mixing a 3-DOF and a 7-DOF robot solves each correctly, with no cross-talk.
+
+    Kernel-level: covers the full 6D error (including orientation rows) that
+    ``TestControllerDifferentialIKModelFree.test_heterogeneous_dof_counts``
+    can't reach through the pose-based public API.
+    """
     rng = np.random.default_rng(6)
     max_dofs = 7
     dof_counts = [3, 7]
@@ -402,46 +322,11 @@ def test_dls_heterogeneous_dof_counts_independent(test: unittest.TestCase, devic
     error_np = rng.normal(size=(robot_count, 6)).astype(np.float32)
     damping_val = 0.15
 
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
-    damping = wp.array([damping_val] * robot_count, dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
-
-    jjt = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(robot_count, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(
-        np.tile(np.arange(6, dtype=np.int32), (robot_count, 1)), dtype=wp.int32, device=device
-    )
-    axis_weight = wp.full(
-        robot_count, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device
-    )
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(robot_count, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-
     total_dofs = sum(dof_counts)
-    bandwidth = wp.ones(total_dofs, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array(
-        np.repeat(np.arange(robot_count, dtype=np.int32), dof_counts), dtype=wp.int32, device=device
-    )
-    slot_of_dof = wp.array(
-        np.concatenate([np.arange(n, dtype=np.int32) for n in dof_counts]), dtype=wp.int32, device=device
-    )
-    joint_qd_target = wp.zeros(total_dofs, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=total_dofs,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
+    joint_qd_np = _solve_dls_svd(
+        jacobian_np, error_np, damping_val, dof_counts, np.ones(total_dofs, dtype=np.float32), device
     )
 
-    joint_qd_np = joint_qd_target.numpy()
     offset = 0
     for robot_idx, n in enumerate(dof_counts):
         j64 = jacobian_np[robot_idx, :, :n].astype(np.float64)
@@ -452,231 +337,24 @@ def test_dls_heterogeneous_dof_counts_independent(test: unittest.TestCase, devic
 
 
 def test_dls_zero_damping_is_pseudo_inverse(test: unittest.TestCase, device):
-    """λ=0 reduces DLS to the ordinary Moore-Penrose pseudo-inverse for a full-rank Jacobian."""
+    """λ=0 reduces DLS to the ordinary Moore-Penrose pseudo-inverse for a full-rank Jacobian.
+
+    Kernel-level: the only place this is checked against genuine
+    ``np.linalg.pinv`` ground truth on a random, non-trivial Jacobian --
+    ``TestControllerDifferentialIKModelFree.test_pseudo_inverse_method_matches_zero_damping_dls``
+    only compares two solve methods against each other on an identity
+    Jacobian, which can't catch a bug shared by both paths.
+    """
     rng = np.random.default_rng(4)
     max_dofs = 6
     jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
     error_np = rng.normal(size=6).astype(np.float32)
 
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([max_dofs], dtype=wp.int32, device=device)
-    damping = wp.array([0.0], dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*error_np)], dtype=wp.spatial_vector, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-    bandwidth = wp.ones(max_dofs, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0] * max_dofs, dtype=wp.int32, device=device)
-    slot_of_dof = wp.array(np.arange(max_dofs, dtype=np.int32), dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(max_dofs, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=max_dofs,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
-    )
+    joint_qd_target = _solve_dls_svd(jacobian_np, error_np, 0.0, max_dofs, np.ones(max_dofs, dtype=np.float32), device)
 
     j64 = jacobian_np[0].astype(np.float64)
     expected = np.linalg.pinv(j64) @ error_np.astype(np.float64)
-    np.testing.assert_allclose(joint_qd_target.numpy(), expected, atol=1e-3)
-
-
-# ---------------------------------------------------------------------------
-# Golden-value tests, hand-derived analytical closed forms for the
-# damped-least-squares solve.
-# ---------------------------------------------------------------------------
-
-
-def test_pinv_identity_jacobian_matches_error_exactly(test: unittest.TestCase, device):
-    """PINV (λ=0) on J = I_6x6: qd = pos_err padded with zero orientation rows, exactly.
-
-    With a square identity Jacobian, J⁺ = I, so the solver output is exactly
-    the raw pose error.
-    """
-    pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-    error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)])
-    jacobian_np = np.eye(6, dtype=np.float32)[None]
-
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([6], dtype=wp.int32, device=device)
-    damping = wp.array([0.0], dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*error_np)], dtype=wp.spatial_vector, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-    bandwidth = wp.ones(6, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
-    slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(6, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=6,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
-    )
-
-    np.testing.assert_allclose(joint_qd_target.numpy(), error_np, atol=1e-5)
-
-
-def test_dls_pipeline_zero_when_poses_match(test: unittest.TestCase, device):
-    """Full pipeline (pose error -> DLS solve) with matching poses gives zero qd."""
-    pose = wp.array([wp.transform(p=wp.vec3(0.3, -0.1, 0.5), q=wp.quat_identity())], dtype=wp.transform, device=device)
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[pose, pose], outputs=[error], device=device)
-
-    jacobian_np = np.eye(6, dtype=np.float32)[None]
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([6], dtype=wp.int32, device=device)
-    damping = wp.array([0.5], dtype=wp.float32, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-    bandwidth = wp.ones(6, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
-    slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(6, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=6,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
-    )
-
-    np.testing.assert_allclose(joint_qd_target.numpy(), np.zeros(6), atol=1e-6)
-
-
-def test_dls_rotation_error_axis_angle_magnitude(test: unittest.TestCase, device):
-    """30 deg rotation about x with J=I_6x6, PINV: qd[3] equals the rotation angle exactly.
-
-    Chains :func:`_pose_error_kernel` with the DLS solve to validate the
-    axis-angle error convention end to end, not just the error kernel alone.
-    """
-    angle = math.pi / 6
-    identity_quat = wp.quat_identity()
-    target_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
-    current = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat)], dtype=wp.transform, device=device)
-    desired = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=target_quat)], dtype=wp.transform, device=device)
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[current, desired], outputs=[error], device=device)
-
-    jacobian_np = np.eye(6, dtype=np.float32)[None]
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([6], dtype=wp.int32, device=device)
-    damping = wp.array([0.0], dtype=wp.float32, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-    bandwidth = wp.ones(6, dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
-    slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(6, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=6,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
-    )
-
-    result = joint_qd_target.numpy()
-    np.testing.assert_allclose(result[:3], [0.0, 0.0, 0.0], atol=1e-5)
-    test.assertAlmostEqual(float(result[3]), angle, places=5)
-    np.testing.assert_allclose(result[4:], [0.0, 0.0], atol=1e-5)
-
-
-def test_dls_one_dof_revolute_arm_matches_analytical_solution(test: unittest.TestCase, device):
-    """A single revolute joint with a unit-length tool offset matches a hand-derived closed form.
-
-    A revolute joint's Jacobian column has both a tangential-linear entry
-    (index 1, from the unit-length tool offset) and a direct angular entry
-    (index 5, since the joint's own velocity is the angular velocity about
-    its axis). Solving ``(JJᵀ + λ²I)y = e`` via the Sherman-Morrison formula
-    for this rank-1 ``J`` gives ``qd = bandwidth · error_y / (λ² + 2)``.
-    """
-    err_y = 0.1
-    lam = 0.5
-    bandwidth_val = 2.0
-
-    jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
-    jacobian_np[0, 1, 0] = 1.0  # tangential linear velocity from the unit-length tool offset
-    jacobian_np[0, 5, 0] = 1.0  # the joint's own angular velocity about its axis
-    error_np = np.zeros(6, dtype=np.float32)
-    error_np[1] = err_y
-
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([1], dtype=wp.int32, device=device)
-    damping = wp.array([lam], dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*error_np)], dtype=wp.spatial_vector, device=device)
-
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    task_dim = wp.full(1, 6, dtype=wp.int32, device=device)
-    active_axis_of_slot = wp.array2d(np.tile(np.arange(6, dtype=np.int32), (1, 1)), dtype=wp.int32, device=device)
-    axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, damping, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[jjt],
-        device=device,
-    )
-    y = _solve6(jjt, error, device)
-    bandwidth = wp.array([bandwidth_val], dtype=wp.float32, device=device)
-    robot_of_dof = wp.array([0], dtype=wp.int32, device=device)
-    slot_of_dof = wp.array([0], dtype=wp.int32, device=device)
-    joint_qd_target = wp.zeros(1, dtype=wp.float32, device=device)
-    wp.launch(
-        _qd_from_y_kernel,
-        dim=1,
-        inputs=[jacobian, y, bandwidth, robot_of_dof, slot_of_dof, task_dim, active_axis_of_slot, axis_weight],
-        outputs=[joint_qd_target],
-        device=device,
-    )
-
-    expected = bandwidth_val * err_y / (2.0 + lam**2)
-    test.assertAlmostEqual(float(joint_qd_target.numpy()[0]), expected, places=5)
+    np.testing.assert_allclose(joint_qd_target, expected, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -799,45 +477,6 @@ def test_posture_bias_matches_formula(test: unittest.TestCase, device):
     np.testing.assert_allclose(dq_center.numpy(), [1.0, -1.5], atol=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# _integrate_position_kernel
-# ---------------------------------------------------------------------------
-
-
-def test_integrate_position_euler_step(test: unittest.TestCase, device):
-    """joint_q_target equals joint_q + joint_qd_target * dt, the explicit-Euler integration step."""
-    joint_q = wp.array([0.0, 1.0, -1.0], dtype=wp.float32, device=device)
-    joint_qd_target = wp.array([1.0, -2.0, 0.5], dtype=wp.float32, device=device)
-    dt = wp.array([0.1], dtype=wp.float32, device=device)
-    joint_q_target = wp.zeros(3, dtype=wp.float32, device=device)
-    wp.launch(
-        _integrate_position_kernel,
-        dim=3,
-        inputs=[joint_q, joint_qd_target, dt],
-        outputs=[joint_q_target],
-        device=device,
-    )
-    np.testing.assert_allclose(joint_q_target.numpy(), [0.1, 0.8, -0.95], atol=1e-6)
-
-
-def test_smallest_eigenvalue_spd6_matches_numpy(test: unittest.TestCase, device):
-    """The kernel's smallest eigenvalue matches numpy's, for a full-rank and a rank-deficient JJᵀ."""
-    rng = np.random.default_rng(11)
-    j1 = rng.normal(size=(6, 6)).astype(np.float32)
-    j2 = np.zeros((6, 4), dtype=np.float32)
-    j2[:, :4] = rng.normal(size=(6, 4))  # rank <= 4: JJᵀ has (at least) two zero eigenvalues
-    jjt_np = np.stack([j1 @ j1.T, j2 @ j2.T]).astype(np.float32)
-
-    matrix = wp.array3d(jjt_np, dtype=wp.float32, device=device)
-    task_dim = wp.full(2, 6, dtype=wp.int32, device=device)
-    smallest_eigenvalue = wp.zeros(2, dtype=wp.float32, device=device)
-    wp.launch(
-        _smallest_eigenvalue_spd6_kernel, dim=2, inputs=[matrix, task_dim], outputs=[smallest_eigenvalue], device=device
-    )
-    expected = np.array([np.linalg.eigvalsh(jjt_np[i].astype(np.float64)).min() for i in range(2)])
-    np.testing.assert_allclose(smallest_eigenvalue.numpy(), np.maximum(expected, 0.0), atol=1e-3)
-
-
 def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
     """Adaptive damping matches the Maciejewski-Klein closed form, saturating at both ends of the ramp."""
     smallest_eigenvalue = wp.array([0.0, 0.25, 100.0], dtype=wp.float32, device=device)  # sigma_min = 0, 0.5, 10
@@ -862,102 +501,46 @@ def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
     test.assertAlmostEqual(float(damping.numpy()[0]), 2.0, places=5)
 
 
-def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
-    """Below-threshold truncation never triggers here, so the kernel's output matches an exact pseudo-inverse."""
+def test_truncated_svd_z_matches_numpy_pinv_when_well_conditioned(test: unittest.TestCase, device):
+    """Below-threshold truncation never triggers here, so the solve matches an exact pseudo-inverse of J."""
     rng = np.random.default_rng(13)
-    j = rng.normal(size=(6, 4)).astype(np.float32)
-    jjt_np = (j @ j.T).astype(np.float32)
-    threshold = 0.05  # well below every singular value of a random 6x4 J, so nothing is truncated here
+    jacobian_np = np.zeros((1, 6, 4), dtype=np.float32)
+    jacobian_np[0] = rng.normal(size=(6, 4))
+    error_np = rng.normal(size=6).astype(np.float32)
+    threshold = 0.001  # well below every singular value of a random 6x4 J, so nothing is truncated here
 
-    matrix = wp.array3d(jjt_np[None], dtype=wp.float32, device=device)
-    threshold_arr = wp.array([threshold], dtype=wp.float32, device=device)
-    pinv_matrix = wp.zeros((1, 6, 6), dtype=wp.float32, device=device)
-    wp.launch(
-        _truncated_pinv_matrix_kernel, dim=1, inputs=[matrix, threshold_arr], outputs=[pinv_matrix], device=device
-    )
+    joint_qd_target = _solve_truncated_svd(jacobian_np, error_np, threshold, 4, np.ones(4, dtype=np.float32), device)
 
-    eigenvalues, eigenvectors = np.linalg.eigh(jjt_np.astype(np.float64))
-    sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
-    # g(sigma) = 1/sigma^2 = 1/eigenvalue: the kernel inverts JJᵀ itself.
-    g = np.where(sigma > threshold, 1.0 / np.maximum(eigenvalues, 1e-30), 0.0)
-    expected = (eigenvectors * g) @ eigenvectors.T
-    np.testing.assert_allclose(pinv_matrix.numpy()[0], expected, atol=1e-3)
+    j64 = jacobian_np[0].astype(np.float64)
+    expected = np.linalg.pinv(j64) @ error_np.astype(np.float64)
+    np.testing.assert_allclose(joint_qd_target, expected, atol=1e-3)
 
 
-def test_truncated_pinv_matrix_drops_singular_directions(test: unittest.TestCase, device):
-    """A rank-3 JJᵀ (from a 3-DOF robot) has 3 exact-zero eigenvalues: those directions contribute nothing."""
+def test_truncated_svd_z_drops_singular_directions(test: unittest.TestCase, device):
+    """A rank-3 J (from a 3-DOF robot padded to dof_count=6) has 3 structurally-zero singular values.
+
+    Checks the "structural vs. thresholded zero" distinction against
+    ``_svd_apply_truncated_z_kernel``'s output: a solve with ``dof_count=3``
+    (the genuine rank) must match one with ``dof_count=6`` on the same,
+    only-3-real-columns Jacobian -- the 3 structural padding directions
+    contribute exactly nothing either way.
+    """
     rng = np.random.default_rng(17)
-    j = np.zeros((6, 3), dtype=np.float32)
-    j[:, :3] = rng.normal(size=(6, 3))
-    jjt_np = (j @ j.T).astype(np.float32)
+    jacobian_np = np.zeros((1, 6, 6), dtype=np.float32)
+    jacobian_np[0, :, :3] = rng.normal(size=(6, 3))
+    error_np = rng.normal(size=6).astype(np.float32)
+    threshold = 1.0e-2  # well below every genuine singular value, well above float32 noise on the zero columns
 
-    matrix = wp.array3d(jjt_np[None], dtype=wp.float32, device=device)
-    # Above the QR eigensolver's own float32 noise floor for a structurally
-    # zero eigenvalue (~1e-6, i.e. sigma ~1e-3) but well below the smallest
-    # genuine singular value, so exactly the 3 structural directions drop.
-    threshold_arr = wp.array([1.0e-2], dtype=wp.float32, device=device)
-    pinv_matrix = wp.zeros((1, 6, 6), dtype=wp.float32, device=device)
-    wp.launch(
-        _truncated_pinv_matrix_kernel, dim=1, inputs=[matrix, threshold_arr], outputs=[pinv_matrix], device=device
-    )
-    # rank(pinv_matrix) == rank(jjt) == 3, not 6: the dropped directions
-    # leave the matrix singular rather than merely small in those directions.
-    rank = np.linalg.matrix_rank(pinv_matrix.numpy()[0].astype(np.float64), tol=1e-3)
-    test.assertEqual(rank, 3)
+    qd_full_width = _solve_truncated_svd(jacobian_np, error_np, threshold, 6, np.ones(6, dtype=np.float32), device)
+    qd_true_rank = _solve_truncated_svd(jacobian_np, error_np, threshold, 3, np.ones(6, dtype=np.float32)[:3], device)
+    np.testing.assert_allclose(qd_full_width[:3], qd_true_rank, atol=1e-4)
+    np.testing.assert_allclose(qd_full_width[3:], 0.0, atol=1e-5)
 
 
 class TestDiffIkKernels(unittest.TestCase):
     pass
 
 
-add_function_test(
-    TestDiffIkKernels, "test_pose_error_zero_when_poses_match", test_pose_error_zero_when_poses_match, devices=devices
-)
-add_function_test(
-    TestDiffIkKernels, "test_pose_error_small_angle_is_finite", test_pose_error_small_angle_is_finite, devices=devices
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_pose_error_multiple_robots_independent",
-    test_pose_error_multiple_robots_independent,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_build_jjt_plus_damping_matches_formula",
-    test_build_jjt_plus_damping_matches_formula,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_build_jjt_plus_damping_task_dim_3_confines_to_top_left_block",
-    test_build_jjt_plus_damping_task_dim_3_confines_to_top_left_block,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_gather_task_error_matches_active_axis_and_weight",
-    test_gather_task_error_matches_active_axis_and_weight,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_gather_jacobian_by_axis_matches_expected_rows",
-    test_gather_jacobian_by_axis_matches_expected_rows,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_scatter_pinv_transpose_by_axis_matches_expected_rows",
-    test_scatter_pinv_transpose_by_axis_matches_expected_rows,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_smallest_eigenvalue_spd6_task_dim_3_skips_padding_zeros",
-    test_smallest_eigenvalue_spd6_task_dim_3_skips_padding_zeros,
-    devices=devices,
-)
 add_function_test(TestDiffIkKernels, "test_qd_from_y_matches_formula", test_qd_from_y_matches_formula, devices=devices)
 add_function_test(
     TestDiffIkKernels,
@@ -981,30 +564,6 @@ add_function_test(
     TestDiffIkKernels,
     "test_dls_zero_damping_is_pseudo_inverse",
     test_dls_zero_damping_is_pseudo_inverse,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_pinv_identity_jacobian_matches_error_exactly",
-    test_pinv_identity_jacobian_matches_error_exactly,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_dls_pipeline_zero_when_poses_match",
-    test_dls_pipeline_zero_when_poses_match,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_dls_rotation_error_axis_angle_magnitude",
-    test_dls_rotation_error_axis_angle_magnitude,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_dls_one_dof_revolute_arm_matches_analytical_solution",
-    test_dls_one_dof_revolute_arm_matches_analytical_solution,
     devices=devices,
 )
 add_function_test(
@@ -1036,27 +595,18 @@ add_function_test(
     TestDiffIkKernels, "test_posture_bias_matches_formula", test_posture_bias_matches_formula, devices=devices
 )
 add_function_test(
-    TestDiffIkKernels, "test_integrate_position_euler_step", test_integrate_position_euler_step, devices=devices
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_smallest_eigenvalue_spd6_matches_numpy",
-    test_smallest_eigenvalue_spd6_matches_numpy,
-    devices=devices,
-)
-add_function_test(
     TestDiffIkKernels, "test_adaptive_damping_matches_formula", test_adaptive_damping_matches_formula, devices=devices
 )
 add_function_test(
     TestDiffIkKernels,
-    "test_truncated_pinv_matrix_matches_numpy",
-    test_truncated_pinv_matrix_matches_numpy,
+    "test_truncated_svd_z_matches_numpy_pinv_when_well_conditioned",
+    test_truncated_svd_z_matches_numpy_pinv_when_well_conditioned,
     devices=devices,
 )
 add_function_test(
     TestDiffIkKernels,
-    "test_truncated_pinv_matrix_drops_singular_directions",
-    test_truncated_pinv_matrix_drops_singular_directions,
+    "test_truncated_svd_z_drops_singular_directions",
+    test_truncated_svd_z_drops_singular_directions,
     devices=devices,
 )
 
@@ -1174,6 +724,26 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         np.testing.assert_allclose(qd[:3], [0.0, 0.0, 0.0], atol=1e-5)
         self.assertAlmostEqual(float(qd[3]), angle, places=5)
         np.testing.assert_allclose(qd[4:], [0.0, 0.0], atol=1e-5)
+
+    def test_tiny_orientation_error_gives_finite_output(self):
+        """A near-identical orientation must not divide-by-zero into NaN anywhere in the pipeline."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        tiny_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1e-7)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=tiny_quat)], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        self.assertTrue(np.all(np.isfinite(qd)))
+        np.testing.assert_allclose(qd, [0.0, 0.0, 0.0, 0.0, 0.0, 1e-7], atol=1e-8)
 
     def test_one_dof_revolute_arm_matches_analytical_solution(self):
         """A single revolute joint with a unit-length tool offset matches the hand-derived closed form.
@@ -1569,6 +1139,62 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy()[:3], pos_err, atol=1e-4)
 
+    def test_axis_weight_gap_in_active_axes_matches_hand_derived_formula(self):
+        """A middle axis (not a leading or trailing run) zeroed out is gathered/scattered correctly, exactly.
+
+        ``axis_weight = (1, 1, 0, 1, 1, 1)`` zeros only position Z (axis 2),
+        leaving a gap in the active-axis set ``{0, 1, 3, 4, 5}`` -- neither a
+        prefix nor a suffix of the 6 canonical axes. With ``J = I_6``, this
+        exercises the primary task solve's own axis gather (whose active
+        axes drive DOFs 0, 1, 3, 4, 5 directly) and, via
+        ``use_null_space_posture_control``, the null-space projector's own
+        independent gather/scatter of the same non-contiguous pattern --
+        both against an exact closed form, not just a qualitative property.
+
+        With ``J = I_6`` and every active axis weighted 1, ``N = I -
+        J_activeᵀ(J_active J_activeᵀ)⁻¹J_active`` reduces to
+        ``diag(0, 0, 1, 0, 0, 0)``: DOF 2 is the only one the primary task
+        never touches, so it's the only one the null-space posture bias
+        reaches.
+        """
+        device = wp.get_device()
+        lam = 0.2
+        stiffness = 3.0
+        pos_err = np.array([0.1, 0.05, -0.2], dtype=np.float32)  # pos_err[2] (Z) must be irrelevant: axis 2 is excluded
+        angle = 0.3  # rotation about X -> raw pose error [.., angle, 0, 0] in the orientation rows
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            axis_weight=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            bandwidth=1.0,
+            damping=lam,
+            use_null_space_posture_control=True,
+            null_space_stiffness=stiffness,
+            # 0 is exact here (not just "safe"): dof_count=6 >= task_dim=5,
+            # so the active-axis JJᵀ is generically full rank without
+            # regularization (same reasoning as
+            # test_null_space_velocity_does_not_disturb_primary_task_with_zeroed_axis_weight).
+            null_space_damping=0.0,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        target_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=target_quat)], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        # Only DOF 2 (the one axis the primary task never reaches) is pulled.
+        inputs.q_des_null = wp.array([0.0, 0.0, 5.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        error = np.array([pos_err[0], pos_err[1], pos_err[2], angle, 0.0, 0.0], dtype=np.float64)
+        primary = error / (1.0 + lam**2)
+        expected = primary.copy()
+        expected[2] = stiffness * 5.0  # N = diag(0, 0, 1, 0, 0, 0): only DOF 2 gets the null-space pull
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-4)
+
     def test_requires_grad_raises(self):
         """requires_grad=True is not supported at this time and raise."""
         device = wp.get_device()
@@ -1619,6 +1245,56 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         expected = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]) / (1.0 + lam_min**2)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-5)
+
+    def test_adaptive_damping_matches_numpy_svd_ground_truth_for_random_jacobian(self):
+        """For a random, non-trivial Jacobian, qd matches a hand-computed λ(sigma_min) via numpy's own SVD.
+
+        The other adaptive-damping tests here use ``J = I_6`` or a
+        structurally rank-1 Jacobian, both of which have an obvious
+        ``sigma_min`` by construction. This one instead checks the full
+        pipeline -- SVD, smallest-singular-value extraction, the
+        Maciejewski-Klein ramp, and the DLS solve -- against an
+        independently computed ``sigma_min`` from ``np.linalg.svd`` on a
+        random matrix, so a bug shared between this controller's SVD and
+        the reference formula below can't cancel out.
+        """
+        device = wp.get_device()
+        rng = np.random.default_rng(31)
+        jacobian_np = rng.normal(size=(1, 6, 6)).astype(np.float32)
+        pos_err = np.array([0.1, -0.2, 0.05], dtype=np.float32)
+        lam_min = 0.1
+        lam_max = 1.0
+
+        j64 = jacobian_np[0].astype(np.float64)
+        sigma_min = np.linalg.svd(j64, compute_uv=False).min()
+        threshold = 2.0 * sigma_min  # an intermediate point on the ramp, not a saturated endpoint
+
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
+            adaptive_damping_min=lam_min,
+            adaptive_damping_max=lam_max,
+            adaptive_damping_threshold=threshold,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        ratio = min(sigma_min / threshold, 1.0)
+        lam_sq = lam_min**2 + (1.0 - ratio**2) * (lam_max**2 - lam_min**2)
+        lam = np.sqrt(lam_sq)
+        error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]).astype(np.float64)
+        expected = j64.T @ np.linalg.solve(j64 @ j64.T + lam**2 * np.eye(6), error_np)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-3)
 
     def test_adaptive_damping_uses_lambda_max_for_structurally_rank_deficient_robot(self):
         """A 1-DOF robot's JJᵀ always has sigma_min = 0 (rank <= 1 < 6), so adaptive damping settles at λ_max."""
