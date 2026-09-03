@@ -1272,11 +1272,14 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # The null-space projector's own regularization stays
             # deliberately unweighted (every axis weight 1), so
             # jacobian_active_buf itself -- not a separately weighted
-            # buffer -- is the SVD's own input.
+            # buffer -- is the SVD's own input. Gathered/scattered by
+            # null_space_active_axis_of_slot/null_space_task_dim, not the
+            # primary solve's own active_axis_of_slot/task_dim -- see
+            # null_space_axes.
             wp.launch(
                 _gather_jacobian_by_axis_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[self._jacobian_buf, self._active_axis_of_slot, self._task_dim],
+                inputs=[self._jacobian_buf, self._null_space_active_axis_of_slot, self._null_space_task_dim],
                 outputs=[self._jacobian_active_buf],
                 device=self._device,
             )
@@ -1295,7 +1298,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             wp.launch(
                 _pinv_singular_value_damped_kernel,
                 dim=(controlled_robot_count, self._max_controlled_dofs),
-                inputs=[self._svd_s_null_buf, null_space_damping, self._task_dim, self._controlled_dofs_per_robot],
+                inputs=[
+                    self._svd_s_null_buf,
+                    null_space_damping,
+                    self._null_space_task_dim,
+                    self._controlled_dofs_per_robot,
+                ],
                 outputs=[self._pinv_singular_value_null_buf],
                 device=self._device,
             )
@@ -1316,8 +1324,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
                 inputs=[
                     self._jacobian_pinv_transpose_slot_buf,
-                    self._active_axis_of_slot,
-                    self._task_dim,
+                    self._null_space_active_axis_of_slot,
+                    self._null_space_task_dim,
                     self._controlled_dofs_per_robot,
                 ],
                 outputs=[self._jacobian_pinv_transpose_buf],
