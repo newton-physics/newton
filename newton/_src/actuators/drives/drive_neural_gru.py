@@ -63,7 +63,7 @@ def _assemble_input_kernel(
     elif feature == _FEATURE_VELOCITY_ERROR:
         value = target_vel[target_vel_indices[i]] - velocity
     elif feature == _FEATURE_DYNAMIC_BIAS:
-        value = bias_force[target_vel_indices[i]]
+        value = bias_force[vel_indices[i]]
     output[i, column] = (value - means[column]) / stds[column]
 
 
@@ -495,11 +495,11 @@ class DriveNeuralGRU(DriveBase):
         return {"model_path": model_path}
 
     @classmethod
-    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> dict[str, Any]:
-        """Register and select the optional generalized-bias input."""
+    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> None:
+        """Register the optional generalized-bias input."""
         model_path = os.fspath(args["model_path"])
         if "dynamic_bias" not in _parse_input_feature_keys(load_metadata(model_path), model_path):
-            return {}
+            return
 
         from ...sim.model import Model  # noqa: PLC0415
 
@@ -512,7 +512,6 @@ class DriveNeuralGRU(DriveBase):
                 default=0.0,
             )
         )
-        return {"control_feedforward_attr": "dynamic_bias"}
 
     def __init__(self, model_path: str):
         """Initialize the drive from an ONNX GRU network.
@@ -528,6 +527,8 @@ class DriveNeuralGRU(DriveBase):
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
+        self._control_input_attrs = ("dynamic_bias",) if "dynamic_bias" in self._input_feature_keys else ()
+        self.dynamic_bias: wp.array[float] | None = None
         if self._description.layers[0].input_size != len(self._input_feature_keys):
             raise ValueError(
                 f"DriveNeuralGRU checkpoint '{self.model_path}' GRU input size "
@@ -686,10 +687,11 @@ class DriveNeuralGRU(DriveBase):
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
         self._next_hidden = None
-        if "dynamic_bias" in self._input_feature_keys and feedforward is None:
+        dynamic_bias = self.dynamic_bias
+        self.dynamic_bias = None
+        if "dynamic_bias" in self._input_feature_keys and dynamic_bias is None:
             raise RuntimeError(
-                "DriveNeuralGRU input_columns includes 'dynamic_bias', but no input was provided through "
-                "Actuator.control_feedforward_attr"
+                "DriveNeuralGRU input_columns includes 'dynamic_bias', but sim_control.dynamic_bias is missing"
             )
         if state is None or state.hidden is None:
             raise ValueError("DriveNeuralGRU requires a current drive state with hidden data")
@@ -717,7 +719,7 @@ class DriveNeuralGRU(DriveBase):
                 velocities,
                 target_pos,
                 target_vel,
-                feedforward,
+                dynamic_bias,
                 pos_indices,
                 vel_indices,
                 target_pos_indices,

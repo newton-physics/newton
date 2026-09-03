@@ -295,16 +295,17 @@ trained with MuJoCo data, this feature commonly corresponds to ``qfrc_bias =
 c(q, v)``: the Coriolis, centrifugal, and gravitational generalized forces.
 Other solvers may provide the equivalent quantity. Checkpoint producers and
 applications are responsible for using consistent physical semantics for this
-feature. The configurable feedforward slot transports this array through the
-existing actuator interface, but :class:`DriveNeuralGRU` uses it only to
-condition the network; it is not added to the predicted torque.
+feature. Before each evaluation, :class:`Actuator` assigns this same-named
+Control array to ``DriveNeuralGRU.dynamic_bias``. The drive uses it only to
+condition the network; it is not added to the predicted torque or interpreted
+as feedforward effort.
 
 Newton reads ``input_columns``, ``sample_dt_s``, and normalization statistics
 for the selected inputs and torque output. The runtime actuator timestep must
 match ``sample_dt_s``. A separate :class:`Delay` may be composed when additional
 runtime delay is desired. Target-derived features use its delayed target
-arrays. Because ``dynamic_bias`` uses the existing feedforward input path, a
-configured :class:`Delay` delays it together with the targets.
+arrays. ``dynamic_bias`` is sampled directly from the current Control and is
+not delayed.
 
 Input normalization is applied feature by feature as
 ``(value - mean) / std``. The network's scalar output is converted back to

@@ -722,7 +722,7 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key, actuator_key)``
+        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Delay step values
         are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
@@ -732,7 +732,6 @@ class ModelBuilder:
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
-        actuator_kwargs: dict  # Options supplied to the composed Actuator
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         drive_args: list[dict[str, Any]]  # Per-actuator drive array params
@@ -2734,9 +2733,8 @@ class ModelBuilder:
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
         configure_actuator = getattr(drive_class, "_configure_actuator", None)
-        actuator_kwargs = configure_actuator(self, resolved_drive) if configure_actuator is not None else {}
-        if not isinstance(actuator_kwargs, dict):
-            raise TypeError(f"{drive_class.__name__}._configure_actuator() must return a dict")
+        if configure_actuator is not None:
+            configure_actuator(self, resolved_drive)
         unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(
@@ -2772,12 +2770,11 @@ class ModelBuilder:
             return v
 
         drive_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in drive_shared.items()))
-        actuator_key = tuple(sorted((k, _make_hashable(v)) for k, v in actuator_kwargs.items()))
         clamping_key = tuple(
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key, actuator_key)
+        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -2786,7 +2783,6 @@ class ModelBuilder:
                 clamping_classes=clamping_classes,
                 clamping_shared_kwargs=clamping_shared_kwargs,
                 drive_shared_kwargs=drive_shared,
-                actuator_kwargs=actuator_kwargs,
                 indices=[],
                 pos_indices=[],
                 drive_args=[],
@@ -4773,7 +4769,6 @@ class ModelBuilder:
                     clamping_classes=sub_entry.clamping_classes,
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
                     drive_shared_kwargs=sub_entry.drive_shared_kwargs,
-                    actuator_kwargs=sub_entry.actuator_kwargs,
                     indices=[],
                     pos_indices=[],
                     drive_args=[],
@@ -13270,7 +13265,6 @@ class ModelBuilder:
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
                     requires_grad=requires_grad,
-                    **entry.actuator_kwargs,
                 )
 
                 m.actuators.append(actuator)

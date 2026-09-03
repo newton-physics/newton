@@ -769,7 +769,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
             pos_indices=wp.array(pos_indices, dtype=wp.uint32, device=self.device),
             target_pos_indices=wp.array(target_indices, dtype=wp.uint32, device=self.device),
             drive=DriveNeuralGRU(model_path),
-            control_feedforward_attr="dynamic_bias",
         )
         state = types.SimpleNamespace(
             joint_q=wp.array(position, dtype=wp.float32, device=self.device),
@@ -847,6 +846,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
     def _compute_direct(self, case, state, dt=SAMPLE_DT, target_vel_indices=None, feedforward=None):
         forces = wp.zeros(len(case.indices), dtype=wp.float32, device=self.device)
+        if feedforward is not None:
+            case.actuator.drive.dynamic_bias = feedforward
         if target_vel_indices is None:
             target_vel_indices = case.actuator.indices
         elif not isinstance(target_vel_indices, wp.array):
@@ -973,7 +974,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
         np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
 
-    def test_delay_applies_to_targets_and_dynamic_bias(self):
+    def test_delay_applies_to_targets_but_not_dynamic_bias(self):
         metadata = self._metadata(("position_error", "target_velocity", "dynamic_bias"))
         path = self._save_gru("delayed_targets.onnx", metadata)
         case = self._make_case(path, 3)
@@ -982,7 +983,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
             pos_indices=case.actuator.pos_indices,
             target_pos_indices=case.actuator.target_pos_indices,
             drive=DriveNeuralGRU(path),
-            control_feedforward_attr="dynamic_bias",
             delay=Delay(
                 delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
                 max_delay=1,
@@ -993,7 +993,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         delayed_target = case.target.copy()
         delayed_target_velocity = case.target_velocity.copy()
-        delayed_dynamic_bias = case.dynamic_bias.copy()
         _, hidden_first = self._step(case)
         case.state_a, case.state_b = case.state_b, case.state_a
 
@@ -1007,7 +1006,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
         expected_case = types.SimpleNamespace(**vars(case))
         expected_case.target = delayed_target
         expected_case.target_velocity = delayed_target_velocity
-        expected_case.dynamic_bias = delayed_dynamic_bias
         expected_effort, expected_hidden = self._expected(metadata, expected_case, hidden=hidden_first)
 
         effort, hidden = self._step(case)
@@ -1043,7 +1041,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
                     case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=dt)
 
         case = self._make_case(path, 1)
-        with self.assertRaisesRegex(RuntimeError, "control_feedforward_attr"):
+        with self.assertRaisesRegex(RuntimeError, "sim_control.dynamic_bias"):
             self._compute_direct(case, case.state_a.drive_state)
         with self.assertRaisesRegex(RuntimeError, "compute must run"):
             case.actuator.drive.update_state(case.state_a.drive_state, case.state_b.drive_state)
@@ -1303,7 +1301,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         state = model.state()
         self.assertEqual(control.dynamic_bias.shape, (model.joint_dof_count,))
         self.assertEqual(control.dynamic_bias.dtype, wp.float32)
-        self.assertEqual(model.actuators[0].control_feedforward_attr, "dynamic_bias")
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
         self.assertFalse(hasattr(state, "dynamic_bias"))
 
         control.dynamic_bias.assign(np.full(model.joint_dof_count, 2.5, dtype=np.float32))
@@ -1325,7 +1323,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertEqual(result["actuator_count"], 1)
         model = builder.finalize(device=self.device)
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
-        self.assertEqual(model.actuators[0].control_feedforward_attr, "dynamic_bias")
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
         self.assertEqual(model.control().dynamic_bias.shape, (model.joint_dof_count,))
         self.assertFalse(hasattr(model.state(), "dynamic_bias"))
 
