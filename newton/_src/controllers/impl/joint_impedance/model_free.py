@@ -32,7 +32,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _validate_array
+from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
     _block_matrix_vector_multiply_kernel,
@@ -232,8 +232,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             device=self._device,
         )
 
-        self._stiffness_baked = self._bake_gain(stiffness)
-        self._damping_baked = self._bake_gain(damping)
+        self._stiffness_baked = _bake_optional_float_array(
+            stiffness, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+        )
+        self._damping_baked = _bake_optional_float_array(
+            damping, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+        )
 
         def _buf():
             return wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
@@ -266,32 +270,6 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             if self._use_inertia
             else None
         )
-
-    def _bake_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh compact buffer.
-
-        Returns ``None`` for live gains, which are read from the input struct
-        each step instead. A wp.array is already validated by
-        :func:`_validate_array`.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return wp.full(
-                self._total_controlled_dofs,
-                float(value),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=self._requires_grad,
-            )
-        baked = wp.zeros(
-            self._total_controlled_dofs,
-            dtype=wp.float32,
-            device=self._device,
-            requires_grad=self._requires_grad,
-        )
-        wp.copy(baked, value)
-        return baked
 
     @property
     def controlled_robot_count(self) -> int:

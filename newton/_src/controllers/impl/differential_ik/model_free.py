@@ -56,7 +56,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _validate_array
+from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
     _apply_spatial_matrix_kernel,
@@ -578,34 +578,70 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             device=self._device,
         )
 
-        self._bandwidth_baked = self._bake(bandwidth, total_controlled_dofs)
+        self._bandwidth_baked = _bake_optional_float_array(
+            bandwidth, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+        )
         # PSEUDO_INVERSE/TRANSPOSE never read damping (validated above to be
         # None), so a dummy zero bake keeps them out of the live-port path
         # without a separate "does this method use damping" branch below.
         self._damping_baked = (
-            self._bake(damping, controlled_robot_count)
+            _bake_optional_float_array(
+                damping, controlled_robot_count, device=self._device, requires_grad=self._requires_grad
+            )
             if ik_method == DifferentialIKMethod.DAMPED_LEAST_SQUARES
-            else self._bake(0.0, controlled_robot_count)
+            else _bake_optional_float_array(
+                0.0, controlled_robot_count, device=self._device, requires_grad=self._requires_grad
+            )
         )
         self._use_adaptive_damping = ik_method == DifferentialIKMethod.ADAPTIVE_DAMPING
         self._adaptive_damping_min_baked = (
-            self._bake(adaptive_damping_min, controlled_robot_count) if self._use_adaptive_damping else None
+            _bake_optional_float_array(
+                adaptive_damping_min, controlled_robot_count, device=self._device, requires_grad=self._requires_grad
+            )
+            if self._use_adaptive_damping
+            else None
         )
         self._adaptive_damping_max_baked = (
-            self._bake(adaptive_damping_max, controlled_robot_count) if self._use_adaptive_damping else None
+            _bake_optional_float_array(
+                adaptive_damping_max, controlled_robot_count, device=self._device, requires_grad=self._requires_grad
+            )
+            if self._use_adaptive_damping
+            else None
         )
         self._adaptive_damping_threshold_baked = (
-            self._bake(adaptive_damping_threshold, controlled_robot_count) if self._use_adaptive_damping else None
+            _bake_optional_float_array(
+                adaptive_damping_threshold,
+                controlled_robot_count,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+            if self._use_adaptive_damping
+            else None
         )
         self._use_truncated_svd = ik_method == DifferentialIKMethod.TRUNCATED_SVD
         self._truncated_svd_threshold_baked = (
-            self._bake(truncated_svd_threshold, controlled_robot_count) if self._use_truncated_svd else None
+            _bake_optional_float_array(
+                truncated_svd_threshold,
+                controlled_robot_count,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+            if self._use_truncated_svd
+            else None
         )
         self._null_space_stiffness_baked = (
-            self._bake(null_space_stiffness, total_controlled_dofs) if self._use_null_space_posture_control else None
+            _bake_optional_float_array(
+                null_space_stiffness, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+            )
+            if self._use_null_space_posture_control
+            else None
         )
         self._null_space_damping_baked = (
-            self._bake(null_space_damping, controlled_robot_count) if use_null_space else None
+            _bake_optional_float_array(
+                null_space_damping, controlled_robot_count, device=self._device, requires_grad=self._requires_grad
+            )
+            if use_null_space
+            else None
         )
         if self._null_space_damping_baked is not None:
             # Only checkable when baked: a live value isn't known until step(),
@@ -769,21 +805,6 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             if self._use_null_space_posture_control and self._null_space_stiffness_baked is None
             else None
         )
-
-    def _bake(self, value: wp.array[wp.float32] | float | None, size: int) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh buffer of the given size.
-
-        Returns ``None`` for a live gain, which is read from the input
-        struct each step instead. A wp.array is already validated by
-        :func:`_validate_array`.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return wp.full(size, float(value), dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
-        baked = wp.zeros(size, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
-        wp.copy(baked, value)
-        return baked
 
     @property
     def controlled_robot_count(self) -> int:

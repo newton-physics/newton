@@ -112,7 +112,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _validate_array
+from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
     _apply_spatial_matrix_kernel,
@@ -869,9 +869,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             self._joint_qd_buf = _compact_buf()
             self._joint_q_des_null_buf = _compact_buf()
             self._joint_qd_des_null_buf = _compact_buf()
-            self._null_stiffness_baked = self._bake_joint_gain(null_space_stiffness)
+            self._null_stiffness_baked = _bake_optional_float_array(
+                null_space_stiffness, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+            )
             self._null_stiffness_buf = _compact_buf() if self._null_stiffness_baked is None else None
-            self._null_damping_baked = self._bake_joint_gain(null_space_damping)
+            self._null_damping_baked = _bake_optional_float_array(
+                null_space_damping, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+            )
             self._null_damping_buf = _compact_buf() if self._null_damping_baked is None else None
             self._posture_acc_buf = _compact_buf()
             self._null_space_jacobian_pinv_transpose = wp.zeros(
@@ -1027,32 +1031,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             device=self._device,
             requires_grad=self._requires_grad,
         )
-
-    def _bake_joint_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh joint-space (compact, per-DOF) buffer.
-
-        Returns ``None`` for live gains, which are read from the input struct
-        each step instead. A wp.array is already validated by
-        :func:`_validate_array`.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return wp.full(
-                self._total_controlled_dofs,
-                float(value),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=self._requires_grad,
-            )
-        baked = wp.zeros(
-            self._total_controlled_dofs,
-            dtype=wp.float32,
-            device=self._device,
-            requires_grad=self._requires_grad,
-        )
-        wp.copy(baked, value)
-        return baked
 
     @property
     def controlled_robot_count(self) -> int:
