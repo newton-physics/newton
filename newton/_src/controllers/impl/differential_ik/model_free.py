@@ -253,13 +253,29 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             step (the default, and the only valid value when both are
             disabled). Unlike the primary ``damping``, ``λ_null = 0`` is
             only safe when every robot has at least as many controlled DOFs
-            as its own task dimension (the number of nonzero ``axis_weight``
-            entries) — otherwise the projector's own ``JJᵀ`` is
-            rank-deficient. That stronger, per-robot requirement is checked
-            at construction only when baked; a live value is the caller's
-            responsibility there, since it needs ``task_dim`` and
-            ``controlled_dofs_per_robot`` compared per robot, not just a
-            sign check.
+            as its own task dimension (the number of nonzero
+            ``null_space_axes`` entries) — otherwise the projector's own
+            ``JJᵀ`` is rank-deficient. That stronger, per-robot requirement
+            is checked at construction only when baked; a live value is the
+            caller's responsibility there, since it needs the null-space
+            task dimension and ``controlled_dofs_per_robot`` compared per
+            robot, not just a sign check.
+        null_space_axes: Which of the 6 canonical task axes the null-space
+            projector treats as occupied, independent of ``axis_weight``.
+            Only whether each entry is zero or nonzero matters — the
+            magnitude itself is meaningless, unlike ``axis_weight``'s own
+            soft per-axis trust. Defaults to ``axis_weight`` itself (so by
+            default the projector's notion of "the task" matches the
+            solve's), which is why the two are usually the same but don't
+            have to be: a robot can soft-track an axis in the solve
+            (``axis_weight`` nonzero) while excluding it from the
+            projector's own rank (``null_space_axes`` zero there), e.g. an
+            under-actuated arm softly tracking orientation that would
+            otherwise leave it with no usable null space at all. Unlike
+            ``axis_weight``, an all-zero row is legal — it means that
+            robot's null-space projector is unconstrained (``N = I``).
+            Only meaningful when ``use_joint_limit_avoidance`` or
+            ``use_null_space_posture_control`` is enabled.
         device: Warp device.
         requires_grad: Not supported at this time; must be ``False``.
     """
@@ -319,6 +335,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         use_null_space_posture_control: bool = False,
         null_space_stiffness: wp.array[wp.float32] | float | None = None,
         null_space_damping: wp.array[wp.float32] | float | None = None,
+        null_space_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         device: Any = None,
         requires_grad: bool = False,
     ):
@@ -546,6 +563,47 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 "null_space_damping was given but neither use_joint_limit_avoidance nor "
                 "use_null_space_posture_control is enabled."
             )
+
+        if use_null_space:
+            null_space_axes_resolved = axis_weight_resolved if null_space_axes is None else null_space_axes
+            if isinstance(null_space_axes_resolved, wp.spatial_vector):
+                null_space_axes_np = np.tile(
+                    np.array(null_space_axes_resolved, dtype=np.float32), (controlled_robot_count, 1)
+                )
+            elif isinstance(null_space_axes_resolved, wp.array):
+                _validate_array(
+                    array=null_space_axes_resolved,
+                    name="null_space_axes",
+                    dtype=wp.spatial_vector,
+                    shape=(controlled_robot_count,),
+                    device=self._device,
+                )
+                null_space_axes_np = null_space_axes_resolved.numpy()
+            else:
+                raise TypeError(
+                    "null_space_axes must be a wp.spatial_vector or a wp.array[wp.spatial_vector] of shape "
+                    f"(controlled_robot_count,), got {type(null_space_axes_resolved).__name__}."
+                )
+            if np.any(null_space_axes_np < 0.0):
+                raise ValueError(f"null_space_axes must be non-negative, got {null_space_axes_np.tolist()}.")
+
+            # Unlike axis_weight, an all-zero row is legal here: it means
+            # that robot's null-space projector is unconstrained (N = I),
+            # not an error -- there's no "nothing to solve for" problem the
+            # way there is for the primary task.
+            null_space_axis_active_np = null_space_axes_np > 0.0
+            null_space_task_dim_np = null_space_axis_active_np.sum(axis=1).astype(np.int32)
+            null_space_active_axis_of_slot_np = np.zeros(
+                (controlled_robot_count, _CANONICAL_TASK_AXIS_COUNT), dtype=np.int32
+            )
+            for robot in range(controlled_robot_count):
+                active = np.flatnonzero(null_space_axis_active_np[robot])
+                null_space_active_axis_of_slot_np[robot, : active.size] = active
+        elif null_space_axes is not None:
+            raise ValueError(
+                "null_space_axes was given but neither use_joint_limit_avoidance nor "
+                "use_null_space_posture_control is enabled."
+            )
         # ------------------------------------------------------------------
 
         self._ik_method = ik_method
@@ -564,6 +622,19 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._active_axis_of_slot = wp.array2d(active_axis_of_slot_np, dtype=wp.int32, device=self._device)
         self._axis_weight = wp.array(
             [wp.spatial_vector(*row) for row in axis_weight_np], dtype=wp.spatial_vector, device=self._device
+        )
+
+        # Same shape as task_dim/active_axis_of_slot above, but for the
+        # null-space projector's own notion of "the task" (null_space_axes),
+        # independent of the primary solve's axis_weight -- see step()'s
+        # null-space section for where each is used.
+        self._null_space_task_dim = (
+            wp.array(null_space_task_dim_np, dtype=wp.int32, device=self._device) if use_null_space else None
+        )
+        self._null_space_active_axis_of_slot = (
+            wp.array2d(null_space_active_axis_of_slot_np, dtype=wp.int32, device=self._device)
+            if use_null_space
+            else None
         )
 
         # Copied, not stored: the kernels use this as a loop bound while the
@@ -657,16 +728,20 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # Only checkable when baked: a live value isn't known until step(),
             # and reading it back to check would cost a host sync every step,
             # breaking is_graphable(). JJᵀ + λ_null²I is only guaranteed SPD
-            # for a robot with fewer controlled DOFs than its own task
-            # dimension when λ_null > 0.
+            # for a robot with fewer controlled DOFs than the null-space
+            # projector's own task dimension (null_space_task_dim_np, not
+            # the primary task_dim_np -- it's the projector's own JJᵀ being
+            # inverted here) when λ_null > 0.
             null_space_damping_np = self._null_space_damping_baked.numpy()
-            bad_robots = np.flatnonzero((controlled_dofs_per_robot_np < task_dim_np) & (null_space_damping_np <= 0.0))
+            bad_robots = np.flatnonzero(
+                (controlled_dofs_per_robot_np < null_space_task_dim_np) & (null_space_damping_np <= 0.0)
+            )
             if bad_robots.size > 0:
                 raise ValueError(
                     "null_space_damping must be positive for a robot with fewer controlled DOFs than its own "
-                    "task dimension, since the null-space projector's JJᵀ is then rank-deficient without "
-                    f"damping; robot(s) {bad_robots.tolist()} have controlled_dofs_per_robot below their own "
-                    "axis_weight's active count with null_space_damping <= 0."
+                    "null-space task dimension, since the null-space projector's JJᵀ is then rank-deficient "
+                    f"without damping; robot(s) {bad_robots.tolist()} have controlled_dofs_per_robot below their "
+                    "own null_space_axes' active count with null_space_damping <= 0."
                 )
 
         self._joint_limit_avoidance_gain = float(joint_limit_avoidance_gain)
