@@ -3372,8 +3372,13 @@ def parse_mjcf(
                     print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
                 continue
 
-            # Add actuator via custom attributes
-            parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+            # Add actuator via custom attributes; the context lets transformers name it when they warn.
+            parsed_attrs = parse_custom_attributes(
+                merged_attrib,
+                builder_custom_attr_actuator,
+                parsing_mode="mjcf",
+                context={"actuator_name": act_name},
+            )
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 

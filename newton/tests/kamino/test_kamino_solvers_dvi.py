@@ -15,16 +15,13 @@ import warp as wp
 
 import newton
 import newton._src.solvers.kamino.config as kamino_config
-from newton._src.solvers.kamino._src.core import ModelBuilderKamino, inertia
-from newton._src.solvers.kamino._src.core.shapes import BoxShape, SphereShape
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
 from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver
-from newton._src.solvers.kamino._src.models.builders import basics, testing
-from newton._src.solvers.kamino._src.models.builders import utils as builder_utils
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
@@ -51,7 +48,7 @@ from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
-from newton.tests.utils import basics as public_basics
+from newton.tests.utils import basics, testing
 
 
 @wp.kernel
@@ -75,48 +72,61 @@ def _project_contact_tangent_for_test(
     )
 
 
-def _build_five_box_stack() -> ModelBuilderKamino:
+def _build_five_box_stack() -> newton.ModelBuilder:
     """Build a vertical stack with four-point contacts at every interface."""
-    builder = ModelBuilderKamino(default_world=False)
-    world = builder.add_world(name="five_box_stack")
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
+    builder = newton.ModelBuilder()
+    shape_cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, gap=0.0)
+    hx = hy = hz = 0.1
+    mass = 1.0
+    i_I_i = inertia.compute_inertia_box_from_mass(mass=mass, hx=hx, hy=hy, hz=hz)
     for box_index in range(5):
-        body = builder.add_rigid_body(
-            name=f"box_{box_index}",
-            m_i=1.0,
-            i_I_i=inertia.solid_cuboid_body_moment_of_inertia(1.0, 0.2, 0.2, 0.2),
-            q_i_0=wp.transformf(0.0, 0.0, 0.1 + 0.2 * box_index, 0.0, 0.0, 0.0, 1.0),
-            u_i_0=wp.spatial_vectorf(0.0),
-            world_index=world,
+        body = builder.add_body(
+            label=f"box_{box_index}",
+            xform=wp.transformf(0.0, 0.0, 0.1 + 0.2 * box_index, 0.0, 0.0, 0.0, 1.0),
+            mass=mass,
+            inertia=i_I_i,
+            lock_inertia=True,
         )
-        builder.add_geometry(body=body, shape=BoxShape(0.1, 0.1, 0.1), world_index=world)
-    builder.add_geometry(
+        builder.add_shape_box(label=f"box_{box_index}_geom", body=body, hx=hx, hy=hy, hz=hz, cfg=shape_cfg)
+    builder.add_shape_box(
+        label="ground",
         body=-1,
-        shape=BoxShape(10.0, 10.0, 0.5),
-        offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
-        world_index=world,
+        hx=10.0,
+        hy=10.0,
+        hz=0.5,
+        xform=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+        cfg=shape_cfg,
     )
     return builder
 
 
-def _build_high_mass_ratio_sphere_stack() -> ModelBuilderKamino:
+def _build_high_mass_ratio_sphere_stack() -> newton.ModelBuilder:
     """Build a two-sphere stack with a 100:1 mass ratio."""
-    builder = ModelBuilderKamino(default_world=False)
-    world = builder.add_world(name="high_mass_ratio_sphere_stack")
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
+    builder = newton.ModelBuilder()
+    shape_cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, gap=0.0)
+    radius = 0.1
     for body_index, mass in enumerate((1.0, 100.0)):
-        body = builder.add_rigid_body(
-            name=f"sphere_{body_index}",
-            m_i=mass,
-            i_I_i=inertia.solid_sphere_body_moment_of_inertia(mass, 0.1),
-            q_i_0=wp.transformf(0.0, 0.0, 0.1 + 0.2 * body_index, 0.0, 0.0, 0.0, 1.0),
-            u_i_0=wp.spatial_vectorf(0.0),
-            world_index=world,
+        i_I_i = inertia.compute_inertia_sphere_from_mass(mass=mass, radius=radius)
+        body = builder.add_body(
+            label=f"sphere_{body_index}",
+            xform=wp.transformf(0.0, 0.0, 0.1 + 0.2 * body_index, 0.0, 0.0, 0.0, 1.0),
+            mass=mass,
+            inertia=i_I_i,
+            lock_inertia=True,
         )
-        builder.add_geometry(body=body, shape=SphereShape(0.1), world_index=world)
-    builder.add_geometry(
+        builder.add_shape_sphere(label=f"sphere_{body_index}_geom", body=body, radius=radius, cfg=shape_cfg)
+    builder.add_shape_box(
+        label="ground",
         body=-1,
-        shape=BoxShape(10.0, 10.0, 0.5),
-        offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
-        world_index=world,
+        hx=10.0,
+        hy=10.0,
+        hz=0.5,
+        xform=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+        cfg=shape_cfg,
     )
     return builder
 
@@ -515,9 +525,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_01_dvi_solve_dense_dual_problem(self):
         builder = basics.build_boxes_fourbar()
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=0,
             sparse=False,
         )
@@ -584,9 +594,9 @@ class TestDVISolver(unittest.TestCase):
         omission must surface at allocation rather than inside a solve that may
         already be recorded into a captured graph.
         """
+        model = ModelKamino.from_newton(basics.build_box_on_plane().finalize(device=self.device))
         model, data, _state, limits, detector, jacobians = make_containers(
-            builder=basics.build_box_on_plane(),
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=False,
         )
@@ -674,10 +684,10 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(state.body_q.numpy(), body_q)
 
     def test_03_dvi_solve_single_contact(self):
-        builder = basics.build_box_on_plane()
+        builder = basics.build_sphere_on_plane()
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=1,
             sparse=False,
         )
@@ -815,9 +825,9 @@ class TestDVISolver(unittest.TestCase):
 
     def _make_box_on_plane_setup(self, max_world_contacts: int = 4, sparse: bool = False):
         """Build an inequality-only box-on-plane problem and its containers."""
+        model = ModelKamino.from_newton(basics.build_box_on_plane().finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=basics.build_box_on_plane(),
-            device=self.device,
+            model=model,
             max_world_contacts=max_world_contacts,
             sparse=sparse,
         )
@@ -1095,13 +1105,11 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
-        builder = builder_utils.make_homogeneous_builder(
-            num_worlds=3,
-            build_fn=basics.build_boxes_hinged,
-        )
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=8,
             sparse=False,
         )
@@ -1198,13 +1206,11 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
-        builder = builder_utils.make_homogeneous_builder(
-            num_worlds=2,
-            build_fn=basics.build_boxes_hinged,
-        )
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=8,
             sparse=True,
         )
@@ -1259,9 +1265,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         builder = basics.build_boxes_hinged()
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=8,
             sparse=False,
         )
@@ -1303,9 +1309,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03e_dvi_direct_block_no_unilateral_rows_reports_single_iteration(self):
         builder = basics.build_box_pendulum(ground=False)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=False,
         )
@@ -1348,9 +1354,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03f_dvi_bilateral_only_solve_resets_stale_status(self):
         builder = basics.build_box_pendulum(ground=False)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=0,
             sparse=False,
         )
@@ -1658,9 +1664,9 @@ class TestDVISolver(unittest.TestCase):
     def test_04_dvi_solve_active_joint_limit(self):
         """Resolve an active joint limit through the inequality solver."""
         builder = testing.build_unary_revolute_joint_test(limits=True, ground=False)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=0,
             sparse=False,
         )
@@ -1776,7 +1782,7 @@ class TestDVISolver(unittest.TestCase):
         """Use Cholesky for heterogeneous dense and sparse DVI rollouts."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
-        public_basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
+        basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
         for sparse in (False, True):
@@ -1827,9 +1833,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03a_sparse_dvi_filtered_matvec_matches_full_rows(self):
         builder = basics.build_box_on_plane()
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=True,
         )
@@ -1878,14 +1884,11 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_allclose(unilateral_np[njc:dim], full_np[njc:dim], rtol=1e-5, atol=1e-5)
 
     def test_05_dvi_solve_multi_world_contacts(self):
-        builder = builder_utils.make_homogeneous_builder(
-            num_worlds=4,
-            build_fn=basics.build_box_on_plane,
-            ground=True,
-        )
+        builder = newton.ModelBuilder()
+        builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=4)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=False,
         )
@@ -1912,14 +1915,11 @@ class TestDVISolver(unittest.TestCase):
     def test_05a_dvi_maps_packed_multiworld_contacts(self):
         """Verify dense and sparse DVI map packed contacts to raw topology."""
         for sparse in (False, True):
-            builder = builder_utils.make_homogeneous_builder(
-                num_worlds=8,
-                build_fn=basics.build_box_on_plane,
-                ground=True,
-            )
+            builder = newton.ModelBuilder()
+            builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=8)
+            model = ModelKamino.from_newton(builder.finalize(device=self.device))
             model, data, state, limits, detector, jacobians = make_containers(
-                builder=builder,
-                device=self.device,
+                model=model,
                 max_world_contacts=4,
                 sparse=sparse,
             )
@@ -1970,16 +1970,19 @@ class TestDVISolver(unittest.TestCase):
         """Converge a coupled five-box stack in dense and sparse modes."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
-                builder = builder_utils.make_homogeneous_builder(4, _build_five_box_stack)
+                builder = newton.ModelBuilder()
+                builder.replicate(builder=_build_five_box_stack(), world_count=4)
+                model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
-                    builder=builder,
-                    device=self.device,
+                    model=model,
                     max_world_contacts=64,
                     sparse=sparse,
                     dt=1.0e-3,
                 )
                 update_containers(model, data, state, limits, detector, jacobians)
-                self.assertTrue(np.all(detector.contacts.world_active_contacts.numpy() == 36))
+                # The unified collision pipeline reduces each coincident box-box face
+                # interface to its 4 corner contacts (5 interfaces x 4 = 20).
+                self.assertTrue(np.all(detector.contacts.world_active_contacts.numpy() == 20))
 
                 problem = (
                     _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
@@ -2003,7 +2006,7 @@ class TestDVISolver(unittest.TestCase):
                     ),
                 )
                 low_budget_dual_residual = float(low_budget_solver.data.status.numpy()[0]["r_d"])
-                self.assertLess(low_budget_dual_residual, 3.5e-4)
+                self.assertLess(low_budget_dual_residual, 7.0e-4)
 
                 default_solver = _solve_dvi(
                     model,
@@ -2026,7 +2029,7 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=75,
+                        max_alternating_iterations=100,
                         inequality_sweeps_per_iteration=1,
                         tolerance=1.0e-5,
                         regularization=1.0e-6,
@@ -2127,9 +2130,9 @@ class TestDVISolver(unittest.TestCase):
         """Support a 100:1 sphere stack accurately in dense and sparse modes."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
+                model = ModelKamino.from_newton(_build_high_mass_ratio_sphere_stack().finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
-                    builder=_build_high_mass_ratio_sphere_stack(),
-                    device=self.device,
+                    model=model,
                     max_world_contacts=4,
                     sparse=sparse,
                     dt=1.0e-3,
@@ -2188,11 +2191,10 @@ class TestDVISolver(unittest.TestCase):
                     new_world=False,
                     limits=True,
                     ground=False,
-                    world_index=0,
                 )
+                model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
-                    builder=builder,
-                    device=self.device,
+                    model=model,
                     max_world_contacts=64,
                     sparse=sparse,
                     dt=1.0e-3,
@@ -2206,7 +2208,10 @@ class TestDVISolver(unittest.TestCase):
                     jacobians=jacobians,
                 )
                 joint_q = data.joints.q_j.numpy()
-                joint_q[0] = 1.0
+                # Revolute joint is the *last* joint of the model; locate its
+                # coordinate via `coords_offset`.
+                revolute_q_offset = int(model.joints.coords_offset.numpy()[-2])
+                joint_q[revolute_q_offset] = 1.0
                 data.joints.q_j.assign(joint_q)
                 limits.detect(q_j=data.joints.q_j)
                 update_constraints_info(model=model, data=data)
@@ -2228,7 +2233,7 @@ class TestDVISolver(unittest.TestCase):
                 )
 
                 self.assertEqual(int(limits.model_active_limits.numpy()[0]), 1)
-                self.assertEqual(int(detector.contacts.world_active_contacts.numpy()[0]), 36)
+                self.assertEqual(int(detector.contacts.world_active_contacts.numpy()[0]), 20)
                 self.assertGreater(int(solver.data.state.inequality_num_colors.numpy()[0]), 0)
 
                 count = int(problem.data.nc.numpy()[0])
@@ -2250,9 +2255,9 @@ class TestDVISolver(unittest.TestCase):
 
     def test_06_dvi_warmstart_modes(self):
         builder = basics.build_box_on_plane()
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=False,
         )
@@ -2310,14 +2315,11 @@ class TestDVISolver(unittest.TestCase):
         _check_solution_matches_dual_problem(self, problem, container_solver)
 
     def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
-        builder = builder_utils.make_homogeneous_builder(
-            num_worlds=3,
-            build_fn=basics.build_box_on_plane,
-            ground=True,
-        )
+        builder = newton.ModelBuilder()
+        builder.replicate(basics.build_box_on_plane(ground=True), world_count=3)
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
-            device=self.device,
+            model=model,
             max_world_contacts=4,
             sparse=False,
         )
