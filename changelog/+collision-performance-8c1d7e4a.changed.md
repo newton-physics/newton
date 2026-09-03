@@ -1,0 +1,1 @@
+Accelerate collision detection without changing public APIs or requiring migration. Improvements include SAP sorting and filtering, compact deterministic and persistent contact keys, validated convex support walks, leaner mesh-convex and mesh-SDF processing, heightfield culling, one-warp split-convex launches, and tighter explicit-pair buffer sizing.

@@ -38,6 +38,7 @@ except ImportError:
 
 from .camera import Camera
 from .picking import Picking
+from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD, _compute_segment_xform
@@ -189,6 +190,7 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._uses_fractional_opacity = False
         self._transform_binding = None
         self._async = async_rendering
 
@@ -569,6 +571,8 @@ void main() {
         rp.CreateAttribute("omni:rtx:reflections:denoiser:enabled", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
+        if self._uses_fractional_opacity:
+            rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -1370,6 +1374,8 @@ void main() {
             self._pending_instance_visibility.clear()
             self._pending_mesh_points.clear()
             self._pending_mesh_normals.clear()
+            self._pending_mesh_topology.clear()
+            self._pending_mesh_visibility.clear()
             self._pending_line_batches.clear()
             self._pending_point_batches.clear()
             self._gizmo_log = {}
@@ -1415,6 +1421,28 @@ void main() {
             self._update_ovrtx_mesh_points()
             self._render_and_display()
 
+    # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
+    # build phase. RTX fractional opacity is evaluated per ray hit, so the
+    # authored material opacity is lower than the requested object opacity.
+    _PREVIEW_SURFACE_OPACITY_LAYERS = 4.0
+
+    @override
+    def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
+        """Map object opacity to RTX PreviewSurface per-hit opacity."""
+        requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            self._uses_fractional_opacity = True
+        if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
+            return requested_opacity
+        return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
+
+    @override
+    def _preview_surface_ior_value(self, requested_opacity: float) -> float | None:
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            # Avoid the default glass-like IOR so opacity behaves like viewer alpha.
+            return 1.0
+        return None
+
     @override
     def log_mesh(
         self,
@@ -1429,6 +1457,8 @@ void main() {
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1447,6 +1477,8 @@ void main() {
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -1460,9 +1492,11 @@ void main() {
                 texture,
                 hidden,
                 backface_culling,
+                opacity=opacity,
                 color=color,
                 roughness=roughness,
                 metallic=metallic,
+                dynamic=dynamic,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:
@@ -1478,6 +1512,17 @@ void main() {
                     if isinstance(normals, wp.array)
                     else np.asarray(normals, dtype=np.float32)
                 )
+            elif dynamic:
+                self._pending_mesh_normals[name] = None
+            if dynamic:
+                indices_np = (
+                    indices.numpy().astype(np.int32)
+                    if isinstance(indices, wp.array)
+                    else np.asarray(indices, dtype=np.int32)
+                )
+                face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
+                self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
+            self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
 
     @override
     def log_instances(
@@ -1489,6 +1534,7 @@ void main() {
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ) -> None:
         """Log a batch of mesh instances for rendering.
 
@@ -1500,12 +1546,22 @@ void main() {
             colors: Array of colors.
             materials: Array of materials.
             hidden: Whether the instances are hidden.
+            opacities: Optional per-instance opacity values.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
 
         if self._phase == self._PHASE_BUILD:
-            super().log_instances(name, mesh, xforms, scales, colors, materials, hidden)
+            super().log_instances(
+                name,
+                mesh,
+                xforms,
+                scales,
+                colors,
+                materials,
+                opacities=opacities,
+                hidden=hidden,
+            )
             if xforms is not None:
                 count = len(xforms)
                 paths = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
@@ -1727,7 +1783,12 @@ void main() {
         return ViewerRTX._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
     def _update_ovrtx_mesh_points(self):
-        if self._rtx is None or (not self._pending_mesh_points and not self._pending_mesh_normals):
+        if self._rtx is None or (
+            not self._pending_mesh_points
+            and not self._pending_mesh_normals
+            and not self._pending_mesh_topology
+            and not self._pending_mesh_visibility
+        ):
             return
         with wp.ScopedTimer("ViewerRTX::update_mesh_points", active=PROFILE_ENABLED, use_nvtx=True):
             for mesh_name, points_np in self._pending_mesh_points.items():
@@ -1744,11 +1805,27 @@ void main() {
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                dl = self._make_point3f_dltensor(normals_np)
+                normals_values = np.empty((0, 3), dtype=np.float32) if normals_np is None else normals_np
+                dl = self._make_point3f_dltensor(normals_values)
                 self._rtx.write_array_attribute(
                     prim_paths=[prim_path],
                     attribute_name="normals",
                     tensors=[dl],
+                )
+            for mesh_name, (face_vertex_counts, face_vertex_indices) in self._pending_mesh_topology.items():
+                prim_path = self._mesh_prim_paths.get(mesh_name)
+                if prim_path is None:
+                    continue
+                self._write_ovrtx_array_attribute(prim_path, "faceVertexCounts", face_vertex_counts)
+                self._write_ovrtx_array_attribute(prim_path, "faceVertexIndices", face_vertex_indices)
+            for mesh_name, visible in self._pending_mesh_visibility.items():
+                prim_path = self._mesh_prim_paths.get(mesh_name)
+                if prim_path is None:
+                    continue
+                self._rtx.write_attribute(
+                    prim_paths=[prim_path],
+                    attribute_name="visibility",
+                    tensor=["inherited" if visible else "invisible"],
                 )
 
     def _update_ovrtx_line_batches(self):
@@ -2063,6 +2140,8 @@ void main() {
         self._pending_instance_visibility = {}
         self._pending_mesh_points = {}
         self._pending_mesh_normals = {}
+        self._pending_mesh_topology = {}
+        self._pending_mesh_visibility = {}
         self._pending_line_batches = {}
         self._pending_point_batches = {}
 

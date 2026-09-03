@@ -1,0 +1,1 @@
+Add `label_prefixes` to `ModelBuilder.replicate`, applying a per-world label prefix the way `add_builder` and `add_world` already do. Pass `None` for a given world to leave its labels unchanged; omit the argument to leave all worlds unchanged, matching prior behavior.

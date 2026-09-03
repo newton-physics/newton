@@ -9,18 +9,15 @@ import unittest
 
 import warp as wp
 
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import make_unilateral_constraints_info
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders.basics import (
-    build_boxes_fourbar,
-    make_basics_heterogeneous_builder,
-)
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.print import print_data_info, print_model_constraint_info
+from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 ###
 # Module configs
@@ -62,12 +59,12 @@ class TestKinematicsConstraints(unittest.TestCase):
         # Constants
         max_world_contacts = 20
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar(dynamic_joints=True, implicit_pd=True)
 
         # Create the model from the builder
-        model: ModelKamino = builder.finalize(device=self.default_device)
-        msg.info(f"model.joints.cts_offset:\n{model.joints.cts_offset}")
+        model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
         msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
         msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
@@ -82,7 +79,7 @@ class TestKinematicsConstraints(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -113,17 +110,13 @@ class TestKinematicsConstraints(unittest.TestCase):
         num_worlds: int = 10
         max_world_contacts: int = 20
 
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(
-            num_worlds=num_worlds,
-            build_fn=build_boxes_fourbar,
-            dynamic_joints=True,
-            implicit_pd=True,
-        )
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(dynamic_joints=True, implicit_pd=True), world_count=num_worlds)
 
         # Create the model from the builder
-        model: ModelKamino = builder.finalize(device=self.default_device)
-        msg.info(f"model.joints.cts_offset:\n{model.joints.cts_offset}")
+        model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
         msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
         msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
@@ -138,7 +131,7 @@ class TestKinematicsConstraints(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -172,14 +165,16 @@ class TestKinematicsConstraints(unittest.TestCase):
         # Extract numpy arrays from the model info
         model_max_limits = model.size.sum_of_max_limits
         model_max_contacts = model.size.sum_of_max_contacts
+        model_max_inequalities = model.size.max_of_max_inequalities
         max_limits = model.info.max_limits.numpy()
         max_contacts = model.info.max_contacts.numpy()
         max_limit_cts = model.info.max_limit_cts.numpy()
         max_contact_cts = model.info.max_contact_cts.numpy()
         max_total_cts = model.info.max_total_cts.numpy()
+        num_bounded_cts = model.info.num_joint_bounded_cts.numpy()
         limits_offset = model.info.limits_offset.numpy()
         contacts_offset = model.info.contacts_offset.numpy()
-        unilaterals_offset = model.info.unilaterals_offset.numpy()
+        inequalities_offset = model.info.inequalities_offset.numpy()
         total_cts_offset = model.info.total_cts_offset.numpy()
 
         # Check the model info entries
@@ -189,6 +184,7 @@ class TestKinematicsConstraints(unittest.TestCase):
         nlc = 0
         nc = 0
         ncc = 0
+        nbc = 0
         for i in range(num_worlds):
             self.assertEqual(model_max_limits, 4 * num_worlds)
             self.assertEqual(model_max_contacts, max_world_contacts * num_worlds)
@@ -196,13 +192,16 @@ class TestKinematicsConstraints(unittest.TestCase):
             self.assertEqual(max_contacts[i], max_world_contacts)
             self.assertEqual(max_limit_cts[i], 4)
             self.assertEqual(max_contact_cts[i], 3 * max_world_contacts)
-            self.assertEqual(max_total_cts[i], 21 + 4 + 3 * max_world_contacts)
+            self.assertEqual(max_total_cts[i], 21 + 1 + 4 + 3 * max_world_contacts)
+            self.assertEqual(model_max_inequalities, 1 + 4 + max_world_contacts)
+            self.assertEqual(num_bounded_cts[i], 1)
             self.assertEqual(limits_offset[i], nl)
             self.assertEqual(contacts_offset[i], nc)
-            self.assertEqual(unilaterals_offset[i], nl + nc)
-            self.assertEqual(total_cts_offset[i], njc + nlc + ncc)
+            self.assertEqual(inequalities_offset[i], nbc + nl + nc)
+            self.assertEqual(total_cts_offset[i], njc + nbc + nlc + ncc)
             nj += 4
             njc += 21
+            nbc += 1
             nl += 4
             nlc += 4
             nc += max_world_contacts
@@ -215,11 +214,11 @@ class TestKinematicsConstraints(unittest.TestCase):
         # Constants
         max_world_contacts = 20
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = make_basics_heterogeneous_builder()
 
         # Create the model from the builder
-        model: ModelKamino = builder.finalize(device=self.default_device)
+        model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Create a model data
         data = model.data(device=self.default_device)
@@ -232,7 +231,7 @@ class TestKinematicsConstraints(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
