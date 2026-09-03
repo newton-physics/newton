@@ -18,6 +18,7 @@ pose-error, null-space, or integration code.
 from __future__ import annotations
 
 import enum
+from typing import Any
 
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
@@ -476,3 +477,202 @@ def _integrate_position_kernel(
     """Explicit-Euler joint position target, ``q_target = q + q̇_target·dt``."""
     dof = wp.tid()
     joint_q_target[dof] = joint_q[dof] + joint_qd_target[dof] * dt[0]
+
+
+# ---------------------------------------------------------------------------
+# One-sided Jacobi SVD -- NOT YET WIRED INTO ``IkMethod.TRUNCATED_SVD``.
+#
+# ``_truncated_pinv_matrix_kernel`` currently derives its pseudo-inverse from
+# ``symmetric_eigenvalues_qr`` on JJᵀ, which squares J's condition number
+# before any float32 arithmetic happens, so a small-but-retained singular
+# value of J can come back badly corrupted (confirmed: relative error in the
+# thousands on a Jacobian with singular values spanning [1, 1e-4]).
+# ``_svd_one_sided_jacobi`` below operates on J's own columns directly and
+# never forms JJᵀ, avoiding that squaring. It is validated in isolation here
+# (two small square-matrix kernels below, exercised by
+# ``test_svd_one_sided_jacobi_*`` in the test suite) but not yet used by any
+# controller; wiring it into ``TRUNCATED_SVD`` needs its own follow-up, since
+# ``TRUNCATED_SVD``'s real input is 6 rows by up to a robot's full DOF count
+# of columns, not the small square matrices tested here.
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
+    """One-sided (Hestenes) Jacobi SVD of a small (possibly non-square) matrix, ``A = U @ diag(S) @ Vᵀ``.
+
+    Correct and simple, not the fastest: intended for small matrices (at
+    most a handful of rows/columns), where its guaranteed convergence
+    (Forsythe & Henrici 1960 for cyclic Jacobi; Hestenes 1958 for this
+    one-sided SVD form) and its column-of-``A``-only formulation matter more
+    than raw throughput. It never explicitly forms ``AᵀA``, unlike deriving
+    an SVD from a symmetric eigensolver on ``AᵀA``, which squares ``A``'s
+    condition number before any arithmetic happens (Demmel & Veselić 1992:
+    Jacobi achieves higher relative accuracy on small singular values than
+    that approach for exactly this reason). Not validated for large
+    matrices, where the O(sweeps · dim²) sweep cost and this convergence
+    behavior may not be worth it relative to a bidiagonalization-based SVD.
+
+    ``A``'s columns may be padded beyond a true problem smaller than ``A``
+    itself, with every "true" entry in the leftmost ``n_columns`` columns and
+    every other entry exactly zero, matching how a Jacobian is already
+    padded elsewhere in this module -- ``n_columns`` bounds every loop to those
+    columns, both so a batch of differently-sized problems can share one
+    padded buffer/kernel, and to skip sweeping over columns already known
+    to contribute nothing. Padding is not a safety requirement here the way
+    it is for ``symmetric_eigenvalues_qr``: an all-zero padding column has
+    zero norm, which this function's own convergence check already treats
+    as trivially converged (see ``denominator > zero`` below), so it would
+    still terminate cleanly with ``n_columns`` left at ``A``'s full column count.
+
+    Args:
+        A: Matrix to decompose, ``m`` rows by ``n`` columns, columns
+            optionally padded (see above). Rows are never padded/masked --
+            an all-zero row is harmless to this algorithm, so callers with
+            row padding of their own (e.g. a padded task dimension) don't
+            need a separate parameter to mask it.
+        n_columns: Number of true, unpadded leftmost columns of ``A``. At most
+            ``m`` of them can have a nonzero singular value (rank ≤ ``m``
+            whenever ``n_columns > m``); ``U``/``S`` beyond index ``m`` are left
+            at their identity/zero initialization rather than written.
+        tol: A sweep is converged once every column pair's
+            off-diagonal-to-diagonal ratio drops below this.
+        max_sweeps: Upper bound on the number of full sweeps over all
+            column pairs -- a safety cap, not a tuning knob; convergence is
+            expected well before this for any well-scaled small matrix.
+
+    Returns:
+        ``(U, S, V)`` such that ``A = U @ diag(S) @ Vᵀ`` over the leftmost
+        ``n_columns`` columns, ``U`` (``m x m``)/``V`` (``n x n``) orthonormal
+        there, ``S`` (length ``n``) sorted descending over its first
+        ``min(n_columns, m)`` entries. A singular value at or below numerical
+        zero leaves its own column of ``U`` as the zero vector, since no
+        direction is well-defined there. Every row/column at or beyond
+        ``n_columns`` (in ``V``) or ``min(n_columns, m)`` (in ``U``/``S``) is left
+        untouched, at whatever ``A`` itself (for ``U``) or the identity
+        (for ``V``) already had there.
+    """
+    zero = A.dtype(0.0)
+    one = A.dtype(1.0)
+    two = A.dtype(2.0)
+
+    # At's rows are A's columns, so a Jacobi rotation of two columns of A is
+    # a plain row update here -- no separate column-extraction step needed.
+    at = wp.transpose(A)
+    row0 = type(A[0])()  # length n (column count of A, row count of At)
+    col0 = type(at[0])()  # length m (row count of A, column count of At)
+    vt = wp.identity(n=type(row0).length, dtype=A.dtype)
+
+    for _sweep in range(max_sweeps):
+        max_off_diagonal_ratio = zero
+        for i in range(n_columns - 1):
+            for j in range(i + 1, n_columns):
+                col_i = at[i]
+                col_j = at[j]
+                alpha = wp.dot(col_i, col_i)
+                beta = wp.dot(col_j, col_j)
+                gamma = wp.dot(col_i, col_j)
+                denominator = wp.sqrt(alpha * beta)
+                ratio = wp.where(denominator > zero, wp.abs(gamma) / denominator, zero)
+                max_off_diagonal_ratio = wp.max(max_off_diagonal_ratio, ratio)
+                if ratio > tol:
+                    # Golub & Van Loan's robust symmetric Jacobi rotation,
+                    # applied here to A's columns (via at's rows) and
+                    # accumulated into V (via vt's rows) the same way.
+                    zeta = (beta - alpha) / (two * gamma)
+                    sign_zeta = wp.where(zeta >= zero, one, -one)
+                    t = sign_zeta / (wp.abs(zeta) + wp.sqrt(one + zeta * zeta))
+                    c = one / wp.sqrt(one + t * t)
+                    s = c * t
+
+                    at[i] = c * col_i - s * col_j
+                    at[j] = s * col_i + c * col_j
+
+                    v_i = vt[i]
+                    v_j = vt[j]
+                    vt[i] = c * v_i - s * v_j
+                    vt[j] = s * v_i + c * v_j
+        if max_off_diagonal_ratio < tol:
+            break
+
+    # Candidate norm of every one of the n_columns converged columns of at
+    # -- NOT just the first u_dim of them. Convergence only drives
+    # off-diagonal correlations to zero; it does not guarantee the largest
+    # singular directions land in any particular prefix of the columns, so
+    # picking the top u_dim by value requires looking at all of them,
+    # whenever n_columns > m (more columns than rows: at most m of them can
+    # be genuinely nonzero, but which ones is not known in advance).
+    candidate_sigma = type(row0)()
+    for i in range(n_columns):
+        candidate_sigma[i] = wp.length(at[i])
+
+    s_vec = type(row0)()
+    ut = wp.identity(n=type(col0).length, dtype=A.dtype)
+    u_dim = wp.min(n_columns, type(col0).length)
+    for i in range(u_dim):
+        # Repeated argmax selection over the remaining candidates, largest
+        # first: also produces s_vec sorted descending, with no separate
+        # sort pass needed. at's and vt's rows are swapped into place the
+        # same way candidate_sigma is (not just looked up by the winner's
+        # original index), so a later round's search always reads
+        # candidate_sigma[i]/at[i]/vt[i] as the same still-associated
+        # triple -- looking up ``at[largest_idx]`` after only
+        # candidate_sigma had been swapped in a previous round would read
+        # the wrong row, since position i no longer corresponds to
+        # A's original column i once candidate_sigma has been reordered.
+        largest_idx = i
+        largest_val = candidate_sigma[i]
+        for k in range(i + 1, n_columns):
+            if candidate_sigma[k] > largest_val:
+                largest_val = candidate_sigma[k]
+                largest_idx = k
+        if largest_idx != i:
+            sigma_tmp = candidate_sigma[i]
+            candidate_sigma[i] = candidate_sigma[largest_idx]
+            candidate_sigma[largest_idx] = sigma_tmp
+            at_tmp = at[i]
+            at[i] = at[largest_idx]
+            at[largest_idx] = at_tmp
+            v_tmp = vt[i]
+            vt[i] = vt[largest_idx]
+            vt[largest_idx] = v_tmp
+        sigma = candidate_sigma[i]
+        s_vec[i] = sigma
+        ut[i] = wp.where(sigma > A.dtype(1.0e-12), at[i] / sigma, ut[i] * zero)
+
+    return wp.transpose(ut), s_vec, wp.transpose(vt)
+
+
+@wp.kernel
+def _svd_one_sided_jacobi_kernel(
+    matrix: wp.array[Any],  # (batch_count,) matrix-typed elements, any fixed (m, n) shape
+    n_columns: wp.array[wp.int32],  # (batch_count,) number of true, unpadded leftmost columns of each matrix
+    tol: wp.float32,
+    max_sweeps: wp.int32,
+    # outputs
+    u: wp.array[Any],  # (batch_count,) m x m
+    s: wp.array[Any],  # (batch_count,) length n
+    v: wp.array[Any],  # (batch_count,) n x n
+):
+    """Batched, size-generic instantiation of :func:`_svd_one_sided_jacobi`, for isolated testing only.
+
+    Generic over ``matrix``'s (and so ``u``/``s``/``v``'s) concrete element
+    type -- Warp compiles one specialization per distinct matrix shape
+    actually launched with, so this single kernel definition covers every
+    size, rather than needing a hand-written kernel per shape.
+
+    ``Any`` here is broader than the real requirement: every array argument
+    must hold a matrix-shaped element type (e.g. ``wp.mat33``), not an
+    arbitrary Warp dtype -- a vector or scalar would fail to compile inside
+    :func:`_svd_one_sided_jacobi` (e.g. at its ``wp.transpose(A)`` call),
+    not silently misbehave, but that constraint isn't expressible in the
+    type hint itself. Warp's kernel-genericity mechanism only dispatches on
+    ``Any``; the more precise ``warp._src.types.Matrix[Scalar, Rows, Cols]``
+    both isn't public API and (confirmed by testing) isn't actually wired
+    into that dispatch mechanism, so it isn't a usable substitute here.
+    """
+    idx = wp.tid()
+    u_local, s_local, v_local = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
+    u[idx] = u_local
+    s[idx] = s_local
+    v[idx] = v_local

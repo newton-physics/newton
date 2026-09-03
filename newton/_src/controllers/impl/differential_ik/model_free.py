@@ -503,6 +503,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             )
             if np.any(joint_pos_lower.numpy() >= joint_pos_upper.numpy()):
                 raise ValueError("joint_pos_lower must be strictly less than joint_pos_upper for every DOF.")
+            if not (np.all(np.isfinite(joint_pos_lower.numpy())) and np.all(np.isfinite(joint_pos_upper.numpy()))):
+                raise ValueError(
+                    "joint_pos_lower/joint_pos_upper must be finite for every DOF when "
+                    "use_joint_limit_avoidance=True; an unbounded limit produces a NaN midpoint even though "
+                    "the avoidance bias is zero away from a limit."
+                )
         elif joint_pos_lower is not None or joint_pos_upper is not None:
             raise ValueError("joint_pos_lower/joint_pos_upper were given but use_joint_limit_avoidance=False.")
 
