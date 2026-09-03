@@ -12,6 +12,8 @@ This lives in its own module (not ``kernels.py``) because it needs the volume-SD
 Nothing imports this module except the collision launcher, so it is cycle-free.
 """
 
+from __future__ import annotations
+
 import warp as wp
 
 from .flags import ShapeFlags
@@ -233,7 +235,7 @@ def _shape_frames(
     if rigid_body >= 0:
         X_wb = body_q[rigid_body]
     X_bs = shape_transform[shape_index]
-    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_ws = X_wb * X_bs
     X_sw = wp.transform_inverse(X_ws)
     return X_bs, X_ws, X_sw
 
