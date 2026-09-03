@@ -271,11 +271,12 @@ must be embedded in the ONNX file.
 The first five features use the standard State and Control arrays already
 passed to every drive. ``dynamic_bias`` is an optional, caller-supplied
 generalized bias-force input. When selected, the application must declare a
-one-dimensional ``wp.float32`` custom Control attribute named
-``actuator:dynamic_bias`` before finalizing the model. It is exposed as
-``control.actuator.dynamic_bias``, has the same global joint-DOF layout and
-length as ``state.joint_qd``, and is gathered with the actuator's velocity
-indices. Checkpoints that do not select this feature need no declaration.
+one-dimensional ``wp.float32`` custom Control attribute named ``dynamic_bias``
+before finalizing the model. It is exposed as ``control.dynamic_bias``, has the
+same global joint-DOF layout and length as ``state.joint_qd``, and is gathered
+with the actuator's velocity indices. Set the actuator's existing
+``control_feedforward_attr`` to ``"dynamic_bias"`` so this array is passed to
+the drive. Checkpoints that do not select this feature need no declaration.
 
 For programmatic model construction, declare the input with Newton's existing
 custom-attribute API:
@@ -289,7 +290,6 @@ custom-attribute API:
    builder.add_custom_attribute(
        newton.ModelBuilder.CustomAttribute(
            name="dynamic_bias",
-           namespace="actuator",
            dtype=wp.float32,
            frequency=newton.Model.AttributeFrequency.JOINT_DOF,
            assignment=newton.Model.AttributeAssignment.CONTROL,
@@ -304,7 +304,7 @@ For USD construction, make the equivalent declaration on the
 .. code-block:: usda
 
    def PhysicsScene "Scene" {
-       custom float newton:actuator:dynamic_bias = 0.0 (
+       custom float newton:dynamic_bias = 0.0 (
            customData = {
                string assignment = "control"
                string frequency = "joint_dof"
@@ -312,31 +312,34 @@ For USD construction, make the equivalent declaration on the
        )
    }
 
-Newton clears this Control array with :meth:`Control.clear` but does not compute
-its values. Applications must therefore clear Control first, then populate the
-current generalized bias force before each actuator evaluation. For models
+Newton does not compute or clear this custom Control array. After model
+finalization, select it as the actuator's input, then populate the generalized
+bias force after each :meth:`Control.clear` and before actuator evaluation:
+
+.. code-block:: python
+
+   actuator.control_feedforward_attr = "dynamic_bias"
+   control.clear(model)
+   control.joint_target_q.assign(target_positions)
+   control.dynamic_bias.assign(computed_generalized_bias_force)
+   actuator.step(state, control, actuator_state_a, actuator_state_b, dt=sample_dt_s)
+   actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
+
+For models
 trained with MuJoCo data, this feature commonly corresponds to ``qfrc_bias =
 c(q, v)``: the Coriolis, centrifugal, and gravitational generalized forces.
 Other solvers may provide the equivalent quantity. Checkpoint producers and
 applications are responsible for using consistent physical semantics for this
-feature. Feedforward ``control.joint_act`` is not consumed, and
-``dynamic_bias`` conditions the network rather than being added to its
-predicted torque.
-
-.. code-block:: python
-
-   control.clear(model)
-   control.joint_target_q.assign(target_positions)
-   control.actuator.dynamic_bias.assign(computed_generalized_bias_force)
-   actuator.step(state, control, actuator_state_a, actuator_state_b, dt=sample_dt_s)
-   actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
+feature. The configurable feedforward slot transports this array through the
+existing actuator interface, but :class:`DriveNeuralGRU` uses it only to
+condition the network; it is not added to the predicted torque.
 
 Newton reads ``input_columns``, ``sample_dt_s``, and normalization statistics
 for the selected inputs and torque output. The runtime actuator timestep must
 match ``sample_dt_s``. A separate :class:`Delay` may be composed when additional
 runtime delay is desired. Target-derived features use its delayed target
-arrays; ``control.actuator.dynamic_bias`` remains a current, per-evaluation
-input.
+arrays. Because ``dynamic_bias`` uses the existing feedforward input path, a
+configured :class:`Delay` delays it together with the targets.
 
 Input normalization is applied feature by feature as
 ``(value - mean) / std``. The network's scalar output is converted back to

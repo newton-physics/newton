@@ -389,9 +389,6 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        bind_control_inputs = getattr(self.drive, "_bind_control_inputs", None)
-        if bind_control_inputs is not None:
-            bind_control_inputs(sim_control)
         output_forces = self._effort_mode.compute_force(
             sim_state,
             positions,

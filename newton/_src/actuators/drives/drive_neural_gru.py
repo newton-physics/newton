@@ -63,7 +63,7 @@ def _assemble_input_kernel(
     elif feature == _FEATURE_VELOCITY_ERROR:
         value = target_vel[target_vel_indices[i]] - velocity
     elif feature == _FEATURE_DYNAMIC_BIAS:
-        value = bias_force[vel_indices[i]]
+        value = bias_force[target_vel_indices[i]]
     output[i, column] = (value - means[column]) / stds[column]
 
 
@@ -555,20 +555,7 @@ class DriveNeuralGRU(DriveBase):
         self._gru_layers: list[Any] = []
         self._head: Any = None
         self._activation: Any = None
-        self._bound_bias_force: wp.array[float] | None = None
         self._next_hidden: list[wp.array2d[float]] | None = None
-
-    def _bind_control_inputs(self, control: Any) -> None:
-        """Bind the optional bias input from the current Control object."""
-        self._bound_bias_force = None
-        if "dynamic_bias" in self._input_feature_keys:
-            try:
-                self._bound_bias_force = control.actuator.dynamic_bias
-            except AttributeError as exc:
-                raise RuntimeError(
-                    "DriveNeuralGRU input_columns includes 'dynamic_bias'; provide control.actuator.dynamic_bias. "
-                    "Model-backed controls must declare it as a CONTROL/JOINT_DOF custom attribute before finalization"
-                ) from exc
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         """Create the Warp-NN layers and inference buffers.
@@ -678,12 +665,11 @@ class DriveNeuralGRU(DriveBase):
         device: wp.Device | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
-        bias_force = self._bound_bias_force
-        self._bound_bias_force = None
         self._next_hidden = None
-        if "dynamic_bias" in self._input_feature_keys and bias_force is None:
+        if "dynamic_bias" in self._input_feature_keys and feedforward is None:
             raise RuntimeError(
-                "DriveNeuralGRU input_columns includes 'dynamic_bias', but no control.actuator.dynamic_bias was bound"
+                "DriveNeuralGRU input_columns includes 'dynamic_bias', but no input was provided through "
+                "Actuator.control_feedforward_attr"
             )
         if state is None or state.hidden is None:
             raise ValueError("DriveNeuralGRU requires a current drive state with hidden data")
@@ -711,7 +697,7 @@ class DriveNeuralGRU(DriveBase):
                 velocities,
                 target_pos,
                 target_vel,
-                bias_force,
+                feedforward,
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
