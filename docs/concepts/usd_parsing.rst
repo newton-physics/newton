@@ -665,21 +665,72 @@ Schema packages own their plugin registration and fallback metadata. Newton read
 Resolution Hierarchy
 ^^^^^^^^^^^^^^^^^^^^
 
+A *compatibility default* is a default value stored in a resolver mapping. Newton keeps it to support unregistered schemas and older custom resolvers. For one property, such as ``armature``, the default legacy path checks the first authored value in resolver order, the importer default, and then the first resolver mapping default. It leaves the property unresolved when none of those sources provides a value.
+
 With ``use_registered_schema_fallbacks=True``, supported explicit importer arguments take precedence over USD. For example, ``enable_self_collisions=False`` forces self-collisions off, while explicitly passing ``mesh_maxhullvert=None`` selects :attr:`newton.Mesh.MAX_HULL_VERTICES` even when USD authors a hull limit.
 
+At a glance, each step returns its value when one is available. Otherwise, resolution continues down this list:
+
+.. code-block:: text
+
+   Supported explicit override
+              |
+          not provided
+              v
+   Resolver candidates in priority order
+   (authored value, then registered fallback)
+              |
+           no result
+              v
+   Importer default
+              |
+         not available
+              v
+   Eligible resolver mapping default
+              |
+            none
+              v
+   Unresolved
+
+The two resolver passes are shown in more detail below.
+
+Without an explicit override, Newton checks each resolver in priority order. It returns the first usable authored value or registered schema fallback:
+
+.. mermaid::
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+   flowchart LR
+       Resolver["For each resolver,<br/>in priority order"] --> Authored{"Usable authored<br/>value?"}
+       Authored -- "Yes" --> AuthoredValue(["Use authored value"])
+       Authored -- "No" --> Owner{"Resolver names a<br/>responsible schema?"}
+       Owner -- "No" --> Continue(["Try next resolver;<br/>after the last, check defaults"])
+       Owner -- "Yes" --> Applied{"Schema applied<br/>to the prim?"}
+       Applied -- "No" --> Continue
+       Applied -- "Yes" --> Fallback{"Registry has a usable<br/>fallback for this property?"}
+       Fallback -- "Yes" --> FallbackValue(["Use registered fallback"])
+       Fallback -- "No" --> Continue
+
+If no resolver returns a value, Newton checks the importer default before making a second pass over resolver mapping defaults:
+
+.. mermaid::
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+   flowchart LR
+       Importer{"Importer default<br/>available?"}
+       Importer -- "Yes" --> ImporterValue(["Use importer default"])
+       Importer -- "No" --> Resolver["For each resolver,<br/>in priority order"]
+       Resolver --> Enabled{"Mapping defaults enabled<br/>for this resolver?"}
+       Enabled -- "No" --> Continue(["Try next resolver;<br/>after the last, leave unresolved"])
+       Enabled -- "Yes" --> Eligible{"Mapping default eligible?<br/>Unowned, or applied and unregistered"}
+       Eligible -- "No" --> Continue
+       Eligible -- "Yes" --> Declared{"Usable mapping<br/>default available?"}
+       Declared -- "Yes" --> ResolverDefaultValue(["Use resolver mapping default"])
+       Declared -- "No" --> Continue
+       Continue --> Unresolved(["Leave unresolved"])
+
+A mapping default is eligible when no schema owns the property, or when the owning schema is applied but unregistered. It is not eligible when its owning schema was not applied. It is also not eligible when the schema is registered, because the registered schema remains the authority even when it declares no fallback for that property.
+
 ``joint_drive_gains_scaling`` and ``collapse_fixed_joints`` are raw PhysicsScene importer metadata rather than registered schema properties. They resolve from an explicit override, authored ``newton:*`` metadata, then the importer default.
-
-By default, attribute resolution retains the deprecated compatibility order:
-
-1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
-2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
-
-Pass ``use_registered_schema_fallbacks=True`` to enable schema ownership. Resolution then follows this order:
-
-1. **Resolver candidate**: For each resolver in priority order, use its authored value or the fallback from its applicable registered schema.
-2. **Importer default**: Use the property-specific importer value when no resolver supplies a candidate.
-3. **Compatibility default**: Use a resolver default only for an applicable unregistered schema or a resolver without declared ownership.
 
 Resolver priority applies to each resolver's complete candidate, so an earlier resolver's registered fallback wins over a later resolver's authored value. A registered property without a fallback does not receive its resolver's compatibility default.
 
