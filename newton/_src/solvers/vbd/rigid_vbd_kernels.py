@@ -4020,69 +4020,40 @@ def build_body_body_contact_lists(
 
 
 @wp.kernel
-def count_body_particle_contacts(
+def build_body_particle_contact_lists(
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_max: int,
     body_particle_contact_shape: wp.array[int],
     shape_body: wp.array[wp.int32],
     body_inv_mass_effective: wp.array[float],
+    body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
-):
-    """Count each dynamic body's soft contacts (particle + edge + face; single total count).
-
-    Static/kinematic bodies (effective inverse mass 0) are skipped since VBD never moves them.
-    """
-    tid = wp.tid()
-    if tid >= min(body_particle_contact_max, body_particle_contact_count[0]):
-        return
-
-    shape = body_particle_contact_shape[tid]
-    body = shape_body[shape] if shape >= 0 else -1
-    if body >= 0 and body_inv_mass_effective[body] > 0.0:
-        wp.atomic_add(body_particle_contact_counts, body, 1)
-
-
-@wp.kernel
-def scan_body_contact_offsets(
-    body_particle_contact_counts: wp.array[wp.int32],
-    body_particle_contact_offsets: wp.array[wp.int32],
-):
-    """Serial exclusive scan of per-body counts into segment offsets. Launch with dim=1.
-
-    Bodies are few, so one thread finishes in microseconds; a serial kernel keeps the scan
-    deterministic and CUDA-graph-capturable with no library dependency.
-    """
-    total = wp.int32(0)
-    for i in range(body_particle_contact_counts.shape[0]):
-        body_particle_contact_offsets[i] = total
-        total += body_particle_contact_counts[i]
-
-
-@wp.kernel
-def fill_body_particle_contact_lists(
-    body_particle_contact_count: wp.array[int],
-    body_particle_contact_max: int,
-    body_particle_contact_shape: wp.array[int],
-    shape_body: wp.array[wp.int32],
-    body_inv_mass_effective: wp.array[float],
-    body_particle_contact_offsets: wp.array[wp.int32],
-    body_particle_contact_cursors: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
+    body_particle_contact_overflow_max: wp.array[wp.int32],
 ):
-    """Fill each dynamic body's exact-size contact-list segment (offsets from count + scan).
+    """
+    Build per-body contact lists for body-particle contacts.
 
-    Segments are exact, so no contact is ever dropped; order within a segment follows the
-    atomic cursors and is scheduling-dependent, matching the accumulation's atomic sums.
+    Each contact is listed only if its body is dynamic (effective inverse
+    mass > 0); static/kinematic bodies are skipped since VBD never moves them.
+    Overflow is tracked in body_particle_contact_overflow_max for diagnostics.
     """
     tid = wp.tid()
-    if tid >= min(body_particle_contact_max, body_particle_contact_count[0]):
+    # Bucket every soft contact (particle + edge + face; single total count) by its rigid body, so
+    # the per-body kernel drives all reactions from one adjacency list.
+    if tid >= body_particle_contact_count[0]:
         return
 
     shape = body_particle_contact_shape[tid]
     body = shape_body[shape] if shape >= 0 else -1
-    if body >= 0 and body_inv_mass_effective[body] > 0.0:
-        slot = body_particle_contact_offsets[body] + wp.atomic_add(body_particle_contact_cursors, body, 1)
-        body_particle_contact_indices[slot] = tid
+
+    if body < 0 or body_inv_mass_effective[body] <= 0.0:
+        return
+
+    idx = wp.atomic_add(body_particle_contact_counts, body, 1)
+    if idx < body_particle_contact_buffer_pre_alloc:
+        body_particle_contact_indices[body * body_particle_contact_buffer_pre_alloc + idx] = tid
+    else:
+        wp.atomic_max(body_particle_contact_overflow_max, 0, idx + 1)
 
 
 @wp.kernel
@@ -5485,6 +5456,7 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
+    body_particle_contact_count: wp.array[int],
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -5494,7 +5466,7 @@ def accumulate_body_particle_contacts_per_body(
     soft_contact_barycentric: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     # Per-body soft-contact adjacency (body-particle)
-    body_particle_contact_offsets: wp.array[wp.int32],
+    body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
     # Outputs
@@ -5531,7 +5503,10 @@ def accumulate_body_particle_contacts_per_body(
         return
 
     num_contacts = body_particle_contact_counts[body_id]
-    list_start = body_particle_contact_offsets[body_id]
+    if num_contacts > body_particle_contact_buffer_pre_alloc:
+        num_contacts = body_particle_contact_buffer_pre_alloc
+
+    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
     X_wb = body_q[body_id]
     X_wb_prev = body_q_prev[body_id]
@@ -5545,8 +5520,10 @@ def accumulate_body_particle_contacts_per_body(
 
     i = thread_id_within_body
     while i < num_contacts:
-        contact_idx = body_particle_contact_indices[list_start + i]
+        contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
         i += _NUM_CONTACT_THREADS_PER_BODY
+        if contact_idx >= max_contacts:
+            continue
 
         f_soft = wp.vec3(0.0)
         h_soft = wp.mat33(0.0)

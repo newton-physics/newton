@@ -60,9 +60,8 @@ def _run_proxy_harvest(device, corners, bary):
     _set(contacts.soft_contact_normal, list(_NORMAL))
 
     out_body_f = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    # The harvest walks an exact per-body adjacency segment, so seed body 0 with the one contact.
+    # The harvest walks a per-body adjacency list, so seed body 0 with the one contact.
     contact_counts = wp.array([1], dtype=wp.int32, device=device)
-    contact_offsets = wp.zeros(1, dtype=wp.int32, device=device)
     contact_indices = wp.zeros(smax, dtype=wp.int32, device=device)
     wp.launch(
         _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
@@ -81,6 +80,7 @@ def _run_proxy_harvest(device, corners, bary):
             wp.full(smax, _KE, dtype=float, device=device),
             wp.zeros(smax, dtype=float, device=device),  # material_kd
             wp.zeros(smax, dtype=float, device=device),  # material_mu
+            contacts.soft_contact_count,
             contacts.soft_contact_indices,
             contacts.soft_contact_barycentric,
             contacts.soft_contact_shape,
@@ -89,7 +89,7 @@ def _run_proxy_harvest(device, corners, bary):
             contacts.soft_contact_normal,
             model.shape_margin,
             model.shape_body,
-            contact_offsets,
+            smax,
             contact_counts,
             contact_indices,
         ],

@@ -145,6 +145,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
+    body_particle_contact_count: wp.array[int],
     soft_contact_indices: wp.array[wp.vec3i],
     soft_contact_barycentric: wp.array[wp.vec3],
     body_particle_contact_shape: wp.array[int],
@@ -153,15 +154,18 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_particle_contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     shape_body: wp.array[wp.int32],
-    body_particle_contact_offsets: wp.array[wp.int32],
+    body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
     out_body_f: wp.array[wp.spatial_vector],
 ):
     """Sum the body-side soft-contact reaction the destination solve applied to each proxy body.
 
-    Walks the same exact per-body adjacency list the destination solve applied, so the
-    harvested reaction always matches the momentum the destination actually injected.
+    Walks the per-body adjacency list, and truncates it at the same per-body capacity as
+    ``accumulate_body_particle_contacts_per_body``. A body carrying more soft contacts than the
+    list holds is pushed by only the records the list kept, so harvesting the whole contact
+    stream would hand the source solver a reaction the destination never applied -- momentum the
+    coupled pair would then disagree about, growing with the size of the overflow.
     """
     tid = wp.tid()
     body_idx = tid // _NUM_CONTACT_THREADS_PER_BODY
@@ -175,10 +179,12 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
         return
 
     num_contacts = body_particle_contact_counts[body_idx]
+    if num_contacts > body_particle_contact_buffer_pre_alloc:
+        num_contacts = body_particle_contact_buffer_pre_alloc
     if num_contacts == 0:
         return
 
-    list_start = body_particle_contact_offsets[body_idx]
+    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
     com_world = wp.transform_point(body_q[body_idx], body_com[body_idx])
 
     force_acc = wp.vec3(0.0)
@@ -186,8 +192,10 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
 
     i = thread_id_within_body
     while i < num_contacts:
-        contact_idx = body_particle_contact_indices[list_start + i]
+        contact_idx = body_particle_contact_indices[body_idx * body_particle_contact_buffer_pre_alloc + i]
         i += _NUM_CONTACT_THREADS_PER_BODY
+        if contact_idx >= max_contacts:
+            continue
 
         corners = soft_contact_indices[contact_idx]
         if corners[0] < 0 or corners[0] >= particle_q.shape[0]:
