@@ -12732,6 +12732,43 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
             solver.step(state_0, state_1, ctrl, contacts, 1.0 / 60.0)
         # No assertion needed — the test passes if no exception is raised.
 
+    def test_overflow_requested_with_contacts_none_does_not_crash(self):
+        """Step should not crash when contacts=None under the default use_mujoco_contacts=True.
+
+        contacts=None is a documented, established calling pattern (see
+        example_mpm_anymal.py) whenever MuJoCo Warp runs its own collision
+        detection. Requesting mujoco:overflow must not break that pattern.
+        """
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("overflow state requires CUDA")
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform((0, 0.3, 0), wp.quat_identity()), mass=0.1)
+        builder.add_shape_sphere(b, radius=0.05)
+        builder.request_state_attributes("mujoco:overflow")
+        model = builder.finalize()
+
+        # use_mujoco_contacts=True is the constructor default.
+        solver = SolverMuJoCo(model)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        ctrl = model.control()
+
+        state_0.clear_forces()
+        solver.step(state_0, state_1, ctrl, None, 1.0 / 60.0)
+        bits = int(state_1.mujoco.overflow.numpy()[0])
+        # Newton bits (16-17) are meaningless when contacts weren't fed in.
+        self.assertEqual(
+            bits & (int(OVERFLOW_CONTACT_PIPELINE) | int(OVERFLOW_SOLVER_NCONMAX)),
+            0,
+            f"Newton overflow bits set despite contacts=None: {bits:#010x}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

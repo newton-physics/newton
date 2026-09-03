@@ -3996,6 +3996,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
+        self._zero_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Track the Contacts instance and its capacity, plus the MJWarp
         # naconmax used during the last full pass.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
@@ -4158,18 +4160,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Write per-step overflow state into State if the attribute was requested.
                 overflow_out = getattr(getattr(state_out, "mujoco", None), "overflow", None)
                 if overflow_out is not None:
+                    # 1 only when Newton fed real contacts in; contacts is None
+                    # whenever use_mujoco_contacts=True (see contacts arg doc above).
+                    newton_contacts = int(not self.mjw_model.opt.run_collision_detection and contacts is not None)
+                    if newton_contacts:
+                        rigid_contact_count = contacts.rigid_contact_count
+                        rigid_contact_max = contacts.rigid_contact_max
+                    else:
+                        rigid_contact_count = self._zero_contact_count
+                        rigid_contact_max = 0
                     wp.launch(
                         collect_overflow_kernel,
                         dim=self.mjw_data.nworld,
                         inputs=[
-                            contacts.rigid_contact_count,
-                            contacts.rigid_contact_max,
+                            rigid_contact_count,
+                            rigid_contact_max,
                             self.mjw_data.naconmax,
-                            # 1 when Newton fed contacts in; 0 when MuJoCo Warp
-                            # ran its own collision detection (bits 16-17 are
-                            # meaningless on that path — rigid_contact_count may
-                            # be stale or zero).
-                            int(not self.mjw_model.opt.run_collision_detection),
+                            newton_contacts,
                             self.mjw_data.overflow,
                         ],
                         outputs=[overflow_out],
