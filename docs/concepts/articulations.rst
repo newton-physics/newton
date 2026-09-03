@@ -63,7 +63,7 @@ per-joint stiffness values remain assembly controls on
 modes; damping is configured directly during assembly. Solver mechanics
 likewise use ``rod`` terminology.
 
-For a circular elastic material, transverse shear uses the AOUSD-compatible
+For a circular elastic material, transverse shear uses the OpenUSD-compatible
 effective rigidity ``kGA`` with ``k = 0.9``. This is a finite
 shear-deformable rod, not the unshearable constraint of a strict Kirchhoff
 rod. Use section rigidities or direct joint stiffnesses when a different

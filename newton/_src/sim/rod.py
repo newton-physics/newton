@@ -14,7 +14,7 @@ import warp as wp
 from ..core.types import Quat, Vec3, axis_to_vec3
 from ..math import quat_between_vectors_robust
 
-# Follow AOUSD's solid-circular-section fallback: shear rigidity = kGA,
+# Follow OpenUSD's solid-circular-section fallback: shear rigidity = kGA,
 # where k ~= 0.9. Newton uses k = 0.9.
 _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION = 0.9
 
@@ -157,7 +157,7 @@ class Rod:
             or mutually inconsistent.
 
     Note:
-        Material-derived transverse shear follows the AOUSD deformable-body
+        Material-derived transverse shear follows the OpenUSD deformable-body
         treatment for a solid circular section, using ``kGA`` with
         ``k = 0.9``. See :meth:`newton.ModelBuilder.add_rod` for rigidity
         discretization, direct stiffness and damping controls, and topology
