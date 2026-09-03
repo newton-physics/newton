@@ -595,7 +595,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Gizmos aren't dragged in headless test mode, so all four arms should stay near their ready pose."""
+        """Verify all four arms stay near their ready pose, since gizmos aren't dragged in headless test mode."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"

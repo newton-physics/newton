@@ -35,7 +35,7 @@ def _run_svd(a_np, n_columns_vals, device, max_sweeps=30, tol=1.0e-8):
 
 
 def test_svd_one_sided_jacobi_matches_numpy_for_diagonal_matrix(test: unittest.TestCase, device):
-    """A diagonal matrix's own entries are already its singular values, exactly, with U = V = I."""
+    """Verify a diagonal matrix's own entries come back as its singular values, exactly, with U = V = I."""
     a_np = np.diag([3.0, 1.0]).astype(np.float32)
     u, s, v = _run_svd(a_np[None], [2], device)
     np.testing.assert_allclose(s[0], [3.0, 1.0], atol=1e-5)
@@ -44,7 +44,7 @@ def test_svd_one_sided_jacobi_matches_numpy_for_diagonal_matrix(test: unittest.T
 
 
 def test_svd_one_sided_jacobi_reconstructs_matrix_built_from_known_factors(test: unittest.TestCase, device):
-    """A matrix built from known orthogonal U/V and singular values S is recovered: U @ diag(S) @ Vᵀ == A.
+    """Verify a matrix built from known orthogonal U/V and singular values S is recovered: U @ diag(S) @ Vᵀ == A.
 
     U and V are only defined up to a simultaneous sign flip per column, so
     this checks reconstruction and orthonormality rather than comparing the
@@ -65,7 +65,7 @@ def test_svd_one_sided_jacobi_reconstructs_matrix_built_from_known_factors(test:
 
 
 def test_svd_one_sided_jacobi_ignores_zero_padding_beyond_n_columns(test: unittest.TestCase, device):
-    """A 2x2 problem zero-padded into a 3x3 buffer, with n_columns=2, matches the same problem solved directly."""
+    """Verify a 2x2 problem zero-padded into a 3x3 buffer, with n_columns=2, matches the same problem solved directly."""
     a2x2 = np.array([[2.0, 1.0], [0.0, 1.0]], dtype=np.float32)
     padded = np.zeros((3, 3), dtype=np.float32)
     padded[:2, :2] = a2x2
@@ -78,7 +78,7 @@ def test_svd_one_sided_jacobi_ignores_zero_padding_beyond_n_columns(test: unitte
 
 
 def test_svd_one_sided_jacobi_matches_numpy_for_non_square_matrix(test: unittest.TestCase, device):
-    """A genuinely non-square (3 rows, 2 columns) matrix is decomposed correctly.
+    """Verify a genuinely non-square (3 rows, 2 columns) matrix is decomposed correctly.
 
     Regression test: an earlier version sized U from A's column count
     instead of its row count, which is only correct by coincidence for a
@@ -97,7 +97,7 @@ def test_svd_one_sided_jacobi_matches_numpy_for_non_square_matrix(test: unittest
 
 
 def test_svd_one_sided_jacobi_recovers_ill_conditioned_singular_values(test: unittest.TestCase, device):
-    """Singular values spanning [1, 1e-4] are recovered to good relative accuracy, including the smallest.
+    """Verify singular values spanning [1, 1e-4] are recovered to good relative accuracy, including the smallest.
 
     The whole point of this algorithm over an eigendecomposition of AᵀA
     (``_truncated_pinv_matrix_kernel``'s current approach): that approach
@@ -124,7 +124,7 @@ def test_svd_one_sided_jacobi_recovers_ill_conditioned_singular_values(test: uni
 
 
 def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.TestCase, device):
-    """A 3x5 matrix (rank <= 3) recovers its 3 real singular values and drops the 2 excess directions to exactly 0.
+    """Verify a 3x5 matrix (rank <= 3) recovers its 3 real singular values and drops the 2 excess directions to exactly 0.
 
     Regression test: an earlier version only ever examined the first
     min(n_columns, m) *positions* of the converged columns when picking the
@@ -147,7 +147,7 @@ def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.Test
 
 
 def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns(test: unittest.TestCase, device):
-    """Two matrices in one batched launch, with different n_columns, match solving each independently.
+    """Verify two matrices in one batched launch, with different n_columns, match solving each independently.
 
     Robot 1's third column is zero-padding (n_columns=2), robot 0's is a
     genuine 3x3 problem (n_columns=3): mixing different active sizes in one
@@ -171,7 +171,7 @@ def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_colum
 
 
 def test_svd_one_sided_jacobi_matches_numpy_for_medium_sized_matrix(test: unittest.TestCase, device):
-    """A 10x10 random matrix -- well beyond the 2x2/3x3 cases above -- still matches numpy's SVD closely."""
+    """Verify a 10x10 random matrix -- well beyond the 2x2/3x3 cases above -- still matches numpy's SVD closely."""
     rng = np.random.default_rng(32)
     a_np = rng.normal(size=(10, 10)).astype(np.float32)
 
@@ -183,7 +183,7 @@ def test_svd_one_sided_jacobi_matches_numpy_for_medium_sized_matrix(test: unitte
 
 
 def test_svd_one_sided_jacobi_default_sweep_budget_is_sufficient_for_medium_size(test: unittest.TestCase, device):
-    """30 sweeps (the value used everywhere above) converges a 10x10 matrix; too few sweeps measurably does not.
+    """Verify 30 sweeps (the value used everywhere above) converges a 10x10 matrix; too few sweeps measurably does not.
 
     Reconstruction (U @ diag(S) @ Vᵀ == A) holds at *any* sweep count --
     every Jacobi rotation is an exact identity, applied consistently to
@@ -206,7 +206,7 @@ def test_svd_one_sided_jacobi_default_sweep_budget_is_sufficient_for_medium_size
 
 
 def test_svd_one_sided_jacobi_handles_repeated_singular_values(test: unittest.TestCase, device):
-    """Two equal singular values (a known-tricky case for the whole Jacobi family) still reconstruct correctly.
+    """Verify two equal singular values (a known-tricky case for the whole Jacobi family) still reconstruct correctly.
 
     U/V individually are not uniquely determined within the degenerate
     (equal-singular-value) subspace -- only their span is -- so this checks
@@ -228,7 +228,7 @@ def test_svd_one_sided_jacobi_handles_repeated_singular_values(test: unittest.Te
 
 
 def test_svd_one_sided_jacobi_degrades_gracefully_near_float32_precision_floor(test: unittest.TestCase, device):
-    """Singular values spanning [1, 1e-6] -- near float32's ~1e-7 relative precision -- stay finite and reasonable.
+    """Verify singular values spanning [1, 1e-6] -- near float32's ~1e-7 relative precision -- stay finite and reasonable.
 
     Not a claim of high accuracy here (this is right at what float32 can
     represent at all), just that behavior degrades gracefully rather than
