@@ -13,6 +13,7 @@ import types
 import unittest
 import warnings
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
@@ -4091,21 +4092,146 @@ class TestDelayGraphCapture(unittest.TestCase):
 class TestActuatorStateAssign(unittest.TestCase):
     """Cover the :meth:`Actuator.State.assign` copy contract."""
 
-    def test_assign_copies_arrays_allocated_outside_dataclass_fields(self):
-        """Copy state a controller allocates in ``__init__`` rather than as a field."""
+    def test_assign_copies_built_in_state(self):
+        """Copy every array in the built-in delay and PID drive state."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        actuator = builder.finalize(device=device).actuators[0]
+        current, advanced = actuator.state(), actuator.state()
+
+        delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
+        for value, name in enumerate(delay_fields, start=1):
+            getattr(advanced.delay_state, name).fill_(value)
+        advanced.drive_state.integral.fill_(6.0)
+
+        current.assign(advanced)
+
+        for value, name in enumerate(delay_fields, start=1):
+            with self.subTest(name=name):
+                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+        np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
+
+    def test_assign_delegates_to_custom_drive_state(self):
+        """Delegate nested and slotted storage to the custom drive state."""
 
         class _CustomState(DriveBase.State):
-            """Undecorated subclass: ``dataclasses.fields()`` is empty for it."""
+            __slots__ = ("nested",)
 
             def __init__(self, num_actuators: int, device: wp.Device):
-                self.extra = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+                self.nested = types.SimpleNamespace(value=wp.zeros(num_actuators, dtype=wp.float32, device=device))
+
+            def assign(self, other: DriveBase.State) -> None:
+                self.nested.value.assign(other.nested.value)
 
         device = wp.get_device()
         current, advanced = _CustomState(1, device), _CustomState(1, device)
-        advanced.extra.fill_(1.0)
+        advanced.nested.value.fill_(1.0)
 
         Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
-        self.assertEqual(current.extra.numpy()[0], 1.0)
+
+        self.assertEqual(current.nested.value.numpy()[0], 1.0)
+        self.assertIsNot(current.nested, advanced.nested)
+
+    def test_assign_copies_slotted_dataclass_state(self):
+        """Copy a custom slotted dataclass through the default implementation."""
+
+        @dataclass(slots=True)
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        destination = current.value
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIs(current.value, destination)
+        self.assertEqual(current.value.numpy()[0], 1.0)
+
+    def test_assign_copies_neural_warp_state_in_place(self):
+        """Copy neural Warp arrays while preserving destination storage."""
+        device = wp.get_device()
+        cases = (
+            (
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                ),
+                ("pos_error_history", "vel_history"),
+            ),
+            (
+                DriveNeuralLSTM.State(
+                    hidden=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralLSTM.State(
+                    hidden=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                ("hidden", "cell"),
+            ),
+        )
+
+        for current, advanced, fields in cases:
+            destinations = {name: getattr(current, name) for name in fields}
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+            for name in fields:
+                destination = destinations[name]
+                self.assertIs(getattr(current, name), destination)
+                np.testing.assert_array_equal(destination.numpy(), 1.0)
+
+    def test_assign_rejects_undecorated_custom_drive_state(self):
+        """Reject an undeclared custom state rather than silently skipping it."""
+
+        class _CustomState(DriveBase.State):
+            def __init__(self, device: wp.Device):
+                self.value = wp.zeros(1, dtype=wp.float32, device=device)
+
+        current = _CustomState(wp.get_device())
+        advanced = _CustomState(wp.get_device())
+        with self.assertRaisesRegex(NotImplementedError, "decorated with @dataclass or implement assign"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    def test_assign_rejects_undeclared_attribute(self):
+        """Reject an attribute present on only one otherwise compatible state."""
+
+        @dataclass
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        current.extra = None
+
+        with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    def test_assign_copies_torch_state_without_aliasing(self):
+        """Copy Torch-backed drive state without aliasing the source tensors."""
+        with _torch.inference_mode():
+            current = DriveNeuralLSTM.State(hidden=_torch.zeros((1, 1, 1)), cell=_torch.zeros((1, 1, 1)))
+            advanced = DriveNeuralLSTM.State(hidden=_torch.ones((1, 1, 1)), cell=_torch.ones((1, 1, 1)))
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIsNot(current.hidden, advanced.hidden)
+        self.assertIsNot(current.cell, advanced.cell)
+        with _torch.inference_mode():
+            advanced.hidden.zero_()
+            advanced.cell.zero_()
+        self.assertEqual(current.hidden.item(), 1.0)
+        self.assertEqual(current.cell.item(), 1.0)
 
     def test_assign_rejects_mismatched_components(self):
         """Raise rather than silently skip when only one state holds a component."""
@@ -4118,8 +4244,8 @@ class TestActuatorStateAssign(unittest.TestCase):
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
 )
-class TestControllerStateGraphCapture(unittest.TestCase):
-    """Controller state must advance per replay, not only for an even captured step count.
+class TestDriveStateGraphCapture(unittest.TestCase):
+    """Drive state must advance per replay, not only for an even captured step count.
 
     A PID with only ``ki`` set, held at a constant position error by a model no
     solver moves, accumulates exactly ``ki * error * dt`` per actuator step

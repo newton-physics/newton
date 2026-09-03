@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -42,15 +42,39 @@ def _scatter_add_kernel(
         computed_output[idx] = computed_output[idx] + computed_forces[i]
 
 
-def _assign_component_state(dst: Any, src: Any, name: str) -> None:
-    """Copy one component state (delay or drive) from *src* into *dst*.
+def _assign_state_value(dst: Any, src: Any, name: str) -> None:
+    """Copy a supported state value without replacing its storage."""
+    if dst is None and src is None:
+        return
+    if dst is None or src is None:
+        raise ValueError(f"Cannot assign '{name}': present in one state and missing in the other.")
 
-    Walks both objects' ``__dict__`` rather than their dataclass fields, so a
-    state that allocates its arrays in ``__init__`` is copied too.  Warp arrays
-    are copied in place, which a captured region records.  Other values are
-    rebound, which is how :class:`DriveNeuralLSTM.State` publishes the
-    Torch tensors it holds for a Torch checkpoint.  That backend is not
-    graphable in any case.
+    dst_is_warp = isinstance(dst, wp.array)
+    src_is_warp = isinstance(src, wp.array)
+    if dst_is_warp or src_is_warp:
+        if not (dst_is_warp and src_is_warp):
+            raise ValueError(f"Cannot assign '{name}': a Warp array in one state and not in the other.")
+        dst.assign(src)
+        return
+
+    dst_is_torch = type(dst).__module__.startswith("torch")
+    src_is_torch = type(src).__module__.startswith("torch")
+    if dst_is_torch or src_is_torch:
+        if not (dst_is_torch and src_is_torch):
+            raise ValueError(f"Cannot assign '{name}': a Torch tensor in one state and not in the other.")
+        if dst.shape != src.shape:
+            raise ValueError(f"Cannot assign '{name}': tensor shapes differ ({dst.shape} and {src.shape}).")
+        import torch
+
+        with torch.inference_mode():
+            dst.copy_(src)
+        return
+
+    raise ValueError(f"Cannot assign '{name}': expected Warp arrays or Torch tensors.")
+
+
+def _assign_component_state(dst: Any, src: Any, name: str) -> None:
+    """Copy one actuator component state from *src* into *dst*.
 
     Args:
         dst: Component state to copy into.
@@ -58,26 +82,36 @@ def _assign_component_state(dst: Any, src: Any, name: str) -> None:
         name: Component name, used in error messages.
 
     Raises:
-        ValueError: The two states do not hold the same values.
+        ValueError: The two actuator states have incompatible components or
+            fields.
+        NotImplementedError: A custom state is not a dataclass and does not
+            implement ``assign()``.
     """
     if dst is None and src is None:
         return
     if dst is None or src is None:
         raise ValueError(f"Cannot assign '{name}': one state has it allocated and the other does not.")
-    for attr in set(dst.__dict__) | set(src.__dict__):
-        val_dst = getattr(dst, attr, None)
-        val_src = getattr(src, attr, None)
-        if val_dst is None and val_src is None:
-            continue
-        if val_dst is None or val_src is None:
-            raise ValueError(f"Cannot assign '{name}.{attr}': present in one state and missing in the other.")
-        array_dst = isinstance(val_dst, wp.array)
-        if array_dst != isinstance(val_src, wp.array):
-            raise ValueError(f"Cannot assign '{name}.{attr}': a Warp array in one state and not in the other.")
-        if array_dst:
-            val_dst.assign(val_src)
-        else:
-            setattr(dst, attr, val_src)
+    if type(dst) is not type(src):
+        raise ValueError(f"Cannot assign '{name}': state types differ ({type(dst).__name__} and {type(src).__name__}).")
+
+    custom_assign = getattr(dst, "assign", None)
+    if custom_assign is not None:
+        custom_assign(src)
+        return
+
+    if "__dataclass_fields__" not in type(dst).__dict__:
+        raise NotImplementedError(f"{type(dst).__qualname__} must be decorated with @dataclass or implement assign")
+
+    state_fields = fields(dst)
+    field_names = {field.name for field in state_fields}
+    attributes = set(getattr(dst, "__dict__", ())) | set(getattr(src, "__dict__", ()))
+    undeclared = attributes - field_names
+    if undeclared:
+        names = ", ".join(sorted(undeclared))
+        raise ValueError(f"Cannot assign '{name}': undeclared state attributes: {names}.")
+
+    for field in state_fields:
+        _assign_state_value(getattr(dst, field.name), getattr(src, field.name), f"{name}.{field.name}")
 
 
 class Actuator:
@@ -171,12 +205,10 @@ class Actuator:
         def assign(self, other: Actuator.State) -> None:
             """Copy the state held by *other* into this one.
 
-            Mirrors :meth:`newton.State.assign`.  A CUDA graph records buffer
-            addresses rather than the caller's Python names.  A captured region
-            holding an odd number of actuator steps therefore leaves its two
-            state objects the wrong way round for the next replay.  Assigning at
-            the boundary, in place of that region's final swap, keeps a single
-            graph correct at the cost of one copy per replay::
+            A CUDA graph records buffer addresses rather than the caller's
+            Python names. Assigning at the boundary of an odd-length captured
+            region, in place of its final state swap, preserves the advanced
+            state for the next replay::
 
                 for i in range(steps):
                     control.joint_f.zero_()
@@ -191,6 +223,8 @@ class Actuator:
 
             Raises:
                 ValueError: The two states do not hold the same components.
+                NotImplementedError: A custom state does not implement
+                    assignment.
             """
             _assign_component_state(self.delay_state, other.delay_state, "delay_state")
             _assign_component_state(self.drive_state, other.drive_state, "drive_state")
