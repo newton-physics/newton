@@ -33,14 +33,16 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
-    build_body_particle_contact_lists,
     compute_rigid_contact_forces,
+    count_body_particle_contacts,
     evaluate_angular_constraint_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
     evaluate_rigid_contact_from_collision,
+    fill_body_particle_contact_lists,
     init_body_body_contacts_alm,
     init_body_particle_contacts,
+    scan_body_contact_offsets,
     snapshot_body_body_contact_history,
     step_body_body_contact_C0_lambda,
     update_duals_body_body_contacts,
@@ -2086,12 +2088,11 @@ def _particle_contact_gather_material_inputs(data):
 def _launch_particle_contact_gather(data, contact_count, contact_head, contact_next, forces, hessians, device):
     wp.launch(
         build_particle_body_contact_adjacency_active,
-        dim=data["worker_count"],
+        dim=data["capacity"],
         inputs=[
             data["contact_indices"],
             contact_count,
             data["capacity"],
-            data["worker_count"],
             contact_head,
             contact_next,
         ],
@@ -2337,14 +2338,12 @@ def _make_body_particle_dual_prefix_data(device, capacity):
     }
 
 
-def _launch_body_particle_dual_prefix(data, contact_count, capacity, worker_count, beta, penalty_k, device):
+def _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penalty_k, device):
     wp.launch(
         update_duals_body_particle_contacts,
-        dim=worker_count,
+        dim=capacity,
         inputs=[
             contact_count,
-            capacity,
-            worker_count,
             data["indices"],
             data["shape"],
             data["body_pos"],
@@ -2386,7 +2385,7 @@ def _body_particle_dual_active_prefix_boundaries(test, device):
         for raw_count in counts:
             contact_count.assign([raw_count])
             penalty_k.fill_(initial_penalty)
-            _launch_body_particle_dual_prefix(data, contact_count, capacity, worker_count, beta, penalty_k, device)
+            _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penalty_k, device)
 
             with test.subTest(raw_count=raw_count):
                 np.testing.assert_allclose(
@@ -2417,7 +2416,7 @@ def _body_particle_dual_capture_replays_device_count(test, device):
             inputs=[raw_count, contact_count, penalty_k, initial_penalty],
             device=device,
         )
-        _launch_body_particle_dual_prefix(data, contact_count, capacity, worker_count, beta, penalty_k, device)
+        _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penalty_k, device)
         wp.synchronize_device(device)
 
         with wp.ScopedCapture(device=device) as capture:
@@ -2427,7 +2426,7 @@ def _body_particle_dual_capture_replays_device_count(test, device):
                 inputs=[raw_count, contact_count, penalty_k, initial_penalty],
                 device=device,
             )
-            _launch_body_particle_dual_prefix(data, contact_count, capacity, worker_count, beta, penalty_k, device)
+            _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penalty_k, device)
         graph = capture.graph
         test.assertIsNotNone(graph)
 
@@ -4252,36 +4251,59 @@ def _body_body_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(body_contact_overflow_max.numpy()[0]), 0)
 
 
+def _build_body_particle_contact_lists(
+    contact_count, contact_shape, shape_body, inv_mass, capacity, body_count, device
+):
+    """Run the count + scan + fill passes and return (counts, offsets, indices)."""
+    counts = wp.zeros(body_count, dtype=wp.int32, device=device)
+    offsets = wp.zeros(body_count, dtype=wp.int32, device=device)
+    cursors = wp.zeros(body_count, dtype=wp.int32, device=device)
+    indices = wp.full(capacity, -1, dtype=wp.int32, device=device)
+    common = [contact_count, capacity, contact_shape, shape_body, inv_mass]
+    wp.launch(count_body_particle_contacts, dim=capacity, inputs=[*common, counts], device=device)
+    wp.launch(scan_body_contact_offsets, dim=1, inputs=[counts, offsets], device=device)
+    wp.launch(
+        fill_body_particle_contact_lists, dim=capacity, inputs=[*common, offsets, cursors, indices], device=device
+    )
+    return counts, offsets, indices
+
+
 def _body_particle_contact_lists_skip_static_kinematic(test, device):
-    """Immovable body-particle contacts must not cause a list overflow."""
-    buffer_pre_alloc = 1
+    """Immovable bodies collect no list entries and dynamic segments stay exact."""
     # Body 0 is dynamic; body 1 represents a static or kinematic body.
     body_inv_mass_effective = wp.array([1.0, 0.0], dtype=float, device=device)
     shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
     body_particle_contact_count = wp.array([3], dtype=int, device=device)
     body_particle_contact_shape = wp.array([0, 1, 1], dtype=int, device=device)
 
-    counts = wp.zeros(2, dtype=wp.int32, device=device)
-    indices = wp.full(2 * buffer_pre_alloc, -1, dtype=wp.int32, device=device)
-    overflow_max = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        build_body_particle_contact_lists,
-        dim=3,
-        inputs=[
-            body_particle_contact_count,
-            body_particle_contact_shape,
-            shape_body,
-            body_inv_mass_effective,
-            buffer_pre_alloc,
-        ],
-        outputs=[counts, indices, overflow_max],
-        device=device,
+    counts, offsets, indices = _build_body_particle_contact_lists(
+        body_particle_contact_count, body_particle_contact_shape, shape_body, body_inv_mass_effective, 3, 2, device
     )
 
     np.testing.assert_array_equal(counts.numpy(), np.array([1, 0], dtype=np.int32))
-    np.testing.assert_array_equal(indices.numpy(), np.array([0, -1], dtype=np.int32))
-    test.assertEqual(int(overflow_max.numpy()[0]), 0)
+    np.testing.assert_array_equal(offsets.numpy(), np.array([0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(indices.numpy(), np.array([0, -1, -1], dtype=np.int32))
+
+
+def _body_particle_contact_lists_exact_beyond_legacy_capacity(test, device):
+    """Per-body segments are exact-size, so heavy contact loads are never truncated.
+
+    300 contacts on one body exceed the removed 256-entry per-body budget that previously
+    dropped the surplus contacts from the body's response.
+    """
+    n = 300
+    body_inv_mass_effective = wp.array([1.0], dtype=float, device=device)
+    shape_body = wp.array([0], dtype=wp.int32, device=device)
+    body_particle_contact_count = wp.array([n], dtype=int, device=device)
+    body_particle_contact_shape = wp.zeros(n, dtype=int, device=device)
+
+    counts, offsets, indices = _build_body_particle_contact_lists(
+        body_particle_contact_count, body_particle_contact_shape, shape_body, body_inv_mass_effective, n, 1, device
+    )
+
+    test.assertEqual(int(counts.numpy()[0]), n)
+    test.assertEqual(int(offsets.numpy()[0]), 0)
+    np.testing.assert_array_equal(np.sort(indices.numpy()), np.arange(n, dtype=np.int32))
 
 
 def _build_multi_world_particle_shape_scene(world_count, device, globals_kind="none"):
@@ -4649,6 +4671,12 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_contact_lists_skip_static_kinematic",
     _body_particle_contact_lists_skip_static_kinematic,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_lists_exact_beyond_legacy_capacity",
+    _body_particle_contact_lists_exact_beyond_legacy_capacity,
     devices=devices,
 )
 add_function_test(

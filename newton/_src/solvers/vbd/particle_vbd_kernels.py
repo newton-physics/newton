@@ -2349,31 +2349,27 @@ def build_particle_body_contact_adjacency_active(
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
-    contact_stride: int,
     particle_contact_head: wp.array[int],
     particle_contact_next: wp.array[int],
 ):
     """Build linked per-particle incidence lists over the compact active contact prefix."""
     contact_index = wp.tid()
-    count = min(body_particle_contact_max, body_particle_contact_count[0])
+    if contact_index >= min(body_particle_contact_max, body_particle_contact_count[0]):
+        return
 
-    while contact_index < count:
-        corners = body_particle_contact_indices[contact_index]
+    corners = body_particle_contact_indices[contact_index]
 
-        # A -1 in slot one identifies the single-particle record. Match the scatter path's
-        # self-description rule exactly instead of interpreting any malformed trailing slot.
-        corner_count = 1
-        if corners[1] >= 0:
-            corner_count = 3
+    # Corners are -1-padded: (p, -1, -1) is a particle record, (v0, v1, -1) an edge, (v0, v1, v2) a face.
+    corner_count = 1
+    if corners[1] >= 0:
+        corner_count = 3
 
-        for corner in range(corner_count):
-            particle_index = corners[corner]
-            if particle_index >= 0:
-                node = 3 * contact_index + corner
-                previous = wp.atomic_exch(particle_contact_head, particle_index, node)
-                particle_contact_next[node] = previous
-
-        contact_index += contact_stride
+    for corner in range(corner_count):
+        particle_index = corners[corner]
+        if particle_index >= 0:
+            node = 3 * contact_index + corner
+            previous = wp.atomic_exch(particle_contact_head, particle_index, node)
+            particle_contact_next[node] = previous
 
 
 @wp.kernel
@@ -2503,10 +2499,10 @@ def gather_particle_body_contact_force_and_hessian(
 
 
 @functools.cache
-def make_solve_elasticity_tile(include_mesh: bool, include_tets: bool, two_particles_per_warp: bool):
+def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_particles_per_warp: bool):
     """Build the tiled per-particle elasticity kernel, specialized at code generation.
 
-    One kernel source serves every tiled variant: ``include_mesh`` / ``include_tets``
+    One kernel source serves every tiled variant: ``include_triangles`` / ``include_tets``
     statically strip the triangle+edge or tetrahedron adjacency loops (the stripped
     code is absent from the generated kernel, matching a hand-specialized one), and
     ``two_particles_per_warp`` packs two independent 16-lane particle solves into one
@@ -2569,7 +2565,7 @@ def make_solve_elasticity_tile(include_mesh: bool, include_tets: bool, two_parti
         h = wp.mat33(0.0)
 
         if particle_is_dynamic:
-            if wp.static(include_mesh):
+            if wp.static(include_triangles):
                 if tri_indices.shape[0] > 0:
                     batch_counter = wp.int32(0)
                     num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
