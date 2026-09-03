@@ -5963,6 +5963,16 @@ class ModelBuilder:
 
         link_idx = len(self.tendon_link_body)
         tendon_link_start = self.tendon_start[-1]
+        if link_idx > tendon_link_start:
+            tendon_body = self.tendon_link_body[tendon_link_start]
+            tendon_world = self.body_world[tendon_body]
+            link_world = self.body_world[body]
+            if link_world != tendon_world:
+                raise ValueError(
+                    f"Cannot add tendon link: body {body} belongs to world {link_world}, "
+                    f"but the tendon belongs to world {tendon_world}. "
+                    "All links in a tendon must belong to the same world."
+                )
         if dynamic and link_type != TendonLinkType.ROLLING:
             raise ValueError("dynamic routing is only supported for ROLLING tendon links")
         if dynamic and link_idx == tendon_link_start:

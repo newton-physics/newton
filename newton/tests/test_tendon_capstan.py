@@ -1142,6 +1142,20 @@ class TestTendonCapstan(unittest.TestCase):
 
         self.assertEqual(destination.body_count, 0)
 
+    def test_rejects_cross_world_tendon(self):
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        body_0 = builder.add_body(mass=0.0)
+        builder.end_world()
+        builder.begin_world()
+        body_1 = builder.add_body(mass=0.0)
+        builder.end_world()
+
+        builder.add_tendon()
+        builder.add_tendon_link(body=body_0)
+        with self.assertRaisesRegex(ValueError, "same world"):
+            builder.add_tendon_link(body=body_1)
+
     def test_rejects_incomplete_tendon(self):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=0.0)
