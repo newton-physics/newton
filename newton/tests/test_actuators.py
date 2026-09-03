@@ -711,7 +711,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         return path
 
     def _write_single_joint_gru_usd(self, model_path: str, filename: str) -> str:
-        """Write a single-joint GRU articulation using typed USD physics APIs."""
+        """Write a single-joint GRU fixture using typed USD physics APIs."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         stage_path = os.path.join(self._tmp_dir, filename)
@@ -724,7 +724,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         base = UsdGeom.Xform.Define(stage, "/World/Robot/Base")
         base_rigid_body = UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
-        UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
         base_rigid_body.CreateKinematicEnabledAttr(True)
         base_mass = UsdPhysics.MassAPI.Apply(base.GetPrim())
         base_mass.CreateMassAttr(1.0)
@@ -1319,6 +1318,10 @@ class TestDriveNeuralGRU(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage_path, floating=False, load_visual_shapes=False)
         self.assertEqual(result["actuator_count"], 1)
+        # This test covers actuator parsing, not the OpenUSD package-dependent
+        # articulation discovery performed by LoadUsdPhysicsFromRange.
+        joint_index = builder.joint_label.index("/World/Robot/Joint")
+        builder.add_articulation([joint_index], label="/World/Robot")
         model = builder.finalize(device=self.device)
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
         self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
