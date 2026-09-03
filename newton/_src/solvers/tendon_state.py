@@ -16,7 +16,9 @@ import warp as wp
 from ..sim import Model
 from ..sim.tendon import TendonLinkFlags, TendonLinkType
 from .tendon_kernels import (
+    mark_tendon_rebaseline_worlds,
     prepare_tendon_route,
+    rebaseline_tendon_attachments,
     reset_tendon_state_array,
     snapshot_tendon_link_active,
     solve_tendon_material,
@@ -156,6 +158,7 @@ class TendonStateMixin:
         self._tendon_segment_world = None
         self._tendon_link_world = None
         self._tendon_world = None
+        self._tendon_pose_rebaseline_mask = None
         # Solver-level cable cone parameters (a solver may override before calling this).
         if not hasattr(self, "tendon_max_sweeps"):
             self.tendon_max_sweeps = 256
@@ -357,6 +360,7 @@ class TendonStateMixin:
                 model.tendon_link_radius,
                 model.tendon_link_offset,
                 model.tendon_link_axis,
+                model.tendon_seg_rest_length,
                 self.tendon_seg_rest_length_step,
                 model.tendon_seg_compliance,
                 model.tendon_seg_damping,
@@ -378,6 +382,44 @@ class TendonStateMixin:
             ],
             device=model.device,
         )
+
+    def _rebaseline_tendon_geometry(self, body_q: wp.array[wp.transform]) -> None:
+        """Rebaseline reset-selected tangent history from the accepted pose."""
+        if self.tendon_seg_rest_length is None:
+            return
+
+        wp.launch(
+            kernel=rebaseline_tendon_attachments,
+            dim=self.model.tendon_segment_count,
+            inputs=[
+                body_q,
+                self.model.tendon_link_body,
+                self.model.tendon_link_type,
+                self.model.tendon_link_radius,
+                self.model.tendon_link_orientation,
+                self.model.tendon_link_offset,
+                self.model.tendon_link_axis,
+                self.tendon_seg_active,
+                self.tendon_seg_active_link_l,
+                self.tendon_seg_active_link_r,
+                self._tendon_segment_world,
+                self._tendon_pose_rebaseline_mask,
+                self.model.world_count,
+            ],
+            outputs=[
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_attachment_l_local_step,
+                self.tendon_seg_attachment_r_local_step,
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_rolling_delta_l,
+                self.tendon_seg_rolling_delta_r,
+                self.tendon_seg_length,
+            ],
+            device=self.model.device,
+        )
+        self._tendon_pose_rebaseline_mask.zero_()
 
     def _update_tendon_cone_rows(
         self,
@@ -671,6 +713,7 @@ class TendonStateMixin:
         self._tendon_segment_world = wp.array(link_world[segment_left_link], dtype=wp.int32, device=model.device)
         self._tendon_link_world = wp.array(link_world, dtype=wp.int32, device=model.device)
         self._tendon_world = wp.array(link_world[tendon_start[:-1]], dtype=wp.int32, device=model.device)
+        self._tendon_pose_rebaseline_mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=model.device)
 
         for field in (*_TENDON_SEGMENT_STATE_FIELDS, *_TENDON_LINK_STATE_FIELDS, *_TENDON_STATE_FIELDS):
             self._tendon_initial_state[field] = wp.clone(getattr(self, field))
@@ -699,3 +742,14 @@ class TendonStateMixin:
                         outputs=[current],
                         device=current.device,
                     )
+
+        if world_mask is None:
+            self._tendon_pose_rebaseline_mask.fill_(True)
+        else:
+            wp.launch(
+                kernel=mark_tendon_rebaseline_worlds,
+                dim=world_mask.shape[0],
+                inputs=[world_mask],
+                outputs=[self._tendon_pose_rebaseline_mask],
+                device=self.model.device,
+            )

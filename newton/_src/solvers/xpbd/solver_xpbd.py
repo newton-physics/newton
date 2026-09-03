@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warnings
 
 import warp as wp
@@ -605,6 +607,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 # of the step, before the inertial predictor is solved.
                 self._update_tendon_link_active(model, state_in.body_q)
                 self._prepare_tendon_route(model, state_in.body_q)
+                self._rebaseline_tendon_geometry(state_in.body_q)
                 self.tendon_seg_lambda.zero_()
                 self.tendon_seg_material_tension.zero_()
 

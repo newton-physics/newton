@@ -872,7 +872,7 @@ def build_oriented_dynamic_route(orientation, device):
     return builder.finalize(device=device), candidate, candidate_link
 
 
-def build_explicit_inactive_dynamic_route(device):
+def build_explicit_inactive_dynamic_route(device, rest_lengths=(0.4, 0.6)):
     """Build an inactive dynamic roller with explicitly authored adjacent rests."""
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=(0.0, 0.0, 0.0))
     lower = builder.add_body(
@@ -905,14 +905,14 @@ def build_explicit_inactive_dynamic_route(device):
         dynamic=True,
         axis=(0.0, 1.0, 0.0),
         compliance=1.0e-3,
-        rest_length=0.4,
+        rest_length=rest_lengths[0],
     )
     builder.add_tendon_link(
         body=upper,
         link_type=TendonLinkType.ATTACHMENT,
         axis=(0.0, 1.0, 0.0),
         compliance=1.0e-3,
-        rest_length=0.6,
+        rest_length=rest_lengths[1],
     )
     return builder.finalize(device=device), candidate_link
 
@@ -1669,6 +1669,17 @@ def test_inactive_dynamic_route_preserves_authored_rest_length(test, device):
         test.assertAlmostEqual(float(np.sum(solver.tendon_seg_rest_length.numpy()[active])), 1.0, delta=1.0e-6)
 
 
+def test_inactive_dynamic_route_preserves_mixed_rest_length(test, device):
+    """Automatic material should fill the part not assigned an explicit rest length."""
+    with wp.ScopedDevice(device):
+        model, candidate_link = build_explicit_inactive_dynamic_route(device, rest_lengths=(-1.0, 0.6))
+        solver = newton.solvers.SolverXPBD(model, iterations=1)
+
+        test.assertFalse(solver.tendon_link_active.numpy()[candidate_link])
+        active = solver.tendon_seg_active.numpy().astype(bool)
+        test.assertAlmostEqual(float(np.sum(solver.tendon_seg_rest_length.numpy()[active])), 1.0, delta=1.0e-6)
+
+
 def test_xpbd_reset_restores_tendon_material_state(test, device):
     """Reset should restore mutable tendon rest lengths and route history."""
     with wp.ScopedDevice(device):
@@ -1690,6 +1701,9 @@ def test_xpbd_reset_restores_tendon_material_state(test, device):
         np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
         np.testing.assert_allclose(solver.tendon_seg_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
         np.testing.assert_allclose(solver.tendon_seg_attachment_r_local.numpy(), initial_local_r, atol=1.0e-7)
+
+        solver.step(state_1, state_0, model.control(), None, 1.0 / 60.0)
+        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
 
 
 def test_dynamic_route_uses_oriented_signed_distance(test, device):
@@ -3407,6 +3421,12 @@ add_test(
     "inactive_dynamic_route_preserves_authored_rest_length",
     devices,
     test_inactive_dynamic_route_preserves_authored_rest_length,
+)
+add_test(
+    TestTendonCapstan,
+    "inactive_dynamic_route_preserves_mixed_rest_length",
+    devices,
+    test_inactive_dynamic_route_preserves_mixed_rest_length,
 )
 add_test(
     TestTendonCapstan,

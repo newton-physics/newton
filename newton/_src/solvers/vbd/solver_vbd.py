@@ -2370,6 +2370,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._snapshot_tendon_step_state()
             self._update_tendon_link_active(self.model, state_in.body_q)
             self._prepare_tendon_route(self.model, state_in.body_q, 1.0e-8)
+            self._rebaseline_tendon_geometry(state_in.body_q)
             self.tendon_seg_material_tension.zero_()
             if self.iterations == 0 or self.integrate_with_external_rigid_solver:
                 self.tendon_seg_lambda.zero_()

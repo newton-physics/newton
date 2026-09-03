@@ -132,6 +132,17 @@ def reset_tendon_state_array(
 
 
 @wp.kernel
+def mark_tendon_rebaseline_worlds(
+    world_mask: wp.array[wp.bool],
+    rebaseline_world_mask: wp.array[wp.bool],
+):
+    """Mark reset-selected worlds for tendon geometry rebaselining."""
+    world = wp.tid()
+    if world_mask[world]:
+        rebaseline_world_mask[world] = True
+
+
+@wp.kernel
 def update_tendon_link_active(
     body_q: wp.array[wp.transform],
     tendon_start: wp.array[int],
@@ -413,6 +424,7 @@ def prepare_tendon_route(
     tendon_link_radius: wp.array[float],
     tendon_link_offset: wp.array[wp.vec3],
     tendon_link_axis: wp.array[wp.vec3],
+    seg_authored_rest_length: wp.array[float],
     seg_rest_length_step: wp.array[float],
     seg_compliance: wp.array[float],
     seg_damping: wp.array[float],
@@ -496,14 +508,57 @@ def prepare_tendon_route(
             )
         elif initialize != 0:
             merged_rest = seg_rest_length_step[seg_left] + seg_rest_length_step[seg_right]
-            if merged_rest <= 0.0:
-                # Auto rest length follows the initially resolved bypass route.
-                merged_rest = tendon_link_route_rest_length[link_idx]
+            auto_left = seg_authored_rest_length[seg_left] < 0.0
+            auto_right = seg_authored_rest_length[seg_right] < 0.0
+            if auto_left or auto_right:
+                # Automatic material fills the unresolved part of the initial bypass.
+                merged_rest = wp.max(merged_rest, tendon_link_route_rest_length[link_idx])
         elif merged_rest <= 0.0:
             merged_rest = tendon_link_route_rest_length[link_idx]
 
         seg_route_rest_length[seg_left] = wp.max(merged_rest, min_rest)
         seg_route_rest_length[seg_right] = min_rest
+
+
+@wp.func
+def _tendon_segment_attachment_points(
+    center_l: wp.vec3,
+    center_r: wp.vec3,
+    normal_l: wp.vec3,
+    normal_r: wp.vec3,
+    type_l: int,
+    type_r: int,
+    radius_l: float,
+    radius_r: float,
+    orient_l: int,
+    orient_r: int,
+    seed_al: wp.vec3,
+    seed_ar: wp.vec3,
+):
+    """Compute one active free span's tangent points."""
+    new_al = center_l
+    new_ar = center_r
+    both_rolling = (type_l == int(TendonLinkType.ROLLING)) and (type_r == int(TendonLinkType.ROLLING))
+
+    if both_rolling and radius_l > 0.0 and radius_r > 0.0:
+        new_al = seed_al
+        new_ar = seed_ar
+        for _iter in range(10):
+            previous_al = new_al
+            previous_ar = new_ar
+            new_ar = tangent_point_circle(new_al, center_r, radius_r, normal_r, orient_r)
+            new_al = tangent_point_circle(new_ar, center_l, radius_l, normal_l, -orient_l)
+            tangent_delta_sq = wp.length_sq(new_al - previous_al) + wp.length_sq(new_ar - previous_ar)
+            if tangent_delta_sq == 0.0:
+                break
+    elif type_l == int(TendonLinkType.ROLLING) and radius_l > 0.0:
+        new_ar = center_r
+        new_al = tangent_point_circle(center_r, center_l, radius_l, normal_l, -orient_l)
+    elif type_r == int(TendonLinkType.ROLLING) and radius_r > 0.0:
+        new_al = center_l
+        new_ar = tangent_point_circle(center_l, center_r, radius_r, normal_r, orient_r)
+
+    return new_al, new_ar
 
 
 @wp.kernel
@@ -588,27 +643,20 @@ def update_tendon_attachments(
 
     base_ar = wp.transform_point(pose_r, seg_attachment_r_local_step[base_ar_step_seg])
 
-    new_al = center_l
-    new_ar = center_r
-    both_rolling = (type_l == int(TendonLinkType.ROLLING)) and (type_r == int(TendonLinkType.ROLLING))
-
-    if both_rolling and radius_l > 0.0 and radius_r > 0.0:
-        new_al = seed_al
-        new_ar = seed_ar
-        for _iter in range(10):
-            previous_al = new_al
-            previous_ar = new_ar
-            new_ar = tangent_point_circle(new_al, center_r, radius_r, normal_r, orient_r)
-            new_al = tangent_point_circle(new_ar, center_l, radius_l, normal_l, -orient_l)
-            tangent_delta_sq = wp.length_sq(new_al - previous_al) + wp.length_sq(new_ar - previous_ar)
-            if tangent_delta_sq == 0.0:
-                break
-    elif type_l == int(TendonLinkType.ROLLING) and radius_l > 0.0:
-        new_ar = center_r
-        new_al = tangent_point_circle(center_r, center_l, radius_l, normal_l, -orient_l)
-    elif type_r == int(TendonLinkType.ROLLING) and radius_r > 0.0:
-        new_al = center_l
-        new_ar = tangent_point_circle(center_l, center_r, radius_r, normal_r, orient_r)
+    new_al, new_ar = _tendon_segment_attachment_points(
+        center_l,
+        center_r,
+        normal_l,
+        normal_r,
+        type_l,
+        type_r,
+        radius_l,
+        radius_r,
+        orient_l,
+        orient_r,
+        seed_al,
+        seed_ar,
+    )
 
     if apply_rolling_transfer != 0:
         if (
@@ -629,6 +677,88 @@ def update_tendon_attachments(
     seg_attachment_r[seg] = new_ar
     seg_attachment_l_local[seg] = wp.transform_point(wp.transform_inverse(pose_l), new_al)
     seg_attachment_r_local[seg] = wp.transform_point(wp.transform_inverse(pose_r), new_ar)
+    seg_length[seg] = wp.length(new_ar - new_al)
+
+
+@wp.kernel
+def rebaseline_tendon_attachments(
+    body_q: wp.array[wp.transform],
+    tendon_link_body: wp.array[int],
+    tendon_link_type: wp.array[int],
+    tendon_link_radius: wp.array[float],
+    tendon_link_orientation: wp.array[int],
+    tendon_link_offset: wp.array[wp.vec3],
+    tendon_link_axis: wp.array[wp.vec3],
+    seg_active: wp.array[int],
+    seg_active_link_l: wp.array[int],
+    seg_active_link_r: wp.array[int],
+    seg_world: wp.array[int],
+    rebaseline_world_mask: wp.array[wp.bool],
+    world_count: int,
+    # inputs/outputs
+    seg_attachment_l_local: wp.array[wp.vec3],
+    seg_attachment_r_local: wp.array[wp.vec3],
+    seg_attachment_l_local_step: wp.array[wp.vec3],
+    seg_attachment_r_local_step: wp.array[wp.vec3],
+    # outputs
+    seg_attachment_l: wp.array[wp.vec3],
+    seg_attachment_r: wp.array[wp.vec3],
+    seg_rolling_delta_l: wp.array[float],
+    seg_rolling_delta_r: wp.array[float],
+    seg_length: wp.array[float],
+):
+    """Rebaseline reset-selected tangent history from the accepted pose."""
+    seg = wp.tid()
+    if not reset_world_selected(seg_world[seg], rebaseline_world_mask, world_count):
+        return
+
+    seg_rolling_delta_l[seg] = 0.0
+    seg_rolling_delta_r[seg] = 0.0
+    if seg_active[seg] == 0:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        seg_attachment_l[seg] = zero
+        seg_attachment_r[seg] = zero
+        seg_attachment_l_local[seg] = zero
+        seg_attachment_r_local[seg] = zero
+        seg_attachment_l_local_step[seg] = zero
+        seg_attachment_r_local_step[seg] = zero
+        seg_length[seg] = 0.0
+        return
+
+    link_l = seg_active_link_l[seg]
+    link_r = seg_active_link_r[seg]
+    body_l = tendon_link_body[link_l]
+    body_r = tendon_link_body[link_r]
+    pose_l = body_q[body_l]
+    pose_r = body_q[body_r]
+    center_l = wp.transform_point(pose_l, tendon_link_offset[link_l])
+    center_r = wp.transform_point(pose_r, tendon_link_offset[link_r])
+    normal_l = wp.transform_vector(pose_l, tendon_link_axis[link_l])
+    normal_r = wp.transform_vector(pose_r, tendon_link_axis[link_r])
+    seed_al = wp.transform_point(pose_l, seg_attachment_l_local[seg])
+    seed_ar = wp.transform_point(pose_r, seg_attachment_r_local[seg])
+    new_al, new_ar = _tendon_segment_attachment_points(
+        center_l,
+        center_r,
+        normal_l,
+        normal_r,
+        tendon_link_type[link_l],
+        tendon_link_type[link_r],
+        tendon_link_radius[link_l],
+        tendon_link_radius[link_r],
+        tendon_link_orientation[link_l],
+        tendon_link_orientation[link_r],
+        seed_al,
+        seed_ar,
+    )
+    local_l = wp.transform_point(wp.transform_inverse(pose_l), new_al)
+    local_r = wp.transform_point(wp.transform_inverse(pose_r), new_ar)
+    seg_attachment_l[seg] = new_al
+    seg_attachment_r[seg] = new_ar
+    seg_attachment_l_local[seg] = local_l
+    seg_attachment_r_local[seg] = local_r
+    seg_attachment_l_local_step[seg] = local_l
+    seg_attachment_r_local_step[seg] = local_r
     seg_length[seg] = wp.length(new_ar - new_al)
 
 

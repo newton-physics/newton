@@ -607,6 +607,26 @@ def test_vbd_reset_restores_tendon_state(test, device):
         np.testing.assert_allclose(solver.tendon_total_cable.numpy(), initial_total, atol=1.0e-7)
 
 
+def test_vbd_reset_rebaselines_tendon_at_custom_pose(test, device):
+    """A custom reset pose should not be interpreted as new roller travel."""
+    with wp.ScopedDevice(device):
+        model, pulley = build_kinematic_rolling_transport(mu=10.0)
+        _set_serial_body_coloring(model)
+        solver = _make_tendon_vbd_solver(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+
+        body_q = state_0.body_q.numpy()
+        angle = 0.4
+        body_q[pulley, 3:] = np.array([0.0, 0.0, np.sin(0.5 * angle), np.cos(0.5 * angle)], dtype=np.float32)
+        state_0.body_q.assign(body_q)
+        solver.reset(state_0, flags=0)
+        solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
+
+        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
+
+
 def test_vbd_tendon_diagnostics_match_final_pose(test, device):
     """Reported tendon geometry and damping should use the completed VBD pose."""
     with wp.ScopedDevice(device):
@@ -1322,6 +1342,12 @@ add_test(
     test_vbd_slack_damped_tendon_opposes_extension,
 )
 add_test(TestTendonVBD, "vbd_reset_restores_tendon_state", devices, test_vbd_reset_restores_tendon_state)
+add_test(
+    TestTendonVBD,
+    "vbd_reset_rebaselines_tendon_at_custom_pose",
+    devices,
+    test_vbd_reset_rebaselines_tendon_at_custom_pose,
+)
 add_test(
     TestTendonVBD,
     "vbd_tendon_diagnostics_match_final_pose",
