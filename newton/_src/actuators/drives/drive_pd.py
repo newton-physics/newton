@@ -7,7 +7,7 @@ from typing import Any
 
 import warp as wp
 
-from .base import Controller
+from .base import DriveBase
 
 
 @wp.func
@@ -65,8 +65,8 @@ def _pd_effort_kernel(
     efforts[i] = effort
 
 
-class ControllerPD(Controller):
-    """Stateless PD (Proportional-Derivative) controller.
+class DrivePD(DriveBase):
+    """Stateless proportional-derivative actuator drive.
 
     Effort law::
 
@@ -89,7 +89,7 @@ class ControllerPD(Controller):
         kd: wp.array[float],
         const_effort: wp.array[float] | None = None,
     ):
-        """Initialize PD controller.
+        """Initialize the PD drive.
 
         Args:
             kp: Proportional gains [N/m or N·m/rad]. Shape ``(N,)``.
@@ -145,7 +145,7 @@ class ControllerPD(Controller):
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: Controller.State | None,
+        state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:

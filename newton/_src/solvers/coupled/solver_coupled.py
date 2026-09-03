@@ -1440,6 +1440,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
 
+        # The parent's CUDA FK topology contains parent-model indices and is
+        # invalid after the compact view renumbers articulations, joints, and bodies.
+        view._fk_articulation_level_start = None
+        view._fk_level_joint_start = None
+        view._fk_level_joints = None
+        view._fk_level_parent_pos = None
+        view._fk_level_capacity = 0
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 

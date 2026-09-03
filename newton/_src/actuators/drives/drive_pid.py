@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from .base import Controller, _masked_zero_1d
+from .base import DriveBase, _masked_zero_1d
 
 
 @wp.func
@@ -24,7 +24,7 @@ def _pid_evaluate_force(
 ) -> wp.float64:
     """PD force law over ``params[i] = [kp, kd, const_eff]``, where
     ``const_eff = const_effort + ki * integral`` is folded in per step by
-    :meth:`ControllerPID.prepare_implicit`.
+    :meth:`DrivePID.prepare_implicit`.
     """
     kp = wp.float64(params[i, 0])
     kd = wp.float64(params[i, 1])
@@ -107,8 +107,8 @@ def _pid_effort_kernel(
     next_integral[i] = integral
 
 
-class ControllerPID(Controller):
-    """Stateful PID (Proportional-Integral-Derivative) controller.
+class DrivePID(DriveBase):
+    """Stateful proportional-integral-derivative actuator drive.
 
     Effort law::
 
@@ -118,12 +118,12 @@ class ControllerPID(Controller):
     Maintains an integral term with anti-windup clamping.
 
     Implicit actuation folds the integral term into a per-step constant (see
-    :meth:`prepare_implicit`); the rest solves as :class:`ControllerPD`.
+    :meth:`prepare_implicit`); the rest solves as :class:`DrivePD`.
     """
 
     @dataclass
-    class State(Controller.State):
-        """Integral state for PID controller."""
+    class State(DriveBase.State):
+        """Integral state for the PID drive."""
 
         integral: wp.array[float] | None = None
         """Accumulated integral of position error [m·s or rad·s], shape ``(N,)``."""
@@ -179,7 +179,7 @@ class ControllerPID(Controller):
         integral_max: wp.array[float],
         const_effort: wp.array[float] | None = None,
     ):
-        """Initialize PID controller.
+        """Initialize the PID drive.
 
         Args:
             kp: Proportional gains [N/m or N·m/rad]. Shape ``(N,)``.
@@ -242,7 +242,7 @@ class ControllerPID(Controller):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        ctrl_state: ControllerPID.State | None,
+        drive_state: DrivePID.State | None,
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
@@ -252,8 +252,8 @@ class ControllerPID(Controller):
         Advances the integral with the current-step error and anti-windup
         clamping. The implicit solve then holds that contribution constant.
         """
-        if ctrl_state is None:
-            raise RuntimeError("Implicit ControllerPID requires controller state (integral)")
+        if drive_state is None:
+            raise RuntimeError("Implicit DrivePID requires drive state (integral)")
         wp.launch(
             _pid_prepare_kernel,
             dim=len(self._next_integral),
@@ -265,15 +265,15 @@ class ControllerPID(Controller):
                 self.ki,
                 self.integral_max,
                 self.const_effort,
-                ctrl_state.integral,
+                drive_state.integral,
                 float(dt),
             ],
             outputs=[self._param_pack, self._next_integral],
             device=device or self.kp.device,
         )
 
-    def state(self, num_actuators: int, device: wp.Device) -> ControllerPID.State:
-        return ControllerPID.State(
+    def state(self, num_actuators: int, device: wp.Device) -> DrivePID.State:
+        return DrivePID.State(
             integral=wp.zeros(num_actuators, dtype=wp.float32, device=device),
         )
 
@@ -289,7 +289,7 @@ class ControllerPID(Controller):
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerPID.State,
+        state: DrivePID.State,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
@@ -320,7 +320,7 @@ class ControllerPID(Controller):
 
     def update_state(
         self,
-        current_state: ControllerPID.State,
-        next_state: ControllerPID.State,
+        current_state: DrivePID.State,
+        next_state: DrivePID.State,
     ) -> None:
         wp.copy(next_state.integral, self._next_integral)

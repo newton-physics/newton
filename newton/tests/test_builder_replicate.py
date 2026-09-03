@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
-from newton.actuators import ControllerPD
+from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
@@ -88,7 +88,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_custom_values(**{"test:ref_body": child, "test:world": -1})
         builder.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=builder.joint_qd_start[child_joint],
             pos_index=builder.joint_q_start[child_joint],
             kp=100.0,
@@ -152,7 +152,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(set(expected.actuator_entries), set(actual.actuator_entries))
         for key, expected_entry in expected.actuator_entries.items():
             actual_entry = actual.actuator_entries[key]
-            for field in ("indices", "pos_indices", "controller_args", "delay_args", "clamping_args"):
+            for field in ("indices", "pos_indices", "drive_args", "delay_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
