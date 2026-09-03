@@ -24,3 +24,5 @@ subclass of :class:`ControllerBase`.
    ControllerBase
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
+   ControllerOperationalSpace
+   ControllerOperationalSpaceModelFree

@@ -369,6 +369,11 @@ class SolverKaminoImpl(SolverBase):
         return self._problem_fd
 
     @property
+    def solver_status(self) -> wp.array[Any]:
+        """Returns the active forward dynamics backend's per-world status array."""
+        return self._solver_fd.data.status
+
+    @property
     def solver_fd(self) -> PADMMSolver | DVISolver:
         """
         Returns the forward dynamics solver.

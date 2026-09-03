@@ -22,7 +22,7 @@ from ._linearization import (
     _gather_slot_state_kernel,
     _linear_force,
 )
-from .base import Controller
+from .base import DriveBase
 
 if typing.TYPE_CHECKING:
     import torch
@@ -107,8 +107,8 @@ def _lstm_output_grads_kernel(
     dtau_dqd[i] = in_grad[0, i, 1] * vel_scale * effort_scale
 
 
-class ControllerNeuralLSTM(Controller):
-    """LSTM-based neural network controller.
+class DriveNeuralLSTM(DriveBase):
+    """LSTM-based neural network actuator drive.
 
     Uses a pre-trained LSTM network to compute joint effort from position
     error and joint velocity. Hidden and cell state are maintained across
@@ -128,7 +128,7 @@ class ControllerNeuralLSTM(Controller):
     ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
     inputs (input, initial hidden, and initial cell) and three graph outputs
     (effort, hidden output, and cell output). Metadata properties map those
-    names to controller roles.
+    names to drive roles.
 
     ONNX checkpoints support the implicit effort mode through a per-step
     linearization of the network; Torch checkpoints do not and must use the
@@ -138,7 +138,7 @@ class ControllerNeuralLSTM(Controller):
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
 
     @dataclass
-    class State(Controller.State):
+    class State(DriveBase.State):
         """LSTM hidden and cell state."""
 
         hidden: torch.Tensor | wp.array3d[float] | None = None
@@ -177,14 +177,14 @@ class ControllerNeuralLSTM(Controller):
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "model_path" not in args:
-            raise ValueError("ControllerNeuralLSTM requires 'model_path' argument")
+            raise ValueError("DriveNeuralLSTM requires 'model_path' argument")
         model_path = args["model_path"]
         if not model_path:
-            raise ValueError("ControllerNeuralLSTM requires a non-empty 'model_path'")
+            raise ValueError("DriveNeuralLSTM requires a non-empty 'model_path'")
         return {"model_path": model_path}
 
     def __init__(self, model_path: str):
-        """Initialize LSTM controller from a checkpoint file.
+        """Initialize the LSTM drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
@@ -306,7 +306,7 @@ class ControllerNeuralLSTM(Controller):
         out_shape = _runtime_shape(runtime, self._output_name)
         if out_shape != (num_actuators, 1):
             raise ValueError(
-                f"ControllerNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
+                f"DriveNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
                 f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
             )
 
@@ -315,7 +315,7 @@ class ControllerNeuralLSTM(Controller):
             expected_state_shape = (self._num_layers, num_actuators, self._hidden_size)
             if tuple(state_shape) != expected_state_shape:
                 raise ValueError(
-                    f"ControllerNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
+                    f"DriveNeuralLSTM: ONNX output '{name}' has shape {tuple(state_shape)}, "
                     f"expected {expected_state_shape} (num_layers, num_actuators, hidden_size)"
                 )
 
@@ -347,7 +347,7 @@ class ControllerNeuralLSTM(Controller):
         return not self._is_torch_checkpoint
 
     #: The network enters the general implicit solve as a per-step-linearized
-    #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
+    #: in-kernel law (see :meth:`prepare_implicit`), like any other drive.
     evaluate_force = _linear_force
 
     def _implicit_supported(self) -> bool:
@@ -371,7 +371,7 @@ class ControllerNeuralLSTM(Controller):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        ctrl_state: ControllerNeuralLSTM.State | None,
+        drive_state: DriveNeuralLSTM.State | None,
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
@@ -383,8 +383,8 @@ class ControllerNeuralLSTM(Controller):
         d(tau)/dqd``, packed as ``[tau0, a, b, q0, qd0]`` into :meth:`bind_params`. The
         forward also advances hidden/cell for :meth:`update_state`.
         """
-        if ctrl_state is None:
-            raise RuntimeError("Implicit ControllerNeuralLSTM requires controller state (hidden/cell)")
+        if drive_state is None:
+            raise RuntimeError("Implicit DriveNeuralLSTM requires drive state (hidden/cell)")
         device = device or self._device
         n = self._num_actuators
         wp.launch(
@@ -408,8 +408,8 @@ class ControllerNeuralLSTM(Controller):
             self._qd0,
             self._tq0,
             self._tqd0,
-            ctrl_state.hidden,
-            ctrl_state.cell,
+            drive_state.hidden,
+            drive_state.cell,
             self._tau0,
             self._dtau_dq,
             self._dtau_dqd,
@@ -468,15 +468,15 @@ class ControllerNeuralLSTM(Controller):
         wp.copy(self._next_hidden, out[self._hidden_out_name].reshape((self._num_layers, n, self._hidden_size)))
         wp.copy(self._next_cell, out[self._cell_out_name].reshape((self._num_layers, n, self._hidden_size)))
 
-    def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralLSTM.State:
+    def state(self, num_actuators: int, device: wp.Device) -> DriveNeuralLSTM.State:
         if self._is_torch_checkpoint:
             import torch
 
-            return ControllerNeuralLSTM.State(
+            return DriveNeuralLSTM.State(
                 hidden=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
                 cell=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
             )
-        return ControllerNeuralLSTM.State(
+        return DriveNeuralLSTM.State(
             hidden=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
             cell=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
         )
@@ -493,7 +493,7 @@ class ControllerNeuralLSTM(Controller):
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerNeuralLSTM.State,
+        state: DriveNeuralLSTM.State,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
@@ -553,8 +553,8 @@ class ControllerNeuralLSTM(Controller):
 
     def update_state(
         self,
-        current_state: ControllerNeuralLSTM.State,
-        next_state: ControllerNeuralLSTM.State,
+        current_state: DriveNeuralLSTM.State,
+        next_state: DriveNeuralLSTM.State,
     ) -> None:
         if next_state is None:
             return
@@ -574,7 +574,7 @@ class ControllerNeuralLSTM(Controller):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerNeuralLSTM.State,
+        state: DriveNeuralLSTM.State,
     ) -> None:
         import torch
 

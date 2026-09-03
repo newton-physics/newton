@@ -18,7 +18,12 @@ from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
 from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
+from ..utils.import_usd_deformable_utils import (
+    _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _is_usd_float_representable,
+    _warn_geometry_authored_material_attrs,
+)
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")
@@ -1853,6 +1858,52 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     )
 
 
+def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
+    """Keep legacy TetMesh material loading when the proposal pass does not own it."""
+    return (
+        not has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
+        or _material_authors_legacy_deformable_attrs(prim)
+        or _material_authors_unscoped_canonical_attrs(prim)
+    )
+
+
+def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespace: str = "physics") -> float | None:
+    """Validate a deformable Poisson ratio and apply Newton's compatibility approximation."""
+    incompressible_approximation = 0.499
+    if -1.0 < value < 0.5:
+        return value
+    if 0.5 <= value < 1.0:
+        if value == 0.5:
+            message = (
+                "is incompressible and gives an infinite Lamé parameter; "
+                f"approximating it as {incompressible_approximation:g} for Newton"
+            )
+        else:
+            message = (
+                "is outside the proposal range (-1, 0.5]; "
+                f"approximating it as {incompressible_approximation:g} for Newton compatibility"
+            )
+        warnings.warn(
+            f"{path}: {attr_namespace}:poissonsRatio={value:g} {message}.",
+            stacklevel=2,
+        )
+        return incompressible_approximation
+
+    warnings.warn(
+        f"{path}: invalid {attr_namespace}:poissonsRatio {value:g} "
+        "(expected a finite value with -1 < value <= 0.5); treating it as unauthored.",
+        stacklevel=2,
+    )
+    return None
+
+
+def _deformable_lame_parameters(youngs: float, poissons: float) -> tuple[float, float]:
+    """Convert isotropic deformable properties to Lamé parameters."""
+    k_mu = youngs / (2.0 * (1.0 + poissons))
+    k_lambda = youngs * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
+    return k_mu, k_lambda
+
+
 def get_tetmesh(
     prim: Usd.Prim,
     *,
@@ -1866,9 +1917,12 @@ def get_tetmesh(
     to the prim (via ``material:binding:physics``) and contains
     ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
     ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
-    those values are read and converted to Lame parameters (``k_mu``,
-    ``k_lambda``) and density on the returned TetMesh. Material properties
-    are set to ``None`` if not present.
+    those values are read and converted to Lamé parameters (``k_mu``,
+    ``k_lambda``) and density on the returned TetMesh, expressed in the stage's
+    configured units. Their SI-equivalent units are [Pa] for the Lamé parameters
+    and [kg/m^3] for density. A material applying
+    ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity
+    fallbacks; API-less compatibility materials leave missing properties unset.
 
     Custom primvars use their resolved interpolation to determine attribute
     frequency. Other custom arrays use length-based inference; arrays whose
@@ -1910,8 +1964,24 @@ def get_tetmesh(
             canonical-only.
 
     Returns:
-        TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+        A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
+    return _get_tetmesh(
+        prim,
+        compat_namespaces=compat_namespaces,
+        load_custom_attributes=_load_custom_attributes,
+        load_material=True,
+    )
+
+
+def _get_tetmesh(
+    prim: Usd.Prim,
+    *,
+    compat_namespaces: Sequence[str] | None,
+    load_custom_attributes: bool,
+    load_material: bool,
+) -> TetMesh:
+    """Load a TetMesh with importer-specific data controls."""
     from ..geometry.types import TetMesh  # noqa: PLC0415
 
     tet_mesh = UsdGeom.TetMesh(prim)
@@ -1938,22 +2008,27 @@ def get_tetmesh(
     k_mu = None
     k_lambda = None
     density = None
+    density_val = None
+    raw_density = None
 
     # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
     # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
     # get_tetmesh() callers too (add_usd's deformable pass warns separately).
-    _warn_geometry_authored_material_attrs(
-        prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
-    )
+    if load_material:
+        _warn_geometry_authored_material_attrs(
+            prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
+        )
 
-    material_prim = _find_physics_material_prim(prim)
+    material_prim = _find_physics_material_prim(prim) if load_material else None
     if compat_namespaces is None:
         # Deprecated legacy default: read vendor namespaces off any bound material, and
         # canonical moduli off materials without the deformable material API. Warn only when
         # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
         # API-less material -- so materials whose reads the default change does not alter
         # (API-applied canonical, render-only) never warn.
-        if _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim):
+        if load_material and (
+            _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
+        ):
             warnings.warn(
                 "get_tetmesh(): the default reads deformable material attributes off any bound "
                 "material (canonical physics: and legacy omniphysics: / physxDeformableBody: "
@@ -1969,58 +2044,75 @@ def get_tetmesh(
     # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
     # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
     # the listed vendor namespaces off any bound material.
-    read_material = material_prim is not None and (
-        bool(compat_namespaces) or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    is_current_volume_material = material_prim is not None and has_applied_api_schema(
+        material_prim, "PhysicsVolumeDeformableMaterialAPI"
     )
+    read_material = material_prim is not None and (bool(compat_namespaces) or is_current_volume_material)
     if read_material:
-        youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
-        poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
-        density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
+        linear_unit = 1.0
+        if UsdGeom.StageHasAuthoredMetersPerUnit(prim.GetStage()):
+            linear_unit = float(UsdGeom.GetStageMetersPerUnit(prim.GetStage()))
+        youngs = _coerce_deformable_float(
+            _read_physics_attr(material_prim, "youngsModulus", compat_namespaces), material_prim, "youngsModulus"
+        )
+        poissons = _coerce_deformable_float(
+            _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces), material_prim, "poissonsRatio"
+        )
+        raw_density = _read_physics_attr(material_prim, "density", compat_namespaces)
+        density_val = _coerce_deformable_float(raw_density, material_prim, "density")
 
-        # The proposal declares youngsModulus with a fallback of -inf, meaning "simulator
-        # default": treat it like an unauthored modulus rather than an invalid value.
-        if youngs is not None and float(youngs) == float("-inf"):
-            youngs = None
+        # The unregistered proposal schema cannot inject its sentinel fallback, so apply
+        # the documented physical value only when the current material API owns the field.
         if youngs is not None:
-            E = float(youngs)
-            # The proposal declares physics:poissonsRatio with a fallback of 0.3. The schema
-            # is not registered with USD, so the fallback cannot be injected by composition
-            # and must be applied here; otherwise an authored Young's modulus would be
-            # silently discarded whenever the ratio is left at its default.
-            nu = 0.3 if poissons is None else float(poissons)
-            if not (math.isfinite(E) and E >= 0.0 and math.isfinite(nu)):
+            authored_youngs = youngs
+            if authored_youngs == -math.inf:
+                youngs = None
+            elif math.isfinite(authored_youngs) and not _is_usd_float_representable(authored_youngs):
                 warnings.warn(
-                    f"{material_prim.GetPath()}: invalid volume material (youngsModulus={E}, "
-                    f"poissonsRatio={nu}); ignoring the authored elastic moduli.",
+                    f"{material_prim.GetPath()}: invalid physics:youngsModulus {authored_youngs:g} "
+                    f"(outside the finite USD float range); treating it as unauthored.",
                     stacklevel=2,
                 )
-            else:
-                # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
-                # division by zero in the Lame parameter conversion.
-                nu = max(-0.999, min(nu, 0.499))
-                k_mu = E / (2.0 * (1.0 + nu))
-                k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+                youngs = None
+        if youngs is None and is_current_volume_material:
+            youngs = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
+        if poissons is not None:
+            poissons = _resolve_deformable_poissons_ratio(poissons, str(material_prim.GetPath()))
+        if youngs is not None:
+            E = youngs
+            nu = _AOUSD_DEFAULT_POISSONS_RATIO if poissons is None else poissons
+            if not (math.isfinite(E) and E >= 0.0):
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid physics:youngsModulus {E:g} "
+                    f"(expected a finite value or the -inf sentinel); treating it as unauthored.",
+                    stacklevel=2,
+                )
+                E = None
+                if is_current_volume_material:
+                    E = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
+            if E is not None:
+                k_mu, k_lambda = _deformable_lame_parameters(E, nu)
 
         if density_val is not None:
-            authored_density = float(density_val)
+            authored_density = density_val
             # The proposal declares density with a range of (0, inf) and a fallback of 0
             # meaning "ignored": zero falls through to the caller's density precedence
             # (body override, then the builder default) without being an invalid value.
-            if math.isfinite(authored_density) and authored_density > 0.0:
+            if _is_usd_float_representable(authored_density) and authored_density > 0.0:
                 density = authored_density
             elif authored_density != 0.0:
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid volume material density "
-                    f"{authored_density}; expected a finite positive value, ignoring it.",
+                    f"{authored_density}; expected a positive value in the finite USD float range, ignoring it.",
                     stacklevel=2,
                 )
 
-    if density is None:
+    if density is None and raw_density is None:
         # The base UsdPhysicsMaterialAPI (which the family APIs extend) supplies
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
-    if not _load_custom_attributes:
+    if not load_custom_attributes:
         return TetMesh(
             vertices=vertices,
             tet_indices=tet_indices,
@@ -2141,6 +2233,58 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     return None
 
 
+def _coerce_deformable_float(
+    value: Any,
+    prim: Usd.Prim,
+    name: str,
+    *,
+    attr_namespace: str = "physics",
+    warn_on_failure: bool = True,
+) -> float | None:
+    """Return a numeric deformable scalar, optionally warning when conversion fails."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, str, bytes)):
+        result = None
+    else:
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError):
+            result = None
+    if result is None and warn_on_failure:
+        warnings.warn(
+            f"{prim.GetPath()}: invalid {attr_namespace}:{name} {value!r} (expected a numeric scalar); "
+            "treating it as unauthored.",
+            stacklevel=2,
+        )
+    return result
+
+
+def _resolve_attachment_gains(
+    prim: Usd.Prim,
+    stiffness_value: Any,
+    damping_value: Any,
+) -> tuple[float | None, float | None]:
+    """Resolve attachment gains without emitting generic scalar warnings.
+
+    The cable graph prepass must reject malformed gains silently so the attachment remains
+    available to the post-pass. That post-pass preserves the authored values in metadata and emits
+    one attachment-specific warning, so warning here would duplicate diagnostics. ``None`` retains
+    the proposal's hard-stiffness and zero-damping fallbacks.
+    """
+    stiffness = (
+        math.inf
+        if stiffness_value is None
+        else _coerce_deformable_float(stiffness_value, prim, "stiffness", warn_on_failure=False)
+    )
+    damping = (
+        0.0
+        if damping_value is None
+        else _coerce_deformable_float(damping_value, prim, "damping", warn_on_failure=False)
+    )
+    return stiffness, damping
+
+
 def _read_deformable_material(
     prim: Usd.Prim,
     read_attr: Callable[[Usd.Prim, str], Any],
@@ -2158,16 +2302,17 @@ def _read_deformable_material(
     single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
     bound material declares ``api_schema``.
 
-    Returns a dict of the authored, in-range values among ``attr_names``, or ``None`` if the bound
+    Returns a dict of the authored, resolved values among ``attr_names``, or ``None`` if the bound
     material does not declare ``api_schema``; an applied API with no valid authored values returns
     an empty dict. ``attr_namespace`` identifies the schema namespace in diagnostics; ``read_attr``
     remains responsible for the actual namespace resolution. ``material_prim`` may supply an
     already-resolved binding when one caller reads multiple APIs from the same material. Stiffness,
-    damping, and Young's modulus accept zero; thickness must be positive; density must be positive
-    to be returned, while zero is its ignored sentinel; and Poisson's ratio must lie in
-    ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, damping, Young's
-    modulus, and thickness is silently dropped. Other out-of-range or non-finite values are dropped
-    with a warning.
+    damping, and Young's modulus accept zero; thickness must be positive; and density must be
+    positive to be returned, while zero is its ignored sentinel. Poisson's ratios in the proposal
+    range ``(-1, 0.5)`` are preserved; values in ``[0.5, 1)`` use Newton's warned ``0.499``
+    compatibility approximation. The ``-inf`` simulator-default sentinel used by stiffness,
+    damping, Young's modulus, and thickness is silently dropped. Other out-of-range or non-finite
+    values are dropped with a warning.
 
     Args:
         prim: Prim whose bound physics material is resolved.
@@ -2184,9 +2329,18 @@ def _read_deformable_material(
     out: dict[str, float] = {}
     for name in attr_names:
         val = read_attr(material_prim, name)
+        val = _coerce_deformable_float(val, material_prim, name, attr_namespace=attr_namespace)
         if val is None:
             continue
-        val = float(val)
+        if name == "poissonsRatio":
+            val = _resolve_deformable_poissons_ratio(
+                val,
+                str(material_prim.GetPath()),
+                attr_namespace=attr_namespace,
+            )
+            if val is not None:
+                out[name] = val
+            continue
         has_negative_infinity_sentinel = name not in ("density", "poissonsRatio")
         if val == -math.inf and has_negative_infinity_sentinel:
             continue  # schema "simulator default" sentinel
@@ -2198,9 +2352,16 @@ def _read_deformable_material(
                 stacklevel=2,
             )
             continue
+        if not _is_usd_float_representable(val):
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
+                f"(outside the finite USD float range); treating it as unauthored.",
+                stacklevel=2,
+            )
+            continue
         # Stiffness, damping, and Young's modulus accept [0, inf), so an authored zero is preserved.
         # Thickness and density must be strictly positive.
-        if name in ("thickness", "curvesThickness", "density"):
+        if name in ("thickness", "surfaceThickness", "curvesThickness", "density"):
             if val > 0.0:
                 out[name] = val
             elif name == "density" and val == 0.0:
@@ -2213,15 +2374,6 @@ def _read_deformable_material(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected > 0); "
                     f"treating it as unauthored.",
-                    stacklevel=2,
-                )
-        elif name == "poissonsRatio":
-            if -1.0 < val <= 0.5:
-                out[name] = val
-            else:
-                warnings.warn(
-                    f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
-                    f"(expected -1 < value <= 0.5); treating it as unauthored.",
                     stacklevel=2,
                 )
         elif val >= 0.0:
@@ -2249,11 +2401,11 @@ def _get_curve_deformable_material(
     """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
 
     Returns a dict of authored, in-range values from the current AOUSD curve material proposal,
-    the earlier unprefixed material attributes during their deprecation window, and the four
-    per-mode ``newton:curves*Damping`` values when ``NewtonCurvesDeformableMaterialAPI`` is also
-    applied. Returns ``None`` if the bound material does not declare
-    ``PhysicsCurvesDeformableMaterialAPI``. See :func:`_read_deformable_material` for
-    value-validation rules.
+    removed ``curvesThickness`` and the earlier unprefixed material attributes during their
+    deprecation windows, and the four per-mode ``newton:curves*Damping`` values when
+    ``NewtonCurvesDeformableMaterialAPI`` is also applied. Returns ``None`` if the bound material
+    does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
+    :func:`_read_deformable_material` for value-validation rules.
 
     Args:
         prim: Curve prim whose bound physics material is read.
@@ -2301,21 +2453,46 @@ def _get_curve_deformable_material(
     return material
 
 
+def _get_volume_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read volume-deformable material parameters bound to a prim."""
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsVolumeDeformableMaterialAPI",
+        ("youngsModulus", "poissonsRatio", "density"),
+    )
+
+
 def _get_surface_deformable_material(
     prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
 ) -> dict[str, float] | None:
     """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns a dict of authored, in-range values among ``thickness``, ``stretchStiffness``,
-    ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
-    declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
-    value-validation rules.
+    Returns authored, in-range elasticity and structural stiffness values, plus removed
+    ``surfaceThickness`` and earlier unprefixed attributes during their deprecation windows.
+    Returns ``None`` if the bound material does not declare
+    ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for validation.
     """
     return _read_deformable_material(
         prim,
         read_attr,
         "PhysicsSurfaceDeformableMaterialAPI",
-        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"),
+        (
+            "surfaceThickness",
+            "youngsModulus",
+            "poissonsRatio",
+            "surfaceStretchStiffness",
+            "surfaceShearStiffness",
+            "surfaceBendStiffness",
+            "density",
+            # Compatibility with the proposal revision imported by Newton 1.4.
+            "thickness",
+            "stretchStiffness",
+            "shearStiffness",
+            "bendStiffness",
+        ),
     )
 
 
@@ -2324,8 +2501,9 @@ def _get_physics_material_density(material_prim) -> float | None:
 
     The proposal reuses the rigid ``UsdPhysicsMaterialAPI`` for deformables, so a
     material applying only the base API still supplies density (the family
-    material APIs extend it). Accepts a finite value greater than zero; zero is
-    the proposal's ignored fallback; other values warn and are ignored.
+    material APIs extend it). Accepts a positive value in the finite USD float
+    range; zero is the proposal's ignored fallback; other values warn and are
+    ignored.
     """
     from pxr import UsdPhysics
 
@@ -2335,15 +2513,15 @@ def _get_physics_material_density(material_prim) -> float | None:
         return None
     attr = material_prim.GetAttribute("physics:density")
     value = attr.Get() if attr else None
-    if value is None:
+    density = _coerce_deformable_float(value, material_prim, "density")
+    if density is None:
         return None
-    density = float(value)
-    if math.isfinite(density) and density > 0.0:
+    if _is_usd_float_representable(density) and density > 0.0:
         return density
     if density != 0.0:
         warnings.warn(
             f"{material_prim.GetPath()}: invalid physics material density {density}; "
-            f"expected a finite positive value, ignoring it.",
+            f"expected a positive value in the finite USD float range, ignoring it.",
             stacklevel=2,
         )
     return None
@@ -2415,29 +2593,29 @@ def _get_deformable_body_overrides(
     material's density (see the precedence in :meth:`ModelBuilder.add_usd`).
 
     Returns:
-        ``(mass, density)`` with each entry ``None`` when unset / non-positive.
+        ``(mass, density)`` with each entry ``None`` when unset, zero, or invalid.
     """
     body_prim = _find_deformable_body_prim(prim)
     if body_prim is None:
         return None, None
-    mass = read_attr(body_prim, "mass")
-    density = read_attr(body_prim, "density")
-    # Require a finite positive value; drop unset, non-positive, or inf/nan overrides.
-    mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
-    density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
-    return mass, density
 
-
-def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]) -> list[float] | None:
-    """Read the simulation API's per-point ``physics:masses`` array.
-
-    Per-point masses take precedence over body and material mass/density (proposal
-    "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
-    """
-    val = read_attr(prim, "masses")
-    if val is None:
+    def read_override(name: str) -> float | None:
+        raw_value = read_attr(body_prim, name)
+        value = _coerce_deformable_float(raw_value, body_prim, name)
+        if value is None:
+            return None
+        if value == 0.0:
+            return None
+        if math.isfinite(value) and value > 0.0:
+            return value
+        warnings.warn(
+            f"{body_prim.GetPath()}: invalid physics:{name} {value:g} "
+            "(expected a finite positive value or the zero sentinel); treating it as unauthored.",
+            stacklevel=2,
+        )
         return None
-    return _validate_mass_array(val, str(prim.GetPath()))
+
+    return read_override("mass"), read_override("density")
 
 
 def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[UsdPhysics.Scene]:
