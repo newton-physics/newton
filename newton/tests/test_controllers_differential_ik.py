@@ -1953,6 +1953,18 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 device=device,
             )
 
+    def test_null_space_axes_rejected_without_null_space_enabled(self):
+        """null_space_axes given with neither joint-limit avoidance nor posture control enabled must raise."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                null_space_axes=wp.spatial_vector(1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+                device=device,
+            )
+
     def test_baked_zero_null_space_damping_rejected_for_underactuated_robot(self):
         """A baked null_space_damping <= 0 for a robot with fewer than 6 DOFs raises at construction."""
         device = wp.get_device()
@@ -1982,6 +1994,40 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             joint_limit_avoidance_margin=0.1,
             joint_pos_lower=wp.full(6, -1.0, dtype=wp.float32, device=device),
             joint_pos_upper=wp.full(6, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.0,
+            device=device,
+        )
+
+    def test_null_space_axes_independent_task_dim_used_for_rank_deficiency_check(self):
+        """The null-space rank-deficiency check uses null_space_axes' own task dimension, not axis_weight's.
+
+        A 5-DOF robot softly tracking the full 6D pose (axis_weight all
+        nonzero, primary task_dim=6) requires null_space_damping > 0
+        (5 < 6). Restricting null_space_axes to position only (task_dim=3)
+        makes null_space_damping=0 valid instead, since 5 >= 3 -- exactly
+        the split this parameter exists for.
+        """
+        device = wp.get_device()
+        axis_weight = wp.spatial_vector(1.0, 1.0, 1.0, 0.5, 0.5, 0.5)
+        with self.assertRaises(ValueError):
+            ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([5], device),
+                axis_weight=axis_weight,
+                bandwidth=1.0,
+                damping=0.1,
+                use_null_space_posture_control=True,
+                null_space_stiffness=1.0,
+                null_space_damping=0.0,
+                device=device,
+            )
+        ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([5], device),
+            axis_weight=axis_weight,
+            null_space_axes=wp.spatial_vector(1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
             null_space_damping=0.0,
             device=device,
         )
@@ -2169,6 +2215,81 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         np.testing.assert_allclose(j_active.astype(np.float64) @ qd.astype(np.float64), np.zeros(3), atol=1e-3)
         # The null-space pull actually did something (the redundant DOFs were used).
         self.assertGreater(np.abs(qd).max(), 1e-3)
+
+    def test_null_space_axes_leaves_softly_tracked_axis_unprotected_for_under_actuated_arm(self):
+        """An axis softly tracked in the primary solve (axis_weight) can still be left unprotected by the
+        null-space projector (null_space_axes), freeing DOFs a fully-protected 6D task would leave none of.
+
+        A 5-DOF arm with axis_weight softly tracking orientation has no
+        usable null space if the projector must also protect orientation
+        (rank <= 5 against 6 rows). Restricting null_space_axes to
+        position only frees a genuine 2D null space: with zero
+        primary-task error, a posture pull toward DOFs 3 and 4 (which map
+        directly to orientation under J = I) must reach them fully, while
+        DOFs 0-2 (position, protected) stay at exactly zero.
+        """
+        device = wp.get_device()
+        stiffness = 2.0
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([5], device),
+            axis_weight=wp.spatial_vector(1.0, 1.0, 1.0, 0.5, 0.5, 0.0),
+            null_space_axes=wp.spatial_vector(1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=stiffness,
+            null_space_damping=0.0,
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(5, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose  # zero primary-task error
+        inputs.jacobian_tool_world = _identity_jacobian(1, 5, device)
+        inputs.q_des_null = wp.array([0.0, 0.0, 0.0, 1.0, 1.0], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+
+        np.testing.assert_allclose(qd[:3], np.zeros(3), atol=1e-5)
+        np.testing.assert_allclose(qd[3:], [stiffness, stiffness], atol=1e-4)
+
+    def test_null_space_axes_all_zero_leaves_every_axis_unprotected(self):
+        """All-zero null_space_axes means N = I always: the secondary bias passes through completely
+        unprojected, even though axis_weight alone (task_dim=6) would normally leave no null space at all.
+        """
+        device = wp.get_device()
+        gain = 2.0
+        margin = 0.3
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            null_space_axes=wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=gain,
+            joint_limit_avoidance_margin=margin,
+            joint_pos_lower=wp.full(6, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(6, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.0,
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose  # zero primary-task error
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+
+        dist_to_limit = min(0.99 - (-1.0), 1.0 - 0.99)
+        activation = 1.0 - dist_to_limit / margin
+        expected_dof0 = -gain * activation * 0.99
+        np.testing.assert_allclose(qd[0], expected_dof0, atol=1e-4)
+        np.testing.assert_allclose(qd[1:], np.zeros(5), atol=1e-4)
 
     def test_joint_limit_avoidance_pulls_away_from_limit(self):
         """A DOF near its upper joint_pos_upper gets a negative null-space contribution, pushing it back down."""
