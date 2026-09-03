@@ -1,1 +1,0 @@
-Sort soft-contact candidate pairs by shape on every device. Same contacts, different emission order, so CPU and deterministic results can shift within floating-point tolerance. Faster for scenes with many shapes or worlds; slightly slower for small scenes with a few similar shapes in heavy contact.
