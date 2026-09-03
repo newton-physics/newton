@@ -67,6 +67,7 @@ from .collision_core import (
     create_compute_gjk_mpr_contacts,
     get_triangle_shape_from_mesh,
 )
+from .collision_primitive import collide_sphere_sphere
 from .contact_data import ContactData, compute_contact_approach_speed
 from .contact_reduction import (
     MAX_CONTACTS_PER_PAIR,
@@ -80,10 +81,12 @@ from .contact_reduction import (
     project_point_to_plane,
 )
 from .support_function import (
+    AcceleratedSupportMapDataProvider,
     GeoTypeEx,
+    closest_point_on_triangle,
     create_triangle_prism_penetration_refiner,
     extract_shape_data,
-    support_map,
+    support_map_accelerated,
 )
 from .types import GeoType
 
@@ -1529,7 +1532,7 @@ def export_and_reduce_contact_centered(
 
 
 @wp.func
-def export_and_reduce_contact_centered_two_spatial_depths(
+def _export_and_reduce_contact_centered_two_spatial_depths(
     shape_a: int,
     shape_b: int,
     position: wp.vec3,
@@ -1544,6 +1547,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
     aabb_upper_voxel: wp.vec3,
     voxel_res: wp.vec3i,
     reducer_data: GlobalContactReducerData,
+    deterministic: int,
 ) -> int:
     """Export contact with inner-preferred spatial winners.
 
@@ -1568,7 +1572,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
 
     if entry_idx >= 0:
         if use_inner:
-            if reducer_data.deterministic != 0:
+            if deterministic != 0:
                 max_depth_probe = _make_preprune_probe_det(-depth, fingerprint)
             else:
                 max_depth_probe = _make_contact_value_fast(-depth, 0, 0)
@@ -1579,7 +1583,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
             if not might_win:
                 dir_2d = get_spatial_direction_2d(dir_i)
                 score = wp.dot(pos_2d, dir_2d)
-                probe = make_spatial_preprune_probe(score, use_inner, fingerprint, reducer_data.deterministic)
+                probe = make_spatial_preprune_probe(score, use_inner, fingerprint, deterministic)
                 if reducer_data.ht_values[dir_i * ht_capacity + entry_idx] < probe:
                     might_win = True
     else:
@@ -1599,7 +1603,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
     if use_inner and not might_win:
         voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
         if voxel_entry_idx >= 0:
-            if reducer_data.deterministic != 0:
+            if deterministic != 0:
                 voxel_probe = _make_preprune_probe_det(-depth, fingerprint)
             else:
                 voxel_probe = _make_contact_value_fast(-depth, 0, 0)
@@ -1620,7 +1624,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
-            provisional_value = make_spatial_contact_value(score, True, fingerprint, 0, reducer_data.deterministic)
+            provisional_value = make_spatial_contact_value(score, True, fingerprint, 0, deterministic)
             previous_value = reduction_try_update_slot(
                 entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity
             )
@@ -1628,7 +1632,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                 won_mask |= 1 << dir_i
                 replaced_values[dir_i] = previous_value
 
-        provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+        provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
         previous_value = reduction_try_update_slot(
             entry_idx,
             wp.static(NUM_SPATIAL_DIRECTIONS),
@@ -1643,7 +1647,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
-            provisional_value = make_spatial_contact_value(score, False, fingerprint, 0, reducer_data.deterministic)
+            provisional_value = make_spatial_contact_value(score, False, fingerprint, 0, deterministic)
             previous_value = reduction_try_update_slot(
                 entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity
             )
@@ -1652,7 +1656,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                 replaced_values[dir_i] = previous_value
 
     if use_inner and voxel_entry_idx >= 0:
-        provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+        provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
         previous_value = reduction_try_update_slot(
             voxel_entry_idx, voxel_local_slot, provisional_value, reducer_data.ht_values, ht_capacity
         )
@@ -1670,14 +1674,12 @@ def export_and_reduce_contact_centered_two_spatial_depths(
             if not still_wins and (won_mask & (1 << dir_i)) != 0:
                 dir_2d = get_spatial_direction_2d(dir_i)
                 score = wp.dot(pos_2d, dir_2d)
-                provisional_value = make_spatial_contact_value(
-                    score, use_inner, fingerprint, 0, reducer_data.deterministic
-                )
+                provisional_value = make_spatial_contact_value(score, use_inner, fingerprint, 0, deterministic)
                 if reducer_data.ht_values[dir_i * ht_capacity + entry_idx] == provisional_value:
                     still_wins = True
 
         if not still_wins and use_inner and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS))) != 0:
-            provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+            provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
             if reducer_data.ht_values[wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + entry_idx] == provisional_value:
                 still_wins = True
 
@@ -1687,7 +1689,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         and voxel_entry_idx >= 0
         and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS + 1))) != 0
     ):
-        provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+        provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
         if reducer_data.ht_values[voxel_local_slot * ht_capacity + voxel_entry_idx] == provisional_value:
             still_wins = True
 
@@ -1700,9 +1702,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                 if (won_mask & (1 << dir_i)) != 0:
                     dir_2d = get_spatial_direction_2d(dir_i)
                     score = wp.dot(pos_2d, dir_2d)
-                    provisional_value = make_spatial_contact_value(
-                        score, use_inner, fingerprint, 0, reducer_data.deterministic
-                    )
+                    provisional_value = make_spatial_contact_value(score, use_inner, fingerprint, 0, deterministic)
                     reduction_rollback_slot(
                         entry_idx,
                         dir_i,
@@ -1712,7 +1712,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                         ht_capacity,
                     )
             if use_inner and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS))) != 0:
-                provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+                provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
                 reduction_rollback_slot(
                     entry_idx,
                     wp.static(NUM_SPATIAL_DIRECTIONS),
@@ -1722,7 +1722,7 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                     ht_capacity,
                 )
         if use_inner and voxel_entry_idx >= 0 and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS + 1))) != 0:
-            provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+            provisional_value = make_contact_value(-depth, fingerprint, 0, deterministic)
             reduction_rollback_slot(
                 voxel_entry_idx,
                 voxel_local_slot,
@@ -1737,10 +1737,10 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
-            value = make_spatial_contact_value(score, True, fingerprint, contact_id, reducer_data.deterministic)
+            value = make_spatial_contact_value(score, True, fingerprint, contact_id, deterministic)
             reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
-        max_depth_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
+        max_depth_value = make_contact_value(-depth, fingerprint, contact_id, deterministic)
         reduction_update_slot(
             entry_idx, wp.static(NUM_SPATIAL_DIRECTIONS), max_depth_value, reducer_data.ht_values, ht_capacity
         )
@@ -1748,19 +1748,56 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
-            value = make_spatial_contact_value(score, False, fingerprint, contact_id, reducer_data.deterministic)
+            value = make_spatial_contact_value(score, False, fingerprint, contact_id, deterministic)
             reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
     if use_inner:
         if voxel_entry_idx < 0:
             voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
         if voxel_entry_idx >= 0:
-            voxel_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
+            voxel_value = make_contact_value(-depth, fingerprint, contact_id, deterministic)
             reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
         else:
             wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
     return contact_id
+
+
+@wp.func
+def export_and_reduce_contact_centered_two_spatial_depths(
+    shape_a: int,
+    shape_b: int,
+    position: wp.vec3,
+    normal: wp.vec3,
+    depth: float,
+    fingerprint: int,
+    centered_position: wp.vec3,
+    inner_spatial_depth: float,
+    outer_spatial_depth: float,
+    position_local: wp.vec3,
+    aabb_lower_voxel: wp.vec3,
+    aabb_upper_voxel: wp.vec3,
+    voxel_res: wp.vec3i,
+    reducer_data: GlobalContactReducerData,
+) -> int:
+    """Export a contact using the reduction mode stored in ``reducer_data``."""
+    return _export_and_reduce_contact_centered_two_spatial_depths(
+        shape_a,
+        shape_b,
+        position,
+        normal,
+        depth,
+        fingerprint,
+        centered_position,
+        inner_spatial_depth,
+        outer_spatial_depth,
+        position_local,
+        aabb_lower_voxel,
+        aabb_upper_voxel,
+        voxel_res,
+        reducer_data,
+        reducer_data.deterministic,
+    )
 
 
 @wp.func
@@ -2313,6 +2350,12 @@ def mesh_triangle_contacts_to_reducer_kernel(
     shape_data: wp.array[wp.vec4],
     shape_transform: wp.array[wp.transform],
     shape_source: wp.array[wp.uint64],
+    shape_support_data: wp.array[wp.vec4i],
+    support_lut: wp.array[int],
+    support_vertex_offsets: wp.array[int],
+    support_neighbors: wp.array[int],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
@@ -2325,8 +2368,8 @@ def mesh_triangle_contacts_to_reducer_kernel(
     """Process mesh/heightfield-triangle contacts and store them in GlobalContactReducer.
 
     This kernel processes triangle pairs (mesh-or-hfield shape, convex-shape, triangle_index)
-    and computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
-    subsequent reduction and export.
+    and computes contacts using exact sphere-triangle geometry or GJK/MPR, storing results
+    in the GlobalContactReducer for subsequent reduction and export.
 
     Uses grid stride loop over triangle pairs.
     """
@@ -2366,6 +2409,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_data,
             shape_source,
         )
+        if shape_data_b.shape_type == GeoType.CONVEX_MESH:
+            # Avoid rebuilding the convex AABB for every candidate triangle.
+            shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
 
         # Triangle position is vertex A in world space.
         # For heightfield prisms, edges are in heightfield-local space
@@ -2394,10 +2440,51 @@ def mesh_triangle_contacts_to_reducer_kernel(
         gap_b = shape_gap[shape_b]
         gap_sum = gap_a + gap_b
 
+        # Heightfields use extruded triangle prisms to keep contacts one-sided near
+        # cell boundaries, so their sphere contacts must retain the generic path.
+        if shape_data_b.shape_type == GeoType.SPHERE and type_a != GeoType.HFIELD:
+            tri_a = pos_a
+            tri_b = pos_a + shape_data_a.scale
+            tri_c = pos_a + shape_data_a.auxiliary
+            surface_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+            normal_length_sq = wp.length_sq(surface_normal)
+            closest = closest_point_on_triangle(pos_b, tri_a, tri_b, tri_c)
+            sphere_radius = shape_data_b.scale[0]
+
+            contact_distance, contact_position, contact_normal = collide_sphere_sphere(
+                closest, 0.0, pos_b, sphere_radius
+            )
+            if wp.length_sq(pos_b - closest) < 1.0e-24 and normal_length_sq > 1.0e-24:
+                contact_normal = surface_normal / wp.sqrt(normal_length_sq)
+                contact_position = pos_b - 0.5 * sphere_radius * contact_normal
+
+            if contact_distance < gap_sum + margin_offset_a + margin_offset_b:
+                contact_data = ContactData()
+                contact_data.contact_point_center = contact_position
+                contact_data.contact_normal_a_to_b = contact_normal
+                contact_data.contact_distance = contact_distance
+                contact_data.radius_eff_a = 0.0
+                contact_data.radius_eff_b = sphere_radius
+                contact_data.margin_a = margin_offset_a
+                contact_data.margin_b = margin_offset_b
+                contact_data.shape_a = shape_a
+                contact_data.shape_b = shape_b
+                contact_data.gap_sum = gap_sum
+                contact_data.sort_sub_key = (tri_idx << 1) | 1
+                write_contact_to_reducer(contact_data, reducer_data, -1)
+            continue
+
+        data_provider = AcceleratedSupportMapDataProvider()
+        data_provider.shape_support_data = shape_support_data
+        data_provider.support_lut = support_lut
+        data_provider.support_vertex_offsets = support_vertex_offsets
+        data_provider.support_neighbors = support_neighbors
         wp.static(
             create_compute_gjk_mpr_contacts(
                 write_contact_to_reducer,
-                penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
+                support_func=support_map_accelerated,
+                use_precomputed_center=True,
+                penetration_refiner=create_triangle_prism_penetration_refiner(support_map_accelerated),
             )
         )(
             shape_data_a,
@@ -2411,6 +2498,7 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_b,
             margin_offset_a,
             margin_offset_b,
+            data_provider,
             reducer_data,
             (tri_idx << 1) | 1,
         )

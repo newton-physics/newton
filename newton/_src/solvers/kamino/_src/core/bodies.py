@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import warp as wp
 
 from .....core.types import override
+from .....sim import BodyFlags
 from .types import Descriptor
 
 ###
@@ -24,6 +25,8 @@ __all__ = [
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
     "convert_geom_offset_origin_to_com",
+    "has_zero_inverse_inertia",
+    "is_immovable_for_kamino",
     "update_body_inertias",
     "update_body_wrenches",
 ]
@@ -182,7 +185,7 @@ class RigidBodiesModel:
 
     inv_m_i: wp.array[wp.float32] | None = None
     """
-    Inverse mass (1/m_i) of each body.
+    Inverse mass (1/m_i) of each body, set to zero for immovable bodies.
     Shape of ``(num_bodies,)``.
     """
 
@@ -194,7 +197,17 @@ class RigidBodiesModel:
 
     inv_i_I_i: wp.array[wp.mat33f] | None = None
     """
-    Inverse of the local moment of inertia of each body.
+    Inverse of the local moment of inertia of each body, set to zero for
+    immovable bodies.
+    Shape of ``(num_bodies,)``.
+    """
+
+    is_immovable: wp.array[wp.int32] | None = None
+    """
+    Per-body boolean (0/1) marking whether Kamino treats the body as immovable,
+    either because it is physically massless (zero inverse mass and inverse
+    inertia in Newton) or because it is flagged
+    :attr:`newton.BodyFlags.KINEMATIC` / :attr:`newton.BodyFlags.PROXY`.
     Shape of ``(num_bodies,)``.
     """
 
@@ -330,6 +343,36 @@ class RigidBodiesData:
 
 
 @wp.func
+def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
+    """Return whether every element of an inverse inertia matrix is zero."""
+    return (
+        inv_inertia[0, 0] == 0.0
+        and inv_inertia[0, 1] == 0.0
+        and inv_inertia[0, 2] == 0.0
+        and inv_inertia[1, 0] == 0.0
+        and inv_inertia[1, 1] == 0.0
+        and inv_inertia[1, 2] == 0.0
+        and inv_inertia[2, 0] == 0.0
+        and inv_inertia[2, 1] == 0.0
+        and inv_inertia[2, 2] == 0.0
+    )
+
+
+@wp.func
+def is_immovable_for_kamino(inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32) -> bool:
+    """Whether a body is treated as immovable by Kamino.
+
+    A body is immovable if it is either physically massless (zero inverse mass
+    and zero inverse inertia) or flagged as externally driven via KINEMATIC or
+    PROXY. Its inverse mass and inertia are masked to zero in Kamino, so the
+    body neither responds to forces nor contributes to constraint dynamics.
+    """
+    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (
+        (flags & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
+    )
+
+
+@wp.func
 def make_symmetric(A: wp.mat33f) -> wp.mat33f:
     """
     Makes a given matrix symmetric by averaging it with its transpose.
@@ -398,7 +441,7 @@ def _update_body_inertias(
     i_I_i = model_bodies_i_I_i_in[bid]
     inv_i_I_i = model_bodies_inv_i_I_i_in[bid]
 
-    # Compute the moment of inertia matrices in world coordinates
+    # Compute the moment of inertia matrices in world coordinates.
     I_i, inv_I_i = transform_body_inertial_properties(p_i, i_I_i, inv_i_I_i)
 
     # Store results in the output arrays

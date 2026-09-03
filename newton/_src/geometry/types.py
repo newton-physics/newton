@@ -1594,7 +1594,6 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    @deprecate_nonkeyword_arguments
     def finalize(
         self,
         device: Devicelike = None,
@@ -2038,9 +2037,12 @@ class TetMesh:
         to the prim (via ``material:binding:physics``) and contains
         ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
         ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
-        those values are read and converted to Lame parameters (``k_mu``,
-        ``k_lambda``) and density on the returned TetMesh. Material properties
-        are set to ``None`` if not present.
+        those values are read and converted to Lamé parameters (``k_mu``,
+        ``k_lambda``) and density on the returned TetMesh, expressed in the stage's
+        configured units. Their SI-equivalent units are [Pa] for the Lamé parameters
+        and [kg/m^3] for density. A material applying
+        ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity
+        fallbacks; API-less compatibility materials leave missing properties unset.
 
         Custom primvars use their resolved interpolation to determine attribute
         frequency. Other custom arrays use length-based inference; arrays whose
@@ -2082,7 +2084,7 @@ class TetMesh:
                 canonical-only.
 
         Returns:
-            TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+            A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 

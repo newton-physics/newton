@@ -2095,12 +2095,10 @@ class TestDVISolver(unittest.TestCase):
                 state_0 = model.state()
                 state_1 = model.state()
                 if self.device.is_cuda and wp.is_mempool_enabled(self.device):
-                    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
-                    solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
                     with wp.ScopedCapture(self.device) as capture:
                         solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                         solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
-                    for _ in range((steps - 4) // 2):
+                    for _ in range((steps - 2) // 2):
                         wp.capture_launch(capture.graph)
                 else:
                     for _ in range(steps):
@@ -2434,7 +2432,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertTrue(np.any(opening))
         self.assertLess(float(np.max(np.abs(contact_reaction[opening]))), 1e-3)
         self.assertLess(float(abs(state_0.body_qd.numpy()[0, 2])), 2.0)
-        self.assertEqual(int(solver._solver_kamino.solver_fd.data.status.numpy()[0]["converged"]), 1)
+        self.assertEqual(int(solver.status.numpy()[0]["converged"]), 1)
 
     def test_03h_dvi_canonical_contact_solution_metrics(self):
         for builder_fn, max_world_contacts in (

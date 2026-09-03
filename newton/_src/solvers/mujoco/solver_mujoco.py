@@ -31,7 +31,8 @@ from ...sim import (
     State,
     StateFlags,
 )
-from ...sim.articulation import eval_articulation_fk, eval_fk
+from ...sim.articulation import eval_fk
+from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
@@ -48,9 +49,6 @@ from .collision_masks import (
     mujoco_mask_to_signed,
 )
 from .constants import (
-    DEFAULT_LIMIT_GAIN_RTOL,
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF,
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
@@ -116,6 +114,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -614,7 +613,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         raise ValueError(f"Expected enable or disable, got {value!r}.")
 
     @staticmethod
-    def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
+    def _parse_named_int(value: str | int, mapping: dict[str, int]) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
         if isinstance(value, int | np.integer):
             return int(value)
@@ -628,8 +627,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         enum_suffix = last_component.rsplit("_", maxsplit=1)[-1]
         if enum_suffix in mapping:
             return mapping[enum_suffix]
-        if fallback_on_unknown is not None:
-            return fallback_on_unknown
         return int(lower_value)
 
     @staticmethod
@@ -1227,6 +1224,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="solreflimit_gain_baseline",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                # Importers populate this for provenance-aware first-update
+                # detection. A non-finite value means that no import baseline
+                # is available; negative infinity remains equality-comparable
+                # when builders are merged.
+                default=wp.vec2(float("-inf"), float("-inf")),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="solreffriction",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -1683,9 +1694,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "mujoco:actuator" custom frequency.
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
-            """Parse actuator enum values, defaulting to 0 for unknown strings."""
-            return int(SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0))
+        def parse_actuator_enum(
+            value: Any, mapping: dict[str, int], attribute: str, context: dict[str, Any] | None
+        ) -> int:
+            """Parse actuator enum values, warning and defaulting to 0 for unrecognized names or ordinals."""
+            try:
+                # _parse_named_int resolves names, MuJoCo enum reprs and bare ordinals, and raises
+                # for anything else. Bare ordinals also need checking against mapping.values(),
+                # since _parse_named_int accepts any numeric value or string.
+                ordinal = int(SolverMuJoCo._parse_named_int(value, mapping))
+                if ordinal in mapping.values():
+                    return ordinal
+            except ValueError:
+                pass
+            context = context or {}
+            prim = context.get("prim")
+            # Every frame above this parser is Newton-internal, so no stacklevel points at the
+            # offending prim or element and the message has to name it.
+            source = f"prim '{prim.GetPath()}'" if prim is not None else f"actuator '{context.get('actuator_name')}'"
+            fallback = next(name for name, ordinal in mapping.items() if ordinal == 0)
+            warnings.warn(
+                f"Unsupported MuJoCo actuator {attribute} {value!r} on {source}; "
+                f"falling back to {fallback!r}. Supported values are {sorted(mapping)}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return 0
 
         actuator_transmission_types = {
             "joint": int(SolverMuJoCo.TrnType.JOINT),
@@ -1716,17 +1750,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "user": _ActuatorBiasType.USER,
         }
 
-        def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_transmission_types)
+        def parse_trntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_transmission_types, "trntype", context)
 
-        def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_dynamics_types)
+        def parse_dyntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_dynamics_types, "dyntype", context)
 
-        def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_gain_types)
+        def parse_gaintype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_gain_types, "gaintype", context)
 
-        def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_bias_types)
+        def parse_biastype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_bias_types, "biastype", context)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -3660,6 +3694,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         *,
         separate_worlds: bool | None = None,
         njmax: int | None = None,
+        njmax_nnz: int | None = None,
         nconmax: int | None = None,
         iterations: int | None = None,
         ls_iterations: int | None = None,
@@ -3703,6 +3738,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
             nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
@@ -3756,6 +3792,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError(
                 "enable_sleeping=True requires use_mujoco_contacts=True so contacts can wake sleeping bodies."
             )
+        if njmax_nnz is not None:
+            if isinstance(njmax_nnz, bool) or not isinstance(njmax_nnz, int | np.integer):
+                raise TypeError(f"njmax_nnz must be an integer or None, got {type(njmax_nnz).__name__}.")
+            if njmax_nnz < 0:
+                raise ValueError(f"njmax_nnz must be non-negative, got {njmax_nnz}.")
+            njmax_nnz = int(njmax_nnz)
         if nvmax is not None:
             if isinstance(nvmax, bool) or not isinstance(nvmax, (int, np.integer)):
                 raise TypeError(f"nvmax must be an integer or None, got {type(nvmax).__name__}.")
@@ -4000,6 +4042,39 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
 
+        # Track changes to generic gains separately from their numerical
+        # values. Imported MJCF defaults may use any builder configuration, so
+        # no particular stiffness/damping pair can serve as a provenance marker.
+        self._joint_limit_ke_snapshot = (
+            np.array(model.joint_limit_ke.numpy(), copy=True) if model.joint_limit_ke is not None else None
+        )
+        self._joint_limit_kd_snapshot = (
+            np.array(model.joint_limit_kd.numpy(), copy=True) if model.joint_limit_kd is not None else None
+        )
+        mujoco_attrs = getattr(model, "mujoco", None)
+        solreflimit_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
+        self._solreflimit_mode_snapshot = (
+            np.array(solreflimit_mode.numpy(), copy=True) if solreflimit_mode is not None else None
+        )
+        gain_baseline = getattr(mujoco_attrs, "solreflimit_gain_baseline", None) if mujoco_attrs is not None else None
+        if (
+            gain_baseline is not None
+            and self._solreflimit_mode_snapshot is not None
+            and self._joint_limit_ke_snapshot is not None
+            and self._joint_limit_kd_snapshot is not None
+        ):
+            gain_baseline_np = gain_baseline.numpy()
+            if (
+                gain_baseline_np.shape == (self._joint_limit_ke_snapshot.shape[0], 2)
+                and self._joint_limit_kd_snapshot.shape == self._joint_limit_ke_snapshot.shape
+                and self._solreflimit_mode_snapshot.shape == self._joint_limit_ke_snapshot.shape
+            ):
+                baseline_valid = (self._solreflimit_mode_snapshot == SOLREF_MODE_MJCF_DEFAULT) & np.all(
+                    np.isfinite(gain_baseline_np), axis=1
+                )
+                self._joint_limit_ke_snapshot[baseline_valid] = gain_baseline_np[baseline_valid, 0]
+                self._joint_limit_kd_snapshot[baseline_valid] = gain_baseline_np[baseline_valid, 1]
+
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
                 model,
@@ -4008,6 +4083,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 disable_contacts=disable_contacts,
                 separate_worlds=separate_worlds,
                 njmax=njmax,
+                njmax_nnz=njmax_nnz,
                 nconmax=nconmax,
                 nvmax=nvmax,
                 iterations=iterations,
@@ -4558,6 +4634,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.body_flags,
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_weldid,
+                self.mjw_model.body_dofnum,
                 self.mjw_model.body_invweight0,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
@@ -5465,6 +5542,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
         njmax: int | None = None,  # number of constraints per world
+        njmax_nnz: int | None = None,
         nconmax: int | None = None,
         nvmax: int | None = None,
         solver: int | str | None = None,
@@ -5507,6 +5585,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world.
             nconmax: Maximum number of contacts.
             nvmax: Maximum number of active degrees of freedom per world.
             solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
@@ -7394,7 +7473,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # just setting qpos0 to d.qpos leads to weird behavior here, needs
         # to be investigated.
 
-        mujoco.mj_forward(self.mj_model, self.mj_data)
+        # ``use_mujoco_contacts=False`` switches MJWarp collision detection off
+        # after conversion, but this CPU forward runs before that option exists.
+        # Temporarily suppress MuJoCo contacts so large Newton-contact scenes do
+        # not build an unused contact set (and potentially overflow mjData's
+        # stack) during solver construction. Restore the authored option before
+        # the model is handed to MJWarp; injected Newton contacts remain enabled.
+        restore_contact_disable = not disable_contacts and not self._use_mujoco_contacts
+        if restore_contact_disable:
+            self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+        try:
+            mujoco.mj_forward(self.mj_model, self.mj_data)
+        finally:
+            if restore_contact_disable:
+                self.mj_model.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
 
         # now that the model is compiled, get the actual geom indices and compute
         # shape transform corrections
@@ -7678,6 +7770,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
+            elif not self._use_mujoco_contacts:
+                # The initialization forward intentionally produces no contacts
+                # in this mode, so size MJWarp from Newton's collision budget.
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
+                newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                default_nconmax = (newton_contact_max + nworld - 1) // nworld
+                if nconmax is None:
+                    nconmax = default_nconmax
+                elif nconmax >= 0:
+                    nconmax = max(nconmax, default_nconmax)
+
+                max_contact_dim = max(
+                    1,
+                    int(np.max(self.mj_model.geom_condim, initial=1)),
+                    int(np.max(self.mj_model.pair_dim, initial=1)),
+                )
+                if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                    constraint_rows_per_contact = max_contact_dim
+                else:
+                    constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+
+                # MJWarp stores contacts in one heterogeneous buffer, so every
+                # contact can belong to any compatible world even though
+                # nconmax is passed as a per-world allocation. Constraint rows
+                # are strictly per-world, so size them from the busiest-world
+                # topology rather than duplicating the global capacity.
+                per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
+                default_njmax = max(
+                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                    self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                )
+                if njmax is None:
+                    njmax = default_njmax
+                elif njmax >= 0:
+                    njmax = max(njmax, default_njmax)
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
@@ -7691,6 +7819,46 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     stacklevel=2,
                 )
                 njmax = self.mj_data.nefc
+
+            from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+            if njmax_nnz is not None and is_mujoco_warp_sparse(self.mj_model):
+                initial_required_nnz = self._get_initial_jacobian_nnz()
+                minimum_njmax_nnz = max(1, initial_required_nnz)
+                if njmax_nnz < minimum_njmax_nnz:
+                    raise ValueError(
+                        f"njmax_nnz={njmax_nnz} is too small: sparse Jacobian storage requires capacity "
+                        f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
+                        f"{initial_required_nnz} nonzeros."
+                    )
+            elif njmax_nnz is None:
+                from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+                from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
+
+                if is_mujoco_warp_sparse(self.mj_model):
+                    resolved_nconmax = (
+                        nconmax if nconmax is not None else estimate_mujoco_warp_nconmax(self.mj_model, self.mj_data)
+                    )
+                    resolved_njmax = (
+                        njmax if njmax is not None else estimate_mujoco_warp_njmax(self.mj_model, self.mj_data)
+                    )
+                    joint_limit_nnz = 0
+                    for limited, joint_type in zip(self.mj_model.jnt_limited, self.mj_model.jnt_type, strict=True):
+                        if not limited:
+                            continue
+                        joint_type_value = int(joint_type)
+                        if joint_type_value == mujoco.mjtJoint.mjJNT_BALL:
+                            joint_limit_nnz += 3
+                        elif joint_type_value in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+                            joint_limit_nnz += 1
+
+                    # work around buffer under-sizing until the fix is released (mjwarp #1630)
+                    njmax_nnz = min(
+                        estimate_mujoco_warp_njmax_nnz(self.mj_model, resolved_nconmax, resolved_njmax)
+                        + joint_limit_nnz,
+                        resolved_njmax * self.mj_model.nv,
+                    )
 
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:
@@ -7711,6 +7879,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 nworld=nworld,
                 nconmax=nconmax,
                 njmax=njmax,
+                njmax_nnz=njmax_nnz,
                 nvmax=nvmax,
             )
             self.nvmax = self.mjw_data.nvmax
@@ -7785,6 +7954,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
+
+    def _get_initial_jacobian_nnz(self) -> int:
+        """Return the nonzero count of the initial MuJoCo constraint Jacobian."""
+        mujoco, _ = self.import_mujoco()
+        if mujoco.mj_isSparse(self.mj_model):
+            return int(np.sum(self.mj_data.efc_J_rownnz[: self.mj_data.nefc], dtype=np.int64))
+
+        initial_jacobian = self.mj_data.efc_J.reshape((-1, self.mj_model.nv))[: self.mj_data.nefc]
+        return int(np.count_nonzero(initial_jacobian))
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -8331,9 +8509,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _compute_body_poses_at_qref(model: Model, ref_q: wp.array) -> wp.array:
         """Compute body transforms at the reference joint configuration.
 
-        Runs :func:`newton.eval_articulation_fk` with the given ``ref_q``
-        and zero velocities to obtain world-space body transforms at the
-        reference pose.
+        Runs :func:`newton.eval_fk` with the given ``ref_q`` and zero
+        velocities to obtain world-space body transforms at the reference
+        pose.
 
         Args:
             model: The Newton :class:`Model`.
@@ -8348,34 +8526,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
         ref_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
 
-        wp.launch(
-            kernel=eval_articulation_fk,
-            dim=model.articulation_count,
-            inputs=[
-                model.articulation_start,
-                model.articulation_end,
-                model.articulation_count,
-                None,
-                None,
-                model.joint_articulation,
-                ref_q,
-                ref_qd,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_X_p,
-                model.joint_X_c,
-                model.joint_axis,
-                model.joint_dof_dim,
-                model.body_com,
-                model.body_flags,
-                int(BodyFlags.ALL),
-            ],
-            outputs=[ref_body_q, ref_body_qd],
-            device=model.device,
-        )
+        ref_state = State()
+        ref_state.body_q = ref_body_q
+        ref_state.body_qd = ref_body_qd
+        eval_fk(model, ref_q, ref_qd, ref_state)
         return ref_body_q
 
     @staticmethod
@@ -8807,20 +8961,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_limit_solref = getattr(mujoco_attrs, "solreflimit", None) if mujoco_attrs is not None else None
         joint_limit_solref_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
 
-        if joint_limit_solref_mode is not None:
-            solref_mode_np = joint_limit_solref_mode.numpy()
-            mjcf_default = solref_mode_np == SOLREF_MODE_MJCF_DEFAULT
-            if np.any(mjcf_default):
-                joint_limit_ke_np = self.model.joint_limit_ke.numpy()
-                joint_limit_kd_np = self.model.joint_limit_kd.numpy()
-                edited = mjcf_default & (
-                    ~np.isclose(joint_limit_ke_np, DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                    | ~np.isclose(joint_limit_kd_np, DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                )
-                if np.any(edited):
-                    solref_mode_np = np.array(solref_mode_np, copy=True)
-                    solref_mode_np[edited] = SOLREF_MODE_FORCE_SPACE
-                    joint_limit_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
+        joint_limit_ke_np = self.model.joint_limit_ke.numpy()
+        joint_limit_kd_np = self.model.joint_limit_kd.numpy()
+        solref_mode_np = joint_limit_solref_mode.numpy() if joint_limit_solref_mode is not None else None
+
+        if (
+            solref_mode_np is not None
+            and self._solreflimit_mode_snapshot is not None
+            and self._joint_limit_ke_snapshot is not None
+            and self._joint_limit_kd_snapshot is not None
+            and solref_mode_np.shape == self._solreflimit_mode_snapshot.shape
+            and joint_limit_ke_np.shape == self._joint_limit_ke_snapshot.shape
+            and joint_limit_kd_np.shape == self._joint_limit_kd_snapshot.shape
+        ):
+            gains_edited = (joint_limit_ke_np != self._joint_limit_ke_snapshot) | (
+                joint_limit_kd_np != self._joint_limit_kd_snapshot
+            )
+            edited_defaults = (
+                (solref_mode_np == SOLREF_MODE_MJCF_DEFAULT)
+                & (self._solreflimit_mode_snapshot == SOLREF_MODE_MJCF_DEFAULT)
+                & gains_edited
+            )
+            if np.any(edited_defaults):
+                solref_mode_np = np.array(solref_mode_np, copy=True)
+                solref_mode_np[edited_defaults] = SOLREF_MODE_FORCE_SPACE
+                joint_limit_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
+
+        self._joint_limit_ke_snapshot = np.array(joint_limit_ke_np, copy=True)
+        self._joint_limit_kd_snapshot = np.array(joint_limit_kd_np, copy=True)
+        self._solreflimit_mode_snapshot = np.array(solref_mode_np, copy=True) if solref_mode_np is not None else None
 
         # Validate authored RAW ``mujoco.solreflimit`` values once per notify.
         # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)`` for the
@@ -8842,12 +9011,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raw_np = joint_limit_solref.numpy()
             raw_mask = mode_np == SOLREF_MODE_RAW
             if np.any(raw_mask):
-                tc = raw_np[raw_mask, 0]
-                dr = raw_np[raw_mask, 1]
                 # ``(0, 0)`` is the MuJoCo inherit-default sentinel, not a
                 # misconfiguration; flag only a single zero or mixed signs.
-                both_zero = (tc == 0.0) & (dr == 0.0)
-                invalid = ((tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))) & ~both_zero
+                invalid = solref_invalid_mask(raw_np[raw_mask])
                 if np.any(invalid):
                     bad = np.flatnonzero(raw_mask)[invalid]
                     warnings.warn(
@@ -8866,8 +9032,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:
-            joint_limit_ke = self.model.joint_limit_ke.numpy()
-            joint_limit_kd = self.model.joint_limit_kd.numpy()
+            joint_limit_ke = joint_limit_ke_np
+            joint_limit_kd = joint_limit_kd_np
             joint_limit_solref_np = joint_limit_solref.numpy() if joint_limit_solref is not None else None
             joint_limit_solref_mode_np = (
                 joint_limit_solref_mode.numpy() if joint_limit_solref_mode is not None else None
@@ -8892,16 +9058,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             jnt_solref[mjc_jnt] = raw_solref
                             continue
 
-                ke = float(joint_limit_ke[newton_dof])
-                kd = float(joint_limit_kd[newton_dof])
-                if (
-                    solref_mode == SOLREF_MODE_MJCF_DEFAULT
-                    and np.isclose(ke, DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                    and np.isclose(kd, DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                ):
+                if solref_mode == SOLREF_MODE_MJCF_DEFAULT:
                     jnt_solref[mjc_jnt] = DEFAULT_LIMIT_SOLREF
                     continue
 
+                ke = float(joint_limit_ke[newton_dof])
+                kd = float(joint_limit_kd[newton_dof])
                 if ke <= 0.0 or kd <= 0.0:
                     # Restore MuJoCo's compiled default so a zero-gain
                     # configuration matches a fresh model with no authored

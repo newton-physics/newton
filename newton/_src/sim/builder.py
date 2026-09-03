@@ -72,8 +72,8 @@ from .model import Model, _pack_shape_pair_codes
 if TYPE_CHECKING:
     from pxr import Usd
 
-    from ..actuators.clamping.base import Clamping
-    from ..actuators.controllers.base import Controller
+    from ..actuators.clamping.base import ClampingBase
+    from ..actuators.drives.base import DriveBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -138,6 +138,10 @@ _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
     "Scalar gravity will be removed in a future release."
 )
+_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
+_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
+)
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
 # dispatch through overload resolution and would initialize the Warp runtime at import.
@@ -186,6 +190,230 @@ def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
         collision_mesh._collision_edges = collision_edges
 
     return collision_mesh
+
+
+_CONVEX_SUPPORT_MIN_VERTICES = 256
+_CONVEX_SUPPORT_LUT_RESOLUTION = 32
+
+
+def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Build a directional seed table and welded vertex adjacency for a convex collision mesh."""
+    vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
+    vertex_count = len(vertices)
+    if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
+        return None
+
+    triangles = np.asarray(source.indices, dtype=np.int32).reshape(-1, 3)
+    geometry_scale = max(float(np.max(np.ptp(vertices, axis=0))), 1.0e-6)
+    vertices64 = vertices.astype(np.float64)
+    triangle_points = vertices64[triangles]
+    face_normals = np.cross(
+        triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
+    )
+    normal_lengths = np.linalg.norm(face_normals, axis=1)
+    nondegenerate = normal_lengths > geometry_scale * geometry_scale * 1.0e-12
+    face_normals = face_normals[nondegenerate]
+    if len(face_normals) == 0:
+        return None
+    face_normals /= normal_lengths[nondegenerate, None]
+    face_offsets = np.einsum("ij,ij->i", face_normals, triangle_points[nondegenerate, 0])
+
+    # The input indices are not automatically rebuilt as a convex hull. Only
+    # use their edges when every non-degenerate triangle lies on a supporting
+    # plane of the point set; otherwise a local edge maximum need not be the
+    # global support point and the exhaustive path must remain active.
+    plane_tolerance = geometry_scale * 2.0e-6
+    for start in range(0, len(face_normals), 64):
+        stop = min(start + 64, len(face_normals))
+        projections = face_normals[start:stop] @ vertices64.T
+        offsets = face_offsets[start:stop]
+        supported_positive = np.max(projections, axis=1) <= offsets + plane_tolerance
+        supported_negative = np.min(projections, axis=1) >= offsets - plane_tolerance
+        if not np.all(supported_positive | supported_negative):
+            return None
+
+    # A connected subset of supporting faces is not necessarily a complete
+    # hull. Walking its edges can stop at a local maximum because an omitted
+    # face also omits the edge needed to reach the global support vertex.
+    # Validate a closed two-manifold after welding numerically split seams.
+    coordinate_scale = max(float(np.max(np.abs(vertices))), 1.0)
+    weld_groups: dict[tuple[float, float, float], list[int]] = {}
+    welded_vertex = np.empty(vertex_count, dtype=np.int32)
+    for vertex, position in enumerate(vertices):
+        key = tuple(np.round(position / coordinate_scale, decimals=6))
+        group = weld_groups.setdefault(key, [])
+        if group:
+            welded_vertex[vertex] = group[0]
+        else:
+            welded_vertex[vertex] = vertex
+        group.append(vertex)
+
+    edge_incidence: Counter[tuple[int, int]] = Counter()
+    for triangle in triangles[nondegenerate]:
+        welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
+        if len(set(welded)) < 3:
+            continue
+        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
+            edge_incidence[min(first, second), max(first, second)] += 1
+    if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
+        warnings.warn(
+            "Convex support acceleration requires complete closed hull topology; "
+            "falling back to exhaustive support mapping.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+
+    adjacent = [set() for _ in range(vertex_count)]
+    for triangle in triangles:
+        a, b, c = (int(value) for value in triangle)
+        if a != b:
+            adjacent[a].add(b)
+            adjacent[b].add(a)
+        if a != c:
+            adjacent[a].add(c)
+            adjacent[c].add(a)
+        if b != c:
+            adjacent[b].add(c)
+            adjacent[c].add(b)
+
+    # Procedural and imported meshes can have numerically split seam vertices.
+    # Share their neighborhoods without changing the mesh points or support values.
+    for group in weld_groups.values():
+        if len(group) <= 1:
+            continue
+        merged = set(group)
+        for vertex in group:
+            merged.update(adjacent[vertex])
+        for vertex in group:
+            adjacent[vertex].update(merged)
+            adjacent[vertex].discard(vertex)
+
+    if any(not neighbors for neighbors in adjacent):
+        return None
+    visited = {0}
+    stack = [0]
+    while stack:
+        vertex = stack.pop()
+        for neighbor in adjacent[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                stack.append(neighbor)
+    if len(visited) != vertex_count:
+        return None
+
+    resolution = _CONVEX_SUPPORT_LUT_RESOLUTION
+    coordinates = np.linspace(-1.0, 1.0, resolution, dtype=np.float32)
+    xx, yy = np.meshgrid(coordinates, coordinates, indexing="xy")
+    zz = 1.0 - np.abs(xx) - np.abs(yy)
+    folded = zz < 0.0
+    old_x = xx.copy()
+    old_y = yy.copy()
+    xx[folded] = (1.0 - np.abs(old_y[folded])) * np.where(old_x[folded] >= 0.0, 1.0, -1.0)
+    yy[folded] = (1.0 - np.abs(old_x[folded])) * np.where(old_y[folded] >= 0.0, 1.0, -1.0)
+    directions = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+
+    lut = np.empty(resolution * resolution, dtype=np.int32)
+    for start in range(0, len(directions), 64):
+        stop = min(start + 64, len(directions))
+        lut[start:stop] = np.argmax(directions[start:stop] @ vertices.T, axis=1)
+
+    offsets = np.zeros(vertex_count + 1, dtype=np.int32)
+    neighbors = []
+    for vertex, values in enumerate(adjacent):
+        neighbors.extend(sorted(values))
+        offsets[vertex + 1] = len(neighbors)
+    return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
+    joint_indices = np.arange(len(joint_parents), dtype=np.int32)
+    max_child = int(np.max(joint_children, initial=-1))
+
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    valid_child = joint_children >= 0
+    body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+
+    parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
+    has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
+    parent_joint[has_parent] = body_joint[joint_parents[has_parent]]
+    return parent_joint
+
+
+def _build_fk_level_topology(
+    articulation_count: int,
+    joint_articulation: Sequence[int],
+    joint_parent: Sequence[int],
+    joint_child: Sequence[int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    if articulation_count == 0:
+        return None
+
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
+    articulation_joints = np.flatnonzero(joint_articulations >= 0).astype(np.int32)
+    articulation_ids = joint_articulations[articulation_joints]
+    if np.any(articulation_ids >= articulation_count):
+        raise ValueError("Joint references an invalid articulation")
+
+    articulation_children = joint_children[articulation_joints]
+    max_child = int(np.max(articulation_children, initial=-1))
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    body_joint[articulation_children] = articulation_joints
+    if np.count_nonzero(body_joint >= 0) != len(articulation_children):
+        return None
+
+    parent_joint = np.full(len(joint_articulations), -1, dtype=np.int32)
+    has_parent_body = (joint_parents[articulation_joints] >= 0) & (joint_parents[articulation_joints] <= max_child)
+    parent_joint[articulation_joints[has_parent_body]] = body_joint[joint_parents[articulation_joints[has_parent_body]]]
+    has_parent_joint = parent_joint[articulation_joints] >= 0
+    parent_articulation = np.full(len(articulation_joints), -1, dtype=np.int32)
+    parent_articulation[has_parent_joint] = joint_articulations[parent_joint[articulation_joints[has_parent_joint]]]
+    parent_joint[articulation_joints[parent_articulation != articulation_ids]] = -1
+
+    depth = np.full(len(joint_articulations), -1, dtype=np.int32)
+    roots = articulation_joints[parent_joint[articulation_joints] < 0]
+    depth[roots] = 0
+    unresolved = articulation_joints[depth[articulation_joints] < 0]
+    while len(unresolved):
+        parents = parent_joint[unresolved]
+        ready = depth[parents] >= 0
+        if not np.any(ready):
+            return None
+        ready_joints = unresolved[ready]
+        depth[ready_joints] = depth[parents[ready]] + 1
+        unresolved = unresolved[~ready]
+
+    joint_depths = depth[articulation_joints]
+    depth_stride = int(np.max(joint_depths, initial=0)) + 1
+    level_key = articulation_ids.astype(np.int64) * depth_stride + joint_depths
+    order = np.argsort(level_key, kind="stable")
+    level_joints = articulation_joints[order]
+    sorted_articulations = articulation_ids[order]
+    sorted_depths = joint_depths[order]
+
+    new_level = np.ones(len(level_joints), dtype=bool)
+    new_level[1:] = (sorted_articulations[1:] != sorted_articulations[:-1]) | (sorted_depths[1:] != sorted_depths[:-1])
+    level_joint_start = np.append(np.flatnonzero(new_level), len(level_joints)).astype(np.int32)
+    articulation_level_count = np.bincount(sorted_articulations[new_level], minlength=articulation_count)
+    articulation_level_start = np.concatenate(([0], np.cumsum(articulation_level_count))).astype(np.int32)
+
+    # Position of each scheduled joint's parent within the previous level.
+    pos_in_level = np.arange(len(level_joints), dtype=np.int32) - np.repeat(
+        level_joint_start[:-1], np.diff(level_joint_start)
+    )
+    joint_pos = np.full(len(joint_articulations), -1, dtype=np.int32)
+    joint_pos[level_joints] = pos_in_level
+    scheduled_parents = parent_joint[level_joints]
+    level_parent_pos = np.where(scheduled_parents >= 0, joint_pos[np.maximum(scheduled_parents, 0)], -1).astype(
+        np.int32
+    )
+
+    return articulation_level_start, level_joint_start, level_joints, level_parent_pos
 
 
 @dataclass(frozen=True)
@@ -494,19 +722,19 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
+        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Delay step values
         are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
-        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        drive_class: type  # DriveBase subclass (e.g. DrivePD)
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
-        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
+        drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
-        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        drive_args: list[dict[str, Any]]  # Per-actuator drive array params
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
@@ -816,7 +1044,6 @@ class ModelBuilder:
         Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
         """
 
-        @deprecate_nonkeyword_arguments
         def __init__(
             self,
             *,
@@ -1757,9 +1984,9 @@ class ModelBuilder:
         """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
+        # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
 
         # Equality constraints are canonical MuJoCo custom attributes and must be available
         # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
@@ -2457,17 +2684,19 @@ class ModelBuilder:
 
     def add_actuator(
         self,
-        controller_class: type[Controller] | None = None,
+        drive_class: type[DriveBase] | None = None,
         index: int | None = None,
-        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
+        *,
+        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *controller_class*, *clamping*
+        Multiple calls with the same *drive_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Different delay
@@ -2475,38 +2704,44 @@ class ModelBuilder:
         sized to ``max(delay_step_values)``.
 
         Args:
-            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+            drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
-                post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+                post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
             delay_steps: Optional number of timesteps [timesteps] to delay inputs.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
+            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
+            **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
-        if controller_class is None:
-            raise TypeError("add_actuator() requires 'controller_class'")
+        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
+            if drive_class is not None:
+                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            drive_class = controller_class
+        if drive_class is None:
+            raise TypeError("add_actuator() requires 'drive_class'")
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
 
         clamping = clamping or []
 
-        # --- Resolve controller kwargs and separate shared from per-DOF ---
-        resolved_ctrl = controller_class.resolve_arguments(kwargs)
-        unrecognized = set(kwargs) - set(resolved_ctrl)
+        # --- Resolve drive kwargs and separate shared from per-DOF ---
+        resolved_drive = drive_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(
-                f"add_actuator: {controller_class.__name__} ignoring "
+                f"add_actuator: {drive_class.__name__} ignoring "
                 f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
                 stacklevel=2,
             )
-        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
-        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
-        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
+        drive_shared_names = getattr(drive_class, "SHARED_PARAMS", set())
+        drive_shared = {k: resolved_drive[k] for k in drive_shared_names if k in resolved_drive}
+        drive_array_params = {k: v for k, v in resolved_drive.items() if k not in drive_shared_names}
 
         # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
         clamping_classes = tuple(cc for cc, _ in clamping)
@@ -2523,31 +2758,31 @@ class ModelBuilder:
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when controller class, presence of delay, clamping
-        # types/shared-params, or controller shared params differ.
+        # Groups differ when drive class, presence of delay, clamping
+        # types/shared-params, or drive shared params differ.
         # Delay values are per-DOF; the buffer is sized to max(delays).
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
             return v
 
-        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        drive_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in drive_shared.items()))
         clamping_key = tuple(
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
+        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
             ModelBuilder.ActuatorEntry(
-                controller_class=controller_class,
+                drive_class=drive_class,
                 clamping_classes=clamping_classes,
                 clamping_shared_kwargs=clamping_shared_kwargs,
-                controller_shared_kwargs=ctrl_shared,
+                drive_shared_kwargs=drive_shared,
                 indices=[],
                 pos_indices=[],
-                controller_args=[],
+                drive_args=[],
                 delay_args=[],
                 clamping_args=[],
             ),
@@ -2555,7 +2790,7 @@ class ModelBuilder:
 
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
-        entry.controller_args.append(ctrl_array_params)
+        entry.drive_args.append(drive_array_params)
         if delay_steps is not None:
             entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
@@ -4527,20 +4762,20 @@ class ModelBuilder:
             entry = self.actuator_entries.setdefault(
                 entry_key,
                 ModelBuilder.ActuatorEntry(
-                    controller_class=sub_entry.controller_class,
+                    drive_class=sub_entry.drive_class,
                     clamping_classes=sub_entry.clamping_classes,
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
-                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    drive_shared_kwargs=sub_entry.drive_shared_kwargs,
                     indices=[],
                     pos_indices=[],
-                    controller_args=[],
+                    drive_args=[],
                     delay_args=[],
                     clamping_args=[],
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
-            entry.controller_args.extend(sub_entry.controller_args)
+            entry.drive_args.extend(sub_entry.drive_args)
             entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
 
@@ -4622,7 +4857,6 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @deprecate_nonkeyword_arguments
     def add_link(
         self,
         *,
@@ -4708,7 +4942,6 @@ class ModelBuilder:
 
         return body_id
 
-    @deprecate_nonkeyword_arguments
     def add_body(
         self,
         *,
@@ -4775,7 +5008,6 @@ class ModelBuilder:
 
     # region joints
 
-    @deprecate_nonkeyword_arguments
     def add_joint(
         self,
         joint_type: JointType,
@@ -5023,7 +5255,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_revolute(
         self,
         parent: int,
@@ -5121,7 +5352,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_prismatic(
         self,
         parent: int,
@@ -5217,7 +5447,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_ball(
         self,
         parent: int,
@@ -5299,7 +5528,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_fixed(
         self,
         parent: int,
@@ -5347,7 +5575,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
@@ -5408,7 +5635,6 @@ class ModelBuilder:
         self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
-    @deprecate_nonkeyword_arguments
     def add_joint_distance(
         self,
         parent: int,
@@ -5472,7 +5698,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_d6(
         self,
         parent: int,
@@ -5527,7 +5752,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_rod(
         self,
         parent: int,
@@ -7723,7 +7947,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_site(
         self,
         body: int,
@@ -8166,7 +8389,6 @@ class ModelBuilder:
 
         return remeshed_shapes
 
-    @deprecate_nonkeyword_arguments
     def add_rod(
         self,
         positions: list[Vec3],
@@ -8396,7 +8618,6 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
-    @deprecate_nonkeyword_arguments
     def add_rod_graph(
         self,
         node_positions: list[Vec3],
@@ -8981,7 +9202,6 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
-    @deprecate_nonkeyword_arguments
     def add_triangle(
         self,
         i: int,
@@ -9077,7 +9297,6 @@ class ModelBuilder:
                 )
             return area
 
-    @deprecate_nonkeyword_arguments
     def add_triangles(
         self,
         i: list[int] | np.ndarray,
@@ -9282,7 +9501,6 @@ class ModelBuilder:
 
         return volume
 
-    @deprecate_nonkeyword_arguments
     def add_edge(
         self,
         i: int,
@@ -9355,7 +9573,6 @@ class ModelBuilder:
 
         return edge_index
 
-    @deprecate_nonkeyword_arguments
     def add_edges(
         self,
         i: list[int],
@@ -9501,7 +9718,6 @@ class ModelBuilder:
                 )
         return range(edge_start, len(self.edge_indices))
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
         *,
@@ -9638,7 +9854,6 @@ class ModelBuilder:
                 self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_mesh(
         self,
         *,
@@ -9798,7 +10013,6 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-    @deprecate_nonkeyword_arguments
     def add_particle_grid(
         self,
         *,
@@ -9902,7 +10116,6 @@ class ModelBuilder:
             custom_attributes=broadcast_custom_attrs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_soft_grid(
         self,
         *,
@@ -10086,7 +10299,6 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-    @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
         *,
@@ -11931,6 +12143,65 @@ class ModelBuilder:
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
+
+            # Compact convex support data (one copy per shared geometry).
+            shape_support_data = []
+            support_lut_chunks = []
+            support_offset_chunks = []
+            support_neighbor_chunks = []
+            support_cache = {}
+            lut_offset = 0
+            vertex_offset = 0
+            neighbor_offset = 0
+            for shape_type, source, shape_flags in zip(
+                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+            ):
+                metadata = (-1, -1, -1, 0)
+                if (
+                    shape_type == GeoType.CONVEX_MESH
+                    and isinstance(source, Mesh)
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                ):
+                    source_key = hash(source)
+                    if source_key not in support_cache:
+                        acceleration = _build_convex_support_acceleration(source)
+                        cached = None
+                        if acceleration is not None:
+                            lut, offsets, neighbors = acceleration
+                            cached = (
+                                (lut_offset, vertex_offset, neighbor_offset, _CONVEX_SUPPORT_LUT_RESOLUTION),
+                                lut,
+                                offsets,
+                                neighbors,
+                            )
+                            support_lut_chunks.append(lut)
+                            support_offset_chunks.append(offsets)
+                            support_neighbor_chunks.append(neighbors)
+                            lut_offset += len(lut)
+                            vertex_offset += len(offsets)
+                            neighbor_offset += len(neighbors)
+                        support_cache[source_key] = cached
+                    cached = support_cache[source_key]
+                    if cached is not None:
+                        metadata = cached[0]
+                shape_support_data.append(metadata)
+
+            m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
+            m._convex_support_lut = wp.array(
+                np.concatenate(support_lut_chunks) if support_lut_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_vertex_offsets = wp.array(
+                np.concatenate(support_offset_chunks) if support_offset_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_neighbors = wp.array(
+                np.concatenate(support_neighbor_chunks) if support_neighbor_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
@@ -12766,9 +13037,13 @@ class ModelBuilder:
 
             # joints
             m._has_rod_joints = JointType.ROD in self.joint_type  # pyright: ignore[reportPrivateUsage]
+            joint_parent_np = np.asarray(self.joint_parent, dtype=np.int32)
+            joint_child_np = np.asarray(self.joint_child, dtype=np.int32)
+            joint_articulation_np = np.asarray(self.joint_articulation, dtype=np.int32)
+
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
-            m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
-            m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
+            m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
+            m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
@@ -12778,14 +13053,9 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            child_to_joint = {}
-            for i, child in enumerate(self.joint_child):
-                child_to_joint[child] = i
-            parent_joint = []
-            for parent in self.joint_parent:
-                parent_joint.append(child_to_joint.get(parent, -1))
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
-            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
+            m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -12851,6 +13121,30 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+            from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
+
+            fk_topology = _build_fk_level_topology(
+                self.articulation_count,
+                joint_articulation_np,
+                joint_parent_np,
+                joint_child_np,
+            )
+            # Non-tree articulations and levels beyond the tile kernel's
+            # shared-memory staging capacity retain the serial FK path.
+            if fk_topology is not None:
+                (
+                    fk_articulation_level_start,
+                    fk_level_joint_start,
+                    fk_level_joints,
+                    fk_level_parent_pos,
+                ) = fk_topology
+                fk_level_capacity = int(np.max(np.diff(fk_level_joint_start), initial=1))
+                if fk_level_capacity <= FK_TILE_MAX_LEVEL_WIDTH:
+                    m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
+                    m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
+                    m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
+                    m._fk_level_parent_pos = wp.array(fk_level_parent_pos, dtype=wp.int32)
+                    m._fk_level_capacity = fk_level_capacity
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
@@ -12936,11 +13230,9 @@ class ModelBuilder:
                 if entry.pos_indices != entry.indices:
                     pos_indices_arg = self._build_index_array(entry.pos_indices, device)
 
-                # Build controller from stacked per-DOF arrays + shared kwargs
-                ctrl_arrays = self._stack_args_to_arrays(
-                    entry.controller_args, device=device, requires_grad=requires_grad
-                )
-                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+                # Build drive from stacked per-DOF arrays + shared kwargs
+                drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
+                drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
                 delay_obj = None
                 if entry.delay_args:
@@ -12964,7 +13256,7 @@ class ModelBuilder:
                 )
                 actuator = Actuator(
                     indices=indices,
-                    controller=controller,
+                    drive=drive,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
@@ -13514,6 +13806,3 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(candidate_pairs)
-
-
-ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)
