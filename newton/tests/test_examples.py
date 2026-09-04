@@ -1238,6 +1238,20 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_franka_cloth_ik_lift",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 240},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_franka_soft_ik_lift",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 240},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
     devices=cuda_test_devices,
     test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
