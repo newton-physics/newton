@@ -124,10 +124,10 @@ Deformable Bodies
    subset and limitations below -- and is not fully proposal-compliant. It also does not
    import native OmniPhysics/PhysX deformable assets (see the vendor-namespace note below).
 
-:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
-Deformables proposal
-<https://github.com/PixarAnimationStudios/OpenUSD-proposals/blob/63c74d79aa67dc98d8707af8ad68f2e1a10622b5/proposals/physics_deformables/wp_deformable_physics.md>`_,
-across three families:
+.. _AOUSD UsdPhysics Deformables proposal: https://github.com/PixarAnimationStudios/OpenUSD-proposals/blob/63c74d79aa67dc98d8707af8ad68f2e1a10622b5/proposals/physics_deformables/wp_deformable_physics.md
+
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the
+`AOUSD UsdPhysics Deformables proposal`_, across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
   becomes a rod: a chain of capsule bodies joined by :attr:`~newton.JointType.ROD` joints,
@@ -154,6 +154,15 @@ deformable and imports as ordinary (static) geometry. One temporary exception: a
 material that authors its values only under the vendor namespaces is still read without a
 resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
 during the deprecation window.
+
+.. note::
+
+   Most deformable properties do not yet use registered schema fallbacks.
+   They read authored ``physics:`` values first, followed by resolver-enabled vendor namespaces.
+   Cloth ``mass_model`` and ``shell_thickness`` already use the common resolver.
+   These properties are described by the experimental `AOUSD UsdPhysics Deformables proposal`_.
+   Registered-fallback support for the remaining deformable properties will be expanded in the
+   future.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
@@ -512,6 +521,9 @@ The table below shows PhysX attribute remapping examples:
    * - ``physxArticulation:enabledSelfCollisions``
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
+   * - ``state:transX:physics:position`` / ``velocity``
+     - D6 ``transX`` initial position / velocity
+     - Direct mapping; equivalent mappings exist for ``transY`` and ``transZ``
 
 **Newton articulation remapping:**
 
@@ -528,7 +540,7 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - ``self_collision_enabled``
      - Direct mapping
 
-The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
+The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` in resolver priority order. When ``enable_self_collisions`` is omitted from :meth:`newton.ModelBuilder.add_usd`, ``True`` is the importer default. With ``use_registered_schema_fallbacks=True``, passing the argument explicitly overrides the resolved USD value. Legacy resolution continues to treat an explicit value as an importer default.
 
 **Newton Joint Attribute Remapping:**
 
@@ -624,13 +636,126 @@ Priority-Based Resolution
 
 When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.
 
-**Resolution Hierarchy:**
+Resolution distinguishes authored values, registered schema fallbacks, importer defaults, resolver compatibility defaults, and explicit importer overrides. Registered fallbacks come from the composed prim definition in ``Usd.SchemaRegistry``; compatibility defaults are approximations retained for unregistered schemas and older custom resolvers.
 
-The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:
+Schema Packages
+^^^^^^^^^^^^^^^
 
-1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
-2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.
+The ``newton[importers]`` extra requires ``newton-usd-schemas>=0.5.0`` to register Newton's schemas; Newton's locked test environment currently uses version 0.5.0. PhysX and MuJoCo schema plugins are optional. Their resolvers can read authored vendor attributes without those plugins, but registered vendor fallbacks are available only when the corresponding plugin is installed and registered with USD. Without it, importer defaults remain ahead of the resolver's compatibility defaults.
+
+Schema packages own their plugin registration and fallback metadata. Newton reads that metadata from ``Usd.SchemaRegistry`` and does not maintain copied PhysX or MuJoCo fallback catalogs.
+
+.. list-table:: Property value sources
+   :header-rows: 1
+   :widths: 25 75
+
+   * - **Source**
+     - **Meaning**
+   * - Authored value
+     - A usable value explicitly authored on the prim.
+   * - Registered schema fallback
+     - An authoritative fallback from an applicable registered schema.
+   * - Importer default
+     - A property-specific value supplied by the builder or an importer argument's default.
+   * - Compatibility default
+     - A lower-priority resolver default for an unregistered or ownership-less schema mapping.
+   * - Explicit importer override
+     - A caller-provided value that replaces USD resolution for supported arguments.
+
+Resolution Hierarchy
+^^^^^^^^^^^^^^^^^^^^
+
+A *compatibility default* is a default value stored in a resolver mapping. Newton keeps it to support unregistered schemas and older custom resolvers. For one property, such as ``armature``, the default legacy path checks the first authored value in resolver order, the importer default, and then the first resolver mapping default. It leaves the property unresolved when none of those sources provides a value.
+
+With ``use_registered_schema_fallbacks=True``, supported explicit importer arguments take precedence over USD. For example, ``enable_self_collisions=False`` forces self-collisions off, while explicitly passing ``mesh_maxhullvert=None`` selects :attr:`newton.Mesh.MAX_HULL_VERTICES` even when USD authors a hull limit.
+
+At a glance, each step returns its value when one is available. Otherwise, resolution continues down this list:
+
+.. code-block:: text
+
+   Supported explicit override
+              |
+          not provided
+              v
+   Resolver candidates in priority order
+   (authored value, then registered fallback)
+              |
+           no result
+              v
+   Importer default
+              |
+         not available
+              v
+   Eligible resolver mapping default
+              |
+            none
+              v
+   Unresolved
+
+The two resolver passes are shown in more detail below.
+
+Without an explicit override, Newton checks each resolver in priority order. It returns the first usable authored value or registered schema fallback:
+
+.. mermaid::
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+   flowchart LR
+       Resolver["For each resolver,<br/>in priority order"] --> Authored{"Usable authored<br/>value?"}
+       Authored -- "Yes" --> AuthoredValue(["Use authored value"])
+       Authored -- "No" --> Owner{"Resolver names a<br/>responsible schema?"}
+       Owner -- "No" --> Continue(["Try next resolver;<br/>after the last, check defaults"])
+       Owner -- "Yes" --> Applied{"Schema applied<br/>to the prim?"}
+       Applied -- "No" --> Continue
+       Applied -- "Yes" --> Fallback{"Registry has a usable<br/>fallback for this property?"}
+       Fallback -- "Yes" --> FallbackValue(["Use registered fallback"])
+       Fallback -- "No" --> Continue
+
+If no resolver returns a value, Newton checks the importer default before making a second pass over resolver mapping defaults:
+
+.. mermaid::
+   :config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+   flowchart LR
+       Importer{"Importer default<br/>available?"}
+       Importer -- "Yes" --> ImporterValue(["Use importer default"])
+       Importer -- "No" --> Resolver["For each resolver,<br/>in priority order"]
+       Resolver --> Enabled{"Mapping defaults enabled<br/>for this resolver?"}
+       Enabled -- "No" --> Continue(["Try next resolver;<br/>after the last, leave unresolved"])
+       Enabled -- "Yes" --> Eligible{"Mapping default eligible?<br/>Unowned, or applied and unregistered"}
+       Eligible -- "No" --> Continue
+       Eligible -- "Yes" --> Declared{"Usable mapping<br/>default available?"}
+       Declared -- "Yes" --> ResolverDefaultValue(["Use resolver mapping default"])
+       Declared -- "No" --> Continue
+       Continue --> Unresolved(["Leave unresolved"])
+
+A mapping default is eligible when no schema owns the property, or when the owning schema is applied but unregistered. It is not eligible when its owning schema was not applied. It is also not eligible when the schema is registered, because the registered schema remains the authority even when it declares no fallback for that property.
+
+``joint_drive_gains_scaling`` and ``collapse_fixed_joints`` are raw PhysicsScene importer metadata rather than registered schema properties. They resolve from an explicit override, authored ``newton:*`` metadata, then the importer default.
+
+Resolver priority applies to each resolver's complete candidate, so an earlier resolver's registered fallback wins over a later resolver's authored value. A registered property without a fallback does not receive its resolver's compatibility default.
+
+Usability and Consumer Meaning
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With ``use_registered_schema_fallbacks=True``, Newton continues to the next candidate when a resolver getter or transformer returns no usable value. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
+
+A blocked attribute is unauthored, so its applicable registered fallback remains eligible. Compound properties retain usable authored constituents and fill missing or blocked constituents from the registered schema.
+
+The deprecated legacy policy preserves one older behavior: after selecting a compatibility default, it does not try another compatibility default if property interpretation produces ``None``.
+
+Migration Audit
+^^^^^^^^^^^^^^^
+
+The legacy hierarchy is deprecated. Set ``audit_registered_schema_fallbacks=True`` to retain the legacy result while comparing it with registered-schema precedence. Newton then emits at most one :exc:`DeprecationWarning` per import when it can prove that an interpreted property or source-dependent meaning changes. Audit failures alone do not warn.
+
+The audit is disabled by default because it evaluates both policies. It cannot be combined with ``use_registered_schema_fallbacks=True``, which already selects the registered-schema result.
+
+Pass ``use_registered_schema_fallbacks=True`` to adopt registered-schema precedence. To preserve the current result, author through a higher-priority schema, reorder ``schema_resolvers``, or use an explicit importer override where supported.
+
+Custom Resolver Compatibility
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Newton's built-in resolvers declare registered-schema ownership internally. Existing custom :class:`~newton.usd.SchemaResolver` subclasses do not need to change: without an internal ownership declaration, their mapping defaults remain compatibility defaults after importer defaults.
 
 **Configuring Resolver Priority:**
 
@@ -1436,8 +1561,10 @@ verifying the Newton import.
 
    Applying ``NewtonSDFCollisionAPI`` declares the prim's SDF configuration.
    The importer fills in schema defaults for any attributes that are not
-   authored (e.g. ``sdfMaxResolution=64``; ``sdfPadding`` defaults to the
-   value of ``newton:contactGap``).
+   authored. For example, ``sdfMaxResolution`` defaults to 64. An omitted
+   ``sdfPadding`` uses ``newton:contactGap`` for ordinary SDF collision and
+   ``newton:contactMargin + newton:contactGap`` for colliding hydroelastic
+   shapes.
 
    For **mesh** shapes, applying the API causes ``ModelBuilder.finalize()``
    to build a deferred SDF on the underlying ``Mesh``. For **primitive**

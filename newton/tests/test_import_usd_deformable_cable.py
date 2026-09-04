@@ -1215,7 +1215,11 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         # The PhysX resolver admits the deformable vendor namespace.
         builder_compat = newton.ModelBuilder()
-        builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+        builder_compat.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_registered_schema_fallbacks=True,
+        )
         self.assertAlmostEqual(cable_stretch(builder_compat), 770.0, delta=1.0e-3)
 
     def test_deformable_ignores_generic_physx_namespaces(self):
@@ -1232,7 +1236,11 @@ class TestUSDDeformableCable(unittest.TestCase):
                 stage, curves.GetPrim(), "/World/Mat", namespace=namespace, curvesStretchStiffness=77.0
             )
             builder = newton.ModelBuilder()
-            builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+            builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverPhysx()],
+                use_registered_schema_fallbacks=True,
+            )
             joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
             return builder.joint_target_ke[builder.joint_qd_start[joint]]
 

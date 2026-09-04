@@ -51,7 +51,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..usd.schema_resolver import SchemaResolver
+from ..usd.schema_resolver import SchemaResolver, _track_omitted_usd_import_defaults
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
@@ -3862,6 +3862,7 @@ class ModelBuilder:
             override_root_xform=override_root_xform,
         )
 
+    @_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
     def add_usd(
         self,
         source: str | UsdStage,
@@ -3890,6 +3891,8 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
+        use_registered_schema_fallbacks: bool = False,
+        audit_registered_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
@@ -3979,11 +3982,25 @@ class ModelBuilder:
 
             only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-            joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+            joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+                default for scaling PD control gains. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
             verbose: If True, print additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
-            collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+            collapse_fixed_joints: When omitted, use ``False`` as the
+                importer default for removing fixed joints and merging their bodies.
+                With ``use_registered_schema_fallbacks=True``, an explicitly provided
+                value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
+            enable_self_collisions: When omitted, use ``True`` as the importer
+                default for self-collisions within an articulation. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides the corresponding authored USD value and schema fallback.
+                Legacy resolution continues to treat it as an importer default. USD
+                resolution reads ``newton:selfCollisionEnabled``
+                (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/".
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -4006,7 +4023,13 @@ class ModelBuilder:
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
                 and finalize under ``model.mujoco.equality_constraint_*``.
-            mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+            mesh_maxhullvert: When omitted, use
+                :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
+                convex hull approximation. Passing ``None`` explicitly selects
+                the same limit. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides the corresponding authored USD value and schema fallback.
+                Legacy resolution continues to treat it as an importer default.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
                 These include namespaced attributes such as ``newton:*``, ``physx*``
@@ -4018,6 +4041,29 @@ class ModelBuilder:
                 .. experimental::
 
                     The ``schema_resolvers`` argument may change without prior notice.
+            use_registered_schema_fallbacks: If True, resolve each ordered resolver's
+                authored value and registered schema fallback before advancing to the
+                next resolver, then use importer and unregistered compatibility defaults.
+                False retains deprecated legacy precedence.
+
+                .. experimental::
+
+                    The ``use_registered_schema_fallbacks`` argument may change without
+                    prior notice.
+
+                .. deprecated:: 1.6
+                    Passing False selects deprecated legacy fallback precedence. Pass
+                    True to adopt registered schema fallback precedence.
+            audit_registered_schema_fallbacks: If True, retain legacy precedence while
+                comparing its interpreted results with registered-schema precedence and
+                emit one migration warning when they differ. The audit is disabled by
+                default because it evaluates both policies. It cannot be combined with
+                ``use_registered_schema_fallbacks=True``.
+
+                .. experimental::
+
+                    The ``audit_registered_schema_fallbacks`` argument may change without
+                    prior notice.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -4173,6 +4219,8 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
+            use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+            audit_registered_schema_fallbacks=audit_registered_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
