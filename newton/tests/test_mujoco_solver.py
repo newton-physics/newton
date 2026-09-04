@@ -658,6 +658,127 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         np.testing.assert_allclose(solver.mj_data.qfrc_actuator[0], native_data.qfrc_actuator[0], rtol=1e-7)
         np.testing.assert_allclose(solver.mj_data.qvel[0], native_data.qvel[0], rtol=1e-6, atol=1e-7)
 
+    def test_mujoco_cpu_midphase_keeps_contacts_after_inertia_frame_sync(self):
+        """Verify the CPU midphase still reports overlapping geom pairs after the inertia frame sync.
+
+        MuJoCo stores the body midphase BVH in the compile-time inertial frame, so overwriting
+        ``body_iquat`` after ``spec.compile()`` invalidates it unless the boxes are re-expressed in
+        the new frame. A stale BVH culls pairs the narrowphase can prove are penetrating.
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+
+        cube_faces = [
+            0, 1, 3, 0, 3, 2, 4, 7, 5, 4, 6, 7, 0, 4, 1, 1, 4, 5,
+            2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3,
+        ]  # fmt: skip
+
+        def box(hx, hy, hz):
+            vertices = [[sx * hx, sy * hy, sz * hz] for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)]
+            return Mesh(np.array(vertices, dtype=np.float32).flatten().tolist(), cube_faces)
+
+        builder = newton.ModelBuilder()
+        # A non-zero gap is exported as a geom margin, which would hide a midphase miss.
+        builder.rigid_gap = 0.0
+        builder.add_shape_mesh(body=-1, mesh=box(0.01, 0.01, 0.01))
+        # Two shapes far apart in the body frame, so the principal axes differ from the compiled ones.
+        # add_body already yields a free-floating body; an explicit free joint would be a
+        # second root and is reported as an unsupported loop closure.
+        obj = builder.add_body(xform=wp.transform(wp.vec3(0.049, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_mesh(body=obj, mesh=box(0.04, 0.01, 0.005))
+        builder.add_shape_mesh(
+            body=obj,
+            mesh=box(0.005, 0.005, 0.005),
+            xform=wp.transform(wp.vec3(0.02, 0.02, 0.0), wp.quat_identity()),
+        )
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=True)
+        mj_model, mj_data = solver.mj_model, solver.mj_data
+
+        midphase_bit = int(mujoco.mjtDisableBit.mjDSBL_MIDPHASE)
+        contact_counts = {}
+        for midphase_enabled in (True, False):
+            if midphase_enabled:
+                mj_model.opt.disableflags &= ~midphase_bit
+            else:
+                mj_model.opt.disableflags |= midphase_bit
+            mujoco.mj_forward(mj_model, mj_data)
+            contact_counts[midphase_enabled] = mj_data.ncon
+
+        # The pair genuinely penetrates, so the narrowphase alone must find it.
+        self.assertGreater(contact_counts[False], 0)
+        self.assertEqual(contact_counts[True], contact_counts[False])
+
+    def test_mujoco_cpu_midphase_survives_runtime_com_update(self):
+        """Verify the CPU midphase follows the inertial frame when only the centre of mass moves.
+
+        A runtime ``body_com`` update moves ``body_ipos`` while leaving ``body_iquat`` alone, so a
+        refit keyed on orientation alone would leave the midphase boxes centred on the old frame.
+        """
+        cube_faces = [
+            0, 1, 3, 0, 3, 2, 4, 7, 5, 4, 6, 7, 0, 4, 1, 1, 4, 5,
+            2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3,
+        ]  # fmt: skip
+
+        def box(hx, hy, hz):
+            vertices = [[sx * hx, sy * hy, sz * hz] for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)]
+            return Mesh(np.array(vertices, dtype=np.float32).flatten().tolist(), cube_faces)
+
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.0
+        builder.add_shape_mesh(body=-1, mesh=box(0.01, 0.01, 0.01))
+        # add_body already yields a free-floating body; an explicit free joint would be a
+        # second root and is reported as an unsupported loop closure.
+        obj = builder.add_body(xform=wp.transform(wp.vec3(0.049, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_mesh(body=obj, mesh=box(0.04, 0.01, 0.005))
+        builder.add_shape_mesh(
+            body=obj,
+            mesh=box(0.005, 0.005, 0.005),
+            xform=wp.transform(wp.vec3(0.02, 0.02, 0.0), wp.quat_identity()),
+        )
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=True)
+        mj_model = solver.mj_model
+
+        body = 1
+        bvh_adr = int(mj_model.body_bvhadr[body])
+        bvh_num = int(mj_model.body_bvhnum[body])
+        centers_before = mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, :3].copy()
+        ipos_before = mj_model.body_ipos[body].copy()
+
+        body_com = model.body_com.numpy().copy()
+        body_com[0] = body_com[0] + np.array([0.02, 0.02, 0.0], dtype=body_com.dtype)
+        model.body_com.assign(body_com)
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        # The origin moved, so the boxes must move with it.
+        self.assertGreater(float(np.max(np.abs(mj_model.body_ipos[body] - ipos_before))), 1e-4)
+        centers_after = mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, :3]
+        self.assertGreater(float(np.max(np.abs(centers_after - centers_before))), 1e-4)
+
+        # Returning to a frame must reproduce that frame's bounds. Rotating a box into a new
+        # frame grows it into the enclosing box, which is not reversible, so a refit computed
+        # from the previous result would accumulate on every round trip.
+        extents = mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, 3:].copy()
+        body_inertia = model.body_inertia.numpy().copy()
+        rotated = body_inertia.copy()
+        angle = math.radians(30.0)
+        rot = np.array(
+            [
+                [math.cos(angle), -math.sin(angle), 0.0],
+                [math.sin(angle), math.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        rotated[0] = (rot @ body_inertia[0].astype(np.float64) @ rot.T).astype(body_inertia.dtype)
+        for _ in range(4):
+            model.body_inertia.assign(rotated)
+            solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+            model.body_inertia.assign(body_inertia)
+            solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        assert_np_equal(mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, 3:], extents, tol=1e-6)
+
     def test_body_gravcomp(self):
         """
         Tests if the body gravity compensation is updated properly.
