@@ -335,7 +335,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
         rigid_joint_adaptive_stiffness: bool | None = None,
-        elastic_contact_relaxation: float = 0.6,
+        elastic_body_relaxation: float = 1.0,
+        elastic_solver_metrics: bool = False,
         deterministic: wp.DeterministicMode | None = None,
     ):
         """
@@ -510,9 +511,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_joint_adaptive_stiffness: Compatibility control for the reduced-elastic development branch.
                 Passing ``False`` disables legacy joint penalty ramping, equivalent to setting both linear and
                 angular beta values to zero. ``None`` and ``True`` leave the beta controls unchanged.
-            elastic_contact_relaxation: Under-relaxation factor for reduced elastic body block updates when rigid
-                contacts are present. Values below 1 damp nonsmooth contact and friction fixed-point iterations while
-                preserving zero-residual updates.
+            elastic_body_relaxation: Under-relaxation factor for reduced elastic body block updates. This scales the
+                coupled frame-and-mode update after inertia, joint, and contact terms are assembled. Must be finite and
+                in the range ``[0, 1]``.
+            elastic_solver_metrics: Whether to compute reduced elastic block residual and update metrics. Disabled by
+                default to avoid extra dense matrix-vector products in every block solve.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -623,7 +626,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
-        self.elastic_contact_relaxation = elastic_contact_relaxation
+        if not np.isfinite(elastic_body_relaxation) or not 0.0 <= elastic_body_relaxation <= 1.0:
+            raise ValueError(
+                f"elastic_body_relaxation must be finite and in the range [0, 1], got {elastic_body_relaxation}"
+            )
+        self.elastic_body_relaxation = float(elastic_body_relaxation)
+        self.elastic_solver_metrics = bool(elastic_solver_metrics)
         self.rigid_joint_adaptive_stiffness = rigid_joint_adaptive_stiffness
         self._joint_mode_deprecation_warned = False
 
@@ -699,21 +707,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             dtype=float,
             device=self.device,
         )
-        self.elastic_implicit_mass_coupling = self._build_elastic_implicit_mass_coupling_flags(model)
+        self.elastic_implicit_mass_coupling, self.elastic_reduced_inv_mass = self._build_elastic_mass_solve_data(model)
         self._solve_elastic_body_tiled = (
             create_solve_elastic_body_tiled(self.elastic_body_block_width) if elastic_body_count > 0 else None
         )
-        self.elastic_body_block_initial_residual_norm = wp.zeros(
-            model.elastic_body_count, dtype=float, device=self.device
-        )
-        self.elastic_body_block_solve_residual_norm = wp.zeros(
-            model.elastic_body_count, dtype=float, device=self.device
-        )
-        self.elastic_body_block_applied_residual_norm = wp.zeros(
-            model.elastic_body_count, dtype=float, device=self.device
-        )
-        self.elastic_body_block_update_norm = wp.zeros(model.elastic_body_count, dtype=float, device=self.device)
-        self.elastic_body_block_update_max = wp.zeros(model.elastic_body_count, dtype=float, device=self.device)
+        metric_count = model.elastic_body_count if self.elastic_solver_metrics else 0
+        self.elastic_body_block_initial_residual_norm = wp.zeros(metric_count, dtype=float, device=self.device)
+        self.elastic_body_block_solve_residual_norm = wp.zeros(metric_count, dtype=float, device=self.device)
+        self.elastic_body_block_applied_residual_norm = wp.zeros(metric_count, dtype=float, device=self.device)
+        self.elastic_body_block_update_norm = wp.zeros(metric_count, dtype=float, device=self.device)
+        self.elastic_body_block_update_max = wp.zeros(metric_count, dtype=float, device=self.device)
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -744,11 +747,16 @@ class SolverVBD(SolverBase, CouplingInterface):
                 f"{max_mode_count} modes."
             )
 
-    def _build_elastic_implicit_mass_coupling_flags(self, model: Model) -> wp.array:
-        """Identify elastic bodies whose stored frame/modal mass block is SPD."""
+    def _build_elastic_mass_solve_data(self, model: Model) -> tuple[wp.array, wp.array]:
+        """Build coupled-mass flags and generalized inverse-mass blocks."""
         elastic_body_count = int(model.elastic_body_count)
         if elastic_body_count == 0:
-            return wp.empty(0, dtype=bool, device=self.device)
+            return (
+                wp.empty(0, dtype=bool, device=self.device),
+                wp.empty(
+                    (0, self.elastic_body_block_width, self.elastic_body_block_width), dtype=float, device=self.device
+                ),
+            )
 
         elastic_body = model.elastic_body.numpy()
         mode_start = model.elastic_mode_start.numpy()
@@ -759,13 +767,30 @@ class SolverVBD(SolverBase, CouplingInterface):
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
+        body_inv_mass = self.body_inv_mass_effective.numpy()
+        body_inv_inertia = self.body_inv_inertia_effective.numpy()
 
         flags = np.zeros(elastic_body_count, dtype=bool)
+        inverse_mass = np.zeros(
+            (elastic_body_count, self.elastic_body_block_width, self.elastic_body_block_width), dtype=np.float32
+        )
         for elastic_index, body in enumerate(elastic_body):
             count = int(mode_count[elastic_index])
             if count == 0:
                 continue
             start = int(mode_start[elastic_index])
+            frame_dynamic = float(body_inv_mass[body]) > 0.0
+            if frame_dynamic:
+                inverse_mass[elastic_index, :3, :3] = float(body_inv_mass[body]) * np.eye(3, dtype=np.float32)
+                inverse_mass[elastic_index, 3:6, 3:6] = np.asarray(body_inv_inertia[body], dtype=np.float32)
+            for mode in range(count):
+                mass = float(mode_mass[start + mode])
+                if mass > 0.0:
+                    inverse_mass[elastic_index, 6 + mode, 6 + mode] = 1.0 / mass
+
+            if not frame_dynamic:
+                continue
+
             frame_mass = np.zeros((6, 6), dtype=np.float64)
             frame_mass[:3, :3] = float(body_mass[body]) * np.eye(3)
             frame_mass[3:, 3:] = np.asarray(body_inertia[body], dtype=np.float64)
@@ -778,9 +803,18 @@ class SolverVBD(SolverBase, CouplingInterface):
             modal_mass = np.diag(np.asarray(mode_mass[start : start + count], dtype=np.float64))
             reduced_mass = np.block([[frame_mass, cross_mass], [cross_mass.T, modal_mass]])
             diagonal_scale = max(float(np.max(np.abs(np.diag(reduced_mass)))), 1.0)
-            flags[elastic_index] = float(np.linalg.eigvalsh(reduced_mass)[0]) > 1.0e-8 * diagonal_scale
+            is_spd = float(np.linalg.eigvalsh(reduced_mass)[0]) > 1.0e-8 * diagonal_scale
+            flags[elastic_index] = is_spd
+            if is_spd:
+                active_width = 6 + count
+                inverse_mass[elastic_index, :active_width, :active_width] = np.linalg.inv(reduced_mass).astype(
+                    np.float32
+                )
 
-        return wp.array(flags, dtype=bool, device=self.device)
+        return (
+            wp.array(flags, dtype=bool, device=self.device),
+            wp.array(inverse_mass, dtype=float, device=self.device),
+        )
 
     def _init_particle_system(
         self,
@@ -1171,6 +1205,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+            if self.model.elastic_body_count > 0:
+                self.elastic_implicit_mass_coupling, self.elastic_reduced_inv_mass = (
+                    self._build_elastic_mass_solve_data(self.model)
+                )
         if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
@@ -2227,6 +2265,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             The frame and modal rows carry different units, so the norms mix ``[N]``, ``[N·m]``
             and modal-force components. They are meaningful as a ratio against
             ``initial_residual_norm``, not as absolute quantities.
+
+            Metrics are empty unless the solver was constructed with
+            ``elastic_solver_metrics=True``.
         """
         return {
             "initial_residual_norm": self.elastic_body_block_initial_residual_norm.numpy().copy(),
@@ -2298,11 +2339,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         if model.elastic_body_count == 0:
             return
 
-        self.elastic_body_block_initial_residual_norm.zero_()
-        self.elastic_body_block_solve_residual_norm.zero_()
-        self.elastic_body_block_applied_residual_norm.zero_()
-        self.elastic_body_block_update_norm.zero_()
-        self.elastic_body_block_update_max.zero_()
+        if self.elastic_solver_metrics:
+            self.elastic_body_block_initial_residual_norm.zero_()
+            self.elastic_body_block_solve_residual_norm.zero_()
+            self.elastic_body_block_applied_residual_norm.zero_()
+            self.elastic_body_block_update_norm.zero_()
+            self.elastic_body_block_update_max.zero_()
 
         wp.copy(state_out.joint_q, state_in.joint_q)
         wp.copy(state_out.joint_qd, state_in.joint_qd)
@@ -2426,16 +2468,12 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _elastic_contact_inputs(self, contacts: Contacts | None) -> tuple[int, wp.array, float]:
-        """Resolve the elastic contact launch bounds and the matching block relaxation.
-
-        Returns the contact capacity, the contact count array, and the relaxation to apply to
-        the elastic block update (contacts are solved with under-relaxation, joints are not).
-        """
+    def _elastic_solve_inputs(self, contacts: Contacts | None) -> tuple[int, wp.array, float]:
+        """Resolve elastic contact launch bounds and the body-block relaxation."""
         model = self.model
         if contacts is None or model.elastic_shape_vertex_total_count == 0 or contacts.rigid_contact_max <= 0:
-            return 0, self.elastic_contact_count_zero, 1.0
-        return contacts.rigid_contact_max, contacts.rigid_contact_count, self.elastic_contact_relaxation
+            return 0, self.elastic_contact_count_zero, self.elastic_body_relaxation
+        return contacts.rigid_contact_max, contacts.rigid_contact_count, self.elastic_body_relaxation
 
     @override
     def reset(
@@ -2980,6 +3018,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_q_start,
                         model.elastic_shape_vertex_local,
                         model.elastic_shape_vertex_phi,
+                        self.elastic_reduced_inv_mass,
                         model.elastic_max_mode_count,
                         self.rigid_contact_hard,
                         self.rigid_compliant_alm,
@@ -3493,7 +3532,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        rigid_contact_max, rigid_contact_count, elastic_body_relaxation = self._elastic_contact_inputs(contacts)
+        rigid_contact_max, rigid_contact_count, elastic_body_relaxation = self._elastic_solve_inputs(contacts)
 
         body_color_groups = model.body_color_groups
 
@@ -3842,13 +3881,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dt,
                 )
 
-            wp.launch(
-                kernel=copy_elastic_body_transforms_back,
-                inputs=[color_group, model.body_elastic_index, state_out.body_q],
-                outputs=[state_in.body_q],
-                dim=color_group.size,
-                device=self.device,
-            )
+            if model.elastic_body_count > 0:
+                wp.launch(
+                    kernel=copy_elastic_body_transforms_back,
+                    inputs=[color_group, model.body_elastic_index, state_out.body_q],
+                    outputs=[state_in.body_q],
+                    dim=color_group.size,
+                    device=self.device,
+                )
 
         if contacts is not None and contacts.rigid_contact_max > 0:
             wp.launch(
@@ -3916,7 +3956,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        if model.joint_count > 0 and self.rigid_joint_adaptive_stiffness is not False:
+        if model.joint_count > 0 and (self.rigid_compliant_alm or self.rigid_joint_adaptive_stiffness is not False):
             wp.launch(
                 kernel=update_duals_joint,
                 dim=model.joint_count,

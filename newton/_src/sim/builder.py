@@ -5226,7 +5226,10 @@ class ModelBuilder:
         self.joint_qd_start.append(self.joint_dof_count)
         self.joint_cts_start.append(self.joint_constraint_count)
 
-        self.joint_q.extend(list(self.body_q[child]))
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * parent_xform
+        frame_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * child_xform
+        self.joint_q.extend(list(frame_q))
         self.joint_q.extend(mode_q_values)
         self.joint_qd.extend([0.0] * 6)
         self.joint_qd.extend(mode_qd_values)
@@ -7256,6 +7259,32 @@ class ModelBuilder:
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Reduced elastic records are keyed by both body and owner-joint indices.
+        # Their owner joint is non-fixed, so it must survive collapse together
+        # with its body. Rebuild both lookup directions after the canonical body
+        # and joint arrays have been reindexed.
+        remapped_elastic_bodies: list[int] = []
+        remapped_elastic_joints: list[int] = []
+        for old_body, old_joint in zip(self.elastic_body, self.elastic_joint, strict=True):
+            if old_body not in body_remap or old_joint not in joint_remap:
+                raise ValueError("collapse_fixed_joints cannot remove a reduced elastic body or its owner joint")
+            remapped_elastic_bodies.append(body_remap[old_body])
+            remapped_elastic_joints.append(joint_remap[old_joint])
+
+        self.elastic_body = remapped_elastic_bodies
+        self.elastic_joint = remapped_elastic_joints
+        self.body_elastic_index = [-1] * self.body_count
+        self.body_elastic_joint = [-1] * self.body_count
+        for elastic_index, (body, joint) in enumerate(zip(self.elastic_body, self.elastic_joint, strict=True)):
+            self.body_elastic_index[body] = elastic_index
+            self.body_elastic_joint[body] = joint
+
+        # Endpoint caches are rebuilt during finalization. Their per-joint index
+        # arrays still need to match the collapsed joint layout before structural
+        # validation runs.
+        self.joint_parent_elastic_endpoint = [-1] * self.joint_count
+        self.joint_child_elastic_endpoint = [-1] * self.joint_count
 
         # Update DOF and coordinate counts to match the rebuilt arrays
         self.joint_dof_count = len(self.joint_qd)
@@ -12207,35 +12236,46 @@ class ModelBuilder:
         Angular samples are only available from a :class:`ModalBasis`; bodies driven by a
         ``mode_shape_fn`` and unsampled bodies report zero angular coupling.
         """
+        phi, psi, sample_indices = self._add_elastic_modal_samples(
+            elastic_index, np.asarray(local_pos, dtype=np.float32).reshape((1, 3))
+        )
+        return phi[0], psi[0], int(sample_indices[0])
+
+    def _add_elastic_modal_samples(
+        self, elastic_index: int, local_positions: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return modal samples and basis indices for body-local points."""
+        points = np.asarray(local_positions, dtype=np.float32).reshape((-1, 3))
         mode_count = self.elastic_mode_count[elastic_index]
         if mode_count == 0:
-            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32), -1
+            zeros = np.zeros((points.shape[0], 0, 3), dtype=np.float32)
+            return zeros, zeros.copy(), np.full(points.shape[0], -1, dtype=np.int32)
 
-        zero_psi = np.zeros((mode_count, 3), dtype=np.float32)
+        zero_psi = np.zeros((points.shape[0], mode_count, 3), dtype=np.float32)
         basis_index = self.elastic_basis[elastic_index] if elastic_index < len(self.elastic_basis) else -1
         if basis_index >= 0:
             basis = self.modal_bases[basis_index]
-            sample_index = basis.add_sample(local_pos)
-            phi = basis.sample_phi[sample_index]
-            psi = basis.sample_psi[sample_index]
-            if phi.shape != (mode_count, 3):
+            sample_indices = basis.add_samples(points)
+            phi = basis.sample_phi[sample_indices]
+            psi = basis.sample_psi[sample_indices]
+            if phi.shape != (points.shape[0], mode_count, 3):
                 raise ValueError(
                     f"modal_basis for elastic body {self.elastic_body[elastic_index]} must provide "
-                    f"shape ({mode_count}, 3), got {phi.shape}"
+                    f"shape ({points.shape[0]}, {mode_count}, 3), got {phi.shape}"
                 )
-            return phi, psi, sample_index
+            return phi, psi, sample_indices
 
         shape_fn = self.elastic_mode_shape_fn[elastic_index]
         if shape_fn is None:
-            return np.zeros((mode_count, 3), dtype=np.float32), zero_psi, -1
+            return np.zeros_like(zero_psi), zero_psi, np.full(points.shape[0], -1, dtype=np.int32)
 
-        values = np.asarray(shape_fn(local_pos), dtype=np.float32)
-        if values.shape != (mode_count, 3):
+        values = np.asarray([shape_fn(point) for point in points], dtype=np.float32)
+        if values.shape != (points.shape[0], mode_count, 3):
             raise ValueError(
                 f"mode_shape_fn for elastic body {self.elastic_body[elastic_index]} must return "
-                f"shape ({mode_count}, 3), got {values.shape}"
+                f"shape ({mode_count}, 3) per point, got {values.shape}"
             )
-        return values, zero_psi, -1
+        return values, zero_psi, np.full(points.shape[0], -1, dtype=np.int32)
 
     def _build_elastic_endpoint_cache(self) -> None:
         """Sample reduced elastic mode shapes at ordinary joint endpoint transforms."""
@@ -12305,7 +12345,7 @@ class ModelBuilder:
             center = np.array(wp.transform_get_translation(self.shape_transform[shape_index]), dtype=np.float32)
             scale = np.array(self.shape_scale[shape_index], dtype=np.float32)
             if self.shape_type[shape_index] == GeoType.BOX:
-                half_extents = scale
+                half_extents = np.abs(scale)
             else:
                 radius = float(np.max(np.abs(scale))) if scale.size > 0 else 0.5
                 half_extents = np.array([radius, radius, radius], dtype=np.float32)
@@ -12342,13 +12382,19 @@ class ModelBuilder:
             self.elastic_render_point_start.append(start)
             self.elastic_render_point_count.append(sample_count)
 
-            for x in np.linspace(min_x, max_x, sample_count):
-                local_pos = np.array([x, y, z], dtype=np.float32)
+            local_positions = np.column_stack(
+                (
+                    np.linspace(min_x, max_x, sample_count, dtype=np.float32),
+                    np.full(sample_count, y, dtype=np.float32),
+                    np.full(sample_count, z, dtype=np.float32),
+                )
+            )
+            phi_values, _psi_values, sample_indices = self._add_elastic_modal_samples(elastic_index, local_positions)
+            for local_pos, phi, sample_index in zip(local_positions, phi_values, sample_indices, strict=True):
                 self.elastic_render_point_local.append(
                     wp.vec3(float(local_pos[0]), float(local_pos[1]), float(local_pos[2]))
                 )
-                phi, _psi, sample_index = self._add_elastic_modal_sample(elastic_index, local_pos)
-                self.elastic_render_point_sample.append(sample_index)
+                self.elastic_render_point_sample.append(int(sample_index))
                 for mode in range(self.elastic_max_mode_count):
                     if mode < phi.shape[0]:
                         self.elastic_render_point_phi.append(
@@ -12506,13 +12552,15 @@ class ModelBuilder:
             self.elastic_shape_indices.extend(int(i) for i in indices)
 
             shape_xform = self.shape_transform[shape_index]
-            for vertex in vertices:
-                local_pos = self._transform_point_np(shape_xform, vertex)
+            local_positions = np.asarray(
+                [self._transform_point_np(shape_xform, vertex) for vertex in vertices], dtype=np.float32
+            )
+            phi_values, _psi_values, sample_indices = self._add_elastic_modal_samples(elastic_index, local_positions)
+            for local_pos, phi, sample_index in zip(local_positions, phi_values, sample_indices, strict=True):
                 self.elastic_shape_vertex_local.append(
                     wp.vec3(float(local_pos[0]), float(local_pos[1]), float(local_pos[2]))
                 )
-                phi, _psi, sample_index = self._add_elastic_modal_sample(elastic_index, local_pos)
-                self.elastic_shape_vertex_sample.append(sample_index)
+                self.elastic_shape_vertex_sample.append(int(sample_index))
                 for mode in range(self.elastic_max_mode_count):
                     if mode < phi.shape[0]:
                         self.elastic_shape_vertex_phi.append(

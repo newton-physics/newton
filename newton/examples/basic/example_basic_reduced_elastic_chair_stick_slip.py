@@ -400,7 +400,7 @@ class Example:
         pusher_cfg.margin = 0.0015
         pusher_cfg.gap = 0.0015
 
-        builder = newton.ModelBuilder(gravity=self.gravity, up_axis="Z")
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, self.gravity), up_axis="Z")
         builder.num_rigid_contacts_per_world = 16384
         ramp_pos = self.ramp_top_origin - self.ramp_normal * self.ramp_hz
         self.ramp_body = builder.add_body(
@@ -493,9 +493,11 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.solver_iterations,
+            elastic_solver_metrics=True,
             rigid_contact_k_start=5.0e3,
             rigid_body_contact_buffer_size=256,
             friction_epsilon=1.5e-3,
+            elastic_body_relaxation=0.6,
         )
 
         elastic_index = int(self.model.body_elastic_index.numpy()[self.chair])

@@ -112,7 +112,7 @@ class Example:
         self.rod1_rest_length = float(np.linalg.norm(bell_input_tip - input_tip) - self.rod1_q0)
         self.rod2_rest_length = float(np.linalg.norm(output_tip - bell_output_tip) - self.rod2_q0)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.012, 0.0, 0.0, 0.0, 0.012, 0.0, 0.0, 0.0, 0.012)

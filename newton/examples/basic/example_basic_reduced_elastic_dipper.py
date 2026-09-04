@@ -168,7 +168,7 @@ class Example:
             label="dipper_arm_basis",
         ).build(sample_points=sample_points)
 
-        builder = newton.ModelBuilder(gravity=-self.gravity)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -self.gravity))
         builder.add_ground_plane()
 
         shape_cfg = newton.ModelBuilder.ShapeConfig()
@@ -335,6 +335,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.solver_iterations,
+            rigid_compliant_alm=True,
             rigid_joint_linear_k_start=5.0e5,
             rigid_joint_angular_k_start=5.0e5,
             rigid_joint_linear_ke=5.0e5,
@@ -342,6 +343,7 @@ class Example:
             rigid_joint_linear_kd=3.0e-5,
             rigid_joint_angular_kd=0.0,
             rigid_joint_adaptive_stiffness=False,
+            elastic_solver_metrics=True,
         )
         init_elastic_solver_metric_tracking(self)
 

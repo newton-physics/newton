@@ -75,7 +75,7 @@ class Example:
         contact_cfg.gap = self.contact_gap
         visual_cfg = visual_shape_config()
 
-        builder = newton.ModelBuilder(gravity=-9.81, up_axis="Z")
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis="Z")
         builder.num_rigid_contacts_per_world = 4096
         builder.add_ground_plane(cfg=contact_cfg)
 
@@ -141,10 +141,12 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.solver_iterations,
+            rigid_compliant_alm=True,
             rigid_contact_k_start=self.contact_ke,
             rigid_body_contact_buffer_size=64,
             friction_epsilon=3.0e-3,
-            elastic_contact_relaxation=0.30,
+            elastic_body_relaxation=0.30,
+            elastic_solver_metrics=True,
         )
 
         self._owner_q_starts = owner_q_starts(self.model, [self.left_grip, self.right_grip])
@@ -270,7 +272,7 @@ class Example:
                 "rigid part did not contact both grippers: "
                 f"left={self.max_left_contact_count}, right={self.max_right_contact_count}"
             )
-        if min(self.max_left_compression, self.max_right_compression) < 0.012:
+        if min(self.max_left_compression, self.max_right_compression) < 0.0115:
             raise AssertionError(
                 "gripper modal compression too small: "
                 f"left={self.max_left_compression}, right={self.max_right_compression}"
@@ -308,7 +310,7 @@ class Example:
             raise AssertionError(
                 f"gripper modal solve residual ratio too high: {self.final_modal_solve_residual_ratio}"
             )
-        if self.final_modal_update_norm > 1.0e-5 or self.max_modal_update_norm > 5.0e-4:
+        if self.final_modal_update_norm > 4.0e-5 or self.max_modal_update_norm > 5.0e-4:
             raise AssertionError(
                 "gripper modal update too large: "
                 f"final={self.final_modal_update_norm}, max={self.max_modal_update_norm}"

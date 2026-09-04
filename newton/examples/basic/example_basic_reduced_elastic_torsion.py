@@ -118,7 +118,7 @@ class Example:
         torsion_basis.mode_stiffness = mode_stiffness
         torsion_basis.mode_damping = mode_damping
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)

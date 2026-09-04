@@ -92,7 +92,7 @@ class Example:
 
         self.com_factor = float(coupled_basis.mode_coupling_linear[0][2]) / self.beam_mass
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.02)

@@ -6,6 +6,7 @@ import warp as wp
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
 from .broad_phase_common import binary_search
 from .contact_data import make_contact_sort_key_with_bits
+from .contact_reduction_global import BETA_THRESHOLD, GlobalContactReducerData, export_and_reduce_contact
 from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
     Axis,
@@ -1275,17 +1276,12 @@ def create_elastic_shape_contacts(
     elastic_joint: wp.array[wp.int32],
     elastic_mode_count: wp.array[wp.int32],
     elastic_max_mode_count: int,
-    elastic_shape_count: int,
-    elastic_shape_shape: wp.array[wp.int32],
-    elastic_shape_body: wp.array[wp.int32],
-    elastic_shape_vertex_start: wp.array[wp.int32],
-    elastic_shape_vertex_count: wp.array[wp.int32],
     elastic_shape_vertex_local: wp.array[wp.vec3],
     elastic_shape_vertex_phi: wp.array[wp.vec3],
-    elastic_shape_vertex_total_count: int,
-    shape_pairs: wp.array[wp.vec2i],
-    shape_pair_count: wp.array[wp.int32],
+    elastic_contact_pairs: wp.array[wp.vec2i],
+    elastic_contact_vertices: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
+    shape_transform_world: wp.array[wp.transform],
     shape_body: wp.array[wp.int32],
     shape_type: wp.array[wp.int32],
     shape_scale: wp.array[wp.vec3],
@@ -1297,6 +1293,11 @@ def create_elastic_shape_contacts(
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_voxel_resolution: wp.array[wp.vec3i],
+    elastic_contact_reducer: GlobalContactReducerData,
+    reduce_contacts: int,
     rigid_contact_max: int,
     contact_sort_shape_index_bits: int,
     contact_sort_sub_key_bits: int,
@@ -1317,41 +1318,28 @@ def create_elastic_shape_contacts(
     rigid_contact_sort_key: wp.array[wp.int64],
 ):
     tid = wp.tid()
-    if elastic_shape_vertex_total_count <= 0:
-        return
-
-    pair_index = tid // elastic_shape_vertex_total_count
-    vertex_index = tid - pair_index * elastic_shape_vertex_total_count
-    if pair_index >= shape_pair_count[0]:
-        return
-
-    elastic_shape = wp.int32(-1)
-    elastic_body = wp.int32(-1)
-    for elastic_shape_index in range(elastic_shape_count):
-        start = elastic_shape_vertex_start[elastic_shape_index]
-        count = elastic_shape_vertex_count[elastic_shape_index]
-        if vertex_index >= start and vertex_index < start + count:
-            elastic_shape = elastic_shape_shape[elastic_shape_index]
-            elastic_body = elastic_shape_body[elastic_shape_index]
-            break
-
-    if elastic_shape < 0 or elastic_body < 0:
-        return
-    if (shape_flags[elastic_shape] & ShapeFlags.COLLIDE_SHAPES) == 0:
-        return
-
-    pair = shape_pairs[pair_index]
+    pair = elastic_contact_pairs[tid]
+    vertex_index = elastic_contact_vertices[tid]
     shape_a = pair[0]
     shape_b = pair[1]
-    rigid_shape = wp.int32(-1)
-    if shape_a == elastic_shape:
-        rigid_shape = shape_b
-    elif shape_b == elastic_shape:
-        rigid_shape = shape_a
-    else:
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
+    shape_a_is_elastic = body_a >= 0 and body_elastic_index[body_a] >= 0
+    shape_b_is_elastic = body_b >= 0 and body_elastic_index[body_b] >= 0
+    if shape_a_is_elastic == shape_b_is_elastic:
         return
 
-    if rigid_shape < 0:
+    elastic_shape = shape_b
+    elastic_body = body_b
+    rigid_shape = wp.int32(-1)
+    if shape_a_is_elastic:
+        elastic_shape = shape_a
+        elastic_body = body_a
+        rigid_shape = shape_b
+    else:
+        rigid_shape = shape_a
+
+    if (shape_flags[elastic_shape] & ShapeFlags.COLLIDE_SHAPES) == 0:
         return
     if (shape_flags[rigid_shape] & ShapeFlags.COLLIDE_SHAPES) == 0:
         return
@@ -1469,6 +1457,26 @@ def create_elastic_shape_contacts(
     gap = shape_gap[rigid_shape] + shape_gap[elastic_shape]
     if d > margin0 + margin1 + gap:
         return
+    normal_world = wp.normalize(wp.transform_vector(X_ws, n))
+
+    if reduce_contacts == 1:
+        rigid_point_world = elastic_point_world - normal_world * d
+        contact_center_world = 0.5 * (elastic_point_world + rigid_point_world)
+        export_and_reduce_contact(
+            elastic_shape,
+            rigid_shape,
+            contact_center_world,
+            -normal_world,
+            d,
+            vertex_index,
+            elastic_contact_reducer,
+            wp.static(BETA_THRESHOLD),
+            shape_transform_world,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            shape_voxel_resolution,
+        )
+        return
 
     contact_index = wp.atomic_add(rigid_contact_count, 0, 1)
     if contact_index >= rigid_contact_max:
@@ -1476,7 +1484,6 @@ def create_elastic_shape_contacts(
 
     rigid_point_shape = x_shape - n * d
     rigid_point_body = wp.transform_point(X_bs, rigid_point_shape)
-    normal_world = wp.normalize(wp.transform_vector(X_ws, n))
 
     rigid_contact_shape0[contact_index] = rigid_shape
     rigid_contact_shape1[contact_index] = elastic_shape

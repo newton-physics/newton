@@ -346,35 +346,141 @@ class ModalBasis:
         Returns:
             The local sample index.
         """
-        query = np.asarray(point, dtype=np.float32).reshape((3,))
-        existing = self.find_sample(query, tolerance=tolerance)
-        if existing >= 0:
-            return existing
-
-        phi_interp, psi_interp = self.evaluate(query)
-
-        if phi is None:
-            phi_values = phi_interp
-        else:
-            phi_values = np.asarray(phi, dtype=np.float32)
-            if phi_values.shape != (self.mode_count, 3):
-                raise ValueError(f"phi must have shape ({self.mode_count}, 3), got {phi_values.shape}")
-
-        if psi is None:
-            psi_values = psi_interp
-        else:
-            psi_values = np.asarray(psi, dtype=np.float32)
-            if psi_values.shape != (self.mode_count, 3):
-                raise ValueError(f"psi must have shape ({self.mode_count}, 3), got {psi_values.shape}")
-
-        self.sample_points = np.vstack((self.sample_points, query.reshape((1, 3)))).astype(np.float32, copy=False)
-        self.sample_phi = np.concatenate((self.sample_phi, phi_values.reshape((1, self.mode_count, 3))), axis=0).astype(
-            np.float32, copy=False
+        phi_batch = None if phi is None else np.asarray(phi, dtype=np.float32).reshape((1, self.mode_count, 3))
+        psi_batch = None if psi is None else np.asarray(psi, dtype=np.float32).reshape((1, self.mode_count, 3))
+        return int(
+            self.add_samples(np.asarray(point, dtype=np.float32).reshape((1, 3)), phi_batch, psi_batch, tolerance)[0]
         )
-        self.sample_psi = np.concatenate((self.sample_psi, psi_values.reshape((1, self.mode_count, 3))), axis=0).astype(
-            np.float32, copy=False
+
+    def add_samples(
+        self,
+        points: Sequence[Sequence[float]] | np.ndarray,
+        phi: Sequence[Sequence[Sequence[float]]] | np.ndarray | None = None,
+        psi: Sequence[Sequence[Sequence[float]]] | np.ndarray | None = None,
+        tolerance: float = 1.0e-7,
+    ) -> np.ndarray:
+        """Add body-local samples in one batch and return their local indices.
+
+        Duplicate points reuse the first matching sample. Missing mode values are
+        interpolated from the samples that existed before this call. If the basis
+        carries lumped sample masses, appended interpolation samples receive zero
+        mass so they do not alter the basis's inertial integrals.
+
+        Args:
+            points: Body-local points [m], shape ``[sample_count, 3]``.
+            phi: Translational mode values [m per modal coordinate], shape
+                ``[sample_count, mode_count, 3]``.
+            psi: Angular mode values [rad per modal coordinate], shape
+                ``[sample_count, mode_count, 3]``.
+            tolerance: Duplicate-point tolerance [m].
+
+        Returns:
+            Local sample indices, shape ``[sample_count]``.
+        """
+        queries = np.asarray(points, dtype=np.float32)
+        if queries.ndim == 1:
+            queries = queries.reshape((1, 3))
+        if queries.ndim != 2 or queries.shape[1] != 3:
+            raise ValueError(f"points must have shape [sample_count, 3], got {queries.shape}")
+        if tolerance < 0.0:
+            raise ValueError(f"tolerance must be non-negative, got {tolerance}")
+
+        query_count = int(queries.shape[0])
+        expected_shape = (query_count, self.mode_count, 3)
+        phi_values = None if phi is None else np.asarray(phi, dtype=np.float32)
+        psi_values = None if psi is None else np.asarray(psi, dtype=np.float32)
+        if phi_values is not None and phi_values.shape != expected_shape:
+            raise ValueError(f"phi must have shape {expected_shape}, got {phi_values.shape}")
+        if psi_values is not None and psi_values.shape != expected_shape:
+            raise ValueError(f"psi must have shape {expected_shape}, got {psi_values.shape}")
+        if query_count == 0:
+            return np.zeros(0, dtype=np.int32)
+
+        all_points = list(self.sample_points)
+        result = np.empty(query_count, dtype=np.int32)
+        new_query_indices: list[int] = []
+
+        # A spatial hash keeps duplicate detection linear in the common case while
+        # retaining the Euclidean tolerance used by find_sample().
+        cell_size = tolerance if tolerance > 0.0 else 1.0
+        buckets: dict[tuple[int, int, int], list[int]] = {}
+
+        def cell(point: np.ndarray) -> tuple[int, int, int]:
+            if tolerance == 0.0:
+                return tuple(int(value) for value in point.view(np.int32))
+            return tuple(int(value) for value in np.floor(point / cell_size))
+
+        for sample_index, point in enumerate(all_points):
+            buckets.setdefault(cell(point), []).append(sample_index)
+
+        neighbor_offsets = (
+            [(0, 0, 0)]
+            if tolerance == 0.0
+            else [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
         )
-        return self.sample_count - 1
+        tolerance2 = tolerance * tolerance
+        for query_index, query in enumerate(queries):
+            query_cell = cell(query)
+            nearest = -1
+            nearest_dist2 = math.inf
+            for dx, dy, dz in neighbor_offsets:
+                candidate_cell = (query_cell[0] + dx, query_cell[1] + dy, query_cell[2] + dz)
+                for sample_index in buckets.get(candidate_cell, ()):
+                    delta = all_points[sample_index] - query
+                    dist2 = float(np.dot(delta, delta))
+                    if dist2 <= tolerance2 and dist2 < nearest_dist2:
+                        nearest = sample_index
+                        nearest_dist2 = dist2
+            if nearest >= 0:
+                result[query_index] = nearest
+                continue
+
+            sample_index = len(all_points)
+            result[query_index] = sample_index
+            new_query_indices.append(query_index)
+            all_points.append(query)
+            buckets.setdefault(query_cell, []).append(sample_index)
+
+        if not new_query_indices:
+            return result
+
+        new_queries = queries[new_query_indices]
+        interpolated_phi, interpolated_psi = self._evaluate_many(new_queries)
+        new_phi = interpolated_phi if phi_values is None else phi_values[new_query_indices]
+        new_psi = interpolated_psi if psi_values is None else psi_values[new_query_indices]
+        self.sample_points = np.concatenate((self.sample_points, new_queries), axis=0)
+        self.sample_phi = np.concatenate((self.sample_phi, new_phi), axis=0)
+        self.sample_psi = np.concatenate((self.sample_psi, new_psi), axis=0)
+        if self.sample_mass is not None:
+            self.sample_mass = np.concatenate((self.sample_mass, np.zeros(len(new_query_indices), dtype=np.float32)))
+        return result
+
+    def _evaluate_many(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate interpolation points in bounded-memory NumPy batches."""
+        query_count = int(points.shape[0])
+        if self.mode_count == 0 or self.sample_count == 0:
+            zeros = np.zeros((query_count, self.mode_count, 3), dtype=np.float32)
+            return zeros, zeros.copy()
+
+        phi = np.empty((query_count, self.mode_count, 3), dtype=np.float32)
+        psi = np.empty_like(phi)
+        chunk_size = max(1, min(query_count, 1_000_000 // self.sample_count))
+        eps2 = self.interpolation_epsilon * self.interpolation_epsilon
+        exact_tol2 = max(eps2, 1.0e-14)
+        for start in range(0, query_count, chunk_size):
+            stop = min(start + chunk_size, query_count)
+            delta = self.sample_points[None, :, :] - points[start:stop, None, :]
+            dist2 = np.einsum("qsc,qsc->qs", delta, delta)
+            nearest = np.argmin(dist2, axis=1)
+            exact = dist2[np.arange(stop - start), nearest] <= exact_tol2
+            weights = (1.0 / (dist2 + eps2)).astype(np.float32)
+            weights /= np.sum(weights, axis=1, keepdims=True)
+            phi[start:stop] = np.einsum("qs,smc->qmc", weights, self.sample_phi)
+            psi[start:stop] = np.einsum("qs,smc->qmc", weights, self.sample_psi)
+            if np.any(exact):
+                phi[start:stop][exact] = self.sample_phi[nearest[exact]]
+                psi[start:stop][exact] = self.sample_psi[nearest[exact]]
+        return phi, psi
 
     def evaluate(self, point: Sequence[float] | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Inverse-distance interpolate the modal samples at a body-local point.
@@ -937,7 +1043,7 @@ class ModalGeneratorPOD:
             matrix = matrix - np.mean(matrix, axis=0, keepdims=True)
 
         _, singular_values, vt = np.linalg.svd(matrix, full_matrices=False)
-        mode_count = self.mode_count or int(vt.shape[0])
+        mode_count = int(vt.shape[0]) if self.mode_count is None else self.mode_count
         mode_count = min(int(mode_count), int(vt.shape[0]))
         if mode_count < 0:
             raise ValueError(f"mode_count must be non-negative, got {mode_count}")
@@ -1336,6 +1442,9 @@ class ModalGeneratorBeam:
         result = dict(spec)
         if "type" not in result:
             raise ValueError("Each beam mode spec must include a 'type' value")
+        order = int(result.get("order", 1))
+        if order < 1:
+            raise ValueError(f"Beam mode order must be at least 1, got {order}")
         return result
 
     def build(self, sample_points: Sequence[Sequence[float]] | np.ndarray | None = None) -> ModalBasis:
@@ -1509,7 +1618,7 @@ class ModalGeneratorBeam:
             gj = self.shear_modulus * self.polar_moment
             if boundary == self.Boundary.LINEAR:
                 mass = rotary_mass * self.length / float(2 * order + 1)
-                stiffness = gj * float(order * order) / self.length
+                stiffness = gj * float(order * order) / (self.length * float(2 * order - 1))
                 return mass, stiffness
             k = (float(order) - 0.5) * math.pi / self.length
             mass = rotary_mass * self.length / 2.0

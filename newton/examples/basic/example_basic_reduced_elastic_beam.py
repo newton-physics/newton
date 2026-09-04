@@ -76,7 +76,7 @@ class Example:
             )
         )
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.015, 0.0, 0.0, 0.0, 0.015, 0.0, 0.0, 0.0, 0.015)

@@ -1,7 +1,6 @@
 # Newton Development Guidelines
 
 Read and follow the canonical [source code and public API guidelines](CODING_GUIDELINES.rst) before changing or reviewing Newton code. This file contains agent-specific workflow instructions; the linked guide is authoritative for coding and API design.
-
 - Create a feature branch on your fork before committing—never commit directly to `main`. Give the pull request a concise, descriptive title.
 - Use imperative mood in commit messages ("Fix X", not "Fixed X"), with a roughly 50-character subject and a body wrapped at 72 characters that explains what and why.
 - Verify regression tests fail without the fix before committing.
@@ -40,7 +39,3 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   - Implement `test_final()` or `test_post_step()`; an example may implement both.
   - In test mode, `test_post_step()` runs after each simulation step and `test_final()` runs after the example completes.
 - Register the example in `README.md` with its `python -m newton.examples <name>` command and a 320x320 JPEG screenshot.
-
-## Reduced Elastic Work
-
-- Before changing reduced elastic bodies, modal bases, or VBD coupling, read `docs/guide/reduced_elastic_agent_notes.md`.

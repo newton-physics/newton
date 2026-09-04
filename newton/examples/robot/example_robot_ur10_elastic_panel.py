@@ -234,12 +234,8 @@ def _find_carhood_stl(carhoods_dir: Path) -> Path | None:
 def _load_panel_mesh(args) -> tuple[np.ndarray, np.ndarray]:
     mesh_path = getattr(args, "panel_mesh", None) if args is not None else None
     if mesh_path is None:
-        carhoods_dir = (
-            getattr(args, "carhoods_dir", Path("/home/horde/datasets/carhoods10k"))
-            if args is not None
-            else Path("/home/horde/datasets/carhoods10k")
-        )
-        mesh_path = _find_carhood_stl(Path(carhoods_dir))
+        carhoods_dir = getattr(args, "carhoods_dir", None) if args is not None else None
+        mesh_path = _find_carhood_stl(Path(carhoods_dir)) if carhoods_dir is not None else None
 
     if mesh_path is None:
         return _make_procedural_hood_panel()
@@ -384,7 +380,7 @@ class Example:
             f"{panel_indices.size // 3} triangles, extents {panel_extents[0]:.2f} x {panel_extents[1]:.2f} m"
         )
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         asset_path = newton.utils.download_asset("universal_robots_ur10")
         robot_mount_height = 1.65
@@ -765,7 +761,7 @@ class Example:
         parser.add_argument(
             "--carhoods-dir",
             type=Path,
-            default=Path("/home/horde/datasets/carhoods10k"),
+            default=None,
             help="Directory containing the downloaded CarHoods10k dataset.",
         )
         parser.add_argument(

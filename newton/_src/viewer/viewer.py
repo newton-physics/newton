@@ -1295,7 +1295,7 @@ class ViewerBase(ABC):
 
             if count == 0 or i_count == 0:
                 continue
-            visible = visible and self.show_elastic_bodies
+            visible = visible and self.show_elastic_bodies and not self._layer_force_hidden()
 
             rest_vertices = np.array(vertex_local[start : start + count], dtype=float)
             local_vertices = rest_vertices.copy()
@@ -1334,6 +1334,7 @@ class ViewerBase(ABC):
                     world_vertices[local_idx] = local + world_offset
 
             points_wp = wp.array(world_vertices, dtype=wp.vec3, device=self.device)
+            points_wp = self._apply_layer_transform_to_points(points_wp)
             indices_wp = wp.array(
                 indices[i_start : i_start + i_count].astype(np.int32), dtype=wp.int32, device=self.device
             )
@@ -1406,7 +1407,7 @@ class ViewerBase(ABC):
         for elastic_index in range(int(self.model.elastic_body_count)):
             body = int(elastic_body[elastic_index])
             world = int(body_world[body])
-            if not self._should_render_world(world):
+            if not self._should_render_world(world) or self._layer_force_hidden():
                 continue
 
             mode_count = int(elastic_mode_count[elastic_index])
@@ -1451,6 +1452,10 @@ class ViewerBase(ABC):
         )
         markers = wp.array(np.array(endpoint_points, dtype=np.float32), dtype=wp.vec3, device=self.device)
         samples = wp.array(np.array(sample_points, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        starts = self._apply_layer_transform_to_points(starts)
+        ends = self._apply_layer_transform_to_points(ends)
+        markers = self._apply_layer_transform_to_points(markers)
+        samples = self._apply_layer_transform_to_points(samples)
         sample_radii = wp.array(
             np.full(len(sample_points), 0.009, dtype=np.float32), dtype=wp.float32, device=self.device
         )

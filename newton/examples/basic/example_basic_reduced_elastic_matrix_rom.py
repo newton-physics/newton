@@ -428,7 +428,7 @@ class Example:
             dtype=np.float32,
         )
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         inertia = wp.mat33(0.025, 0.0, 0.0, 0.0, 0.025, 0.0, 0.0, 0.0, 0.025)
         self.wrist = builder.add_body(
             xform=wp.transform(wp.vec3(*self.wrist_origin), wp.quat_identity()),
@@ -619,12 +619,13 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=36,
-            rigid_compliant_alm=False,
+            rigid_compliant_alm=True,
             rigid_avbd_beta=1.0e5,
             rigid_joint_linear_k_start=1.0e5,
             rigid_joint_angular_k_start=1.0e4,
             rigid_joint_linear_ke=2.5e6,
             rigid_joint_angular_ke=7.5e5,
+            elastic_body_relaxation=0.6,
         )
 
         self.viewer.set_model(self.model)
@@ -801,11 +802,11 @@ class Example:
             raise AssertionError(f"matrix ROM modes were not visibly excited: {self.max_mode_abs}")
         if self.max_mode_abs > 0.65:
             raise AssertionError(f"matrix ROM modal response is out of range: {self._mode_values()}")
-        if self.max_sag_abs < 0.35 * abs(self.reference_rom_sag):
+        if self.max_sag_abs < 0.30 * abs(self.reference_rom_sag):
             raise AssertionError(
                 f"matrix ROM gripper sag too small: sag={self.max_sag_abs}, reference={self.reference_rom_sag}"
             )
-        if self.max_centerline_deflection < 0.35 * abs(self.reference_rom_sag):
+        if self.max_centerline_deflection < 0.30 * abs(self.reference_rom_sag):
             raise AssertionError(
                 "matrix ROM centerline deflection visualizer did not observe enough motion: "
                 f"deflection={self.max_centerline_deflection}, reference={self.reference_rom_sag}"

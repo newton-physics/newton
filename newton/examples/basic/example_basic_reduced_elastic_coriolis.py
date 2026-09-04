@@ -118,7 +118,7 @@ class Example:
             label="coriolis_uncoupled_basis",
         )
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         shape_cfg = newton.ModelBuilder.ShapeConfig()

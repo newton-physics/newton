@@ -399,8 +399,8 @@ def eval_single_articulation_fk(
         # Transform joint motion into world space.
         linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            # FREE / DISTANCE joint linear DOFs follow Newton's COM-velocity
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ELASTIC:
+            # FREE / DISTANCE / ELASTIC joint linear DOFs follow Newton's COM-velocity
             # convention, so convert the relative child COM twist to an
             # origin-referenced twist before the tree recurrence.
             v_joint_origin = com_twist_to_origin_twist(

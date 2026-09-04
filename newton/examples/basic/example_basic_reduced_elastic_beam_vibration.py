@@ -83,7 +83,7 @@ class Example:
         self.mode_damping = float(beam_basis.mode_damping[0])
         self.natural_frequency = math.sqrt(self.mode_stiffness / self.mode_mass)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.015, 0.0, 0.0, 0.0, 0.015, 0.0, 0.0, 0.0, 0.015)

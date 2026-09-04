@@ -106,7 +106,7 @@ class Example:
         center_z = self.top_z - 0.5 * self.length
         bottom_z = self.top_z - self.length
 
-        builder = newton.ModelBuilder(gravity=-self.gravity)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -self.gravity))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)

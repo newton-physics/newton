@@ -1346,6 +1346,349 @@ def _contact_tangent_conditioning_scale(
 
 
 @wp.func
+def _elastic_contact_jacobian_component(
+    coordinate: int,
+    direction_local: wp.vec3,
+    lever_local: wp.vec3,
+    elastic_sample: int,
+    mode_count: int,
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_max_mode_count: int,
+):
+    if coordinate < 3:
+        return direction_local[coordinate]
+    if coordinate < 6:
+        return wp.cross(lever_local, direction_local)[coordinate - 3]
+    mode = coordinate - 6
+    if mode < mode_count:
+        phi = elastic_shape_vertex_phi[elastic_sample * elastic_max_mode_count + mode]
+        return wp.dot(phi, direction_local)
+    return 0.0
+
+
+@wp.func
+def _elastic_contact_row_mobility_pair(
+    body_id: int,
+    elastic_sample: int,
+    point_local: wp.vec3,
+    offset_local: wp.vec3,
+    direction_a: wp.vec3,
+    direction_b: wp.vec3,
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_elastic_index: wp.array[wp.int32],
+    elastic_joint: wp.array[wp.int32],
+    elastic_mode_count: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_q_start: wp.array[wp.int32],
+    elastic_shape_vertex_local: wp.array[wp.vec3],
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_reduced_inv_mass: wp.array3d[float],
+    elastic_max_mode_count: int,
+):
+    """Return ``J_a M_r^-1 J_b^T`` for one elastic contact endpoint."""
+    if body_id < 0 or elastic_sample < 0:
+        return 0.0
+    elastic_index = body_elastic_index[body_id]
+    if elastic_index < 0:
+        return 0.0
+
+    mode_count = elastic_mode_count[elastic_index]
+    owner_joint = elastic_joint[elastic_index]
+    q_start = joint_q_start[owner_joint] + 7
+    deformed_point_local = elastic_shape_vertex_local[elastic_sample]
+    for mode in range(elastic_max_mode_count):
+        if mode < mode_count:
+            phi = elastic_shape_vertex_phi[elastic_sample * elastic_max_mode_count + mode]
+            deformed_point_local = deformed_point_local + phi * joint_q[q_start + mode]
+
+    lever_local = deformed_point_local + offset_local - body_com[body_id]
+    rotation = wp.transform_get_rotation(body_q[body_id])
+    direction_a_local = wp.quat_rotate_inv(rotation, direction_a)
+    direction_b_local = wp.quat_rotate_inv(rotation, direction_b)
+    width = elastic_max_mode_count + 6
+    mobility = float(0.0)
+    for row in range(width):
+        jacobian_a = _elastic_contact_jacobian_component(
+            row,
+            direction_a_local,
+            lever_local,
+            elastic_sample,
+            mode_count,
+            elastic_shape_vertex_phi,
+            elastic_max_mode_count,
+        )
+        projected = float(0.0)
+        for column in range(width):
+            jacobian_b = _elastic_contact_jacobian_component(
+                column,
+                direction_b_local,
+                lever_local,
+                elastic_sample,
+                mode_count,
+                elastic_shape_vertex_phi,
+                elastic_max_mode_count,
+            )
+            projected = projected + elastic_reduced_inv_mass[elastic_index, row, column] * jacobian_b
+        mobility = mobility + jacobian_a * projected
+    return mobility
+
+
+@wp.func
+def _contact_body_conditioning_scale_elastic(
+    shape_id: int,
+    elastic_sample: int,
+    point_local: wp.vec3,
+    n: wp.vec3,
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_structural_k: wp.array[float],
+    body_elastic_index: wp.array[wp.int32],
+    elastic_joint: wp.array[wp.int32],
+    elastic_mode_count: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_q_start: wp.array[wp.int32],
+    elastic_shape_vertex_local: wp.array[wp.vec3],
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_reduced_inv_mass: wp.array3d[float],
+    elastic_max_mode_count: int,
+    inv_dt_sq: float,
+):
+    if shape_id < 0:
+        return 0.0
+    body_id = shape_body[shape_id]
+    if body_id < 0:
+        return 0.0
+
+    if elastic_sample >= 0 and body_elastic_index[body_id] >= 0:
+        mobility = _elastic_contact_row_mobility_pair(
+            body_id,
+            elastic_sample,
+            point_local,
+            wp.vec3(0.0),
+            n,
+            n,
+            body_q,
+            body_com,
+            body_elastic_index,
+            elastic_joint,
+            elastic_mode_count,
+            joint_q,
+            joint_q_start,
+            elastic_shape_vertex_local,
+            elastic_shape_vertex_phi,
+            elastic_reduced_inv_mass,
+            elastic_max_mode_count,
+        )
+    else:
+        mobility = _contact_delassus_w(body_id, point_local, n, body_q, body_com, body_inv_mass, body_inv_inertia)
+    if mobility <= 0.0:
+        return 0.0
+    return inv_dt_sq / mobility + body_structural_k[body_id]
+
+
+@wp.func
+def _contact_conditioning_scale_elastic(
+    shape_id_0: int,
+    shape_id_1: int,
+    elastic_sample_0: int,
+    elastic_sample_1: int,
+    point0_local: wp.vec3,
+    point1_local: wp.vec3,
+    n: wp.vec3,
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_structural_k: wp.array[float],
+    body_elastic_index: wp.array[wp.int32],
+    elastic_joint: wp.array[wp.int32],
+    elastic_mode_count: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_q_start: wp.array[wp.int32],
+    elastic_shape_vertex_local: wp.array[wp.vec3],
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_reduced_inv_mass: wp.array3d[float],
+    elastic_max_mode_count: int,
+    inv_dt_sq: float,
+):
+    scale_0 = _contact_body_conditioning_scale_elastic(
+        shape_id_0,
+        elastic_sample_0,
+        point0_local,
+        n,
+        shape_body,
+        body_q,
+        body_com,
+        body_inv_mass,
+        body_inv_inertia,
+        body_structural_k,
+        body_elastic_index,
+        elastic_joint,
+        elastic_mode_count,
+        joint_q,
+        joint_q_start,
+        elastic_shape_vertex_local,
+        elastic_shape_vertex_phi,
+        elastic_reduced_inv_mass,
+        elastic_max_mode_count,
+        inv_dt_sq,
+    )
+    scale_1 = _contact_body_conditioning_scale_elastic(
+        shape_id_1,
+        elastic_sample_1,
+        point1_local,
+        n,
+        shape_body,
+        body_q,
+        body_com,
+        body_inv_mass,
+        body_inv_inertia,
+        body_structural_k,
+        body_elastic_index,
+        elastic_joint,
+        elastic_mode_count,
+        joint_q,
+        joint_q_start,
+        elastic_shape_vertex_local,
+        elastic_shape_vertex_phi,
+        elastic_reduced_inv_mass,
+        elastic_max_mode_count,
+        inv_dt_sq,
+    )
+    if scale_0 > 0.0 and scale_1 > 0.0:
+        return _series_scale(scale_0, scale_1)
+    return wp.max(scale_0, scale_1)
+
+
+@wp.func
+def _contact_tangent_conditioning_scale_elastic(
+    shape_id_0: int,
+    shape_id_1: int,
+    elastic_sample_0: int,
+    elastic_sample_1: int,
+    point0_local: wp.vec3,
+    point1_local: wp.vec3,
+    offset0_local: wp.vec3,
+    offset1_local: wp.vec3,
+    n: wp.vec3,
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_elastic_index: wp.array[wp.int32],
+    elastic_joint: wp.array[wp.int32],
+    elastic_mode_count: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_q_start: wp.array[wp.int32],
+    elastic_shape_vertex_local: wp.array[wp.vec3],
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_reduced_inv_mass: wp.array3d[float],
+    elastic_max_mode_count: int,
+    inv_dt_sq: float,
+):
+    tangent_0, tangent_1 = orthonormal_basis(n)
+    w = wp.vec3(0.0)
+    for endpoint in range(2):
+        if endpoint == 0:
+            shape_id = shape_id_0
+            elastic_sample = elastic_sample_0
+            point_local = point0_local
+            offset_local = offset0_local
+        else:
+            shape_id = shape_id_1
+            elastic_sample = elastic_sample_1
+            point_local = point1_local
+            offset_local = offset1_local
+
+        if shape_id >= 0:
+            body_id = shape_body[shape_id]
+            if body_id >= 0 and elastic_sample >= 0 and body_elastic_index[body_id] >= 0:
+                w = w + wp.vec3(
+                    _elastic_contact_row_mobility_pair(
+                        body_id,
+                        elastic_sample,
+                        point_local,
+                        offset_local,
+                        tangent_0,
+                        tangent_0,
+                        body_q,
+                        body_com,
+                        body_elastic_index,
+                        elastic_joint,
+                        elastic_mode_count,
+                        joint_q,
+                        joint_q_start,
+                        elastic_shape_vertex_local,
+                        elastic_shape_vertex_phi,
+                        elastic_reduced_inv_mass,
+                        elastic_max_mode_count,
+                    ),
+                    _elastic_contact_row_mobility_pair(
+                        body_id,
+                        elastic_sample,
+                        point_local,
+                        offset_local,
+                        tangent_0,
+                        tangent_1,
+                        body_q,
+                        body_com,
+                        body_elastic_index,
+                        elastic_joint,
+                        elastic_mode_count,
+                        joint_q,
+                        joint_q_start,
+                        elastic_shape_vertex_local,
+                        elastic_shape_vertex_phi,
+                        elastic_reduced_inv_mass,
+                        elastic_max_mode_count,
+                    ),
+                    _elastic_contact_row_mobility_pair(
+                        body_id,
+                        elastic_sample,
+                        point_local,
+                        offset_local,
+                        tangent_1,
+                        tangent_1,
+                        body_q,
+                        body_com,
+                        body_elastic_index,
+                        elastic_joint,
+                        elastic_mode_count,
+                        joint_q,
+                        joint_q_start,
+                        elastic_shape_vertex_local,
+                        elastic_shape_vertex_phi,
+                        elastic_reduced_inv_mass,
+                        elastic_max_mode_count,
+                    ),
+                )
+            else:
+                w = w + _contact_body_tangent_block(
+                    shape_id,
+                    point_local + offset_local,
+                    tangent_0,
+                    tangent_1,
+                    shape_body,
+                    body_q,
+                    body_com,
+                    body_inv_mass,
+                    body_inv_inertia,
+                )
+
+    trace = w[0] + w[2]
+    if trace <= 0.0:
+        return 0.0
+    discriminant = wp.sqrt(wp.max((w[0] - w[2]) * (w[0] - w[2]) + 4.0 * w[1] * w[1], 0.0))
+    return inv_dt_sq / (0.5 * (trace + discriminant))
+
+
+@wp.func
 def _contact_penalty_floor(material_k: float, k_start: float):
     """Resolve the mutable legacy contact-penalty floor.
 
@@ -2869,69 +3212,6 @@ def apply_angular_drive_limit_torque(
     if not is_parent:
         tau = -tau
     return tau, Haa
-
-
-@wp.func
-def evaluate_revolute_drive_limit_force_hessian(
-    q_wp: wp.quat,
-    q_wc: wp.quat,
-    q_wp_rest: wp.quat,
-    q_wc_rest: wp.quat,
-    q_wp_prev: wp.quat,
-    q_wc_prev: wp.quat,
-    axis: wp.vec3,
-    rest_angle: float,
-    model_drive_ke: float,
-    drive_kd: float,
-    target_pos: float,
-    target_vel: float,
-    lim_lower: float,
-    lim_upper: float,
-    model_limit_ke: float,
-    lim_kd: float,
-    avbd_ke: float,
-    is_parent: bool,
-    dt: float,
-    kappa_cached: wp.vec3,
-    J_world_cached: wp.mat33,
-    has_cached: bool,
-):
-    """Evaluate the revolute free-axis drive or limit torque in world space."""
-    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-    has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
-    if not has_drive and not has_limits:
-        return wp.vec3(0.0), wp.mat33(0.0)
-
-    kappa = kappa_cached
-    J_world = J_world_cached
-    if not has_cached:
-        kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
-
-    theta = wp.dot(kappa, axis)
-    theta_abs = theta + rest_angle
-    omega_p = quat_velocity(q_wp, q_wp_prev, dt)
-    omega_c = quat_velocity(q_wc, q_wc_prev, dt)
-    dkappa_dt = compute_kappa_dot_analytic(q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p, omega_c, kappa)
-    dtheta_dt = wp.dot(dkappa_dt, axis)
-
-    mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
-    f_scalar = float(0.0)
-    H_scalar = float(0.0)
-    if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-        lim_ke = wp.min(avbd_ke, model_limit_ke)
-        lim_d = lim_kd * lim_ke
-        f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
-        H_scalar = lim_ke + lim_d / dt
-    elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-        drive_ke = wp.min(avbd_ke, model_drive_ke)
-        drive_d = drive_kd * drive_ke
-        vel_err = dtheta_dt - target_vel
-        f_scalar = drive_ke * err_pos + drive_d * vel_err
-        H_scalar = drive_ke + drive_d / dt
-
-    if H_scalar > 0.0:
-        return apply_angular_drive_limit_torque(axis, J_world, is_parent, f_scalar, H_scalar)
-    return wp.vec3(0.0), wp.mat33(0.0)
 
 
 @wp.func
@@ -5175,6 +5455,7 @@ def step_body_body_contact_C0_lambda(
     joint_q_start: wp.array[wp.int32],
     elastic_shape_vertex_local: wp.array[wp.vec3],
     elastic_shape_vertex_phi: wp.array[wp.vec3],
+    elastic_reduced_inv_mass: wp.array3d[float],
     elastic_max_mode_count: int,
     legacy_hard_contacts: int,
     contact_compliant_alm: int,
@@ -5253,8 +5534,6 @@ def step_body_body_contact_C0_lambda(
         )
         offset0 = rigid_contact_offset0[i]
         offset1 = rigid_contact_offset1[i]
-        anchor0_local = p0 + offset0
-        anchor1_local = p1 + offset1
         C0_n = -contact_surface_separation(cp0, cp1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
         a0 = cp0 + offset0
         a1 = cp1 + offset1
@@ -5268,9 +5547,11 @@ def step_body_body_contact_C0_lambda(
 
         if contact_compliant_alm == 1:
             # Resolve rho before using it to validate retained history.
-            normal_support = _contact_conditioning_scale(
+            normal_support = _contact_conditioning_scale_elastic(
                 s0,
                 s1,
+                rigid_contact_elastic_sample0[i],
+                rigid_contact_elastic_sample1[i],
                 p0,
                 p1,
                 n,
@@ -5280,20 +5561,42 @@ def step_body_body_contact_C0_lambda(
                 body_inv_mass,
                 body_inv_inertia,
                 body_structural_k,
+                body_elastic_index,
+                elastic_joint,
+                elastic_mode_count,
+                joint_q,
+                joint_q_start,
+                elastic_shape_vertex_local,
+                elastic_shape_vertex_phi,
+                elastic_reduced_inv_mass,
+                elastic_max_mode_count,
                 inv_dt_sq,
             )
             contact_normal_rho[i] = _contact_auto_normal_rho(normal_support, ke)
-            tangent_support = _contact_tangent_conditioning_scale(
+            tangent_support = _contact_tangent_conditioning_scale_elastic(
                 s0,
                 s1,
-                anchor0_local,
-                anchor1_local,
+                rigid_contact_elastic_sample0[i],
+                rigid_contact_elastic_sample1[i],
+                p0,
+                p1,
+                offset0,
+                offset1,
                 n,
                 shape_body,
                 body_q,
                 body_com,
                 body_inv_mass,
                 body_inv_inertia,
+                body_elastic_index,
+                elastic_joint,
+                elastic_mode_count,
+                joint_q,
+                joint_q_start,
+                elastic_shape_vertex_local,
+                elastic_shape_vertex_phi,
+                elastic_reduced_inv_mass,
+                elastic_max_mode_count,
                 inv_dt_sq,
             )
             structural_support = _contact_pair_structural_scale(
@@ -5731,19 +6034,7 @@ def accumulate_body_body_contacts_per_body(
         material_k = contact_material_ke[contact_idx]
         if (elastic_sample0 >= 0 or elastic_sample1 >= 0) and legacy_hard_contacts == 0 and contact_compliant_alm == 0:
             normal_solve_weight = material_k
-        elif (
-            contact_compliant_alm == 1 and (elastic_sample0 >= 0 or elastic_sample1 >= 0) and normal_solve_weight <= 0.0
-        ):
-            # Contact conditioning currently sees only floating-frame inverse mass.
-            # Keep modal-only contacts active when that frame is kinematic.
-            normal_solve_weight = material_k
         tangent_solve_weight = contact_tangent_rho[contact_idx]
-        if (
-            contact_compliant_alm == 1
-            and (elastic_sample0 >= 0 or elastic_sample1 >= 0)
-            and tangent_solve_weight <= 0.0
-        ):
-            tangent_solve_weight = material_k
         friction_c0 = wp.vec3(0.0)
 
         if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
@@ -7290,18 +7581,10 @@ def update_duals_body_body_contacts(
     if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
         if contact_compliant_alm == 1:
             rho_n = contact_normal_rho[idx]
-            if (rigid_contact_elastic_sample0[idx] >= 0 or rigid_contact_elastic_sample1[idx] >= 0) and rho_n <= 0.0:
-                rho_n = contact_material_ke[idx]
         else:
             rho_n = contact_penalty_k[idx]
         material_k = contact_material_ke[idx]
         rho_t = contact_tangent_rho[idx]
-        if (
-            contact_compliant_alm == 1
-            and (rigid_contact_elastic_sample0[idx] >= 0 or rigid_contact_elastic_sample1[idx] >= 0)
-            and rho_t <= 0.0
-        ):
-            rho_t = material_k
         lam_vec = contact_lambda[idx]
         mu = contact_material_mu[idx]
 

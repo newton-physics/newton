@@ -2758,6 +2758,39 @@ class TestModelJoints(unittest.TestCase):
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                 assert_np_equal(state.body_qd.numpy()[0], expected)
 
+    def test_collapse_fixed_joints_remaps_reduced_elastic_owner(self):
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+
+        collapsed = builder.add_link(mass=1.0, inertia=wp.mat33(1.0))
+        builder.add_joint_fixed(parent=-1, child=collapsed)
+
+        elastic = builder.add_body_elastic(
+            mass=1.0,
+            inertia=wp.mat33(1.0),
+            mode_count=1,
+            mode_mass=[1.0],
+            mode_stiffness=[10.0],
+            mode_damping=[0.1],
+        )
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(1.0))
+        builder.add_joint_fixed(parent=elastic, child=child)
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.elastic_body, [0])
+        self.assertEqual(builder.elastic_joint, [0])
+        self.assertEqual(builder.body_elastic_index, [0])
+        self.assertEqual(builder.body_elastic_joint, [0])
+        self.assertEqual(builder.joint_parent_elastic_endpoint, [-1])
+        self.assertEqual(builder.joint_child_elastic_endpoint, [-1])
+
+        model = builder.finalize()
+        self.assertEqual(model.elastic_body_count, 1)
+        self.assertEqual(int(model.elastic_body.numpy()[0]), 0)
+        self.assertEqual(int(model.elastic_joint.numpy()[0]), 0)
+
     def test_collapse_fixed_joints_remaps_custom_body_and_joint_references(self):
         # A custom attribute declaring references="body"/"joint" must have its indices remapped
         # when fixed joints are collapsed, just like the built-in arrays. This is the generic path

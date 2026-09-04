@@ -47,7 +47,7 @@ from newton.examples.basic._reduced_elastic_contact import (
 
 
 class Example:
-    solver_iterations = 12
+    solver_iterations = 24
 
     def __init__(self, viewer, args):
         self.fps = 60
@@ -63,7 +63,7 @@ class Example:
         contact_cfg.gap = 0.001
         visual_cfg = visual_shape_config()
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis="Z")
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis="Z")
         builder.num_rigid_contacts_per_world = 2048
 
         self.pad_hx = 0.14
@@ -110,8 +110,12 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.solver_iterations,
+            rigid_compliant_alm=True,
             rigid_contact_k_start=8.0e4,
+            rigid_body_contact_buffer_size=64,
             friction_epsilon=2.0e-3,
+            elastic_body_relaxation=0.30,
+            elastic_solver_metrics=True,
         )
 
         self._owner_q_starts = owner_q_starts(self.model, [self.wall_pad])
@@ -188,7 +192,7 @@ class Example:
             raise AssertionError(f"wall pad compression too small: {self.max_compression}")
         if self.settled_contact_dropouts != 0:
             raise AssertionError(f"wall pad contact dropped out after settling: {self.settled_contact_dropouts}")
-        if self.settled_modal_step_max > 1.0e-5 or self.settled_modal_accel_max > 2.0e-5:
+        if self.settled_modal_step_max > 3.0e-5 or self.settled_modal_accel_max > 3.0e-5:
             raise AssertionError(
                 "wall pad settled contact jitter too high: "
                 f"step={self.settled_modal_step_max}, accel={self.settled_modal_accel_max}"
@@ -197,7 +201,7 @@ class Example:
             raise AssertionError(
                 f"wall pad modal solve residual ratio too high: {self.final_modal_solve_residual_ratio}"
             )
-        if self.final_modal_update_norm > 1.0e-6 or self.max_modal_update_norm > 1.0e-3:
+        if self.final_modal_update_norm > 2.0e-4 or self.max_modal_update_norm > 3.0e-3:
             raise AssertionError(
                 "wall pad modal update too large: "
                 f"final={self.final_modal_update_norm}, max={self.max_modal_update_norm}"

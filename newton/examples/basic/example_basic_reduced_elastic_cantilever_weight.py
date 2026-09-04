@@ -104,7 +104,7 @@ class Example:
             label="gravity_cantilever_tip_basis",
         )
 
-        builder = newton.ModelBuilder(gravity=-self.gravity)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -self.gravity))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)

@@ -223,7 +223,7 @@ class Example:
         follower_center = coupler_center + midpoint_def_world
         self.rail_x = float(follower_center[0])
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.012, 0.0, 0.0, 0.0, 0.012, 0.0, 0.0, 0.0, 0.012)

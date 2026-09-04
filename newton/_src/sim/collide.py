@@ -23,6 +23,7 @@ from ..geometry.contact_data import (
     prepare_speculative_contact,
 )
 from ..geometry.contact_match import ContactMatcher
+from ..geometry.contact_reduction_global import GlobalContactReducer, create_export_reduced_contacts_kernel
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import ShapeFlags
@@ -142,6 +143,13 @@ class ContactWriterData:
     shape_body: wp.array[int]
     body_elastic_index: wp.array[wp.int32]
     shape_gap: wp.array[float]
+    shape_margin: wp.array[float]
+    joint_q: wp.array[float]
+    joint_q_start: wp.array[wp.int32]
+    elastic_joint: wp.array[wp.int32]
+    elastic_mode_count: wp.array[wp.int32]
+    elastic_max_mode_count: int
+    elastic_shape_vertex_local: wp.array[wp.vec3]
     # Output arrays
     contact_count: wp.array[int]
     out_shape0: wp.array[int]
@@ -319,6 +327,91 @@ def write_contact_speculative(
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
+
+
+@wp.func
+def write_elastic_contact(
+    contact_data: ContactData,
+    writer_data: ContactWriterData,
+    output_index: int,
+):
+    """Export one reduced elastic contact while preserving its modal sample."""
+    shape_a = contact_data.shape_a
+    shape_b = contact_data.shape_b
+    body_a = writer_data.shape_body[shape_a]
+    body_b = writer_data.shape_body[shape_b]
+    elastic_a = body_a >= 0 and writer_data.body_elastic_index[body_a] >= 0
+    elastic_b = body_b >= 0 and writer_data.body_elastic_index[body_b] >= 0
+    if elastic_a == elastic_b:
+        return
+
+    elastic_shape = shape_a if elastic_a else shape_b
+    rigid_shape = shape_b if elastic_a else shape_a
+    elastic_body = body_a if elastic_a else body_b
+    rigid_body = body_b if elastic_a else body_a
+    elastic_sample = contact_data.sort_sub_key
+
+    normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
+    center = contact_data.contact_point_center
+    distance = contact_data.contact_distance
+    point_a_world = center - 0.5 * distance * normal_a_to_b
+    point_b_world = center + 0.5 * distance * normal_a_to_b
+    rigid_point_world = point_b_world if elastic_a else point_a_world
+    normal_rigid_to_elastic = -normal_a_to_b if elastic_a else normal_a_to_b
+
+    index = output_index
+    if index < 0:
+        index = wp.atomic_add(writer_data.contact_count, 0, 1)
+    if index >= writer_data.contact_max:
+        return
+
+    elastic_index = writer_data.body_elastic_index[elastic_body]
+    owner_joint = writer_data.elastic_joint[elastic_index]
+    owner_q_start = writer_data.joint_q_start[owner_joint]
+    X_we = wp.transform(
+        wp.vec3(
+            writer_data.joint_q[owner_q_start + 0],
+            writer_data.joint_q[owner_q_start + 1],
+            writer_data.joint_q[owner_q_start + 2],
+        ),
+        wp.quat(
+            writer_data.joint_q[owner_q_start + 3],
+            writer_data.joint_q[owner_q_start + 4],
+            writer_data.joint_q[owner_q_start + 5],
+            writer_data.joint_q[owner_q_start + 6],
+        ),
+    )
+    X_wr = writer_data.body_q[rigid_body] if rigid_body >= 0 else wp.transform_identity()
+    X_rw = wp.transform_inverse(X_wr)
+
+    margin_rigid = writer_data.shape_margin[rigid_shape]
+    margin_elastic = writer_data.shape_margin[elastic_shape]
+    writer_data.out_shape0[index] = rigid_shape
+    writer_data.out_shape1[index] = elastic_shape
+    writer_data.out_point0[index] = wp.transform_point(X_rw, rigid_point_world)
+    writer_data.out_point1[index] = writer_data.elastic_shape_vertex_local[elastic_sample]
+    writer_data.out_offset0[index] = wp.transform_vector(X_rw, margin_rigid * normal_rigid_to_elastic)
+    writer_data.out_offset1[index] = wp.transform_vector(
+        wp.transform_inverse(X_we), -margin_elastic * normal_rigid_to_elastic
+    )
+    writer_data.out_normal[index] = normal_rigid_to_elastic
+    writer_data.out_margin0[index] = margin_rigid
+    writer_data.out_margin1[index] = margin_elastic
+    writer_data.out_tids[index] = elastic_sample
+    writer_data.out_elastic_sample0[index] = -1
+    writer_data.out_elastic_sample1[index] = elastic_sample
+
+    if writer_data.out_sort_key.shape[0] > 0:
+        writer_data.out_sort_key[index] = make_contact_sort_key_with_bits(
+            rigid_shape,
+            elastic_shape,
+            elastic_sample,
+            writer_data.shape_index_bits,
+            writer_data.sub_key_bits,
+        )
+
+
+export_reduced_elastic_contacts = create_export_reduced_contacts_kernel(write_elastic_contact)
 
 
 @wp.kernel(enable_backward=False)
@@ -1358,20 +1451,59 @@ class CollisionPipeline:
         self._speculative_enabled = speculative_config is not None
         contact_writer = write_contact_speculative if self._speculative_enabled else write_contact
 
+        shape_is_elastic = np.zeros(shape_count, dtype=bool)
         elastic_shape_pairs = np.empty((0, 2), dtype=np.int32)
-        if getattr(model, "elastic_shape_count", 0) > 0 and model.shape_contact_pairs is not None:
-            candidate_pairs = model.shape_contact_pairs.numpy().reshape((-1, 2))
+        narrow_phase_elastic_pairs = np.empty((0, 2), dtype=np.int32)
+        candidate_pair_array = shape_pairs_filtered if shape_pairs_filtered is not None else model.shape_contact_pairs
+        if getattr(model, "elastic_shape_count", 0) > 0 and candidate_pair_array is not None:
+            candidate_pairs = candidate_pair_array.numpy().reshape((-1, 2))
             shape_body_np = model.shape_body.numpy()
             body_elastic_index_np = model.body_elastic_index.numpy()
-            shape_is_elastic = np.zeros(shape_count, dtype=bool)
             dynamic_shape_mask = shape_body_np >= 0
             shape_is_elastic[dynamic_shape_mask] = body_elastic_index_np[shape_body_np[dynamic_shape_mask]] >= 0
-            pair_mask = shape_is_elastic[candidate_pairs[:, 0]] ^ shape_is_elastic[candidate_pairs[:, 1]]
-            elastic_shape_pairs = candidate_pairs[pair_mask].astype(np.int32, copy=False)
+            elastic_a = shape_is_elastic[candidate_pairs[:, 0]]
+            elastic_b = shape_is_elastic[candidate_pairs[:, 1]]
+            elastic_shape_pairs = candidate_pairs[elastic_a ^ elastic_b].astype(np.int32, copy=False)
+            narrow_phase_elastic_pairs = candidate_pairs[elastic_a | elastic_b].astype(np.int32, copy=False)
+
+        def without_elastic_pairs(pairs: wp.array) -> wp.array:
+            pairs_np = pairs.numpy().reshape((-1, 2))
+            keep = ~(shape_is_elastic[pairs_np[:, 0]] | shape_is_elastic[pairs_np[:, 1]])
+            return wp.array(pairs_np[keep], dtype=wp.vec2i, device=device)
+
+        shape_vertex_range = {}
+        if getattr(model, "elastic_shape_count", 0) > 0:
+            for shape, start, count in zip(
+                model.elastic_shape_shape.numpy(),
+                model.elastic_shape_vertex_start.numpy(),
+                model.elastic_shape_vertex_count.numpy(),
+                strict=True,
+            ):
+                shape_vertex_range[int(shape)] = (int(start), int(count))
+
+        contact_pair_work = []
+        contact_vertex_work = []
+        for pair in elastic_shape_pairs:
+            elastic_shape = int(pair[0]) if shape_is_elastic[int(pair[0])] else int(pair[1])
+            vertex_range = shape_vertex_range.get(elastic_shape)
+            if vertex_range is None:
+                continue
+            start, count = vertex_range
+            contact_pair_work.extend([pair] * count)
+            contact_vertex_work.extend(range(start, start + count))
+
         self.elastic_shape_pairs_max = len(elastic_shape_pairs)
+        self.elastic_contact_work_count = len(contact_vertex_work)
         with wp.ScopedDevice(device):
             self.elastic_shape_pairs = wp.array(elastic_shape_pairs, dtype=wp.vec2i, device=device)
-            self.elastic_shape_pair_count = wp.array([self.elastic_shape_pairs_max], dtype=wp.int32, device=device)
+            self.elastic_contact_pairs = wp.array(contact_pair_work, dtype=wp.vec2i, device=device)
+            self.elastic_contact_vertices = wp.array(contact_vertex_work, dtype=wp.int32, device=device)
+        self.elastic_contact_reducer = GlobalContactReducer(
+            max(self.elastic_contact_work_count, 1),
+            device=device,
+            deterministic=deterministic,
+            enable_reduction=reduce_contacts,
+        )
 
         if using_expert_components:
             if broad_phase_instance is None or narrow_phase is None:
@@ -1395,14 +1527,14 @@ class CollisionPipeline:
                         "shape_pairs_filtered must be provided for explicit broad phase "
                         "(or set model.shape_contact_pairs)"
                     )
-                self.shape_pairs_filtered = shape_pairs_filtered
-                self.shape_pairs_max = len(shape_pairs_filtered)
+                self.shape_pairs_filtered = without_elastic_pairs(shape_pairs_filtered)
+                self.shape_pairs_max = len(self.shape_pairs_filtered)
                 self.shape_pairs_excluded = None
                 self.shape_pairs_excluded_count = 0
             else:
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
-                self.shape_pairs_excluded = self._build_excluded_pairs(model)
+                self.shape_pairs_excluded = self._build_excluded_pairs(model, narrow_phase_elastic_pairs)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
                 )
@@ -1436,8 +1568,8 @@ class CollisionPipeline:
                         "(or set model.shape_contact_pairs)"
                     )
                 self.broad_phase = BroadPhaseExplicit()
-                self.shape_pairs_filtered = shape_pairs_filtered
-                self.shape_pairs_max = len(shape_pairs_filtered)
+                self.shape_pairs_filtered = without_elastic_pairs(shape_pairs_filtered)
+                self.shape_pairs_max = len(self.shape_pairs_filtered)
                 self.shape_pairs_excluded = None
                 self.shape_pairs_excluded_count = 0
             elif self.broad_phase_mode == "nxn":
@@ -1446,7 +1578,7 @@ class CollisionPipeline:
                 self.broad_phase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
-                self.shape_pairs_excluded = self._build_excluded_pairs(model)
+                self.shape_pairs_excluded = self._build_excluded_pairs(model, narrow_phase_elastic_pairs)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
                 )
@@ -1456,7 +1588,7 @@ class CollisionPipeline:
                 self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, sort_type="auto", device=device)
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
-                self.shape_pairs_excluded = self._build_excluded_pairs(model)
+                self.shape_pairs_excluded = self._build_excluded_pairs(model, narrow_phase_elastic_pairs)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
                 )
@@ -1845,8 +1977,11 @@ class CollisionPipeline:
             self._contact_matcher.reset(world_mask)
 
     @staticmethod
-    def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
+    def _build_excluded_pairs(model: Model, additional_pairs: np.ndarray | None = None) -> wp.array[wp.vec2i] | None:
         sorted_pairs = model.shape_collision_filter_pairs_array()
+        if additional_pairs is not None and len(additional_pairs) > 0:
+            additional_pairs = np.sort(np.asarray(additional_pairs, dtype=np.int32), axis=1)
+            sorted_pairs = np.unique(np.concatenate((sorted_pairs, additional_pairs), axis=0), axis=0)
         if sorted_pairs.shape[0] == 0:
             return None
         return wp.array(
@@ -2064,6 +2199,13 @@ class CollisionPipeline:
         writer_data.shape_body = model.shape_body
         writer_data.body_elastic_index = model.body_elastic_index
         writer_data.shape_gap = model.shape_gap
+        writer_data.shape_margin = model.shape_margin
+        writer_data.joint_q = state.joint_q
+        writer_data.joint_q_start = model.joint_q_start
+        writer_data.elastic_joint = model.elastic_joint
+        writer_data.elastic_mode_count = model.elastic_mode_count
+        writer_data.elastic_max_mode_count = model.elastic_max_mode_count
+        writer_data.elastic_shape_vertex_local = model.elastic_shape_vertex_local
         writer_data.contact_count = contacts.rigid_contact_count
         writer_data.out_shape0 = contacts.rigid_contact_shape0
         writer_data.out_shape1 = contacts.rigid_contact_shape1
@@ -2144,11 +2286,14 @@ class CollisionPipeline:
         if (
             getattr(model, "elastic_shape_count", 0) > 0
             and getattr(model, "elastic_shape_vertex_total_count", 0) > 0
-            and self.elastic_shape_pairs_max > 0
+            and self.elastic_contact_work_count > 0
         ):
+            if self.reduce_contacts:
+                self.elastic_contact_reducer.clear_active()
+            elastic_reducer_data = self.elastic_contact_reducer.get_data_struct()
             wp.launch(
                 kernel=create_elastic_shape_contacts,
-                dim=self.elastic_shape_pairs_max * model.elastic_shape_vertex_total_count,
+                dim=self.elastic_contact_work_count,
                 inputs=[
                     state.body_q,
                     state.joint_q,
@@ -2157,17 +2302,12 @@ class CollisionPipeline:
                     model.elastic_joint,
                     model.elastic_mode_count,
                     model.elastic_max_mode_count,
-                    model.elastic_shape_count,
-                    model.elastic_shape_shape,
-                    model.elastic_shape_body,
-                    model.elastic_shape_vertex_start,
-                    model.elastic_shape_vertex_count,
                     model.elastic_shape_vertex_local,
                     model.elastic_shape_vertex_phi,
-                    model.elastic_shape_vertex_total_count,
-                    self.elastic_shape_pairs,
-                    self.elastic_shape_pair_count,
+                    self.elastic_contact_pairs,
+                    self.elastic_contact_vertices,
                     model.shape_transform,
+                    self.geom_transform,
                     model.shape_body,
                     model.shape_type,
                     model.shape_scale,
@@ -2179,6 +2319,11 @@ class CollisionPipeline:
                     model.shape_heightfield_index,
                     model.heightfield_data,
                     model.heightfield_elevations,
+                    model.shape_collision_aabb_lower,
+                    model.shape_collision_aabb_upper,
+                    self.narrow_phase.shape_voxel_resolution,
+                    elastic_reducer_data,
+                    int(self.reduce_contacts),
                     contacts.rigid_contact_max,
                     self._contact_sort_shape_index_bits,
                     self._contact_sort_sub_key_bits,
@@ -2201,6 +2346,32 @@ class CollisionPipeline:
                 ],
                 device=self.device,
             )
+            if self.reduce_contacts:
+                export_num_blocks = max(1, (self.elastic_contact_work_count + 31) // 32)
+                wp.launch_tiled(
+                    kernel=export_reduced_elastic_contacts,
+                    dim=export_num_blocks,
+                    inputs=[
+                        self.elastic_contact_reducer.hashtable.keys,
+                        self.elastic_contact_reducer.ht_values,
+                        self.elastic_contact_reducer.hashtable.active_slots,
+                        self.elastic_contact_reducer.position_depth,
+                        self.elastic_contact_reducer.normal,
+                        self.elastic_contact_reducer.shape_pairs,
+                        self.elastic_contact_reducer.contact_fingerprints,
+                        self.elastic_contact_reducer.exported_flags,
+                        model.shape_type,
+                        self.geom_data,
+                        model.shape_gap,
+                        writer_data,
+                        export_num_blocks,
+                        int(self.device.is_cuda),
+                        int(self.elastic_contact_reducer.deterministic),
+                    ],
+                    device=self.device,
+                    block_dim=32,
+                    record_tape=False,
+                )
 
         # Match contacts against previous frame before sorting.
         if self._contact_matcher is not None:

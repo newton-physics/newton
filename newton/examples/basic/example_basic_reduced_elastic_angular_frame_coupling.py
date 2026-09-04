@@ -106,7 +106,7 @@ class Example:
         }
         self.frame_counter_spin = coupling_z / self.inertia_zz * self.mode_kick["coupled"]
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
 
         inertia = wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, self.inertia_zz)

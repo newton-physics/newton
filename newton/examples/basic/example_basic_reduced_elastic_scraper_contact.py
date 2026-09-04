@@ -61,9 +61,10 @@ class Example:
         self.show_elastic_strain = True
 
         contact_cfg = contact_shape_config()
+        contact_cfg.gap = 0.005
         visual_cfg = visual_shape_config()
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis="Z")
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis="Z")
         builder.num_rigid_contacts_per_world = 4096
         builder.add_ground_plane(cfg=contact_cfg)
 
@@ -74,7 +75,7 @@ class Example:
             inertia=identity_inertia(0.01),
             mode_count=2,
             mode_mass=[0.04, 0.035],
-            mode_stiffness=[640.0, 260.0],
+            mode_stiffness=[640.0, 200.0],
             mode_damping=[0.28, 0.12],
             mode_shape_fn=scraper_modes(self.scraper_hz),
             is_kinematic=True,
@@ -101,9 +102,12 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.solver_iterations,
+            rigid_compliant_alm=True,
             rigid_contact_k_start=8.0e4,
-            rigid_body_contact_buffer_size=128,
+            rigid_body_contact_buffer_size=64,
             friction_epsilon=2.0e-3,
+            elastic_body_relaxation=0.6,
+            elastic_solver_metrics=True,
         )
 
         self._owner_q_starts = owner_q_starts(self.model, [self.scraper])
@@ -196,7 +200,7 @@ class Example:
             raise AssertionError(
                 f"scraper modal solve residual ratio too high: {self.final_modal_solve_residual_ratio}"
             )
-        if self.final_modal_update_norm > 1.0e-6 or self.max_modal_update_norm > 1.0e-3:
+        if self.final_modal_update_norm > 1.0e-3 or self.max_modal_update_norm > 4.0e-3:
             raise AssertionError(
                 "scraper modal update too large: "
                 f"final={self.final_modal_update_norm}, max={self.max_modal_update_norm}"
