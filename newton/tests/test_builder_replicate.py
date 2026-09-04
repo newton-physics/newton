@@ -3,6 +3,7 @@
 
 import gc
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -674,8 +675,14 @@ class TestModelBuilderReplicate(unittest.TestCase):
                             getattr(materialized, name)
                         self.assertFalse(materialized._array_backed_attributes)
 
-                        expected = materialized.finalize(device="cpu")
-                        actual = array_backed.finalize(device="cpu")
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(
+                                "ignore",
+                                message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
+                                category=DeprecationWarning,
+                            )
+                            expected = materialized.finalize(device="cpu")
+                            actual = array_backed.finalize(device="cpu")
 
                         self.assertEqual(actual.world_count, expected.world_count)
                         self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
