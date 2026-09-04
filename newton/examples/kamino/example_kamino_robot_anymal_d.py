@@ -18,7 +18,6 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
-        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -82,14 +81,6 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        if not self.use_kamino_contacts:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-        else:
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)

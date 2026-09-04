@@ -26,10 +26,10 @@ Typical usage example:
 
     # Create a model from the builder and construct additional
     # containers to hold joint-limits, contacts, Jacobians
-    model = builder.finalize()
+    model = ModelKamino.from_newton(builder.finalize())
     data = model.data()
     limits = LimitsKamino(model)
-    contacts = ContactsKamino(builder)
+    contacts = ContactsKamino(model)
     jacobians = DenseSystemJacobians(model, limits, contacts)
 
     # Define a linear solver type to use as a back-end for the
@@ -262,12 +262,11 @@ def _build_delassus_elementwise_sparse(
     # Retrieve the number of non-zero blocks
     num_nzb = jacobian_cts_num_nzb[wid]
 
-    # Compute Jacobian block indices from the tid
-    block_id_i = tid // num_nzb
-    block_id_j = tid % num_nzb
+    # Process each unordered block pair once; the result is mirrored below.
+    block_id_i, block_id_j = upper_triangular_indices_from_index(tid, num_nzb)
 
     # Skip if index exceeds problem size
-    if block_id_i >= num_nzb:
+    if block_id_i < 0 or block_id_i >= num_nzb or block_id_j >= num_nzb:
         return
 
     nzb_start = jacobian_cts_nzb_start[wid]
@@ -282,11 +281,8 @@ def _build_delassus_elementwise_sparse(
     if block_coords_i[1] != block_coords_j[1]:
         return
 
-    # The Delassus matrix is symmetric, so we only compute the upper triangle (ct_i <= ct_j).
     ct_i = block_coords_i[0]
     ct_j = block_coords_j[0]
-    if ct_i > ct_j:
-        return
 
     # Body index (bid) of body k w.r.t the model, from Jacobian block coords
     bid_k = bio + block_coords_i[1] // 6
@@ -352,6 +348,33 @@ def _add_joint_armature_diagonal_regularization_dense(
 
 
 @wp.kernel
+def _add_joint_effort_diagonal_regularization_dense(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    delassus_dim: wp.array[wp.int32],
+    delassus_mio: wp.array[wp.int32],
+    # Outputs:
+    delassus_D: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    ncts = delassus_dim[wid]
+    dmio = delassus_mio[wid]
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    delassus_D[dmio + ncts * row + row] += inv_m_a
+
+
+@wp.kernel
 def _regularize_delassus_diagonal_dense(
     # Inputs:
     delassus_dim: wp.array[wp.int32],
@@ -385,7 +408,8 @@ def _merge_inv_mass_matrix_kernel(
     num_nzb: wp.array[wp.int32],
     nzb_start: wp.array[wp.int32],
     nzb_coords: wp.array2d[wp.int32],
-    nzb_values: wp.array[vec6f],
+    jacobian_nzb_values: wp.array[vec6f],
+    mass_weighted_nzb_values: wp.array[vec6f],
 ):
     """
     Kernel to merge the inverse mass matrix into an existing sparse matrix, so that the resulting
@@ -399,7 +423,7 @@ def _merge_inv_mass_matrix_kernel(
 
     global_block_idx = nzb_start[mat_id] + block_idx
     block_coord = nzb_coords[global_block_idx]
-    block = nzb_values[global_block_idx]
+    block = jacobian_nzb_values[global_block_idx]
 
     body_id = block_coord[1] // 6
 
@@ -421,7 +445,7 @@ def _merge_inv_mass_matrix_kernel(
     block[3] = w[0]
     block[4] = w[1]
     block[5] = w[2]
-    nzb_values[global_block_idx] = block
+    mass_weighted_nzb_values[global_block_idx] = block
 
 
 @functools.cache
@@ -514,6 +538,31 @@ def _add_armature_regularization_sparse(
 
 
 @wp.kernel
+def _add_effort_regularization_sparse(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    row_start: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    # Outputs:
+    combined_regularization: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    vec_id = row_start[wid] + row
+    combined_regularization[vec_id] += inv_m_a
+
+
+@wp.kernel
 def _add_armature_regularization_preconditioned_sparse(
     # Inputs:
     model_info_num_joint_dynamic_cts: wp.array[wp.int32],
@@ -548,6 +597,33 @@ def _add_armature_regularization_preconditioned_sparse(
 
     # Add the armature regularization
     combined_regularization[vec_id] += p * p * inv_m_j
+
+
+@wp.kernel
+def _add_effort_regularization_preconditioned_sparse(
+    # Inputs:
+    model_info_num_effort_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_joint_inv_m_a: wp.array[wp.float32],
+    row_start: wp.array[wp.int32],
+    preconditioner: wp.array[wp.float32],
+    # Outputs:
+    combined_regularization: wp.array[wp.float32],
+):
+    wid, tid = wp.tid()
+
+    num_effort_cts = model_info_num_effort_cts[wid]
+    if num_effort_cts == 0 or tid >= num_effort_cts:
+        return
+
+    world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
+    vec_id = row_start[wid] + row
+    p = preconditioner[vec_id]
+    combined_regularization[vec_id] += p * p * inv_m_a
 
 
 @wp.kernel
@@ -988,8 +1064,10 @@ class DelassusOperator:
         if reset_to_zero:
             self.zero()
 
-        # Build the Delassus matrix parallelized over the upper triangle.
-        # Aligns to warp size (32) to avoid partially-filled warps.
+        # Build the Delassus matrix parallelized over the upper triangle. Warp's
+        # CUDA kernels use 32-thread warps, so pad the work count to keep the
+        # final warp full. The padding is harmless on other devices because the
+        # kernels reject indices outside the upper triangle.
         if isinstance(jacobians, DenseSystemJacobians):
             max_ncts = max(self._world_maxdims) if self._world_maxdims else 0
             upper_tri_size = max_ncts * (max_ncts + 1) // 2
@@ -1014,9 +1092,12 @@ class DelassusOperator:
             )
         else:
             jacobian_cts = jacobians._J_cts.bsm
+            upper_tri_size = jacobian_cts.max_of_num_nzb * (jacobian_cts.max_of_num_nzb + 1) // 2
+            warp_size = 32
+            upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
             wp.launch(
                 kernel=_build_delassus_elementwise_sparse,
-                dim=(self._size.num_worlds, jacobian_cts.max_of_num_nzb * jacobian_cts.max_of_num_nzb),
+                dim=(self._size.num_worlds, upper_tri_size),
                 inputs=[
                     # Inputs:
                     model.info.bodies_offset,
@@ -1047,6 +1128,22 @@ class DelassusOperator:
                     self._operator.info.dim,
                     self._operator.info.mio,
                     # Outputs:
+                    self._operator.mat,
+                ],
+                device=self._device,
+            )
+        if model.size.sum_of_num_effort_joint_cts > 0:
+            wp.launch(
+                kernel=_add_joint_effort_diagonal_regularization_dense,
+                dim=(self._size.num_worlds, model.size.max_of_num_effort_joint_cts),
+                inputs=[
+                    model.info.num_joint_effort_cts,
+                    model.info.joint_effort_cts_offset,
+                    model.info.joint_bounded_cts_group_offset,
+                    model.info.num_joint_friction_cts,
+                    data.joints.inv_m_a,
+                    self._operator.info.dim,
+                    self._operator.info.mio,
                     self._operator.mat,
                 ],
                 device=self._device,
@@ -1166,10 +1263,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         # Create a model from the builder and construct additional
         # containers to hold joint-limits, contacts, Jacobians
-        model = builder.finalize()
+        model = ModelKamino.from_newton(builder.finalize())
         data = model.data()
         limits = LimitsKamino(model)
-        contacts = ContactsKamino(builder)
+        contacts = ContactsKamino(model)
         jacobians = SparseSystemJacobians(model, limits, contacts)
 
         # Build the Jacobians for the model and active limits and contacts
@@ -1379,7 +1476,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         )
 
         # Initialize memory for combined regularization, if necessary
-        if self._model.size.max_of_num_dynamic_joint_cts > 0:
+        if self._model.size.max_of_num_dynamic_joint_cts > 0 or self._model.size.max_of_num_effort_joint_cts > 0:
             self._combined_regularization = wp.empty(
                 (self._model.size.sum_of_max_total_cts,), dtype=wp.float32, device=self._device
             )
@@ -1463,10 +1560,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         else:
             self._col_major_jacobian.update(self._model, self._jacobians, self._limits, self._contacts)
 
-        # Copy current Jacobian values to local constraint Jacobian
-        wp.copy(self.bsm.nzb_values, self.constraint_jacobian.nzb_values)
-
-        # Apply inverse mass matrix to (copy of) constraint Jacobian
+        # Apply inverse mass matrix while copying the current Jacobian values.
         wp.launch(
             kernel=_merge_inv_mass_matrix_kernel,
             dim=(self.bsm.num_matrices, self.bsm.max_of_num_nzb),
@@ -1478,6 +1572,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 self.bsm.num_nzb,
                 self.bsm.nzb_start,
                 self.bsm.nzb_coords,
+                self.constraint_jacobian.nzb_values,
                 # Outputs:
                 self.bsm.nzb_values,
             ],
@@ -1534,39 +1629,72 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             if self._preconditioner is None:
                 # If there is no preconditioner, we add the armature regularization directly to the
                 # combined regularization term.
-                wp.launch(
-                    kernel=_add_armature_regularization_sparse,
-                    dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        # Inputs:
-                        self._model.info.num_joint_dynamic_cts,
-                        self._model.info.joint_dynamic_cts_offset,
-                        self.bsm.row_start,
-                        self._data.joints.inv_m_j,
-                        # Outputs:
-                        self._combined_regularization,
-                    ],
-                    device=self._device,
-                )
+                if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_armature_regularization_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                        inputs=[
+                            # Inputs:
+                            self._model.info.num_joint_dynamic_cts,
+                            self._model.info.joint_dynamic_cts_offset,
+                            self.bsm.row_start,
+                            self._data.joints.inv_m_j,
+                            # Outputs:
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
+                if self._model.size.sum_of_num_effort_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_effort_regularization_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                        inputs=[
+                            self._model.info.num_joint_effort_cts,
+                            self._model.info.joint_effort_cts_offset,
+                            self._model.info.joint_bounded_cts_group_offset,
+                            self._model.info.num_joint_friction_cts,
+                            self.bsm.row_start,
+                            self._data.joints.inv_m_a,
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
             else:
                 # If there is a preconditioner, we need to scale the armature regularization with
                 # the preconditioner terms (the square of the preconditioner, to be exact) before
                 # adding it to the combined regularization term.
-                wp.launch(
-                    kernel=_add_armature_regularization_preconditioned_sparse,
-                    dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-                    inputs=[
-                        # Inputs:
-                        self._model.info.num_joint_dynamic_cts,
-                        self._model.info.joint_dynamic_cts_offset,
-                        self._data.joints.inv_m_j,
-                        self.bsm.row_start,
-                        self._preconditioner,
-                        # Outputs:
-                        self._combined_regularization,
-                    ],
-                    device=self._device,
-                )
+                if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_armature_regularization_preconditioned_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                        inputs=[
+                            # Inputs:
+                            self._model.info.num_joint_dynamic_cts,
+                            self._model.info.joint_dynamic_cts_offset,
+                            self._data.joints.inv_m_j,
+                            self.bsm.row_start,
+                            self._preconditioner,
+                            # Outputs:
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
+                if self._model.size.sum_of_num_effort_joint_cts > 0:
+                    wp.launch(
+                        kernel=_add_effort_regularization_preconditioned_sparse,
+                        dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                        inputs=[
+                            self._model.info.num_joint_effort_cts,
+                            self._model.info.joint_effort_cts_offset,
+                            self._model.info.joint_bounded_cts_group_offset,
+                            self._model.info.num_joint_friction_cts,
+                            self._data.joints.inv_m_a,
+                            self.bsm.row_start,
+                            self._preconditioner,
+                            self._combined_regularization,
+                        ],
+                        device=self._device,
+                    )
 
         self._needs_update = False
 
@@ -1609,8 +1737,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            This uses the diagonal of the pure Delassus matrix, without any regularization or
-            preconditioning.
+            Returns the diagonal of the pure Delassus matrix. Armature and
+            effort-compliance diagonal terms are included; proximal
+            regularization (``eta``) and preconditioning are not.
 
         Args:
             diag: Output vector for the Delassus matrix diagonal entries.
@@ -1642,21 +1771,37 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             device=self._device,
         )
 
-        # Add armature regularization
-        wp.launch(
-            kernel=_add_armature_regularization_sparse,
-            dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
-            inputs=[
-                # Inputs:
-                self._model.info.num_joint_dynamic_cts,
-                self._model.info.joint_dynamic_cts_offset,
-                self.constraint_jacobian.row_start,
-                self._data.joints.inv_m_j,
-                # Outputs:
-                diag,
-            ],
-            device=self._device,
-        )
+        # Add armature and effort regularization
+        if self._model.size.sum_of_num_dynamic_joint_cts > 0:
+            wp.launch(
+                kernel=_add_armature_regularization_sparse,
+                dim=(self.num_matrices, self._model.size.max_of_num_dynamic_joint_cts),
+                inputs=[
+                    # Inputs:
+                    self._model.info.num_joint_dynamic_cts,
+                    self._model.info.joint_dynamic_cts_offset,
+                    self.constraint_jacobian.row_start,
+                    self._data.joints.inv_m_j,
+                    # Outputs:
+                    diag,
+                ],
+                device=self._device,
+            )
+        if self._model.size.sum_of_num_effort_joint_cts > 0:
+            wp.launch(
+                kernel=_add_effort_regularization_sparse,
+                dim=(self.num_matrices, self._model.size.max_of_num_effort_joint_cts),
+                inputs=[
+                    self._model.info.num_joint_effort_cts,
+                    self._model.info.joint_effort_cts_offset,
+                    self._model.info.joint_bounded_cts_group_offset,
+                    self._model.info.num_joint_friction_cts,
+                    self.constraint_jacobian.row_start,
+                    self._data.joints.inv_m_a,
+                    diag,
+                ],
+                device=self._device,
+            )
 
     def compute(self, reset_to_zero: bool = True):
         """

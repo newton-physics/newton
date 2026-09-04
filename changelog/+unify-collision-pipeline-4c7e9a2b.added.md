@@ -1,0 +1,1 @@
+Add solver-owned collision pipelines with configurable rigid and soft self-contact detection schedules keyed by `SolverBase.CollisionSlot`. `SolverVBD` supports scheduled mid-solve detection, and `Contacts` can store reusable triangle-mesh self-contact results.

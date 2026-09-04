@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import warp as wp
 
-from .....core.types import override
-from .types import Descriptor
+from .....sim import BodyFlags
 
 ###
 # Module interface
@@ -19,11 +18,12 @@ from .types import Descriptor
 __all__ = [
     "RigidBodiesData",
     "RigidBodiesModel",
-    "RigidBodyDescriptor",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
     "convert_geom_offset_origin_to_com",
+    "has_zero_inverse_inertia",
+    "is_immovable_for_kamino",
     "update_body_inertias",
     "update_body_wrenches",
 ]
@@ -39,75 +39,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Rigid-Body Containers
 ###
-
-
-@dataclass
-class RigidBodyDescriptor(Descriptor):
-    """
-    A container to describe a single rigid body in the model builder.
-
-    Attributes:
-        name: The name of the body.
-        uid: The unique identifier of the body.
-        m_i: Mass of the body [kg].
-        i_r_com_i: Translational offset of the body center of mass [m].
-        i_I_i: Moment of inertia matrix in local coordinates [kg·m²].
-        q_i_0: Initial absolute pose of the body in world coordinates.
-        u_i_0: Initial absolute twist of the body in world coordinates.
-        wid: Index of the world to which the body belongs.
-        bid: Index of the body w.r.t. its world.
-    """
-
-    ###
-    # Attributes
-    ###
-
-    m_i: float = 0.0
-    """Mass of the body."""
-
-    i_r_com_i: wp.vec3f = field(default_factory=wp.vec3f)
-    """Translational offset of the body center of mass w.r.t the reference frame expressed in local coordinates."""
-
-    i_I_i: wp.mat33f = field(default_factory=wp.mat33f)
-    """Moment of inertia matrix of the body expressed in local coordinates."""
-
-    q_i_0: wp.transformf = field(default_factory=wp.transformf)
-    """Initial absolute pose of the body expressed in world coordinates."""
-
-    u_i_0: wp.spatial_vectorf = field(default_factory=wp.spatial_vectorf)
-    """Initial absolute twist of the body expressed in world coordinates."""
-
-    ###
-    # Metadata - to be set by the WorldDescriptor when added
-    ###
-
-    wid: int = -1
-    """
-    Index of the world to which the body belongs.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    bid: int = -1
-    """
-    Index of the body w.r.t. its world.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    @override
-    def __repr__(self) -> str:
-        """Returns a human-readable string representation of the RigidBodyDescriptor."""
-        return (
-            f"RigidBodyDescriptor(\n"
-            f"name: {self.name},\n"
-            f"uid: {self.uid},\n"
-            f"m_i: {self.m_i},\n"
-            f"i_I_i:\n{self.i_I_i},\n"
-            f"q_i_0: {self.q_i_0},\n"
-            f"u_i_0: {self.u_i_0}\n"
-            f"wid: {self.wid},\n"
-            f"bid: {self.bid},\n"
-            f")"
-        )
 
 
 @dataclass
@@ -182,7 +113,7 @@ class RigidBodiesModel:
 
     inv_m_i: wp.array[wp.float32] | None = None
     """
-    Inverse mass (1/m_i) of each body.
+    Inverse mass (1/m_i) of each body, set to zero for immovable bodies.
     Shape of ``(num_bodies,)``.
     """
 
@@ -194,7 +125,17 @@ class RigidBodiesModel:
 
     inv_i_I_i: wp.array[wp.mat33f] | None = None
     """
-    Inverse of the local moment of inertia of each body.
+    Inverse of the local moment of inertia of each body, set to zero for
+    immovable bodies.
+    Shape of ``(num_bodies,)``.
+    """
+
+    is_immovable: wp.array[wp.int32] | None = None
+    """
+    Per-body boolean (0/1) marking whether Kamino treats the body as immovable,
+    either because it is physically massless (zero inverse mass and inverse
+    inertia in Newton) or because it is flagged
+    :attr:`newton.BodyFlags.KINEMATIC` / :attr:`newton.BodyFlags.PROXY`.
     Shape of ``(num_bodies,)``.
     """
 
@@ -330,6 +271,36 @@ class RigidBodiesData:
 
 
 @wp.func
+def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
+    """Return whether every element of an inverse inertia matrix is zero."""
+    return (
+        inv_inertia[0, 0] == 0.0
+        and inv_inertia[0, 1] == 0.0
+        and inv_inertia[0, 2] == 0.0
+        and inv_inertia[1, 0] == 0.0
+        and inv_inertia[1, 1] == 0.0
+        and inv_inertia[1, 2] == 0.0
+        and inv_inertia[2, 0] == 0.0
+        and inv_inertia[2, 1] == 0.0
+        and inv_inertia[2, 2] == 0.0
+    )
+
+
+@wp.func
+def is_immovable_for_kamino(inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32) -> bool:
+    """Whether a body is treated as immovable by Kamino.
+
+    A body is immovable if it is either physically massless (zero inverse mass
+    and zero inverse inertia) or flagged as externally driven via KINEMATIC or
+    PROXY. Its inverse mass and inertia are masked to zero in Kamino, so the
+    body neither responds to forces nor contributes to constraint dynamics.
+    """
+    return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (
+        (flags & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
+    )
+
+
+@wp.func
 def make_symmetric(A: wp.mat33f) -> wp.mat33f:
     """
     Makes a given matrix symmetric by averaging it with its transpose.
@@ -398,7 +369,7 @@ def _update_body_inertias(
     i_I_i = model_bodies_i_I_i_in[bid]
     inv_i_I_i = model_bodies_inv_i_I_i_in[bid]
 
-    # Compute the moment of inertia matrices in world coordinates
+    # Compute the moment of inertia matrices in world coordinates.
     I_i, inv_I_i = transform_body_inertial_properties(p_i, i_I_i, inv_i_I_i)
 
     # Store results in the output arrays
