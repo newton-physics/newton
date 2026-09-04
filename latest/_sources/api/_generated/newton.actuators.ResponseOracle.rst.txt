@@ -1,0 +1,8 @@
+﻿newton.actuators.ResponseOracle
+===============================
+
+.. autoclass:: newton.actuators.ResponseOracle
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

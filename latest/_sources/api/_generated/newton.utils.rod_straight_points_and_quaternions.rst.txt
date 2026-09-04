@@ -1,0 +1,6 @@
+﻿newton.utils.rod\_straight\_points\_and\_quaternions
+====================================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: rod_straight_points_and_quaternions

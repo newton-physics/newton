@@ -1,0 +1,6 @@
+﻿newton.eval\_inverse\_dynamics\_force
+=====================================
+
+.. currentmodule:: newton
+
+.. autofunction:: eval_inverse_dynamics_force

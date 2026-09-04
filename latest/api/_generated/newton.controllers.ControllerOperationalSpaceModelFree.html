@@ -1,0 +1,1501 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>newton.controllers.ControllerOperationalSpaceModelFree &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6036a7ed" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+
+    <script src="../../_static/documentation_options.js?v=cd9de7ed"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'api/_generated/newton.controllers.ControllerOperationalSpaceModelFree';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="newton.controllers.DifferentialIKMethod" href="newton.controllers.DifferentialIKMethod.html" />
+    <link rel="prev" title="newton.controllers.ControllerOperationalSpace" href="newton.controllers.ControllerOperationalSpace.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.7.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../solvers/kamino.html">Kamino</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="../newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../newton_controllers.html" class="nav-link">newton.controllers</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.controllers.ControllerOperationalSpaceModelFree</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="newton-controllers-controlleroperationalspacemodelfree">
+<h1>newton.controllers.ControllerOperationalSpaceModelFree<a class="headerlink" href="#newton-controllers-controlleroperationalspacemodelfree" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.controllers.</span></span><span class="sig-name descname"><span class="pre">ControllerOperationalSpaceModelFree</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">controlled_dofs_per_robot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_stiffness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_damping</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">operational_frame_pose_world</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_TRANSFORM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_inertia_decoupling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_partial_inertia_decoupling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gravity_compensation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_wrench_feedforward</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_wrench_feedback</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_selection_axes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wrench_selection_axes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wrench_stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">linear_selection_frame_operational</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_QUAT</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">angular_selection_frame_operational</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_QUAT</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_null_space_control</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">null_space_stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">null_space_damping</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/controllers/impl/operational_space/model_free.py#L302"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference internal" href="newton.controllers.ControllerBase.html#newton.controllers.ControllerBase" title="newton._src.controllers.controller.ControllerBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerBase</span></code></a></p>
+<p>Task-space (operational-space) impedance controller with caller-supplied kinematics and dynamics.</p>
+<p>Implements the operational-space motion-control law. This model-free
+variant expects the tool pose, tool twist, tool-point Jacobian, and
+(when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=True</span></code>) the controlled-DOF mass matrix to
+be computed externally — it is the caller’s responsibility to compute
+these correctly and write them into the input struct before every
+<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.step" title="newton.controllers.ControllerOperationalSpaceModelFree.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a>.</p>
+<p>Every port is <strong>per-robot</strong>: a 1-D array with one entry per robot,
+ordered to match <code class="docutils literal notranslate"><span class="pre">controlled_dofs_per_robot</span></code> — except
+<code class="docutils literal notranslate"><span class="pre">outputs.joint_f</span></code>, which is <strong>compact</strong>: one entry per controlled DOF,
+robot 0’s DOFs first, then robot 1’s.</p>
+<p>Every port, of any dtype, may be bound either to a plain array or to an
+indexed view of a simulation-sized array.</p>
+<p>Array shapes and devices are validated on each direct call to
+<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.step" title="newton.controllers.ControllerOperationalSpaceModelFree.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a>, but not when a captured graph is replayed, since the
+checks run in Python at capture time only.</p>
+<p>Supports heterogeneous robot fleets — robots may have different
+controlled-DOF counts. Only the Jacobian and mass matrix are padded, to
+<code class="docutils literal notranslate"><span class="pre">max_controlled_dofs</span></code>; every other buffer is compact or per-robot.</p>
+<p>Allocate input and output structs via <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.input" title="newton.controllers.ControllerOperationalSpaceModelFree.input"><code class="xref py py-meth docutils literal notranslate"><span class="pre">input()</span></code></a> and <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.output" title="newton.controllers.ControllerOperationalSpaceModelFree.output"><code class="xref py py-meth docutils literal notranslate"><span class="pre">output()</span></code></a>.
+All field names on those structs are fixed — see <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Inputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Inputs</span></code></a> and
+<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Outputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Outputs</span></code></a> for the typed schema. Fields for disabled features
+(e.g. <code class="docutils literal notranslate"><span class="pre">mass_matrix</span></code> when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=False</span></code>) are
+allocated as <code class="docutils literal notranslate"><span class="pre">None</span></code> and must not be written.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>controlled_dofs_per_robot</strong> (<em>wp.array</em><em>[</em><em>wp.int32</em><em>]</em>) – Controlled-DOF count for each robot. Its
+length sets <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.controlled_robot_count" title="newton.controllers.ControllerOperationalSpaceModelFree.controlled_robot_count"><code class="xref py py-attr docutils literal notranslate"><span class="pre">controlled_robot_count</span></code></a> (the length of every
+per-robot port), its sum sets <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.total_controlled_dofs" title="newton.controllers.ControllerOperationalSpaceModelFree.total_controlled_dofs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">total_controlled_dofs</span></code></a> (the
+length of <code class="docutils literal notranslate"><span class="pre">outputs.joint_f</span></code>), and its maximum sets
+<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.max_controlled_dofs" title="newton.controllers.ControllerOperationalSpaceModelFree.max_controlled_dofs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">max_controlled_dofs</span></code></a> (the padded width of the Jacobian and
+mass matrix). Every entry must be positive, and — when
+<code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=True</span></code> — at least 6, since the
+operational-space mass matrix is only invertible for a robot
+whose Jacobian can span all 6 task dimensions.</p></li>
+<li><p><strong>motion_stiffness</strong> (<em>wp.array</em><em>[</em><em>wp.spatial_vector</em><em>] </em><em>| </em><em>wp.spatial_vector</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Task-space position/orientation-error gain Kp,
+per-axis in the operational frame (e.g. “stiff along the
+insertion axis” stays meaningful as that frame reorients). Units
+depend on <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code>: [1/s²] when enabled, since
+the spring-damper term is then a task-space acceleration
+premultiplied by Lambda; otherwise [N/m] on the position axes
+and [N·m/rad] on the orientation axes. Pass a scalar to apply
+the same gain to every axis of every robot, a
+<code class="docutils literal notranslate"><span class="pre">wp.spatial_vector</span></code> to apply the same 6 per-axis gains to every
+robot, an array of shape [controlled_robot_count] to set them
+individually (one <code class="docutils literal notranslate"><span class="pre">wp.spatial_vector</span></code> of 6 gains per robot), or
+<code class="docutils literal notranslate"><span class="pre">None</span></code> to read <code class="docutils literal notranslate"><span class="pre">inputs.motion_stiffness</span></code> each step.</p></li>
+<li><p><strong>motion_damping</strong> (<em>wp.array</em><em>[</em><em>wp.spatial_vector</em><em>] </em><em>| </em><em>wp.spatial_vector</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Task-space velocity-error gain Kd, operational-frame-
+local like <code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code>, [1/s] when
+<code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise [N·s/m] on the
+position axes and [N·m·s/rad] on the orientation axes. Same
+format as <code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code>.</p></li>
+<li><p><strong>operational_frame_pose_world</strong> (<em>wp.array</em><em>[</em><em>wp.transform</em><em>] </em><em>| </em><em>wp.transform</em><em> | </em><em>None</em>) – World pose of the operational frame —
+the frame <code class="docutils literal notranslate"><span class="pre">inputs.desired_tool_pose_operational</span></code>/
+<code class="docutils literal notranslate"><span class="pre">inputs.desired_twist_operational</span></code> are expressed relative to,
+and that <code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code>/<code class="docutils literal notranslate"><span class="pre">motion_damping</span></code>/
+<code class="docutils literal notranslate"><span class="pre">wrench_stiffness</span></code> are interpreted in. Need not coincide with
+the tool’s own current orientation (e.g. a frame aligned to a
+work surface, tracked independently of how the tool is
+oriented). Pass a <code class="docutils literal notranslate"><span class="pre">wp.transform</span></code> to apply the same fixed pose
+to every robot, an array of shape [controlled_robot_count] to
+set them individually (fixed for the controller’s lifetime), or
+<code class="docutils literal notranslate"><span class="pre">None</span></code> to read <code class="docutils literal notranslate"><span class="pre">inputs.operational_frame_pose_world</span></code> each
+step for a time-varying frame. Defaults to identity (coincides
+with world frame).</p></li>
+<li><p><strong>use_inertia_decoupling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Premultiply the task-space spring-damper term
+by Lambda, the operational-space mass matrix. Note that if
+<code class="docutils literal notranslate"><span class="pre">inputs.mass_matrix</span></code> omits a DOF that is both free and
+dynamically coupled to the controlled set, then there is not
+sufficient information to fully dynamically decouple the
+system. No error is raised, as omitting certain joints is
+often a useful approximation. It is the user’s responsibility
+to provide the needed information.</p></li>
+<li><p><strong>use_partial_inertia_decoupling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Compute Lambda ignoring the coupling
+between translational and rotational inertia. Only meaningful
+when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=True</span></code>.</p></li>
+<li><p><strong>use_gravity_compensation</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Add <code class="docutils literal notranslate"><span class="pre">inputs.gravity_force</span></code> directly to
+the summed joint torque.</p></li>
+<li><p><strong>use_wrench_feedforward</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Command the desired wrench directly, as a
+feedforward term in the wrench law, combined with motion control
+through Khatib’s generalized selection matrix Omega (see
+<code class="docutils literal notranslate"><span class="pre">linear_selection_frame_operational</span></code>/
+<code class="docutils literal notranslate"><span class="pre">angular_selection_frame_operational</span></code> below). When both this
+and <code class="docutils literal notranslate"><span class="pre">use_wrench_feedback</span></code> are <code class="docutils literal notranslate"><span class="pre">False</span></code>, every axis is
+motion-controlled and <code class="docutils literal notranslate"><span class="pre">motion_selection_axes</span></code>/
+<code class="docutils literal notranslate"><span class="pre">wrench_selection_axes</span></code>/<code class="docutils literal notranslate"><span class="pre">wrench_stiffness</span></code> must be left
+unset, and <code class="docutils literal notranslate"><span class="pre">linear_selection_frame_operational</span></code>/
+<code class="docutils literal notranslate"><span class="pre">angular_selection_frame_operational</span></code> must be left at their
+identity default.</p></li>
+<li><p><strong>use_wrench_feedback</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Correct the wrench command by
+<code class="docutils literal notranslate"><span class="pre">Kp</span> <span class="pre">·</span> <span class="pre">(desired</span> <span class="pre">-</span> <span class="pre">measured)</span></code> using <code class="docutils literal notranslate"><span class="pre">inputs.measured_wrench_world</span></code>
+each step, as a feedback term in the wrench law. May be enabled
+with or without <code class="docutils literal notranslate"><span class="pre">use_wrench_feedforward</span></code>: without it, the
+command is the feedback correction alone, regulating the
+measured wrench toward the desired setpoint with no separate
+feedforward term.</p></li>
+<li><p><strong>motion_selection_axes</strong> (<em>wp.array</em><em>[</em><em>wp.spatial_vector</em><em>] </em><em>| </em><em>wp.spatial_vector</em><em> | </em><em>None</em>) – Diagonal selection weight per task axis (0/1,
+or any scalar weight): (linear x, y, z, angular x, y, z), the
+linear half interpreted in <code class="docutils literal notranslate"><span class="pre">linear_selection_frame_operational</span></code>
+(S_f) and the angular half in
+<code class="docutils literal notranslate"><span class="pre">angular_selection_frame_operational</span></code> (S_tau). Pass a
+<code class="docutils literal notranslate"><span class="pre">wp.spatial_vector</span></code> to apply the same weights to every robot,
+or an array of shape [controlled_robot_count] to set them
+individually. Only meaningful when wrench control is enabled;
+defaults to every axis motion-controlled,
+<code class="docutils literal notranslate"><span class="pre">wp.spatial_vector(1,</span> <span class="pre">1,</span> <span class="pre">1,</span> <span class="pre">1,</span> <span class="pre">1,</span> <span class="pre">1)</span></code>.
+Usually the complement of <code class="docutils literal notranslate"><span class="pre">wrench_selection_axes</span></code> — each axis
+under motion control, not force control, and vice versa — but
+that is not enforced: nothing here requires the two to
+partition the 6 axes.</p></li>
+<li><p><strong>wrench_selection_axes</strong> (<em>wp.array</em><em>[</em><em>wp.spatial_vector</em><em>] </em><em>| </em><em>wp.spatial_vector</em><em> | </em><em>None</em>) – Diagonal selection weight per task axis, same
+format and selection frames as <code class="docutils literal notranslate"><span class="pre">motion_selection_axes</span></code>, applied
+to the wrench term. Required when wrench control is enabled.
+Usually the complement of <code class="docutils literal notranslate"><span class="pre">motion_selection_axes</span></code>, but that is
+not enforced — see its docstring above.</p></li>
+<li><p><strong>wrench_stiffness</strong> (<em>wp.array</em><em>[</em><em>wp.spatial_vector</em><em>] </em><em>| </em><em>wp.spatial_vector</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Contact-wrench proportional feedback gain Kp,
+operational-frame-local like <code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code>, dimensionless
+(multiplies a wrench error directly, not a pose error) on both
+the force and moment axes. Same format as <code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code>.
+Only meaningful when <code class="docutils literal notranslate"><span class="pre">use_wrench_feedback=True</span></code>.</p></li>
+<li><p><strong>linear_selection_frame_operational</strong> (<em>wp.array</em><em>[</em><em>wp.quat</em><em>] </em><em>| </em><em>wp.quat</em><em> | </em><em>None</em>) – Orientation of S_f, the frame
+<code class="docutils literal notranslate"><span class="pre">motion_selection_axes</span></code>/<code class="docutils literal notranslate"><span class="pre">wrench_selection_axes</span></code>’s linear
+(force) half is interpreted in, relative to the operational
+frame — e.g. aligned to a contact surface’s normal. Independent
+of <code class="docutils literal notranslate"><span class="pre">angular_selection_frame_operational</span></code> (S_tau); the two need
+not agree. Pass a <code class="docutils literal notranslate"><span class="pre">wp.quat</span></code> to apply the same fixed orientation
+to every robot, an array of shape [controlled_robot_count] to set
+them individually, or <code class="docutils literal notranslate"><span class="pre">None</span></code> to read
+<code class="docutils literal notranslate"><span class="pre">inputs.linear_selection_frame_operational</span></code> each step for a
+time-varying frame. Defaults to identity.</p></li>
+<li><p><strong>angular_selection_frame_operational</strong> (<em>wp.array</em><em>[</em><em>wp.quat</em><em>] </em><em>| </em><em>wp.quat</em><em> | </em><em>None</em>) – Orientation of S_tau, the frame
+<code class="docutils literal notranslate"><span class="pre">motion_selection_axes</span></code>/<code class="docutils literal notranslate"><span class="pre">wrench_selection_axes</span></code>’s angular
+(moment) half is interpreted in, relative to the operational
+frame — e.g. a compliant rotation axis. Same format as
+<code class="docutils literal notranslate"><span class="pre">linear_selection_frame_operational</span></code>.</p></li>
+<li><p><strong>use_null_space_control</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Pursue a secondary joint-space posture task
+in the null space of the primary task, so it does not disturb
+task-space motion. Requires every robot to have more than 6
+controlled DOFs (redundant relative to the 6D task). The
+null-space projector is dynamically consistent (accounts for the
+robot’s own inertia) when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=True</span></code> and
+<code class="docutils literal notranslate"><span class="pre">use_partial_inertia_decoupling=False</span></code>, or a kinematics-only
+(Moore-Penrose) projector otherwise.</p></li>
+<li><p><strong>null_space_stiffness</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Joint-space posture position-error gain Kp.
+Units depend on <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code>: [1/s²] when enabled,
+since the posture PD term is then premultiplied by the mass
+matrix; otherwise [N/m or N·m/rad]. Pass a scalar to apply the
+same gain to every controlled DOF, an array of shape
+[total_controlled_dofs] to set them individually, or <code class="docutils literal notranslate"><span class="pre">None</span></code> to
+read <code class="docutils literal notranslate"><span class="pre">inputs.null_space_stiffness</span></code> each step. Only meaningful
+when <code class="docutils literal notranslate"><span class="pre">use_null_space_control=True</span></code>.</p></li>
+<li><p><strong>null_space_damping</strong> (<em>wp.array</em><em>[</em><em>wp.float32</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Joint-space posture velocity-error gain Kd,
+[1/s] when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise
+[N·s/m or N·m·s/rad]. Same format as <code class="docutils literal notranslate"><span class="pre">null_space_stiffness</span></code>.</p></li>
+<li><p><strong>device</strong> (<em>Any</em>) – Warp device.</p></li>
+<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether internal buffers need gradient support.</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Inputs</span></span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Input struct returned by <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.input" title="newton.controllers.ControllerOperationalSpaceModelFree.input"><code class="xref py py-meth docutils literal notranslate"><span class="pre">input()</span></code></a>.</p>
+<p>Every field is per-robot, shape [controlled_robot_count], except
+<code class="docutils literal notranslate"><span class="pre">jacobian_tool_world</span></code> and <code class="docutils literal notranslate"><span class="pre">mass_matrix</span></code>, which are padded to
+[controlled_robot_count, …, max_controlled_dofs]. Optional fields
+are <code class="docutils literal notranslate"><span class="pre">None</span></code> when the corresponding feature is disabled at
+construction.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.angular_selection_frame_operational">
+<span class="sig-name descname"><span class="pre">angular_selection_frame_operational</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.quatf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.quatf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.angular_selection_frame_operational" title="Link to this definition">#</a></dt>
+<dd><p>Orientation of S_tau, relative to the operational frame, shape [controlled_robot_count]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when fixed at construction, or when wrench control is disabled.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_tool_pose_operational">
+<span class="sig-name descname"><span class="pre">desired_tool_pose_operational</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_tool_pose_operational" title="Link to this definition">#</a></dt>
+<dd><p>Desired tool pose, relative to the operational frame, shape [controlled_robot_count].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_twist_operational">
+<span class="sig-name descname"><span class="pre">desired_twist_operational</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_twist_operational" title="Link to this definition">#</a></dt>
+<dd><p>Desired tool twist (linear, angular), components expressed in the operational frame [m/s, rad/s], shape [controlled_robot_count].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_wrench_world">
+<span class="sig-name descname"><span class="pre">desired_wrench_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_wrench_world" title="Link to this definition">#</a></dt>
+<dd><p>Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count] — the feedforward term, and/or the feedback setpoint. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless wrench control is enabled.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.gravity_force">
+<span class="sig-name descname"><span class="pre">gravity_force</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.gravity_force" title="Link to this definition">#</a></dt>
+<dd><p>Gravity generalized forces [N or N·m], compact, shape [total_controlled_dofs]. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_gravity_compensation=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.jacobian_tool_world">
+<span class="sig-name descname"><span class="pre">jacobian_tool_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array3d[wp.float32]</span> <span class="pre">|</span> <span class="pre">&lt;warp._src.types.indexedarray</span> <span class="pre">object&gt;</span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.jacobian_tool_world" title="Link to this definition">#</a></dt>
+<dd><p>Tool-point Jacobian in world coordinates, shape [controlled_robot_count, 6, max_controlled_dofs]. Rows 0-2 map a controlled DOF’s velocity to the tool point’s linear velocity [1 or m], rows 3-5 to its angular velocity [1/m or 1], depending on whether that DOF is revolute or prismatic.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q">
+<span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q" title="Link to this definition">#</a></dt>
+<dd><p>Current joint positions [m or rad], compact, shape [total_controlled_dofs]. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_null_space_control=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q_des_null">
+<span class="sig-name descname"><span class="pre">joint_q_des_null</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q_des_null" title="Link to this definition">#</a></dt>
+<dd><p>Desired joint positions for the null-space posture task [m or rad], compact, shape [total_controlled_dofs]. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_null_space_control=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd">
+<span class="sig-name descname"><span class="pre">joint_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd" title="Link to this definition">#</a></dt>
+<dd><p>Current joint velocities [m/s or rad/s], compact, shape [total_controlled_dofs]. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_null_space_control=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd_des_null">
+<span class="sig-name descname"><span class="pre">joint_qd_des_null</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd_des_null" title="Link to this definition">#</a></dt>
+<dd><p>Desired joint velocities for the null-space posture task [m/s or rad/s], compact, shape [total_controlled_dofs]. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_null_space_control=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.linear_selection_frame_operational">
+<span class="sig-name descname"><span class="pre">linear_selection_frame_operational</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.quatf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.quatf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.linear_selection_frame_operational" title="Link to this definition">#</a></dt>
+<dd><p>Orientation of S_f, relative to the operational frame, shape [controlled_robot_count]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when fixed at construction, or when wrench control is disabled.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.mass_matrix">
+<span class="sig-name descname"><span class="pre">mass_matrix</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array3d[wp.float32]</span> <span class="pre">|</span> <span class="pre">&lt;warp._src.types.indexedarray</span> <span class="pre">object&gt;</span> <span class="pre">|</span> <span class="pre">None</span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.mass_matrix" title="Link to this definition">#</a></dt>
+<dd><p>[kg] translational, [kg·m] mixed, [kg·m²] rotational. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling=True</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Joint-space mass matrix over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than <code class="docutils literal notranslate"><span class="pre">max_controlled_dofs</span></code> DOFs leaves the trailing rows and columns unread. Units by row/column DOF type</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.measured_wrench_world">
+<span class="sig-name descname"><span class="pre">measured_wrench_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.measured_wrench_world" title="Link to this definition">#</a></dt>
+<dd><p>Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. <code class="docutils literal notranslate"><span class="pre">None</span></code> unless <code class="docutils literal notranslate"><span class="pre">use_wrench_feedback=True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_damping">
+<span class="sig-name descname"><span class="pre">motion_damping</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_damping" title="Link to this definition">#</a></dt>
+<dd><p>Task-space velocity-error gain Kd, operational-frame-local, shape [controlled_robot_count]. [1/s] when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise [N·s/m] / [N·m·s/rad]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when gains are baked at construction.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_stiffness">
+<span class="sig-name descname"><span class="pre">motion_stiffness</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_stiffness" title="Link to this definition">#</a></dt>
+<dd><p>Task-space position/orientation-error gain Kp, operational-frame-local, shape [controlled_robot_count]. [1/s²] when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise [N/m] / [N·m/rad]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when gains are baked at construction.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_damping">
+<span class="sig-name descname"><span class="pre">null_space_damping</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_damping" title="Link to this definition">#</a></dt>
+<dd><p>Joint-space posture velocity-error gain Kd, compact, shape [total_controlled_dofs]. [1/s] when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise [N·s/m or N·m·s/rad]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when gains are baked at construction, or when <code class="docutils literal notranslate"><span class="pre">use_null_space_control=False</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_stiffness">
+<span class="sig-name descname"><span class="pre">null_space_stiffness</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_stiffness" title="Link to this definition">#</a></dt>
+<dd><p>Joint-space posture position-error gain Kp, compact, shape [total_controlled_dofs]. [1/s²] when <code class="docutils literal notranslate"><span class="pre">use_inertia_decoupling</span></code> is enabled, otherwise [N/m or N·m/rad]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when gains are baked at construction, or when <code class="docutils literal notranslate"><span class="pre">use_null_space_control=False</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.operational_frame_pose_world">
+<span class="sig-name descname"><span class="pre">operational_frame_pose_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.operational_frame_pose_world" title="Link to this definition">#</a></dt>
+<dd><p>World pose of the operational frame, shape [controlled_robot_count]. <code class="docutils literal notranslate"><span class="pre">None</span></code> when fixed at construction.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_pose_world">
+<span class="sig-name descname"><span class="pre">tool_pose_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.transformf</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_pose_world" title="Link to this definition">#</a></dt>
+<dd><p>Current world pose of the tool frame [m, unitless quaternion], shape [controlled_robot_count].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_twist_world">
+<span class="sig-name descname"><span class="pre">tool_twist_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_twist_world" title="Link to this definition">#</a></dt>
+<dd><p>Current tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Inputs.wrench_stiffness">
+<span class="sig-name descname"><span class="pre">wrench_stiffness</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.spatial_vectorf</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.wrench_stiffness" title="Link to this definition">#</a></dt>
+<dd><p>Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. Dimensionless – multiplies a wrench error directly, not a pose error. <code class="docutils literal notranslate"><span class="pre">None</span></code> when gains are baked at construction, or when <code class="docutils literal notranslate"><span class="pre">use_wrench_feedback=False</span></code>.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Outputs">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Outputs</span></span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Output struct returned by <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.output" title="newton.controllers.ControllerOperationalSpaceModelFree.output"><code class="xref py py-meth docutils literal notranslate"><span class="pre">output()</span></code></a>.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.Outputs.joint_f">
+<span class="sig-name descname"><span class="pre">joint_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">wp.indexedarray</span><span class="p"><span class="pre">[</span></span><span class="pre">wp.float32</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs.joint_f" title="Link to this definition">#</a></dt>
+<dd><p>Joint torque command [N or N·m], shape [total_controlled_dofs].</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">controlled_dofs_per_robot</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_stiffness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_damping</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">operational_frame_pose_world</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_TRANSFORM</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_inertia_decoupling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_partial_inertia_decoupling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_gravity_compensation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_wrench_feedforward</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_wrench_feedback</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">motion_selection_axes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wrench_selection_axes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wrench_stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">linear_selection_frame_operational</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_QUAT</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">angular_selection_frame_operational</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">_IDENTITY_QUAT</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_null_space_control</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">null_space_stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">null_space_damping</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.input">
+<span class="sig-name descname"><span class="pre">input</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.input" title="Link to this definition">#</a></dt>
+<dd><p>Return a pre-allocated <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Inputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Inputs</span></code></a> with zero-initialised arrays.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.is_graphable">
+<span class="sig-name descname"><span class="pre">is_graphable</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.is_graphable" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.output">
+<span class="sig-name descname"><span class="pre">output</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.output" title="Link to this definition">#</a></dt>
+<dd><p>Return a pre-allocated <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Outputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Outputs</span></code></a> with a compact torque array.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.step">
+<span class="sig-name descname"><span class="pre">step</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">inputs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">outputs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.step" title="Link to this definition">#</a></dt>
+<dd><p>Compute one operational-space motion-control step and write joint torques.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>inputs</strong> (<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Inputs"><em>Inputs</em></a>) – Populated <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Inputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Inputs</span></code></a> struct. Kinematic and dynamics
+fields must be filled by the caller before each call.</p></li>
+<li><p><strong>outputs</strong> (<a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Outputs"><em>Outputs</em></a>) – <a class="reference internal" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs" title="newton.controllers.ControllerOperationalSpaceModelFree.Outputs"><code class="xref py py-class docutils literal notranslate"><span class="pre">Outputs</span></code></a> struct to write torques into.</p></li>
+<li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>wp.array</em><em>[</em><em>wp.float32</em><em>]</em>) – Unused. Accepted for API compatibility.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.controlled_robot_count">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">controlled_robot_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.controlled_robot_count" title="Link to this definition">#</a></dt>
+<dd><p>Number of robots, i.e. the length of <code class="docutils literal notranslate"><span class="pre">controlled_dofs_per_robot</span></code>.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.max_controlled_dofs">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">max_controlled_dofs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.max_controlled_dofs" title="Link to this definition">#</a></dt>
+<dd><p>Largest controlled-DOF count over the robots, the padded width of the Jacobian and mass matrix.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="newton.controllers.ControllerOperationalSpaceModelFree.total_controlled_dofs">
+<em class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">total_controlled_dofs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.controllers.ControllerOperationalSpaceModelFree.total_controlled_dofs" title="Link to this definition">#</a></dt>
+<dd><p>Total controlled-DOF count across all robots, the length of <code class="docutils literal notranslate"><span class="pre">outputs.joint_f</span></code>.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree"><code class="docutils literal notranslate"><span class="pre">ControllerOperationalSpaceModelFree</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs"><code class="docutils literal notranslate"><span class="pre">Inputs</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.angular_selection_frame_operational"><code class="docutils literal notranslate"><span class="pre">angular_selection_frame_operational</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_tool_pose_operational"><code class="docutils literal notranslate"><span class="pre">desired_tool_pose_operational</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_twist_operational"><code class="docutils literal notranslate"><span class="pre">desired_twist_operational</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.desired_wrench_world"><code class="docutils literal notranslate"><span class="pre">desired_wrench_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.gravity_force"><code class="docutils literal notranslate"><span class="pre">gravity_force</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.jacobian_tool_world"><code class="docutils literal notranslate"><span class="pre">jacobian_tool_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q"><code class="docutils literal notranslate"><span class="pre">joint_q</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_q_des_null"><code class="docutils literal notranslate"><span class="pre">joint_q_des_null</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd"><code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.joint_qd_des_null"><code class="docutils literal notranslate"><span class="pre">joint_qd_des_null</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.linear_selection_frame_operational"><code class="docutils literal notranslate"><span class="pre">linear_selection_frame_operational</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.mass_matrix"><code class="docutils literal notranslate"><span class="pre">mass_matrix</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.measured_wrench_world"><code class="docutils literal notranslate"><span class="pre">measured_wrench_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_damping"><code class="docutils literal notranslate"><span class="pre">motion_damping</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.motion_stiffness"><code class="docutils literal notranslate"><span class="pre">motion_stiffness</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_damping"><code class="docutils literal notranslate"><span class="pre">null_space_damping</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.null_space_stiffness"><code class="docutils literal notranslate"><span class="pre">null_space_stiffness</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.operational_frame_pose_world"><code class="docutils literal notranslate"><span class="pre">operational_frame_pose_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_pose_world"><code class="docutils literal notranslate"><span class="pre">tool_pose_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.tool_twist_world"><code class="docutils literal notranslate"><span class="pre">tool_twist_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Inputs.wrench_stiffness"><code class="docutils literal notranslate"><span class="pre">wrench_stiffness</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs"><code class="docutils literal notranslate"><span class="pre">Outputs</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.Outputs.joint_f"><code class="docutils literal notranslate"><span class="pre">joint_f</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.input"><code class="docutils literal notranslate"><span class="pre">input()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.is_graphable"><code class="docutils literal notranslate"><span class="pre">is_graphable()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.output"><code class="docutils literal notranslate"><span class="pre">output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.step"><code class="docutils literal notranslate"><span class="pre">step()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.controlled_robot_count"><code class="docutils literal notranslate"><span class="pre">controlled_robot_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.max_controlled_dofs"><code class="docutils literal notranslate"><span class="pre">max_controlled_dofs</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.controllers.ControllerOperationalSpaceModelFree.total_controlled_dofs"><code class="docutils literal notranslate"><span class="pre">total_controlled_dofs</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.18.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

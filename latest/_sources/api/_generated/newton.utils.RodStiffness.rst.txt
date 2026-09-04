@@ -1,0 +1,8 @@
+﻿newton.utils.RodStiffness
+=========================
+
+.. autoclass:: newton.utils.RodStiffness
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

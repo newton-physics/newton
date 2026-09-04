@@ -1,0 +1,6 @@
+﻿newton.utils.rod\_parallel\_transport\_quaternions
+==================================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: rod_parallel_transport_quaternions
