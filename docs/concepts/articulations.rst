@@ -106,6 +106,76 @@ In order to update the body poses (maximal coordinates), we need to use the forw
 Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
 As mentioned above, this call is not needed for generalized-coordinate solvers.
 
+Mimic joints
+------------
+
+A joint can derive its coordinates from another joint with the same position
+and velocity dimensions. The joint being derived is the *follower*. Newton
+calls the other joint the *reference joint*: it is the leader whose motion the
+follower mimics. Configure this relationship with
+:meth:`newton.ModelBuilder.set_joint_mimic`:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+  link_0 = builder.add_link()
+  link_1 = builder.add_link()
+  reference = builder.add_joint_revolute(parent=-1, child=link_0, axis=wp.vec3(0.0, 0.0, 1.0))
+  follower = builder.add_joint_revolute(parent=link_0, child=link_1, axis=wp.vec3(0.0, 0.0, 1.0))
+  builder.add_articulation([reference, follower])
+  builder.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
+
+  model = builder.finalize()
+  state = model.state()
+  state.joint_q.assign([0.5, 0.0])
+  state.joint_qd.assign([1.0, 0.0])
+  newton.eval_mimic(model, state)
+
+  assert np.allclose(state.joint_q.numpy(), [0.5, -0.75])
+  assert np.allclose(state.joint_qd.numpy(), [1.0, -2.0])
+
+Every joint has a :attr:`newton.Model.joint_mimic_joint` entry. ``-1`` means
+that the joint is independent; otherwise it stores the reference joint index.
+:attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)``. The
+same relationship, ``q_follower = offset + multiplier * q_reference``, is
+applied componentwise when the joints have more than one coordinate.
+The joint types do not need to match; only their position and velocity
+dimensions must match. For example, a one-axis D6 joint can mimic another
+one-dimensional joint. Quaternion-parameterized ``BALL``, ``FREE``, and
+``DISTANCE`` joints are not supported because a componentwise affine mapping
+would not preserve a unit quaternion.
+
+:func:`newton.eval_mimic` updates the follower coordinates in a state. For each
+follower, it reads all position and velocity coordinates of the reference joint
+and writes the corresponding follower coordinates. Independent joints are
+left unchanged. By default the function updates the input state in place; pass
+a different output state to copy the input coordinates and update the
+followers in that state instead.
+
+Mimic chains are not supported. The reference joint must be independent, and a
+joint that is already the reference for a follower cannot itself become a
+follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
+case would create a chain.
+
+Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
+maximal-coordinate body poses should reflect the mimic relationship.
+:class:`newton.solvers.SolverSemiImplicit` enforces these relationships with
+penalty spring and damping forces. Configure the global gains with
+``joint_mimic_ke`` and ``joint_mimic_kd`` on the solver. As with other explicit
+springs, stronger gains may require a smaller simulation time step.
+:class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverVBD` enforce
+relationships between revolute, prismatic, and D6 joints with coupled
+maximal-coordinate corrections. Both approaches act on the follower and the
+reference joint, so forces applied to the follower also affect the reference.
+VBD performs one mimic correction after each rigid-body iteration. Increase
+the solver's ``iterations`` setting when mimic relationships need tighter
+convergence.
+:class:`newton.solvers.SolverFeatherstone` applies the same relationships in
+generalized coordinates. It removes follower degrees of freedom from the
+dynamics solve and transfers their forces and inertia to the reference joint.
+:class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
+directly through its joint equality constraints.
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::

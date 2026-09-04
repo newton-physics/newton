@@ -160,6 +160,22 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_mimic_joint.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_mimic_joint.jpg" alt="Mimic Joint">
+      </a>
+    </td>
+    <td width="33%"></td>
+    <td width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_mimic_joint</code>
+    </td>
+    <td width="33%"></td>
+    <td width="33%"></td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Robot Examples</h3></td>
   </tr>
   <tr>

@@ -29,11 +29,12 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces
+from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -178,7 +179,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
-          :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
+          :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+        - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -794,6 +796,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_joint_linear_kd,
             rigid_joint_angular_kd,
         )
+
+        self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
+        self._mimic_body_deltas = None
+        if self._has_joint_mimics:
+            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -3529,6 +3536,17 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 dim=color_group.size,
                 device=self.device,
+            )
+
+        if self._has_joint_mimics:
+            project_joint_mimics(
+                model,
+                state_in.body_q,
+                state_in.body_qd,
+                self.body_inv_mass_effective,
+                self.body_inv_inertia_effective,
+                self._mimic_body_deltas,
+                dt,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0:

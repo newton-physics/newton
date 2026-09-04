@@ -15,8 +15,8 @@ from newton.utils import compute_world_offsets
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
-    @staticmethod
-    def _make_source() -> ModelBuilder:
+    def _make_source(self) -> ModelBuilder:
+        """Build source data while verifying the sparse mimic deprecation."""
         builder = ModelBuilder()
 
         particles = [
@@ -63,7 +63,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_shape_box(body=fixed, hx=0.1, hy=0.1, hz=0.1, label="fixed_shape")
         builder.add_shape_collision_filter_pair(root_shape, child_shape)
-        builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
 
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
         builder.add_custom_attribute(
@@ -186,6 +187,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual.replicate(source, len(xforms), xforms=xforms)
 
         self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_remaps_joint_mimic_references(self):
+        """Verify replication remaps dense mimic references per world."""
+        source = ModelBuilder()
+        body0 = source.add_link()
+        body1 = source.add_link()
+        reference = source.add_joint_revolute(-1, body0)
+        follower = source.add_joint_revolute(body0, body1)
+        source.add_articulation([reference, follower])
+        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+
+        builder = ModelBuilder()
+        builder.replicate(source, 3)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, 0, -1, 2, -1, 4])
+        np.testing.assert_allclose(
+            model.joint_mimic_coeffs.numpy(),
+            [(0.0, 1.0), (0.25, -2.0)] * 3,
+        )
 
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
