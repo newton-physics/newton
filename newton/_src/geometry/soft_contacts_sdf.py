@@ -12,6 +12,8 @@ This lives in its own module (not ``kernels.py``) because it needs the volume-SD
 Nothing imports this module except the collision launcher, so it is cycle-free.
 """
 
+from __future__ import annotations
+
 import warp as wp
 
 from .flags import ShapeFlags
@@ -239,6 +241,43 @@ def _shape_frames(
 
 
 @wp.func
+def _soft_feature_aabb_misses_shape(
+    geo: wp.int32,
+    shape_index: wp.int32,
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    feature_lower: wp.vec3,
+    feature_upper: wp.vec3,
+    margin: float,
+    radius: float,
+) -> bool:
+    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB.
+
+    Planes bypass the test (their finite stored bounds cannot represent an infinite contact
+    surface); an empty AABB array disables the rejection for isolated/reference callers.
+    """
+    if shape_aabb_lower.shape[0] == 0 or geo == GeoType.PLANE:
+        return False
+
+    gap = shape_gap[shape_index]
+    expansion = margin + radius + wp.max(0.0, -gap)
+    expansion_vec = wp.vec3(expansion, expansion, expansion)
+    lower = feature_lower - expansion_vec
+    upper = feature_upper + expansion_vec
+    rigid_lower = shape_aabb_lower[shape_index]
+    rigid_upper = shape_aabb_upper[shape_index]
+    return (
+        upper[0] < rigid_lower[0]
+        or upper[1] < rigid_lower[1]
+        or upper[2] < rigid_lower[2]
+        or lower[0] > rigid_upper[0]
+        or lower[1] > rigid_upper[1]
+        or lower[2] > rigid_upper[2]
+    )
+
+
+@wp.func
 def _emit_soft_ef_contact(
     tid: wp.int32,
     tid_base: wp.int32,
@@ -296,6 +335,9 @@ def create_soft_face_contacts(
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
     shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
     sdf_face_iters: wp.int32,
     sdf_ls_iters: wp.int32,
     margin: float,
@@ -334,11 +376,37 @@ def create_soft_face_contacts(
     c_idx = tri_indices[t, 2]
     radius = wp.max(particle_radius[a_idx], wp.max(particle_radius[b_idx], particle_radius[c_idx]))
 
+    a_w = particle_q[a_idx]
+    b_w = particle_q[b_idx]
+    c_w = particle_q[c_idx]
+    feature_lower = wp.vec3(
+        wp.min(a_w[0], wp.min(b_w[0], c_w[0])),
+        wp.min(a_w[1], wp.min(b_w[1], c_w[1])),
+        wp.min(a_w[2], wp.min(b_w[2], c_w[2])),
+    )
+    feature_upper = wp.vec3(
+        wp.max(a_w[0], wp.max(b_w[0], c_w[0])),
+        wp.max(a_w[1], wp.max(b_w[1], c_w[1])),
+        wp.max(a_w[2], wp.max(b_w[2], c_w[2])),
+    )
+    if _soft_feature_aabb_misses_shape(
+        geo,
+        shape_index,
+        shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        feature_lower,
+        feature_upper,
+        margin,
+        radius,
+    ):
+        return
+
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    a_s = wp.transform_point(X_sw, particle_q[a_idx])
-    b_s = wp.transform_point(X_sw, particle_q[b_idx])
-    c_s = wp.transform_point(X_sw, particle_q[c_idx])
+    a_s = wp.transform_point(X_sw, a_w)
+    b_s = wp.transform_point(X_sw, b_w)
+    c_s = wp.transform_point(X_sw, c_w)
     scale = shape_scale[shape_index]
     # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
     s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
@@ -395,6 +463,9 @@ def create_soft_edge_contacts(
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
     shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
     sdf_edge_iters: wp.int32,
     margin: float,
     tid_base: wp.int32,
@@ -431,10 +502,35 @@ def create_soft_edge_contacts(
     v1 = edge_indices[e, 3]
     radius = wp.max(particle_radius[v0], particle_radius[v1])
 
+    p_w = particle_q[v0]
+    q_w = particle_q[v1]
+    feature_lower = wp.vec3(
+        wp.min(p_w[0], q_w[0]),
+        wp.min(p_w[1], q_w[1]),
+        wp.min(p_w[2], q_w[2]),
+    )
+    feature_upper = wp.vec3(
+        wp.max(p_w[0], q_w[0]),
+        wp.max(p_w[1], q_w[1]),
+        wp.max(p_w[2], q_w[2]),
+    )
+    if _soft_feature_aabb_misses_shape(
+        geo,
+        shape_index,
+        shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        feature_lower,
+        feature_upper,
+        margin,
+        radius,
+    ):
+        return
+
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    p_s = wp.transform_point(X_sw, particle_q[v0])
-    q_s = wp.transform_point(X_sw, particle_q[v1])
+    p_s = wp.transform_point(X_sw, p_w)
+    q_s = wp.transform_point(X_sw, q_w)
     scale = shape_scale[shape_index]
     # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
     s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
@@ -471,7 +567,19 @@ def create_soft_edge_contacts(
         )
 
 
-def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, edge_pairs, face_pairs, n_particle_pairs):
+def launch_soft_ef_contacts(
+    *,
+    model,
+    state,
+    contacts,
+    margin: float,
+    device,
+    edge_pairs: wp.array[wp.vec2i],
+    face_pairs: wp.array[wp.vec2i],
+    n_particle_pairs: int,
+    shape_aabb_lower: wp.array[wp.vec3] | None = None,
+    shape_aabb_upper: wp.array[wp.vec3] | None = None,
+):
     """Launch the soft EDGE and FACE passes (the soft-particle pass is the legacy kernel).
 
     ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
@@ -490,6 +598,12 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
     if n_edge_pairs == 0 and n_face_pairs == 0:
         return
 
+    if shape_aabb_lower is None:
+        # Isolated kernel tests can intentionally disable the broad rejection. Production collision
+        # always supplies the current narrow-phase AABBs, so graph capture never allocates here.
+        shape_aabb_lower = wp.empty(0, dtype=wp.vec3, device=device)
+        shape_aabb_upper = wp.empty(0, dtype=wp.vec3, device=device)
+
     shape_args = [
         model.shape_body,
         model.shape_type,
@@ -500,6 +614,9 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
         model._shape_sdf_index,
         model._texture_sdf_data,
         model.shape_margin,
+        model.shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
     ]
     outputs = [
         contacts.soft_contact_count,
