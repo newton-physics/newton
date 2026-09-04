@@ -3,12 +3,14 @@
 
 import gc
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
+from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES
 from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
@@ -116,7 +118,13 @@ class TestModelBuilderReplicate(unittest.TestCase):
         return builder
 
     def assert_builder_merge_state_equal(self, expected: ModelBuilder, actual: ModelBuilder) -> None:
-        manually_verified = ("_shape_collision_filter_pairs", "actuator_entries", "custom_attributes")
+        manually_verified = (
+            "_raw_array_access_active",
+            "_array_backed_attributes",
+            "_shape_collision_filter_pairs",
+            "actuator_entries",
+            "custom_attributes",
+        )
         for name in sorted(set(vars(expected)) | set(vars(actual))):
             if name in manually_verified:
                 continue
@@ -335,6 +343,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             np.testing.assert_array_equal(actual_group, expected_group)
 
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
+        """Bypass offset construction while preserving exact joint coordinates."""
         source = ModelBuilder()
         body = source.add_link()
         source.add_joint_free(
@@ -342,7 +351,11 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
 
         replicated = ModelBuilder()
-        replicated.replicate(source, 2)
+        with mock.patch(
+            "newton._src.sim.builder.compute_world_offsets",
+            side_effect=AssertionError("unexpected offset construction"),
+        ):
+            replicated.replicate(source, 2)
 
         expected = np.tile(np.asarray(source.joint_q, dtype=np.float32), 2)
         np.testing.assert_array_equal(np.asarray(replicated.joint_q, dtype=np.float32), expected)
@@ -515,6 +528,198 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(scene.muscle_activations, source.muscle_activations * 2)
         np.testing.assert_array_equal(scene.body_color_groups[0], np.asarray([0, 1, 2, 3]))
 
+    def test_replicate_materializes_array_backing_on_public_access(self):
+        """Materialize an array-backed attribute on ordinary access."""
+        source = ModelBuilder()
+        source.add_particle(wp.vec3(1.0, 2.0, 3.0), wp.vec3(), 2.0)
+
+        scene = ModelBuilder()
+        scene.replicate(source, 2)
+        other_scene = ModelBuilder()
+        other_scene.replicate(source, 1)
+
+        self.assertIn("particle_q", scene._array_backed_attributes)
+        self.assertNotIn("particle_q", vars(scene))
+        self.assertIsInstance(scene._array_backed_attributes["particle_q"][0], np.ndarray)
+        self.assertIsNot(scene._array_backed_attributes, other_scene._array_backed_attributes)
+
+        scene.replicate(source, 1)
+        self.assertIn("particle_q", scene._array_backed_attributes)
+
+        particle_q = scene.particle_q
+        self.assertIsInstance(particle_q, list)
+        self.assertNotIn("particle_q", scene._array_backed_attributes)
+        self.assertIn("particle_q", other_scene._array_backed_attributes)
+        np.testing.assert_array_equal(np.asarray(particle_q), np.tile(np.asarray(source.particle_q), (3, 1)))
+
+        particle_q.append(wp.vec3(4.0, 5.0, 6.0))
+        self.assertEqual(len(scene.particle_q), 4)
+
+    def test_array_backed_access_preserves_descriptor_attribute_errors(self):
+        """Preserve AttributeErrors raised while evaluating unrelated descriptors."""
+
+        class DerivedBuilder(ModelBuilder):
+            @property
+            def my_property(self):
+                return self._missing_internal_attribute
+
+        with self.assertRaisesRegex(AttributeError, "_missing_internal_attribute"):
+            _ = DerivedBuilder().my_property
+
+    def test_replicate_and_finalize_restore_gc_after_failure(self):
+        """Disable cyclic GC during each operation and restore its prior state after failure."""
+        source = ModelBuilder()
+        original_gc_enabled = gc.isenabled()
+
+        try:
+            for operation, internal_method, args, kwargs in (
+                ("replicate", "_merge_builder_copies", (source, 1), {}),
+                ("finalize", "_finalize_impl", (), {"skip_all_validations": True}),
+            ):
+                for initially_enabled in (False, True):
+                    with self.subTest(operation=operation, initially_enabled=initially_enabled):
+                        if initially_enabled:
+                            gc.enable()
+                        else:
+                            gc.disable()
+
+                        builder = ModelBuilder()
+
+                        def fail_while_gc_is_disabled(*args, **kwargs):
+                            self.assertFalse(gc.isenabled())
+                            raise RuntimeError("expected failure")
+
+                        with mock.patch.object(builder, internal_method, side_effect=fail_while_gc_is_disabled):
+                            with self.assertRaisesRegex(RuntimeError, "expected failure"):
+                                getattr(builder, operation)(*args, **kwargs)
+
+                        self.assertEqual(gc.isenabled(), initially_enabled)
+        finally:
+            if original_gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+
+    def test_add_world_materializes_array_backing(self):
+        """Materialize array-backed attributes before adding another world."""
+        source = ModelBuilder()
+        source.add_particle(wp.vec3(1.0, 2.0, 3.0), wp.vec3(), 2.0)
+
+        scene = ModelBuilder()
+        scene.replicate(source, 2)
+        self.assertIn("particle_q", scene._array_backed_attributes)
+
+        scene.add_world(source)
+
+        self.assertIsInstance(scene.particle_q, list)
+        self.assertNotIn("particle_q", scene._array_backed_attributes)
+        self.assertEqual(scene.particle_world, [0, 1, 2])
+        np.testing.assert_array_equal(np.asarray(scene.particle_q), np.tile(np.asarray(source.particle_q), (3, 1)))
+
+    def test_array_backed_dtype_is_at_least_declared_dtype(self):
+        """Do not truncate offsets when a source reference array uses a narrow dtype."""
+        source = ModelBuilder()
+        particles = [source.add_particle(wp.vec3(), wp.vec3(), 1.0) for _ in range(2)]
+        source.add_spring(*particles, 1.0, 1.0, 0.0)
+        source.spring_indices = np.asarray(source.spring_indices, dtype=np.int8)
+
+        scene = ModelBuilder()
+        for _ in range(128):
+            scene.add_particle(wp.vec3(), wp.vec3(), 1.0)
+        scene.replicate(source, 1)
+
+        spring_indices = scene._array_backed_attributes["spring_indices"][0]
+        self.assertEqual(spring_indices.dtype, np.dtype(np.int32))
+        np.testing.assert_array_equal(spring_indices, [128, 129])
+
+    def test_finalize_consumes_array_backing_without_materializing(self):
+        """Finalize directly from array-backed attributes without materializing them."""
+        source = ModelBuilder()
+        source.add_particle(wp.vec3(1.0, 2.0, 3.0), wp.vec3(), 2.0)
+
+        scene = ModelBuilder()
+        scene.replicate(source, 2)
+        particle_q = scene._array_backed_attributes["particle_q"][0]
+
+        model = scene.finalize(device="cpu")
+
+        self.assertIn("particle_q", scene._array_backed_attributes)
+        self.assertIs(scene._array_backed_attributes["particle_q"][0], particle_q)
+        np.testing.assert_array_equal(model.particle_q.numpy(), particle_q)
+
+    def test_finalize_matches_materialized_finalize(self):
+        """Match materialized finalization for array-backed attributes."""
+        for world_count in (1, 3):
+            for use_coord_layout_targets in (False, True):
+                with self.subTest(world_count=world_count, use_coord_layout_targets=use_coord_layout_targets):
+                    with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
+                        source = self._make_source()
+
+                        array_backed = self._make_destination()
+                        array_backed.replicate(source, world_count)
+                        array_backed_names = set(array_backed._array_backed_attributes)
+                        self.assertTrue(array_backed_names)
+                        self.assertTrue(
+                            {
+                                "body_inertia",
+                                "joint_target_q",
+                                "muscle_params",
+                                "tri_poses",
+                                "tet_poses",
+                            }.issubset(array_backed_names)
+                        )
+
+                        materialized = self._make_destination()
+                        materialized.replicate(source, world_count)
+                        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+                            getattr(materialized, name)
+                        self.assertFalse(materialized._array_backed_attributes)
+
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(
+                                "ignore",
+                                message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
+                                category=DeprecationWarning,
+                            )
+                            expected = materialized.finalize(device="cpu")
+                            actual = array_backed.finalize(device="cpu")
+
+                        self.assertEqual(actual.world_count, expected.world_count)
+                        self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
+                        for name in sorted(array_backed_names):
+                            with self.subTest(attribute=name):
+                                expected_array = getattr(expected, name)
+                                actual_array = getattr(actual, name)
+                                self.assertIsInstance(expected_array, wp.array)
+                                self.assertIsInstance(actual_array, wp.array)
+                                self.assertIs(expected_array.dtype, actual_array.dtype)
+                                np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
+
+    def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
+        """Return before reading joint topology when every joint belongs to an articulation."""
+        scene = ModelBuilder()
+        scene.replicate(self._make_source(), 2)
+
+        with mock.patch.object(
+            ModelBuilder, "joint_parent", new_callable=mock.PropertyMock, create=True
+        ) as joint_parent:
+            joint_parent.side_effect = AssertionError("unexpected general joint validation")
+            scene._validate_joints()
+
+        joint_parent.assert_not_called()
+
+    def test_array_backed_joint_validation_still_rejects_orphan_joints(self):
+        """Run general joint validation when an array-backed articulation entry is negative."""
+        source = ModelBuilder()
+        parent = source.add_link()
+        child = source.add_link()
+        source.add_joint_fixed(parent, child)
+        scene = ModelBuilder()
+        scene.replicate(source, 2)
+
+        with self.assertRaisesRegex(ValueError, "not belonging to any articulation"):
+            scene.finalize(device="cpu")
+
     def test_all_builder_lists_have_merge_metadata(self):
         list_attributes = {name for name, value in vars(ModelBuilder()).items() if isinstance(value, list)}
         specs = ModelBuilder._builder_merge_attribute_specs()
@@ -542,6 +747,20 @@ class TestModelBuilderReplicate(unittest.TestCase):
         with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
                 ModelBuilder._build_builder_merge_attribute_specs(False)
+
+    def test_array_backed_attributes_have_generic_merge_metadata(self):
+        """Require generic merge metadata and NumPy-compatible dtypes for array-backed attributes."""
+        _, builder_list_attributes = ModelBuilder._base_builder_attributes()
+        specs = ModelBuilder._builder_merge_attribute_specs()
+
+        self.assertTrue(_ARRAY_BACKED_ATTRIBUTE_DTYPES)
+        for name, warp_dtype in _ARRAY_BACKED_ATTRIBUTE_DTYPES.items():
+            with self.subTest(attribute=name):
+                self.assertIn(name, builder_list_attributes)
+                self.assertIn(name, specs)
+                self.assertEqual(specs[name].compaction_policy, "generic")
+                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
+                self.assertIsNotNone(wp.dtype_to_numpy(scalar_dtype))
 
 
 @wp.kernel
