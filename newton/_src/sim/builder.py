@@ -2732,6 +2732,9 @@ class ModelBuilder:
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
+        configure_actuator = getattr(drive_class, "_configure_actuator", None)
+        if configure_actuator is not None:
+            configure_actuator(self, resolved_drive)
         unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(
