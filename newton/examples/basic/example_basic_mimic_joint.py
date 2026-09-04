@@ -205,7 +205,13 @@ class Example:
         if self.solver_name == "featherstone":
             return newton.solvers.SolverFeatherstone(self.model)
         if self.solver_name == "semi_implicit":
-            return newton.solvers.SolverSemiImplicit(self.model)
+            # SemiImplicit treats the relationship as a penalty spring. These
+            # gains are tuned for this mechanism's masses and 240 Hz time step.
+            return newton.solvers.SolverSemiImplicit(
+                self.model,
+                joint_mimic_ke=5.0e4,
+                joint_mimic_kd=5.0e2,
+            )
         if self.solver_name == "xpbd":
             return newton.solvers.SolverXPBD(self.model, iterations=10)
         if self.solver_name == "mujoco":

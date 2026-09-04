@@ -12,14 +12,9 @@ from ...math import (
     vec_min,
     velocity_at_point,
 )
-from ...sim import BodyFlags, JointType
-from ...sim.articulation import (
-    invert_2d_rotational_dofs,
-    invert_3d_rotational_dofs,
-    transform_2d_rotational_axes,
-    transform_3d_rotational_axes,
-)
+from ...sim import BodyFlags, JointType, Model
 from ...sim.contacts import contact_surface_point, contact_surface_separation
+from ...sim.joint_mimic import eval_joint_mimic_coordinate
 
 
 @wp.kernel
@@ -2094,120 +2089,6 @@ def solve_body_joints(
 
 
 @wp.func
-def _joint_mimic_coordinate_and_gradients(
-    joint: int,
-    component: int,
-    body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_qd_start: wp.array[int],
-    joint_dof_dim: wp.array2d[int],
-    joint_axis: wp.array[wp.vec3],
-):
-    """Return one joint coordinate and its parent/child maximal-coordinate gradients."""
-    type = joint_type[joint]
-    parent = joint_parent[joint]
-    child = joint_child[joint]
-
-    X_wp = joint_X_p[joint]
-    pose_p = X_wp
-    if parent >= 0:
-        pose_p = body_q[parent]
-        X_wp = pose_p * X_wp
-    pose_c = body_q[child]
-    X_wc = pose_c * joint_X_c[joint]
-
-    q_p = wp.transform_get_rotation(X_wp)
-    q_c = wp.transform_get_rotation(X_wc)
-    rel_q = wp.quat_inverse(q_p) * q_c
-    x_err = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-    x_err_p = wp.quat_rotate_inv(q_p, x_err)
-
-    qd_start = joint_qd_start[joint]
-    lin_axis_count = joint_dof_dim[joint, 0]
-    ang_axis_count = joint_dof_dim[joint, 1]
-
-    coordinate = float(0.0)
-    linear_axis = wp.vec3(0.0)
-    angular_covector = wp.vec3(0.0)
-
-    if type == JointType.PRISMATIC:
-        axis = joint_axis[qd_start]
-        coordinate = wp.dot(x_err_p, axis)
-        linear_axis = wp.quat_rotate(q_p, axis)
-    elif type == JointType.REVOLUTE:
-        axis = joint_axis[qd_start]
-        coordinate = wp.quat_twist_angle_signed(axis, rel_q)
-        angular_covector = wp.quat_rotate(q_p, axis)
-    elif type == JointType.D6:
-        if component < lin_axis_count:
-            axis = joint_axis[qd_start + component]
-            coordinate = wp.dot(x_err_p, axis)
-            linear_axis = wp.quat_rotate(q_p, axis)
-        else:
-            angular_component = component - lin_axis_count
-            angular_start = qd_start + lin_axis_count
-            local_covector = wp.vec3(0.0)
-            if ang_axis_count == 1:
-                axis = joint_axis[angular_start]
-                coordinate = wp.quat_twist_angle_signed(axis, rel_q)
-                local_covector[0] = axis[0]
-                local_covector[1] = axis[1]
-                local_covector[2] = axis[2]
-            elif ang_axis_count == 2:
-                axis_0 = joint_axis[angular_start + 0]
-                axis_1 = joint_axis[angular_start + 1]
-                coordinates_2, _unused_velocities_2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, wp.vec3(0.0))
-                coordinate = coordinates_2[angular_component]
-                axis_0_q, axis_1_q = transform_2d_rotational_axes(axis_0, axis_1, coordinates_2[0])
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                else:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
-            elif ang_axis_count == 3:
-                axis_0 = joint_axis[angular_start + 0]
-                axis_1 = joint_axis[angular_start + 1]
-                axis_2 = joint_axis[angular_start + 2]
-                coordinates_3, _unused_velocities_3 = invert_3d_rotational_dofs(
-                    axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0)
-                )
-                coordinate = coordinates_3[angular_component]
-                axis_0_q, axis_1_q, axis_2_q = transform_3d_rotational_axes(
-                    axis_0, axis_1, axis_2, coordinates_3[0], coordinates_3[1]
-                )
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                elif angular_component == 1:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
-                else:
-                    local_covector[0] = axis_2_q[0]
-                    local_covector[1] = axis_2_q[1]
-                    local_covector[2] = axis_2_q[2]
-            angular_covector = wp.quat_rotate(q_p, local_covector)
-
-    r_p = wp.vec3(0.0)
-    if parent >= 0:
-        r_p = wp.transform_get_translation(X_wp) - wp.transform_point(pose_p, body_com[parent])
-    r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, body_com[child])
-
-    gradient_parent = wp.spatial_vector(-linear_axis, -wp.cross(r_p, linear_axis) - angular_covector)
-    gradient_child = wp.spatial_vector(linear_axis, wp.cross(r_c, linear_axis) + angular_covector)
-    return coordinate, gradient_parent, gradient_child
-
-
-@wp.func
 def _joint_mimic_effective_mass(
     body: int,
     gradient: wp.spatial_vector,
@@ -2280,7 +2161,7 @@ def solve_joint_mimics(
         if component >= coordinate_count:
             continue
 
-        follower_q, follower_parent_gradient, follower_child_gradient = _joint_mimic_coordinate_and_gradients(
+        follower_q, follower_parent_gradient, follower_child_gradient = eval_joint_mimic_coordinate(
             follower,
             component,
             body_q,
@@ -2294,7 +2175,7 @@ def solve_joint_mimics(
             joint_dof_dim,
             joint_axis,
         )
-        reference_q, reference_parent_gradient, reference_child_gradient = _joint_mimic_coordinate_and_gradients(
+        reference_q, reference_parent_gradient, reference_child_gradient = eval_joint_mimic_coordinate(
             reference,
             component,
             body_q,
@@ -2372,6 +2253,89 @@ def solve_joint_mimics(
         if joint_impulse:
             wp.atomic_add(joint_impulse, follower, follower_child_gradient * delta_lambda)
             wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
+
+
+@wp.kernel
+def apply_joint_mimic_deltas(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    deltas: wp.array[wp.spatial_vector],
+    dt: float,
+):
+    """Apply velocity-like mimic corrections to maximal body state in place."""
+    body = wp.tid()
+    inv_m = body_inv_m[body]
+    if inv_m == 0.0:
+        return
+
+    pose = body_q[body]
+    rotation = wp.transform_get_rotation(pose)
+    delta = deltas[body]
+    linear_delta = wp.spatial_top(delta) * inv_m
+    angular_delta = wp.quat_rotate(
+        rotation,
+        body_inv_I[body] * wp.quat_rotate_inv(rotation, wp.spatial_bottom(delta)),
+    )
+
+    rotation_new = wp.normalize(rotation + 0.5 * wp.quat(angular_delta * dt, 0.0) * rotation)
+    com = body_com[body]
+    com_world = wp.transform_get_translation(pose) + wp.quat_rotate(rotation, com)
+    position_new = com_world + linear_delta * dt - wp.quat_rotate(rotation_new, com)
+
+    velocity = body_qd[body]
+    body_q[body] = wp.transform(position_new, rotation_new)
+    body_qd[body] = wp.spatial_vector(
+        wp.spatial_top(velocity) + linear_delta,
+        wp.spatial_bottom(velocity) + angular_delta,
+    )
+
+
+def project_joint_mimics(
+    model: Model,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    deltas: wp.array[wp.spatial_vector],
+    dt: float,
+) -> None:
+    """Perform one maximal-coordinate projection of supported mimic relationships."""
+    deltas.zero_()
+    wp.launch(
+        kernel=solve_joint_mimics,
+        dim=model.joint_count,
+        inputs=[
+            body_q,
+            model.body_com,
+            body_inv_m,
+            body_inv_I,
+            model.joint_type,
+            model.joint_enabled,
+            model.joint_parent,
+            model.joint_child,
+            model.joint_X_p,
+            model.joint_X_c,
+            model.joint_qd_start,
+            model.joint_dof_dim,
+            model.joint_axis,
+            model.joint_mimic_joint,
+            model.joint_mimic_coeffs,
+            1.0,
+            1.0,
+            dt,
+        ],
+        outputs=[deltas, None],
+        device=model.device,
+    )
+    wp.launch(
+        kernel=apply_joint_mimic_deltas,
+        dim=model.body_count,
+        inputs=[body_q, body_qd, model.body_com, body_inv_m, body_inv_I, deltas, dt],
+        device=model.device,
+    )
 
 
 @wp.func

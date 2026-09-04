@@ -159,10 +159,17 @@ case would create a chain.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
-:class:`newton.solvers.SolverSemiImplicit`, :class:`newton.solvers.SolverXPBD`,
-and :class:`newton.solvers.SolverVBD` enforce relationships between revolute,
-prismatic, and D6 joints in maximal coordinates. Their correction acts on both
-joints, so forces applied to the follower also affect the reference joint.
+:class:`newton.solvers.SolverSemiImplicit` enforces these relationships with
+penalty spring and damping forces. Configure the global gains with
+``joint_mimic_ke`` and ``joint_mimic_kd`` on the solver. As with other explicit
+springs, stronger gains may require a smaller simulation time step.
+:class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverVBD` enforce
+relationships between revolute, prismatic, and D6 joints with coupled
+maximal-coordinate corrections. Both approaches act on the follower and the
+reference joint, so forces applied to the follower also affect the reference.
+VBD performs one mimic correction after each rigid-body iteration. Increase
+the solver's ``iterations`` setting when mimic relationships need tighter
+convergence.
 :class:`newton.solvers.SolverFeatherstone` applies the same relationships in
 generalized coordinates. It removes follower degrees of freedom from the
 dynamics solve and transfers their forces and inertia to the reference joint.

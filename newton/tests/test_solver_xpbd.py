@@ -2579,20 +2579,31 @@ def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
 
 
 def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
-    """Warn when XPBD cannot enforce a joint-owned mimic relationship."""
+    """Cap the reported indices when XPBD cannot enforce mimic relationships."""
     builder = newton.ModelBuilder()
-    body_0 = builder.add_link()
-    body_1 = builder.add_link()
-    builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
-    builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
-    reference = builder.add_joint_fixed(-1, body_0)
-    follower = builder.add_joint_fixed(body_0, body_1)
-    builder.add_articulation([reference, follower])
-    builder.set_joint_mimic(follower, reference)
+    joints = []
+    followers = []
+    for _ in range(12):
+        body_0 = builder.add_link()
+        body_1 = builder.add_link()
+        builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
+        reference = builder.add_joint_fixed(-1, body_0)
+        follower = builder.add_joint_fixed(body_0, body_1)
+        builder.set_joint_mimic(follower, reference)
+        joints.extend((reference, follower))
+        followers.append(follower)
+    builder.add_articulation(joints)
     model = builder.finalize(device=device)
 
-    with test.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         newton.solvers.SolverXPBD(model)
+
+    message = next(
+        str(warning.message) for warning in caught if "unsupported follower joint indices" in str(warning.message)
+    )
+    test.assertIn(f"unsupported follower joint indices: {followers[:10]}; 2 additional indices omitted.", message)
 
 
 devices = get_test_devices()

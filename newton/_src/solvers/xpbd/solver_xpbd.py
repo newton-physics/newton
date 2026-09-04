@@ -7,8 +7,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..joint_mimic import has_supported_joint_mimics
 from ..solver import SolverBase
 from . import kernels, restitution_kernels
 from .kernels import (
