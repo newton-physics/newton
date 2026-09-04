@@ -565,6 +565,40 @@ class TestModelBuilderReplicate(unittest.TestCase):
         with self.assertRaisesRegex(AttributeError, "_missing_internal_attribute"):
             _ = DerivedBuilder().my_property
 
+    def test_replicate_and_finalize_restore_gc_after_failure(self):
+        """Disable cyclic GC during each operation and restore its prior state after failure."""
+        source = ModelBuilder()
+        original_gc_enabled = gc.isenabled()
+
+        try:
+            for operation, internal_method, args, kwargs in (
+                ("replicate", "_merge_builder_copies", (source, 1), {}),
+                ("finalize", "_finalize_impl", (), {"skip_all_validations": True}),
+            ):
+                for initially_enabled in (False, True):
+                    with self.subTest(operation=operation, initially_enabled=initially_enabled):
+                        if initially_enabled:
+                            gc.enable()
+                        else:
+                            gc.disable()
+
+                        builder = ModelBuilder()
+
+                        def fail_while_gc_is_disabled(*args, **kwargs):
+                            self.assertFalse(gc.isenabled())
+                            raise RuntimeError("expected failure")
+
+                        with mock.patch.object(builder, internal_method, side_effect=fail_while_gc_is_disabled):
+                            with self.assertRaisesRegex(RuntimeError, "expected failure"):
+                                getattr(builder, operation)(*args, **kwargs)
+
+                        self.assertEqual(gc.isenabled(), initially_enabled)
+        finally:
+            if original_gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
+
     def test_add_world_materializes_array_backing(self):
         """Materialize array-backed attributes before adding another world."""
         source = ModelBuilder()

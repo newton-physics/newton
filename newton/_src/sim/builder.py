@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
+import gc
 import inspect
 import math
 import os
@@ -3139,6 +3140,9 @@ class ModelBuilder:
             `set_world_offsets()` method instead of physical spacing. This improves numerical
             stability by keeping all worlds at the origin in the physics simulation.
 
+            Python's cyclic garbage collector is temporarily disabled during this operation.
+            Its previous state is restored before returning or propagating an exception.
+
         .. important::
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
@@ -3161,33 +3165,39 @@ class ModelBuilder:
                 world's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
         """
-        if world_count <= 0:
-            return
-        if self.current_world != -1:
-            raise RuntimeError(
-                f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
-                "Call end_world() first to close the current world context."
-            )
-        if xforms is None:
-            if tuple(spacing) == (0, 0, 0):
-                xforms = [None] * world_count
-            else:
-                offsets = compute_world_offsets(world_count, spacing, self.up_axis)
-                xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
-        elif len(xforms) != world_count:
-            raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
-        if label_prefixes is None:
-            label_prefixes = [None] * world_count
-        elif len(label_prefixes) != world_count:
-            raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            if world_count <= 0:
+                return
+            if self.current_world != -1:
+                raise RuntimeError(
+                    f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
+                    "Call end_world() first to close the current world context."
+                )
+            if xforms is None:
+                if tuple(spacing) == (0, 0, 0):
+                    xforms = [None] * world_count
+                else:
+                    offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                    xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
+            elif len(xforms) != world_count:
+                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+            if label_prefixes is None:
+                label_prefixes = [None] * world_count
+            elif len(label_prefixes) != world_count:
+                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
 
-        base_world = self.world_count
-        worlds = list(range(base_world, base_world + world_count))
-        with self._raw_array_access():
-            self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
+            base_world = self.world_count
+            worlds = list(range(base_world, base_world + world_count))
+            with self._raw_array_access():
+                self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
-        self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
-        self.world_count += world_count
+            self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
+            self.world_count += world_count
+        finally:
+            if gc_was_enabled:
+                gc.enable()
 
     def _merge_builder_copies(
         self,
@@ -12063,33 +12073,41 @@ class ModelBuilder:
             - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
+            - Python's cyclic garbage collector is temporarily disabled during this operation. Its previous state
+              is restored before returning or propagating an exception.
         """
 
-        # ensure the world count is set correctly
-        self.world_count = max(1, self.world_count)
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            # ensure the world count is set correctly
+            self.world_count = max(1, self.world_count)
 
-        # validate world ordering and contiguity
-        if not skip_all_validations and not skip_validation_worlds:
-            self._validate_world_ordering()
+            # validate world ordering and contiguity
+            if not skip_all_validations and not skip_validation_worlds:
+                self._validate_world_ordering()
 
-        # validate joints belong to an articulation
-        if not skip_all_validations and not skip_validation_joints:
-            self._validate_joints()
+            # validate joints belong to an articulation
+            if not skip_all_validations and not skip_validation_joints:
+                self._validate_joints()
 
-        # validate shapes have valid contact margins
-        if not skip_all_validations and not skip_validation_shapes:
-            self._validate_shapes()
+            # validate shapes have valid contact margins
+            if not skip_all_validations and not skip_validation_shapes:
+                self._validate_shapes()
 
-        # validate structural invariants (body/joint references, array lengths)
-        if not skip_all_validations and not skip_validation_structure:
-            self._validate_structure()
+            # validate structural invariants (body/joint references, array lengths)
+            if not skip_all_validations and not skip_validation_structure:
+                self._validate_structure()
 
-        # validate DFS topological joint ordering (opt-in, skipped by default)
-        if not skip_all_validations and not skip_validation_joint_ordering:
-            self.validate_joint_ordering()
+            # validate DFS topological joint ordering (opt-in, skipped by default)
+            if not skip_all_validations and not skip_validation_joint_ordering:
+                self.validate_joint_ordering()
 
-        with self._raw_array_access():
-            return self._finalize_impl(device=device, requires_grad=requires_grad)
+            with self._raw_array_access():
+                return self._finalize_impl(device=device, requires_grad=requires_grad)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
 
     def _finalize_impl(
         self,
