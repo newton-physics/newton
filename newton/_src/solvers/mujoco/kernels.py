@@ -2722,6 +2722,13 @@ def update_jnt_solref_from_invweight0_kernel(
         jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
+    if solref_mode == SOLREF_MODE_MJCF_DEFAULT:
+        # Persist the same one-way promotion performed by the eager host path.
+        # This write is required when the update is replayed from a CUDA graph:
+        # reverting the gains to their defaults later must not silently restore
+        # the MJCF-default interpretation.
+        joint_limit_solref_mode[newton_dof] = SOLREF_MODE_FORCE_SPACE
+
     if ke <= 0.0 or kd <= 0.0:
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
         # updates behave the same as a fresh model built without a custom limit
@@ -2741,6 +2748,27 @@ def update_jnt_solref_from_invweight0_kernel(
     direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
     direct_damping = wp.max(kd * factor, MJ_MINVAL)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+
+
+@wp.kernel
+def compute_physical_meaninertia_kernel(
+    nv: int,
+    M_rownnz: wp.array[wp.int32],
+    M_rowadr: wp.array[wp.int32],
+    M: wp.array2d[float],
+    meaninertia: wp.array[float],
+):
+    """Remove kinematic locking armature from MuJoCo's mean-inertia statistic."""
+    world = wp.tid()
+    if nv == 0:
+        meaninertia[world % meaninertia.shape[0]] = 1.0
+        return
+
+    total = float(0.0)
+    for mjc_dof in range(nv):
+        total += M[world, M_rowadr[mjc_dof] + M_rownnz[mjc_dof] - 1]
+
+    meaninertia[world % meaninertia.shape[0]] = total / float(nv)
 
 
 @wp.kernel(enable_backward=False)
