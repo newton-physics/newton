@@ -155,7 +155,7 @@ def _joint_split_residual(model: newton.Model, state: newton.State) -> tuple[flo
                 P_ang = P_ang - np.outer(axis, axis)
 
         if jt in (
-            int(newton.JointType.CABLE),
+            int(newton.JointType.ROD),
             int(newton.JointType.BALL),
             int(newton.JointType.FIXED),
             int(newton.JointType.REVOLUTE),
@@ -165,7 +165,7 @@ def _joint_split_residual(model: newton.Model, state: newton.State) -> tuple[flo
             linear_residuals.append(P_lin @ (x_child - x_parent))
 
         if jt in (
-            int(newton.JointType.CABLE),
+            int(newton.JointType.ROD),
             int(newton.JointType.FIXED),
             int(newton.JointType.REVOLUTE),
             int(newton.JointType.PRISMATIC),
@@ -413,7 +413,7 @@ def _make_projected_joint_chain_model(joint_kind: str) -> newton.Model:
         )
     elif joint_kind == "cable":
         joints.append(
-            builder.add_joint_cable(
+            builder.add_joint_rod(
                 parent=-1,
                 child=bodies[0],
                 parent_xform=wp.transform(p=wp.vec3(*positions[0]), q=wp.quat_identity()),
@@ -423,7 +423,7 @@ def _make_projected_joint_chain_model(joint_kind: str) -> newton.Model:
             )
         )
         joints.append(
-            builder.add_joint_cable(
+            builder.add_joint_rod(
                 parent=bodies[0],
                 child=bodies[1],
                 parent_xform=wp.transform(p=wp.vec3(0.175, 0.0, 0.0), q=wp.quat_identity()),
@@ -485,6 +485,7 @@ def _solve_coupled_revolute_armature() -> tuple[float, float, float]:
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=False,
         rigid_articulation_solve="block_sparse_joints",
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -524,7 +525,7 @@ def _make_cable_rod_model(closed: bool, bend_damping: float = 0.0) -> newton.Mod
         points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), z) for t in theta]
     else:
         segment_count = 8
-        points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+        points, quats = newton.utils.rod_straight_points_and_quaternions(
             start=wp.vec3(-0.4, 0.0, 1.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=0.8,
@@ -532,7 +533,7 @@ def _make_cable_rod_model(closed: bool, bend_damping: float = 0.0) -> newton.Mod
         )
 
     if closed:
-        quats = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+        quats = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="add_rod: wrap_in_articulation=False", category=UserWarning)
@@ -628,6 +629,7 @@ def _solve_stiffness_ratio_energy(mode: str) -> float:
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=False,
         rigid_articulation_solve=mode,
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -653,6 +655,7 @@ def _solve_projected_joint_split_residual(joint_kind: str, mode: str) -> tuple[f
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=False,
         rigid_articulation_solve=mode,
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -676,6 +679,7 @@ def _solve_cable_rod_split_residual(closed: bool, mode: str, bend_damping: float
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=False,
         rigid_articulation_solve=mode,
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -697,7 +701,7 @@ def _make_xy_table_example(mode: str):
     return example
 
 
-def _solve_residual(mode: str) -> float:
+def _solve_residual(mode: str, compliant_alm: bool = False) -> float:
     model = _make_loop_model()
     state_in = model.state()
     state_out = model.state()
@@ -713,6 +717,7 @@ def _solve_residual(mode: str) -> float:
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=compliant_alm,
         rigid_articulation_solve=mode,
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -721,7 +726,7 @@ def _solve_residual(mode: str) -> float:
     return _joint_residual(model, state_out)
 
 
-def _solve_loop_q(mode: str, device: str) -> np.ndarray:
+def _solve_loop_q(mode: str, device: str, compliant_alm: bool = False) -> np.ndarray:
     model = _make_loop_model(device)
     state_in = model.state()
     state_out = model.state()
@@ -732,6 +737,7 @@ def _solve_loop_q(mode: str, device: str) -> np.ndarray:
     solver = newton.solvers.SolverVBD(
         model,
         iterations=1,
+        rigid_compliant_alm=compliant_alm,
         rigid_articulation_solve=mode,
         rigid_articulation_relaxation=1.0,
         rigid_avbd_alpha=0.0,
@@ -752,7 +758,11 @@ def _solve_single_body_q(mode: str) -> np.ndarray:
     state_in.body_q.assign(body_q)
 
     solver = newton.solvers.SolverVBD(
-        model, iterations=1, rigid_articulation_solve=mode, rigid_articulation_relaxation=1.0
+        model,
+        iterations=1,
+        rigid_compliant_alm=False,
+        rigid_articulation_solve=mode,
+        rigid_articulation_relaxation=1.0,
     )
     solver.step(state_in, state_out, control, None, 1.0 / 120.0)
     return state_out.body_q.numpy()
@@ -773,7 +783,11 @@ def _solve_offset_com_single_body_q(mode: str) -> np.ndarray:
     state_in.body_q.assign(body_q)
 
     solver = newton.solvers.SolverVBD(
-        model, iterations=1, rigid_articulation_solve=mode, rigid_articulation_relaxation=1.0
+        model,
+        iterations=1,
+        rigid_compliant_alm=False,
+        rigid_articulation_solve=mode,
+        rigid_articulation_relaxation=1.0,
     )
     solver.step(state_in, state_out, control, None, 1.0 / 120.0)
     return state_out.body_q.numpy()
@@ -832,15 +846,24 @@ class TestVBDSparseArticulation(unittest.TestCase):
         sparse_residual = _solve_residual("block_sparse_joints")
         self.assertLess(sparse_residual, 0.9 * local_residual)
 
+    def test_sparse_articulation_reduces_compliant_alm_loop_residual(self):
+        local_residual = _solve_residual("local", compliant_alm=True)
+        sparse_residual = _solve_residual("block_sparse_joints", compliant_alm=True)
+        self.assertLess(sparse_residual, 0.9 * local_residual)
+
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA device required")
     def test_sparse_articulation_cuda_matches_cpu_serial(self):
-        cpu_q = _solve_loop_q("block_sparse_joints", "cpu")
-        cuda_q = _solve_loop_q("block_sparse_joints", "cuda:0")
-        np.testing.assert_allclose(cuda_q, cpu_q, rtol=2.0e-4, atol=2.0e-4)
+        for compliant_alm in (False, True):
+            with self.subTest(compliant_alm=compliant_alm):
+                cpu_q = _solve_loop_q("block_sparse_joints", "cpu", compliant_alm=compliant_alm)
+                cuda_q = _solve_loop_q("block_sparse_joints", "cuda:0", compliant_alm=compliant_alm)
+                np.testing.assert_allclose(cuda_q, cpu_q, rtol=2.0e-4, atol=2.0e-4)
 
     def test_sparse_articulation_default_relaxation_is_tuned(self):
         model = _make_single_body_model()
-        solver = newton.solvers.SolverVBD(model, iterations=1, rigid_articulation_solve="block_sparse_joints")
+        solver = newton.solvers.SolverVBD(
+            model, iterations=1, rigid_compliant_alm=False, rigid_articulation_solve="block_sparse_joints"
+        )
         self.assertEqual(solver.rigid_articulation_relaxation, 0.65)
 
     def test_sparse_articulation_couples_revolute_armature(self):

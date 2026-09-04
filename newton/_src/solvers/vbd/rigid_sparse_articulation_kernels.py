@@ -5,16 +5,17 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
 from newton._src.math import quat_velocity
 from newton._src.sim import JointType
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
-    _DRIVE_LIMIT_MODE_DRIVE,
-    _DRIVE_LIMIT_MODE_LIMIT_LOWER,
-    _DRIVE_LIMIT_MODE_LIMIT_UPPER,
+    _drive_row_applies_force,
+    _eval_joint_axis_drive_limit,
+    _limit_row_exists,
+    _load_joint_axis_drive_limit,
+    _load_solve_weight,
+    _material_force_terms,
     compute_kappa_and_jacobian,
     compute_kappa_dot,
-    resolve_drive_limit_mode,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -1261,6 +1262,113 @@ def regularize_articulation_body_hessian(
     body_hessian_aa[body] = H_aa
 
 
+@wp.func
+def _load_sparse_structural_coefficients(
+    jt: int,
+    c_start: int,
+    joint_penalty_k: wp.array[float],
+    joint_rho: wp.array[float],
+    joint_material_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_compliant_alm: int,
+):
+    solve_weight_linear = float(0.0)
+    solve_weight_angular = float(0.0)
+    material_k_linear = float(0.0)
+    material_k_angular = float(0.0)
+    kd_linear = float(0.0)
+    kd_angular = float(0.0)
+
+    if jt == JointType.ROD:
+        solve_weight_linear = wp.max(
+            _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm),
+            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm),
+        )
+        solve_weight_angular = wp.max(
+            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 2, joint_compliant_alm),
+            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 3, joint_compliant_alm),
+        )
+        material_k_linear = wp.max(joint_material_k[c_start], joint_material_k[c_start + 1])
+        material_k_angular = wp.max(joint_material_k[c_start + 2], joint_material_k[c_start + 3])
+        kd_linear = wp.max(joint_penalty_kd[c_start], joint_penalty_kd[c_start + 1])
+        kd_angular = wp.max(joint_penalty_kd[c_start + 2], joint_penalty_kd[c_start + 3])
+    elif jt == JointType.BALL:
+        solve_weight_linear = _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm)
+        material_k_linear = joint_material_k[c_start]
+        kd_linear = joint_penalty_kd[c_start]
+    else:
+        solve_weight_linear = _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm)
+        solve_weight_angular = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
+        material_k_linear = joint_material_k[c_start]
+        material_k_angular = joint_material_k[c_start + 1]
+        kd_linear = joint_penalty_kd[c_start]
+        kd_angular = joint_penalty_kd[c_start + 1]
+
+    return (
+        solve_weight_linear,
+        solve_weight_angular,
+        material_k_linear,
+        material_k_angular,
+        kd_linear,
+        kd_angular,
+    )
+
+
+@wp.func
+def _evaluate_sparse_drive_limit(
+    dof_idx: int,
+    target_q_idx: int,
+    penalty_slot: int,
+    q: float,
+    rate: float,
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_vel: wp.array[float],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_penalty_k: wp.array[float],
+    joint_drive_limit_support: wp.array[float],
+    joint_drive_lambda: wp.array[float],
+    joint_limit_lambda: wp.array[float],
+    joint_compliant_alm: int,
+    dt: float,
+):
+    axis = _load_joint_axis_drive_limit(
+        dof_idx,
+        target_q_idx,
+        penalty_slot,
+        joint_target_ke,
+        joint_target_kd,
+        joint_target_q,
+        joint_target_vel,
+        joint_limit_lower,
+        joint_limit_upper,
+        joint_limit_ke,
+        joint_limit_kd,
+        joint_penalty_k,
+        joint_compliant_alm,
+    )
+    has_drive = _drive_row_applies_force(axis.material_drive_ke, axis.drive_kd)
+    has_limits = _limit_row_exists(axis.material_limit_ke, axis.lower, axis.upper)
+    if has_drive or has_limits:
+        return _eval_joint_axis_drive_limit(
+            axis,
+            q,
+            rate,
+            has_drive,
+            has_limits,
+            joint_drive_limit_support[dof_idx],
+            joint_drive_lambda[dof_idx],
+            joint_limit_lambda[dof_idx],
+            joint_compliant_alm,
+            1.0 / dt,
+        )
+    return float(0.0), float(0.0)
+
+
 @wp.kernel
 def assemble_articulation_body_diagonal(
     dt: float,
@@ -1368,6 +1476,8 @@ def assemble_articulation_joints_scalar(
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
     joint_penalty_k: wp.array[float],
+    joint_rho: wp.array[float],
+    joint_material_k: wp.array[float],
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
@@ -1382,12 +1492,16 @@ def assemble_articulation_joints_scalar(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_drive_limit_support: wp.array[float],
+    joint_drive_lambda: wp.array[float],
+    joint_limit_lambda: wp.array[float],
     joint_lambda_lin: wp.array[wp.vec3],
     joint_lambda_ang: wp.array[wp.vec3],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
+    joint_compliant_alm: int,
     values_scalar: wp.array[float],
     rhs_scalar: wp.array[float],
 ):
@@ -1398,7 +1512,7 @@ def assemble_articulation_joints_scalar(
 
     jt = joint_type[joint]
     if (
-        jt != JointType.CABLE
+        jt != JointType.ROD
         and jt != JointType.BALL
         and jt != JointType.FIXED
         and jt != JointType.REVOLUTE
@@ -1466,12 +1580,12 @@ def assemble_articulation_joints_scalar(
     lin_C0 = wp.vec3(0.0)
     lin_alpha = float(0.0)
     linear_hard = joint_is_hard[c_start] == 1
-    if jt == JointType.CABLE:
+    if jt == JointType.ROD:
         linear_hard = linear_hard or joint_is_hard[c_start + 1] == 1
-    if linear_hard:
+    if linear_hard or joint_compliant_alm == 1:
         lin_lambda = joint_lambda_lin[joint]
         lin_C0 = joint_C0_lin[joint]
-        if jt == JointType.CABLE:
+        if jt == JointType.ROD:
             lin_lambda = wp.quat_rotate(parent_anchor_q, lin_lambda)
             lin_C0 = wp.quat_rotate(parent_anchor_q, lin_C0)
         lin_alpha = avbd_alpha
@@ -1481,48 +1595,33 @@ def assemble_articulation_joints_scalar(
     ang_alpha = float(0.0)
     ang_hard = int(0)
     if jt != JointType.BALL:
-        if jt == JointType.CABLE:
+        if jt == JointType.ROD:
             if joint_is_hard[c_start + 2] == 1 or joint_is_hard[c_start + 3] == 1:
                 ang_hard = 1
         else:
             ang_hard = joint_is_hard[c_start + 1]
-        if ang_hard == 1:
+        if ang_hard == 1 or joint_compliant_alm == 1:
             ang_lambda = joint_lambda_ang[joint]
             ang_C0 = joint_C0_ang[joint]
             ang_alpha = avbd_alpha
 
-    k_linear = float(0.0)
-    k_angular = float(0.0)
-    kd_linear = float(0.0)
-    kd_angular = float(0.0)
-    if jt == JointType.CABLE:
-        k_linear = wp.max(joint_penalty_k[c_start], joint_penalty_k[c_start + 1])
-        k_angular = wp.max(joint_penalty_k[c_start + 2], joint_penalty_k[c_start + 3])
-        kd_linear = wp.max(joint_penalty_kd[c_start], joint_penalty_kd[c_start + 1])
-        kd_angular = wp.max(joint_penalty_kd[c_start + 2], joint_penalty_kd[c_start + 3])
-    elif jt == JointType.BALL:
-        k_linear = joint_penalty_k[c_start]
-        kd_linear = joint_penalty_kd[c_start]
-    elif jt == JointType.FIXED:
-        k_linear = joint_penalty_k[c_start]
-        k_angular = joint_penalty_k[c_start + 1]
-        kd_linear = joint_penalty_kd[c_start]
-        kd_angular = joint_penalty_kd[c_start + 1]
-    elif jt == JointType.REVOLUTE:
-        k_linear = joint_penalty_k[c_start]
-        k_angular = joint_penalty_k[c_start + 1]
-        kd_linear = joint_penalty_kd[c_start]
-        kd_angular = joint_penalty_kd[c_start + 1]
-    elif jt == JointType.PRISMATIC:
-        k_linear = joint_penalty_k[c_start]
-        k_angular = joint_penalty_k[c_start + 1]
-        kd_linear = joint_penalty_kd[c_start]
-        kd_angular = joint_penalty_kd[c_start + 1]
-    elif jt == JointType.D6:
-        k_linear = joint_penalty_k[c_start]
-        k_angular = joint_penalty_k[c_start + 1]
-        kd_linear = joint_penalty_kd[c_start]
-        kd_angular = joint_penalty_kd[c_start + 1]
+    solve_weight_linear, solve_weight_angular, material_k_linear, material_k_angular, kd_linear, kd_angular = (
+        _load_sparse_structural_coefficients(
+            jt,
+            c_start,
+            joint_penalty_k,
+            joint_rho,
+            joint_material_k,
+            joint_penalty_kd,
+            joint_compliant_alm,
+        )
+    )
+    k_linear, lin_lambda = _material_force_terms(
+        solve_weight_linear, material_k_linear, lin_lambda, joint_compliant_alm
+    )
+    k_angular, ang_lambda = _material_force_terms(
+        solve_weight_angular, material_k_angular, ang_lambda, joint_compliant_alm
+    )
 
     if k_linear > 0.0 and (jt != JointType.D6 or lin_count < 3):
         _assemble_linear_joint_scalar(
@@ -1556,7 +1655,7 @@ def assemble_articulation_joints_scalar(
     if k_angular > 0.0 and jt != JointType.BALL and (jt != JointType.D6 or ang_count < 3):
         sigma0 = wp.vec3(0.0)
         C_fric = wp.vec3(0.0)
-        if jt == JointType.CABLE and ang_hard == 0:
+        if jt == JointType.ROD and ang_hard == 0:
             sigma0 = joint_sigma_start[joint]
             C_fric = joint_C_fric[joint]
         kappa_cached, J_world_cached = _assemble_angular_joint_scalar(
@@ -1619,17 +1718,8 @@ def assemble_articulation_joints_scalar(
     if jt == JointType.REVOLUTE:
         dof_idx = qd_start
         target_q_idx = joint_target_q_start[joint]
-        model_drive_ke = joint_target_ke[dof_idx]
-        drive_kd = joint_target_kd[dof_idx]
-        target_pos = joint_target_q[target_q_idx]
-        target_vel = joint_target_vel[dof_idx]
-        lim_lower = joint_limit_lower[dof_idx]
-        lim_upper = joint_limit_upper[dof_idx]
-        model_limit_ke = joint_limit_ke[dof_idx]
-        lim_kd = joint_limit_kd[dof_idx]
-
-        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+        has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+        has_limits = _limit_row_exists(joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx])
         if has_drive or has_limits:
             axis_local = wp.normalize(joint_axis[dof_idx])
             kappa = kappa_cached
@@ -1645,18 +1735,27 @@ def assemble_articulation_joints_scalar(
             dkappa_dt = compute_kappa_dot(J_world, omega_parent, omega_child)
             dtheta_dt = wp.dot(dkappa_dt, axis_local)
 
-            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
-            avbd_ke = joint_penalty_k[c_start + 2]
-            drive_ke = wp.min(avbd_ke, model_drive_ke)
-            lim_ke = wp.min(avbd_ke, model_limit_ke)
-            force_scalar = float(0.0)
-            hessian_scalar = float(0.0)
-            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                force_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                hessian_scalar = lim_ke + lim_kd / dt
-            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                force_scalar = drive_ke * err_pos + drive_kd * (dtheta_dt - target_vel)
-                hessian_scalar = drive_ke + drive_kd / dt
+            force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                dof_idx,
+                target_q_idx,
+                c_start + 2,
+                theta_abs,
+                dtheta_dt,
+                joint_target_ke,
+                joint_target_kd,
+                joint_target_q,
+                joint_target_vel,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_limit_kd,
+                joint_penalty_k,
+                joint_drive_limit_support,
+                joint_drive_lambda,
+                joint_limit_lambda,
+                joint_compliant_alm,
+                dt,
+            )
 
             if hessian_scalar > 0.0:
                 angular_jacobian_world = J_world * axis_local
@@ -1677,17 +1776,8 @@ def assemble_articulation_joints_scalar(
     if jt == JointType.PRISMATIC:
         dof_idx = qd_start
         target_q_idx = joint_target_q_start[joint]
-        model_drive_ke = joint_target_ke[dof_idx]
-        drive_kd = joint_target_kd[dof_idx]
-        target_pos = joint_target_q[target_q_idx]
-        target_vel = joint_target_vel[dof_idx]
-        lim_lower = joint_limit_lower[dof_idx]
-        lim_upper = joint_limit_upper[dof_idx]
-        model_limit_ke = joint_limit_ke[dof_idx]
-        lim_kd = joint_limit_kd[dof_idx]
-
-        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+        has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+        has_limits = _limit_row_exists(joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx])
         if has_drive or has_limits:
             axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
             C_vec = child_anchor - parent_anchor
@@ -1695,18 +1785,27 @@ def assemble_articulation_joints_scalar(
             d_along = wp.dot(C_vec, axis_world)
             dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
 
-            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
-            avbd_ke = joint_penalty_k[c_start + 2]
-            drive_ke = wp.min(avbd_ke, model_drive_ke)
-            lim_ke = wp.min(avbd_ke, model_limit_ke)
-            force_scalar = float(0.0)
-            hessian_scalar = float(0.0)
-            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                force_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                hessian_scalar = lim_ke + lim_kd / dt
-            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                force_scalar = drive_ke * err_pos + drive_kd * (dd_dt - target_vel)
-                hessian_scalar = drive_ke + drive_kd / dt
+            force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                dof_idx,
+                target_q_idx,
+                c_start + 2,
+                d_along,
+                dd_dt,
+                joint_target_ke,
+                joint_target_kd,
+                joint_target_q,
+                joint_target_vel,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_limit_kd,
+                joint_penalty_k,
+                joint_drive_limit_support,
+                joint_drive_lambda,
+                joint_limit_lambda,
+                joint_compliant_alm,
+                dt,
+            )
 
             if hessian_scalar > 0.0:
                 _assemble_linear_axis_row_scalar(
@@ -1736,35 +1835,35 @@ def assemble_articulation_joints_scalar(
             if li < lin_count:
                 dof_idx = qd_start + li
                 target_q_idx = target_q_base + li
-                model_drive_ke = joint_target_ke[dof_idx]
-                drive_kd = joint_target_kd[dof_idx]
-                target_pos = joint_target_q[target_q_idx]
-                target_vel = joint_target_vel[dof_idx]
-                lim_lower = joint_limit_lower[dof_idx]
-                lim_upper = joint_limit_upper[dof_idx]
-                model_limit_ke = joint_limit_ke[dof_idx]
-                lim_kd = joint_limit_kd[dof_idx]
-
-                has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-                has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+                has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+                has_limits = _limit_row_exists(
+                    joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+                )
                 if has_drive or has_limits:
                     axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
                     d_along = wp.dot(C_vec, axis_world)
                     dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
-                    mode, err_pos = resolve_drive_limit_mode(
-                        d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                    force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                        dof_idx,
+                        target_q_idx,
+                        c_start + 2 + li,
+                        d_along,
+                        dd_dt,
+                        joint_target_ke,
+                        joint_target_kd,
+                        joint_target_q,
+                        joint_target_vel,
+                        joint_limit_lower,
+                        joint_limit_upper,
+                        joint_limit_ke,
+                        joint_limit_kd,
+                        joint_penalty_k,
+                        joint_drive_limit_support,
+                        joint_drive_lambda,
+                        joint_limit_lambda,
+                        joint_compliant_alm,
+                        dt,
                     )
-                    avbd_ke = joint_penalty_k[c_start + 2 + li]
-                    drive_ke = wp.min(avbd_ke, model_drive_ke)
-                    lim_ke = wp.min(avbd_ke, model_limit_ke)
-                    force_scalar = float(0.0)
-                    hessian_scalar = float(0.0)
-                    if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                        force_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                        hessian_scalar = lim_ke + lim_kd / dt
-                    elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                        force_scalar = drive_ke * err_pos + drive_kd * (dd_dt - target_vel)
-                        hessian_scalar = drive_ke + drive_kd / dt
 
                     if hessian_scalar > 0.0:
                         _assemble_linear_axis_row_scalar(
@@ -1800,36 +1899,36 @@ def assemble_articulation_joints_scalar(
                 if ai < ang_count:
                     dof_idx = qd_start + lin_count + ai
                     target_q_idx = target_q_base + lin_count + ai
-                    model_drive_ke = joint_target_ke[dof_idx]
-                    drive_kd = joint_target_kd[dof_idx]
-                    target_pos = joint_target_q[target_q_idx]
-                    target_vel = joint_target_vel[dof_idx]
-                    lim_lower = joint_limit_lower[dof_idx]
-                    lim_upper = joint_limit_upper[dof_idx]
-                    model_limit_ke = joint_limit_ke[dof_idx]
-                    lim_kd = joint_limit_kd[dof_idx]
-
-                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-                    has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+                    has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+                    has_limits = _limit_row_exists(
+                        joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+                    )
                     if has_drive or has_limits:
                         axis_local = wp.normalize(joint_axis[dof_idx])
                         theta = wp.dot(kappa, axis_local)
                         theta_abs = theta + joint_rest_angle[dof_idx]
                         dtheta_dt = wp.dot(dkappa_dt, axis_local)
-                        mode, err_pos = resolve_drive_limit_mode(
-                            theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                        force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                            dof_idx,
+                            target_q_idx,
+                            c_start + 2 + lin_count + ai,
+                            theta_abs,
+                            dtheta_dt,
+                            joint_target_ke,
+                            joint_target_kd,
+                            joint_target_q,
+                            joint_target_vel,
+                            joint_limit_lower,
+                            joint_limit_upper,
+                            joint_limit_ke,
+                            joint_limit_kd,
+                            joint_penalty_k,
+                            joint_drive_limit_support,
+                            joint_drive_lambda,
+                            joint_limit_lambda,
+                            joint_compliant_alm,
+                            dt,
                         )
-                        avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
-                        drive_ke = wp.min(avbd_ke, model_drive_ke)
-                        lim_ke = wp.min(avbd_ke, model_limit_ke)
-                        force_scalar = float(0.0)
-                        hessian_scalar = float(0.0)
-                        if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            force_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                            hessian_scalar = lim_ke + lim_kd / dt
-                        elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            force_scalar = drive_ke * err_pos + drive_kd * (dtheta_dt - target_vel)
-                            hessian_scalar = drive_ke + drive_kd / dt
 
                         if hessian_scalar > 0.0:
                             angular_jacobian_world = J_world * axis_local
@@ -2090,6 +2189,8 @@ def solve_articulation_sparse_serial(
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
     joint_penalty_k: wp.array[float],
+    joint_rho: wp.array[float],
+    joint_material_k: wp.array[float],
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
@@ -2104,12 +2205,16 @@ def solve_articulation_sparse_serial(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_drive_limit_support: wp.array[float],
+    joint_drive_lambda: wp.array[float],
+    joint_limit_lambda: wp.array[float],
     joint_lambda_lin: wp.array[wp.vec3],
     joint_lambda_ang: wp.array[wp.vec3],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
+    joint_compliant_alm: int,
     update_relaxation: float,
     values: wp.array[mat66f],
     rhs: wp.array[vec6f],
@@ -2151,7 +2256,7 @@ def solve_articulation_sparse_serial(
 
         jt = joint_type[joint]
         if (
-            jt != JointType.CABLE
+            jt != JointType.ROD
             and jt != JointType.BALL
             and jt != JointType.FIXED
             and jt != JointType.REVOLUTE
@@ -2218,12 +2323,12 @@ def solve_articulation_sparse_serial(
         lin_C0 = wp.vec3(0.0)
         lin_alpha = float(0.0)
         linear_hard = joint_is_hard[c_start] == 1
-        if jt == JointType.CABLE:
+        if jt == JointType.ROD:
             linear_hard = linear_hard or joint_is_hard[c_start + 1] == 1
-        if linear_hard:
+        if linear_hard or joint_compliant_alm == 1:
             lin_lambda = joint_lambda_lin[joint]
             lin_C0 = joint_C0_lin[joint]
-            if jt == JointType.CABLE:
+            if jt == JointType.ROD:
                 lin_lambda = wp.quat_rotate(parent_anchor_q, lin_lambda)
                 lin_C0 = wp.quat_rotate(parent_anchor_q, lin_C0)
             lin_alpha = avbd_alpha
@@ -2233,48 +2338,33 @@ def solve_articulation_sparse_serial(
         ang_alpha = float(0.0)
         ang_hard = int(0)
         if jt != JointType.BALL:
-            if jt == JointType.CABLE:
+            if jt == JointType.ROD:
                 if joint_is_hard[c_start + 2] == 1 or joint_is_hard[c_start + 3] == 1:
                     ang_hard = 1
             else:
                 ang_hard = joint_is_hard[c_start + 1]
-            if ang_hard == 1:
+            if ang_hard == 1 or joint_compliant_alm == 1:
                 ang_lambda = joint_lambda_ang[joint]
                 ang_C0 = joint_C0_ang[joint]
                 ang_alpha = avbd_alpha
 
-        k_linear = float(0.0)
-        k_angular = float(0.0)
-        kd_linear = float(0.0)
-        kd_angular = float(0.0)
-        if jt == JointType.CABLE:
-            k_linear = wp.max(joint_penalty_k[c_start], joint_penalty_k[c_start + 1])
-            k_angular = wp.max(joint_penalty_k[c_start + 2], joint_penalty_k[c_start + 3])
-            kd_linear = wp.max(joint_penalty_kd[c_start], joint_penalty_kd[c_start + 1])
-            kd_angular = wp.max(joint_penalty_kd[c_start + 2], joint_penalty_kd[c_start + 3])
-        elif jt == JointType.BALL:
-            k_linear = joint_penalty_k[c_start]
-            kd_linear = joint_penalty_kd[c_start]
-        elif jt == JointType.FIXED:
-            k_linear = joint_penalty_k[c_start]
-            k_angular = joint_penalty_k[c_start + 1]
-            kd_linear = joint_penalty_kd[c_start]
-            kd_angular = joint_penalty_kd[c_start + 1]
-        elif jt == JointType.REVOLUTE:
-            k_linear = joint_penalty_k[c_start]
-            k_angular = joint_penalty_k[c_start + 1]
-            kd_linear = joint_penalty_kd[c_start]
-            kd_angular = joint_penalty_kd[c_start + 1]
-        elif jt == JointType.PRISMATIC:
-            k_linear = joint_penalty_k[c_start]
-            k_angular = joint_penalty_k[c_start + 1]
-            kd_linear = joint_penalty_kd[c_start]
-            kd_angular = joint_penalty_kd[c_start + 1]
-        elif jt == JointType.D6:
-            k_linear = joint_penalty_k[c_start]
-            k_angular = joint_penalty_k[c_start + 1]
-            kd_linear = joint_penalty_kd[c_start]
-            kd_angular = joint_penalty_kd[c_start + 1]
+        solve_weight_linear, solve_weight_angular, material_k_linear, material_k_angular, kd_linear, kd_angular = (
+            _load_sparse_structural_coefficients(
+                jt,
+                c_start,
+                joint_penalty_k,
+                joint_rho,
+                joint_material_k,
+                joint_penalty_kd,
+                joint_compliant_alm,
+            )
+        )
+        k_linear, lin_lambda = _material_force_terms(
+            solve_weight_linear, material_k_linear, lin_lambda, joint_compliant_alm
+        )
+        k_angular, ang_lambda = _material_force_terms(
+            solve_weight_angular, material_k_angular, ang_lambda, joint_compliant_alm
+        )
 
         if k_linear > 0.0 and (jt != JointType.D6 or lin_count < 3):
             _assemble_linear_joint(
@@ -2308,7 +2398,7 @@ def solve_articulation_sparse_serial(
         if k_angular > 0.0 and jt != JointType.BALL and (jt != JointType.D6 or ang_count < 3):
             sigma0 = wp.vec3(0.0)
             C_fric = wp.vec3(0.0)
-            if jt == JointType.CABLE and ang_hard == 0:
+            if jt == JointType.ROD and ang_hard == 0:
                 sigma0 = joint_sigma_start[joint]
                 C_fric = joint_C_fric[joint]
             kappa_cached, J_world_cached = _assemble_angular_joint(
@@ -2374,17 +2464,10 @@ def solve_articulation_sparse_serial(
         if jt == JointType.REVOLUTE:
             dof_idx = qd_start
             target_q_idx = joint_target_q_start[joint]
-            model_drive_ke = joint_target_ke[dof_idx]
-            drive_kd = joint_target_kd[dof_idx]
-            target_pos = joint_target_q[target_q_idx]
-            target_vel = joint_target_vel[dof_idx]
-            lim_lower = joint_limit_lower[dof_idx]
-            lim_upper = joint_limit_upper[dof_idx]
-            model_limit_ke = joint_limit_ke[dof_idx]
-            lim_kd = joint_limit_kd[dof_idx]
-
-            has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-            has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+            has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+            has_limits = _limit_row_exists(
+                joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+            )
             if has_drive or has_limits:
                 axis_local = wp.normalize(joint_axis[dof_idx])
                 kappa = kappa_cached
@@ -2400,20 +2483,27 @@ def solve_articulation_sparse_serial(
                 dkappa_dt = compute_kappa_dot(J_world, omega_parent, omega_child)
                 dtheta_dt = wp.dot(dkappa_dt, axis_local)
 
-                mode, err_pos = resolve_drive_limit_mode(
-                    theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                    dof_idx,
+                    target_q_idx,
+                    c_start + 2,
+                    theta_abs,
+                    dtheta_dt,
+                    joint_target_ke,
+                    joint_target_kd,
+                    joint_target_q,
+                    joint_target_vel,
+                    joint_limit_lower,
+                    joint_limit_upper,
+                    joint_limit_ke,
+                    joint_limit_kd,
+                    joint_penalty_k,
+                    joint_drive_limit_support,
+                    joint_drive_lambda,
+                    joint_limit_lambda,
+                    joint_compliant_alm,
+                    dt,
                 )
-                avbd_ke = joint_penalty_k[c_start + 2]
-                drive_ke = wp.min(avbd_ke, model_drive_ke)
-                lim_ke = wp.min(avbd_ke, model_limit_ke)
-                force_scalar = float(0.0)
-                hessian_scalar = float(0.0)
-                if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                    force_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                    hessian_scalar = lim_ke + lim_kd / dt
-                elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                    force_scalar = drive_ke * err_pos + drive_kd * (dtheta_dt - target_vel)
-                    hessian_scalar = drive_ke + drive_kd / dt
 
                 if hessian_scalar > 0.0:
                     angular_jacobian_world = J_world * axis_local
@@ -2434,17 +2524,10 @@ def solve_articulation_sparse_serial(
         if jt == JointType.PRISMATIC:
             dof_idx = qd_start
             target_q_idx = joint_target_q_start[joint]
-            model_drive_ke = joint_target_ke[dof_idx]
-            drive_kd = joint_target_kd[dof_idx]
-            target_pos = joint_target_q[target_q_idx]
-            target_vel = joint_target_vel[dof_idx]
-            lim_lower = joint_limit_lower[dof_idx]
-            lim_upper = joint_limit_upper[dof_idx]
-            model_limit_ke = joint_limit_ke[dof_idx]
-            lim_kd = joint_limit_kd[dof_idx]
-
-            has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-            has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+            has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+            has_limits = _limit_row_exists(
+                joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+            )
             if has_drive or has_limits:
                 axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
                 C_vec = child_anchor - parent_anchor
@@ -2452,20 +2535,27 @@ def solve_articulation_sparse_serial(
                 d_along = wp.dot(C_vec, axis_world)
                 dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
 
-                mode, err_pos = resolve_drive_limit_mode(
-                    d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                    dof_idx,
+                    target_q_idx,
+                    c_start + 2,
+                    d_along,
+                    dd_dt,
+                    joint_target_ke,
+                    joint_target_kd,
+                    joint_target_q,
+                    joint_target_vel,
+                    joint_limit_lower,
+                    joint_limit_upper,
+                    joint_limit_ke,
+                    joint_limit_kd,
+                    joint_penalty_k,
+                    joint_drive_limit_support,
+                    joint_drive_lambda,
+                    joint_limit_lambda,
+                    joint_compliant_alm,
+                    dt,
                 )
-                avbd_ke = joint_penalty_k[c_start + 2]
-                drive_ke = wp.min(avbd_ke, model_drive_ke)
-                lim_ke = wp.min(avbd_ke, model_limit_ke)
-                force_scalar = float(0.0)
-                hessian_scalar = float(0.0)
-                if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                    force_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                    hessian_scalar = lim_ke + lim_kd / dt
-                elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                    force_scalar = drive_ke * err_pos + drive_kd * (dd_dt - target_vel)
-                    hessian_scalar = drive_ke + drive_kd / dt
 
                 if hessian_scalar > 0.0:
                     _assemble_linear_axis_row(
@@ -2495,35 +2585,35 @@ def solve_articulation_sparse_serial(
                 if li < lin_count:
                     dof_idx = qd_start + li
                     target_q_idx = target_q_base + li
-                    model_drive_ke = joint_target_ke[dof_idx]
-                    drive_kd = joint_target_kd[dof_idx]
-                    target_pos = joint_target_q[target_q_idx]
-                    target_vel = joint_target_vel[dof_idx]
-                    lim_lower = joint_limit_lower[dof_idx]
-                    lim_upper = joint_limit_upper[dof_idx]
-                    model_limit_ke = joint_limit_ke[dof_idx]
-                    lim_kd = joint_limit_kd[dof_idx]
-
-                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-                    has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+                    has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+                    has_limits = _limit_row_exists(
+                        joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+                    )
                     if has_drive or has_limits:
                         axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
                         d_along = wp.dot(C_vec, axis_world)
                         dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
-                        mode, err_pos = resolve_drive_limit_mode(
-                            d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                        force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                            dof_idx,
+                            target_q_idx,
+                            c_start + 2 + li,
+                            d_along,
+                            dd_dt,
+                            joint_target_ke,
+                            joint_target_kd,
+                            joint_target_q,
+                            joint_target_vel,
+                            joint_limit_lower,
+                            joint_limit_upper,
+                            joint_limit_ke,
+                            joint_limit_kd,
+                            joint_penalty_k,
+                            joint_drive_limit_support,
+                            joint_drive_lambda,
+                            joint_limit_lambda,
+                            joint_compliant_alm,
+                            dt,
                         )
-                        avbd_ke = joint_penalty_k[c_start + 2 + li]
-                        drive_ke = wp.min(avbd_ke, model_drive_ke)
-                        lim_ke = wp.min(avbd_ke, model_limit_ke)
-                        force_scalar = float(0.0)
-                        hessian_scalar = float(0.0)
-                        if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            force_scalar = lim_ke * err_pos + lim_kd * dd_dt
-                            hessian_scalar = lim_ke + lim_kd / dt
-                        elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            force_scalar = drive_ke * err_pos + drive_kd * (dd_dt - target_vel)
-                            hessian_scalar = drive_ke + drive_kd / dt
 
                         if hessian_scalar > 0.0:
                             _assemble_linear_axis_row(
@@ -2559,36 +2649,36 @@ def solve_articulation_sparse_serial(
                     if ai < ang_count:
                         dof_idx = qd_start + lin_count + ai
                         target_q_idx = target_q_base + lin_count + ai
-                        model_drive_ke = joint_target_ke[dof_idx]
-                        drive_kd = joint_target_kd[dof_idx]
-                        target_pos = joint_target_q[target_q_idx]
-                        target_vel = joint_target_vel[dof_idx]
-                        lim_lower = joint_limit_lower[dof_idx]
-                        lim_upper = joint_limit_upper[dof_idx]
-                        model_limit_ke = joint_limit_ke[dof_idx]
-                        lim_kd = joint_limit_kd[dof_idx]
-
-                        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
-                        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+                        has_drive = _drive_row_applies_force(joint_target_ke[dof_idx], joint_target_kd[dof_idx])
+                        has_limits = _limit_row_exists(
+                            joint_limit_ke[dof_idx], joint_limit_lower[dof_idx], joint_limit_upper[dof_idx]
+                        )
                         if has_drive or has_limits:
                             axis_local = wp.normalize(joint_axis[dof_idx])
                             theta = wp.dot(kappa, axis_local)
                             theta_abs = theta + joint_rest_angle[dof_idx]
                             dtheta_dt = wp.dot(dkappa_dt, axis_local)
-                            mode, err_pos = resolve_drive_limit_mode(
-                                theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
+                            force_scalar, hessian_scalar = _evaluate_sparse_drive_limit(
+                                dof_idx,
+                                target_q_idx,
+                                c_start + 2 + lin_count + ai,
+                                theta_abs,
+                                dtheta_dt,
+                                joint_target_ke,
+                                joint_target_kd,
+                                joint_target_q,
+                                joint_target_vel,
+                                joint_limit_lower,
+                                joint_limit_upper,
+                                joint_limit_ke,
+                                joint_limit_kd,
+                                joint_penalty_k,
+                                joint_drive_limit_support,
+                                joint_drive_lambda,
+                                joint_limit_lambda,
+                                joint_compliant_alm,
+                                dt,
                             )
-                            avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
-                            drive_ke = wp.min(avbd_ke, model_drive_ke)
-                            lim_ke = wp.min(avbd_ke, model_limit_ke)
-                            force_scalar = float(0.0)
-                            hessian_scalar = float(0.0)
-                            if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                                force_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
-                                hessian_scalar = lim_ke + lim_kd / dt
-                            elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                                force_scalar = drive_ke * err_pos + drive_kd * (dtheta_dt - target_vel)
-                                hessian_scalar = drive_ke + drive_kd / dt
 
                             if hessian_scalar > 0.0:
                                 angular_jacobian_world = J_world * axis_local
