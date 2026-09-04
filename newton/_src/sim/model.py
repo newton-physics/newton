@@ -843,8 +843,14 @@ class Model:
         """Triangle element activations, shape [tri_count], float."""
         self.tri_materials: wp.array2d[wp.float32] | None = None
         """Triangle element materials, shape [tri_count, 5], float.
-        Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
-        Stored per-element; kernels multiply by rest area internally."""
+        Components: [0] k_mu [N/m], [1] k_lambda [N/m], [2] k_damp [N·s/m], [3] k_drag [kg/m³], [4] k_lift [kg/m³].
+        Stored per-element; kernels multiply by rest area internally.
+
+        The elastic components are per unit length rather than pressures, because the triangle
+        energy is integrated over area and a shell carries no thickness. A material modulus
+        :math:`E` [Pa] therefore enters as :math:`E h` for a shell of thickness :math:`h` [m], which is
+        the conversion :meth:`ModelBuilder.add_usd` applies to an authored stretch stiffness.
+        Contrast :attr:`tet_materials`, which is integrated over volume and is in [Pa]."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
         self.tri_color: wp.array[wp.vec3] | None = None

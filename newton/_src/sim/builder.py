@@ -1512,19 +1512,20 @@ class ModelBuilder:
         """Default particle radius used when particle radius is not provided explicitly."""
 
         self.default_tri_ke = 100.0
-        """Default triangle elastic stiffness for cloth/soft-triangle constraints."""
+        """Default triangle elastic stiffness [N/m] for cloth/soft-triangle constraints.
+        Per unit length, not a pressure: see :attr:`Model.tri_materials`."""
 
         self.default_tri_ka = 100.0
-        """Default triangle area stiffness for cloth/soft-triangle constraints."""
+        """Default triangle area stiffness [N/m] for cloth/soft-triangle constraints."""
 
         self.default_tri_kd = 10.0
-        """Default triangle damping for cloth/soft-triangle constraints."""
+        """Default triangle damping [N·s/m] for cloth/soft-triangle constraints."""
 
         self.default_tri_drag = 0.0
-        """Default aerodynamic drag coefficient for triangle elements."""
+        """Default aerodynamic drag coefficient [kg/m³] for triangle elements."""
 
         self.default_tri_lift = 0.0
-        """Default aerodynamic lift coefficient for triangle elements."""
+        """Default aerodynamic lift coefficient [kg/m³] for triangle elements."""
 
         self.default_spring_ke = 100.0
         """Default spring elastic stiffness for distance constraints."""
