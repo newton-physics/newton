@@ -292,7 +292,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   (dynamics only, per the proposal). Cloth and volume deformables cannot disable particle
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
-  (mixed authoring warns).
+  (mixed authoring warns). Self-collision resolves with the opposite polarity: one member
+  curve authoring ``newton:selfCollisionEnabled = false`` disables self-collision for the
+  whole graph (conflicting authored values warn), and once any member authors a value the
+  ``enable_self_collisions`` argument no longer applies to that graph.
 * **Collision and graphics geometry** -- separate collision or render geometry under a
   deformable body is not simulated or driven (embedding is not implemented): untagged
   PointBased graphics geometry warns and is skipped (a static import would leave a frozen
@@ -371,6 +374,12 @@ The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no e
 A welded rod graph gets one articulation per connected component; each of its curves keeps its
 own body range but shares that articulation. Attachment joints that tie a cable to other bodies
 close a loop, so they stay outside the articulation.
+
+Self-collision is resolved per articulation from ``newton:selfCollisionEnabled`` authored on
+the curve prim itself (see the articulation remapping below). Disabling it filters collisions
+between the articulation's non-adjacent segments; adjacent segments are already filtered by the
+cable joints. Sibling curves of a multi-curve prim are separate articulations, so the filter
+never spans them.
 
 .. code-block:: python
 
@@ -515,7 +524,7 @@ The table below shows PhysX attribute remapping examples:
 
 **Newton articulation remapping:**
 
-On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``) and on cable ``BasisCurves`` prims, the following is resolved:
 
 .. list-table:: Newton Articulation Remapping
    :header-rows: 1
