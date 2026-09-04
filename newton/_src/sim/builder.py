@@ -3169,8 +3169,11 @@ class ModelBuilder:
                 "Call end_world() first to close the current world context."
             )
         if xforms is None:
-            offsets = compute_world_offsets(world_count, spacing, self.up_axis)
-            xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
+            if tuple(spacing) == (0, 0, 0):
+                xforms = [None] * world_count
+            else:
+                offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
         elif len(xforms) != world_count:
             raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
         if label_prefixes is None:
