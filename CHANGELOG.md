@@ -4,6 +4,247 @@
 
 <!-- towncrier release notes start -->
 
+## [1.6.0] - 2026-09-04
+
+### Added
+
+- Add public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs for sparse-volume particle surface extraction with graph-capturable topology rebuilds, compact multi-world meshes, optional SDF redistancing, MPM collider extrapolation, and an `mpm_water_dam_break` example with optional multi-world visualization. Add composable CUDA-OpenGL interoperability flags for `ViewerGL` render-geometry buffers. ([#2909](https://github.com/newton-physics/newton/issues/2909))
+- Add opt-in unified compliant ALM for experimental `SolverVBD` rigid contacts, structural joints, drives, and limits with `rigid_compliant_alm=True`. Authored finite stiffness controls physical compliance while `SolverVBD` selects numerical conditioning automatically. Values used with legacy hard constraints may require retuning for the desired deformation. ([#3333](https://github.com/newton-physics/newton/issues/3333))
+- Warn when automatic collision-pipeline sizing allocates at least 256 MiB for base rigid-contact buffers, and report how to select an explicit `rigid_contact_max` budget. ([#3402](https://github.com/newton-physics/newton/issues/3402))
+- Add review guidelines for contributors and review agents. ([#3509](https://github.com/newton-physics/newton/issues/3509))
+- Import MJCF `jointinparent` actuator transmissions. ([#3743](https://github.com/newton-physics/newton/issues/3743))
+- Import MJCF slider-crank actuator transmissions. ([#3745](https://github.com/newton-physics/newton/issues/3745))
+- Add `newton.utils.cable_straight_points()` for cable centerline geometry. Add `rod_parallel_transport_quaternions()` and `rod_straight_points_and_quaternions()` for rod segment frames, plus `RodStiffness` and `rod_stiffness_from_elastic_moduli()` for per-joint rod stiffness. ([#3800](https://github.com/newton-physics/newton/issues/3800))
+- Add `JointType.ROD` as the preferred rod-joint spelling and `ModelBuilder.add_joint_rod()` as the canonical builder method. For compatibility, value 7 retains `"CABLE"` as its canonical enum name during 1.6. ([#3800](https://github.com/newton-physics/newton/issues/3800))
+- Add an experimental implicit effort mode to `newton.actuators.Actuator`.
+  `actuator.set_effort_mode_implicit(response=oracle)` switches on an implicit
+  scheme for solving actuator impulses. The
+  response comes from the new `newton.actuators.ResponseOracle`; tune the solve
+  with `newton.actuators.Actuator.ImplicitOptions`. ([#3855](https://github.com/newton-physics/newton/issues/3855))
+- Expose device-resident per-world terminal solver status through `SolverKamino.status` for PADMM and DVI. ([#3933](https://github.com/newton-physics/newton/issues/3933))
+- Add an asRoBallet example with selectable policy and LQR controllers. ([#3955](https://github.com/newton-physics/newton/issues/3955))
+- Import per-mode curve damping from `NewtonCurvesDeformableMaterialAPI` and discretize each value using the rod joint's dual rest length. ([#3980](https://github.com/newton-physics/newton/issues/3980))
+- Add articulation ownership and labels to custom frequencies so `ArticulationView` automatically supports solver-defined rows, including MuJoCo tendons and actuators. ([#4016](https://github.com/newton-physics/newton/issues/4016))
+- Add `Actuator.State.assign()` for preserving actuator state across odd-length CUDA graph replays with a single captured graph. ([#4098](https://github.com/newton-physics/newton/issues/4098))
+- Accept a scalar `stiffness`/`damping` in the joint impedance controllers,
+  broadcast to every controlled DOF, alongside the existing compact array of
+  shape `[total_controlled_dofs]`.
+- Accept the expanded implicit-MPM solver names `conjugate-gradient`, `conjugate-residual`, and `generalized-minimal-residual` while retaining the `cg`, `cr`, and `gmres` aliases.
+- Add Coulomb joint friction support to SolverKamino.
+- Add `ControllerDifferentialIK`, a model-based differential-kinematics (Jacobian-based)
+  controller driving joint velocity/position targets toward a desired tool
+  pose, with a selectable inverse-Jacobian solve
+  (`DifferentialIKMethod.DAMPED_LEAST_SQUARES`, `PSEUDO_INVERSE`, `TRANSPOSE`,
+  `ADAPTIVE_DAMPING`, or `TRUNCATED_SVD`) and optional null-space joint-limit
+  avoidance/posture control for redundant robots. Add
+  `ControllerDifferentialIKModelFree`, taking the tool pose and Jacobian as inputs
+  instead of computing them from a `Model`. Add `controller_differential_ik`, an
+  example driving four heterogeneous robots at once with a single controller
+  call -- a redundant 7-DOF Franka Panda, a non-redundant 6-DOF UR10, a 4-DOF
+  planar arm restricted to a 3D (X, Y, yaw) task via `axis_weight`, made
+  redundant by that restriction, and a 5-DOF elbow-type arm demonstrating
+  `null_space_axes` (protecting a different set of axes than `axis_weight`
+  tracks) -- each tracking its own draggable gizmo target, with null-space
+  posture control anchoring the redundant arms and
+  `DifferentialIKMethod.ADAPTIVE_DAMPING` ramping damping up automatically near a
+  singularity or the edge of reach.
+- Add `ControllerOperationalSpace`, a model-based operational-space (task-space)
+  controller supporting simultaneous motion and wrench (hybrid force/motion)
+  control per task axis, with optional inertia decoupling and null-space
+  posture control for redundant robots. Add
+  `ControllerOperationalSpaceModelFree`, taking the tool pose/twist, Jacobian,
+  mass matrix, and gravity term as inputs instead of computing them from a
+  `Model`. Add `controller_operational_space_hybrid_force_motion`, an example
+  demonstrating `ControllerOperationalSpace` on two heterogeneous robots (a
+  redundant Franka Panda and a non-redundant UR10) pressing into tables with
+  interactively steered position and force targets.
+- Add `SensorTiledCamera.utils.compute_camera_rays_pinhole_opencv()` for OpenCV pinhole cameras with radial, tangential, and thin-prism distortion.
+- Add `SolverXPBD.rigid_contact_restitution_iterations` to configure the number of outer per-manifold restitution passes.
+- Add `label_prefixes` to `ModelBuilder.replicate`, applying a per-world label prefix the way `add_builder` and `add_world` already do. Pass `None` for a given world to leave its labels unchanged; omit the argument to leave all worlds unchanged, matching prior behavior.
+- Add `newton.eval_rigid_contact_kinematics()` to evaluate selected rigid-contact distances and world-space points in caller-provided arrays.
+- Add a `total_controlled_dofs` property to `ControllerJointImpedance` and
+  `ControllerJointImpedanceModelFree`, reporting the controlled-DOF count that
+  every compact port is sized to. `ControllerJointImpedance` also exposes
+  `q_start`/`qd_start`, the resolved coordinate/DOF index of each controlled
+  joint.
+- Add broadcast or per-triangle display color and opacity to cloth and soft-body surfaces, display opacity to rigid shapes and viewer mesh instances, and preserve appearance through asset import. Use triangle coloring to add deformation and rotation cues to the cloth stretch and roller examples and distinguish individual poker cards.
+- Add opt-in circular-arc barrel profiles for cylinder collision, mass properties, and viewer geometry.
+- Add opt-in speculative rigid contacts through `CollisionPipeline.SpeculativeContactConfig`, the `speculative_config` constructor argument, and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction, and reject unsupported hydroelastic combinations.
+- Add opt-out controls for adjacent-X SDF texture packing through `ModelBuilder.sdf_texture_paired_samples` and `Mesh.build_sdf(paired_samples=False)` to trade sampling speed for half the texture storage.
+- Add solver-owned collision pipelines with configurable rigid and soft self-contact detection schedules keyed by `SolverBase.CollisionSlot`. `SolverVBD` supports scheduled mid-solve detection, and `Contacts` can store reusable triangle-mesh self-contact results.
+- Add support for body flags (kinematic/dynamic/proxy) in Kamino.
+- Enforce joint effort limits in SolverKamino for explicit commands and implicit PD drives.
+- Expose ``njmax_nnz`` in ``SolverMuJoCo`` to control sparse Jacobian nonzero capacity per world; leave it as ``None`` to use the automatic model-derived estimate.
+- Expose the Gaussian splat BVH via `Gaussian.bvh` and add `Gaussian.bvh_refit()` to refit it in place after the finalized data changes, mirroring `Model.bvh_refit_shapes`.
+- Import authored particle simulation geometry from `UsdGeom.Points` in `ModelBuilder.add_usd()`, including standard deformable mass precedence, Newton MPM materials and scene configuration, per-prim particle ranges, and resettable initial plastic volume strain.
+- Parallelize `newton.eval_fk` forward kinematics across the joints of each articulation on CUDA; differentiable models and non-tree articulation topologies retain the serial implementation.
+
+### Changed
+
+- Read the four structural `physics:curves*Stiffness` cable material attributes and resolve each unauthored mode from `physics:youngsModulus`, `physics:poissonsRatio`, and simulation-geometry `physics:thicknesses` instead of using `add_rod()` defaults. Use AOUSD's 1 mm diameter fallback (0.5 mm radius) for unauthored thickness instead of Newton's previous 2.5 mm radius; short segments at this diameter may have their inertia corrected during model finalization. To preserve the previous dimensions, author the equivalent 5 mm diameter in stage units as a one-element `physics:thicknesses` array with `physics:thicknesses:elementType = "constant"`. To migrate material-owned `physics:curvesThickness = d`, move `d` to simulation-geometry `physics:thicknesses = [d]` with the same constant element type. ([#3722](https://github.com/newton-physics/newton/issues/3722))
+- Warn when a bound cable or cloth deformable material authors a non-finite or out-of-range value, such as a negative stiffness or a NaN modulus, instead of dropping it silently. The value is still treated as unauthored. ([#3722](https://github.com/newton-physics/newton/issues/3722))
+- Derive each cable joint's stiffness in the experimental USD deformable importer from its local dual rest length, `0.5 * (L_parent + L_child)`, instead of a curve-wide mean, and use a welded graph's authored `restShapePoints` for that normalization. Re-test unevenly sampled or welded cables against 1.5.0 and re-baseline expected joint stiffnesses where needed; author `physics:restShapePoints` when normalization should use a distinct rest geometry. A non-finite or zero-length rest segment now emits a warning instead of being ignored silently. ([#3722](https://github.com/newton-physics/newton/issues/3722))
+- Align Newton's supported subset of the experimental USD deformable importer with AOUSD proposal revision `63c74d79`. Read surface and curve `physics:thicknesses` from simulation geometry with the required `physics:thicknesses:elementType`, use the 1 mm physical fallback, and apply varying thickness to mass, collision radius, and derived stiffness. When the fallback is used, warn about the change from Newton's previous 2 mm default and report an explicit stage-unit authoring recipe. Read strictly positive typed `physics:masses` as constant, per-simplex, per-curve, or per-point values and convert them through element masses before lowering to Newton particles or cable segments. Ignore the entire typed array when any value is invalid and continue with lower-precedence mass sources; ignore values for unreferenced simplex points without discarding valid referenced values. Point conversion preserves total mass but can change its distribution relative to the deprecated direct-point interpretation. Compute element measures from default-time simulation geometry rather than the proposal's rest geometry; a saved deformed pose can therefore change mass distribution until [issue #3383](https://github.com/newton-physics/newton/issues/3383) is implemented. Missing cloth bend arrays now follow `physics:restBendAnglesDefault` (`flat` by default), and rest fallbacks read simulation attributes at the USD default time. Warn when the unauthored flat fallback replaces non-planar imported dihedral rest angles; author `restShape` to preserve them. Unsupported authored rest topology, an element-type token without its array, non-finite cloth geometry, and invalid or non-numeric body and material scalars now warn and use safe fallbacks; invalid attachment stiffness or damping values remain unsupported metadata and never select a hard constraint. Use the proposal's final 1000 kg/m³ density instead of Newton builder density defaults when a proposal-marked deformable has no authored density. For all deformable families, preserve proposal-valid Poisson's ratios below 0.5, approximate values from 0.5 up to but excluding 1 as 0.499 with a compatibility warning, and use the proposal's 0.3 fallback for invalid boundary or non-finite values. For a bound material applying `PhysicsVolumeDeformableMaterialAPI`, make `newton.usd.get_tetmesh()` and `TetMesh.create_from_usd()` resolve missing elasticity with the proposal's 1 MPa Young's modulus and 0.3 Poisson's ratio rather than leaving the derived Lamé parameters unset. The proposed core APIs are not yet registered by OpenUSD or `newton-usd-schemas`; author their applied-schema and `physics:` tokens directly as documented. Remove unsupported rest topology or bake it into default-time simulation topology, author array/type pairs together, and replace invalid physical values. Assets that explicitly author their thickness and rest-bend choice within Newton's supported subset need no migration. ([#3809](https://github.com/newton-physics/newton/issues/3809))
+- Clamp an infinite plane's broad-phase AABB to the half space it bounds instead of falling back to a bounding sphere with the plane's 1e6 m collision radius, so shapes far from an axis-aligned plane are no longer permanent broad-phase candidates against it. The clamped bound carries the surface rise that a nearly-aligned normal implies over the reach the AABB admits, so resting contacts far from the plane anchor are retained. Contact results are unchanged and no migration is required. ([#3865](https://github.com/newton-physics/newton/issues/3865))
+- Accelerate CUDA convex narrow-phase collision in large and replicated scenes while preserving existing collision paths and results; no migration is required.
+- Accelerate collision detection without changing public APIs or requiring migration. Improvements include SAP sorting and filtering, compact deterministic and persistent contact keys, validated convex support walks, leaner mesh-convex and mesh-SDF processing, heightfield culling, one-warp split-convex launches, and tighter explicit-pair buffer sizing.
+- Accelerate convex-hull and mesh contact preprocessing for CUDA collision workloads; no migration is required.
+- Accelerate shape BVH construction by reducing mesh and Gaussian local bounds cooperatively on the device; computed bounds are unchanged and no migration is required.
+- Adopt margin-plus-gap collision ranges in `CollisionPipeline` and `SolverVBD`, separating interaction distance from detection slack while preserving deprecated call patterns. Migration: `SolverVBD(particle_self_contact_radius=r, particle_self_contact_margin=q)` -> `SolverVBD(particle_self_contact_margin=r, particle_self_contact_gap=q - r)`; `CollisionPipeline(soft_contact_margin=x)` -> `CollisionPipeline(soft_contact_gap=x)`; `particle_collision_detection_interval=n` -> the self-contact slot of `collision_frequency` / `collision_frequency_type` (`n < 0` -> `PRE_INIT`, `n == 0` -> `PRE_POST_INIT`, `n >= 1` -> `ITERATIONS` with frequency `n`).
+- Cache packed mesh-SDF collision edge centers and half-vectors and specialize their contact kernels, removing repeated mesh-index and vertex fetches without changing contact generation.
+- Constrain `ControllerJointImpedance` to the joints it controls rather than the
+  whole model: a model containing a free, ball, distance, or D6 joint is now
+  accepted, and only an addressed joint must span a single coordinate and a single
+  DOF. An articulation may be left uncontrolled, in which case it occupies no slot
+  and is masked out of the forward kinematics and dynamics evaluations. Mistakes
+  that previously produced silently wrong torques now raise — a joint belonging to
+  no articulation, the same DOF addressed twice, or a write to a port whose
+  feature is disabled. `device` and `requires_grad` are no longer constructor
+  arguments; both are taken from `model` directly.
+- Default `newton.use_coord_layout_targets` to `True`: `Model.joint_target_q` and `Control.joint_target_q` are now shaped `(joint_coord_count,)`, matching `joint_q`. Index them via `Model.joint_target_q_start`. Set the flag to `False` before building models to restore the deprecated DOF-shaped layout.
+- Filter fully inward manifold mesh edges by default when building mesh SDFs to reduce redundant contacts; pass `edge_inward_filter=False` to `Mesh.build_sdf()` to retain them.
+- Improve Kamino contact allocation, warmstarting, and factorization, and make it available in selection cartpole example.
+- Make experimental hydroelastic contacts respect each shape's margin and gap, including force-free speculative contacts between the margin and gap boundaries. Set both `margin=0.0` and `gap=0.0` for the closest equivalent of the earlier geometric-surface behavior. Externally supplied texture SDFs can declare their original AABB padding with `SDF.create_from_data(construction_padding=...)` for hydroelastic shape validation.
+- Refine contact visualizations in Newton viewers to show contact forces and color-coded contact modes.
+- Require `newton-usd-schemas` 0.5.0 or newer for the deformable and MPM schemas.
+- Resolve USD `mjc:damping` through `SchemaResolverMjc` into `Model.joint_damping` like the other direct-mapped MuJoCo attributes; importing it no longer happens implicitly when MuJoCo custom attributes are registered, so pass `schema_resolvers=[..., SchemaResolverMjc()]` to `ModelBuilder.add_usd()` when reading MuJoCo-authored USD.
+- Reuse `Contacts.rigid_contact_normal` for the deprecated `Contacts.rigid_contact_diff_normal` attribute instead of allocating a duplicate buffer; use `Contacts.rigid_contact_normal` directly.
+- Rework the joint impedance controllers' ports. Every port of
+  `ControllerJointImpedanceModelFree` is compact — one entry per controlled DOF —
+  as are the gains and `outputs.joint_f` of `ControllerJointImpedance`, which keeps
+  whole-model `inputs.joint_q` and `inputs.joint_qd` to evaluate the dynamics from.
+  Ports accept a `wp.indexedarray` view, so a gather or scatter is expressed at the
+  bind site.
+
+  `ControllerJointImpedance` takes a finalized `newton.Model` and
+  `articulations`/`joints` arguments selecting the controlled joints, instead of
+  a `ModelBuilder` and `default_dof_indices`. Each accepts model indices and/or
+  label patterns — a glob, a compiled regular expression, or a list of either —
+  following the same label-matching rules as the rest of Newton; omitting
+  `joints` controls every eligible joint of each selected articulation. Buffers
+  are sized to the robots actually controlled, so `inputs.mass_matrix` is
+  `[controlled_robot_count, max_controlled_dofs, max_controlled_dofs]`. The
+  counts are renamed to say what they count: `robot_count`, `dofs_per_robot`,
+  `max_dofs`, and `total_dofs` become `model_robot_count`,
+  `controlled_dofs_per_robot`, `max_controlled_dofs`, and `total_controlled_dofs`.
+
+  ```python
+  # Was: ControllerJointImpedance(builder=builder, default_dof_indices=idx, ...)
+  #      outputs.joint_f = control.joint_f
+  controller = ControllerJointImpedance(model, joints=["shoulder", "elbow"], ...)
+  outputs.joint_f = control.joint_f[controller.qd_start]
+  ```
+- Solve `SolverXPBD` rigid restitution per contact manifold with bounded best-K contact reduction. Scenes that raised `rigid_contact_restitution_iterations` to compensate for weak multi-contact rebounds can return it to the default of 2 and should re-test bounce behavior.
+- Speed up linear `uint8` texture conversion and avoid redundant visual-material resolution during USD import. Pass `load_visual_materials=False` to `newton.usd.get_mesh()` when only geometry, normals, and UVs are needed.
+- Update the pinned `newton-assets` revision so the eight structured USD menagerie robots come from `mujoco-usd-converter` 0.5.0. Bodies whose mass came from visual geoms inside `inertiagrouprange` now carry MuJoCo's compiled mass rather than accumulating it from disabled colliders, and `newton:limitStiffness` and `newton:limitDamping` are no longer authored. Joint-limit parsing itself is unchanged, so custom assets keep their current behavior; when authoring structured USD, author `mjc:solreflimit` for `SolverMuJoCo`, which uses it verbatim, and leave the Newton-generic gains unset so other solvers apply their own limit defaults rather than a value derived from MuJoCo's normalized constraint space.
+- Upgrade `mujoco` and `mujoco-warp` to 3.12.0. Reinstall the `sim` extra when upgrading from MuJoCo 3.11.
+
+### Deprecated
+
+- Deprecate the per-slot joint hard/soft switch in experimental `SolverVBD` (`set_joint_constraint_mode` and `vbd:joint_is_hard`). Pass `rigid_compliant_alm=True` and author finite stiffness for compliance instead; under compliant ALM those hard/soft controls have no mode effect. The distinction will be removed with the legacy non-ALM path. ([#3333](https://github.com/newton-physics/newton/issues/3333))
+- Deprecate the legacy non-ALM rigid path in experimental `SolverVBD`, including the `rigid_avbd_beta`, `rigid_avbd_linear_beta`, `rigid_avbd_angular_beta`, `rigid_contact_hard`, `rigid_contact_k_start`, `rigid_joint_linear_k_start`, and `rigid_joint_angular_k_start` parameters. Body-particle contacts do not yet use compliant ALM, so the ramping controls remain functional for that path during the migration window; they are nevertheless deprecated, and fixed authored contact stiffness with effective `beta=0` (the default behavior) is recommended. When `SolverVBD` integrates rigid bodies, omitting `rigid_compliant_alm` emits a `DeprecationWarning` because the default will change from legacy AVBD (`False`) to unified compliant ALM (`True`). Pass `rigid_compliant_alm=True` and author fixed finite stiffness to adopt compliant ALM now, or pass `rigid_compliant_alm=False` to keep the legacy path during the migration window. ([#3333](https://github.com/newton-physics/newton/issues/3333))
+- Deprecate material-owned `physics:curvesThickness` and the earlier cable material attributes `physics:thickness`, `physics:stretchStiffness`, `physics:shearStiffness`, `physics:bendStiffness`, and `physics:twistStiffness`. Thickness remains a warned fallback; move scalar `physics:curvesThickness = d` to simulation-geometry `physics:thicknesses = [d]` and set `physics:thicknesses:elementType = "constant"`. The unprefixed stiffnesses retain their former modulus interpretation during the window. To preserve them, multiply stretch and shear by the circular cross-section area, bend by the second moment, and twist by the polar moment. When an earlier material omitted shear or twist, preserve its former stretch-to-shear or bend-to-twist fallback before authoring all four structural `physics:curves*Stiffness` modes. Re-test unevenly sampled cables that relied on an unauthored legacy mode because one material-level structural value cannot reproduce every former per-joint builder default. ([#3722](https://github.com/newton-physics/newton/issues/3722))
+- Deprecate `JointType.CABLE` and `ModelBuilder.add_joint_cable()` in favor of `JointType.ROD` and `ModelBuilder.add_joint_rod()`. The old names remain functional through 1.6 and are eligible for removal in 1.7. Code that persists enum names should accept both `"CABLE"` and `"ROD"` while migrating and write `"ROD"` explicitly. ([#3800](https://github.com/newton-physics/newton/issues/3800))
+- Deprecate `newton.utils.CableStiffness` and the `create_*` cable helpers in favor of `RodStiffness`, `rod_stiffness_from_elastic_moduli()`, `rod_parallel_transport_quaternions()`, `cable_straight_points()`, and `rod_straight_points_and_quaternions()`. The old names remain functional through 1.6 and are eligible for removal in 1.7. ([#3800](https://github.com/newton-physics/newton/issues/3800))
+- Deprecate material-owned `physics:surfaceThickness` and untyped deformable `physics:masses` arrays. Material thickness remains a warned fallback, but geometry `physics:thicknesses` takes precedence; move scalar `physics:surfaceThickness = d` or the earlier `physics:thickness = d` to simulation-geometry `physics:thicknesses = [d]` and set `physics:thicknesses:elementType = "constant"`. Untyped masses retain Newton's former direct point interpretation; author `physics:masses:elementType = "point"` to opt into the proposal's volume-weighted point-to-element conversion, which preserves total mass but may change its distribution. The earlier unprefixed surface material attributes also remain accepted with their former modulus interpretation. Multiply the old stretch and shear moduli by thickness and the old bend modulus by thickness cubed, then author the corresponding structural `physics:surface*Stiffness` values. ([#3809](https://github.com/newton-physics/newton/issues/3809))
+- Deprecate `newton.actuators.ClampingDCMotor.corner_velocity`. It is now derived from the live parameters on access rather than stored at construction, so it no longer goes stale when a parameter is retuned. Compute it as `velocity_limit * (1 + max_motor_effort / saturation_effort)` if you need the value. ([#3855](https://github.com/newton-physics/newton/issues/3855))
+- Deprecate `Contacts.rigid_contact_diff_*` in Newton 1.6 in favor of caller-allocated outputs passed to `newton.eval_rigid_contact_kinematics()`; use `Contacts.rigid_contact_normal` for the frozen world-space normal.
+- Deprecate `Gaussian.warp_data` and `Gaussian.warp_bvh`; use the `Gaussian.Data` object returned by `Gaussian.finalize()` and `Gaussian.bvh` instead.
+- Deprecate `HydroelasticSDF.Config.margin_contact_area` without replacement; remove this setting from hydroelastic configurations. Its speculative-contact stiffness behavior remains during the deprecation period.
+- Deprecate `Model.AttributeNamespace.add_deprecated_alias()` in favor of explicit namespace properties.
+- Deprecate `SolverXPBD.compute_body_velocity_from_position_delta`; XPBD now maintains rigid-body velocities incrementally, so remove this setting from applications.
+- Deprecate legacy collision-range names and scheduling controls in favor of `soft_contact_gap`, `soft_contact_pair_count`, `particle_self_contact_margin` plus `particle_self_contact_gap`, and solver collision schedules.
+- Deprecate passing `newton.Mesh` arguments after `indices` and `newton.TetMesh` arguments after `tet_indices` positionally; pass them as keyword arguments instead.
+- Deprecate passing `newton.usd.get_mesh()` parameters positionally after the stable positional input `source`; migrate calls such as `get_mesh(prim, True)` to `get_mesh(prim, load_normals=True)`.
+- Deprecate the `newton.actuators.Controller*` class family in favor of `DriveBase`, `DrivePD`, `DrivePID`, `DriveNeuralMLP`, and `DriveNeuralLSTM`, and deprecate the `Clamping` base class in favor of `ClampingBase`. Migrate actuator construction and inspection from `controller`, `controller_class`, `controller_state`, and `controller_kwargs` to `drive`, `drive_class`, `drive_state`, and `drive_kwargs`, and use `ComponentKind.DRIVE` instead of `ComponentKind.CONTROLLER`. The former names remain functional with `DeprecationWarning` during the Newton 1.6 deprecation window.
+
+### Removed
+
+- Remove the deprecated `indices` argument of `MeshAdjacency`; pass `tri_indices` instead. ([#3514](https://github.com/newton-physics/newton/issues/3514))
+- Remove the deprecated `MeshAdjacency.edges` dict accessor and the `MeshAdjacency.Edge` record class; read the `edge_indices` / `edge_tri_indices` arrays instead. ([#3514](https://github.com/newton-physics/newton/issues/3514))
+- Remove the deprecated `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead. ([#3514](https://github.com/newton-physics/newton/issues/3514))
+- Remove the deprecated `dahl_defaults_enabled` parameter from `SolverVBD.register_custom_attributes()`; explicitly author positive `vbd:dahl_eps_max` and `vbd:dahl_tau` values to enable Dahl rod friction. ([#3633](https://github.com/newton-physics/newton/issues/3633))
+- Remove support for passing keyword-only options positionally to `ModelBuilder` and related public APIs after deprecation in v1.4.0; pass these arguments by keyword. ([#4069](https://github.com/newton-physics/newton/issues/4069))
+- Remove the `default_dof_indices` constructor argument and the per-port index
+  overrides (`joint_q_des_idx`, `joint_qd_des_idx`, `joint_qdd_idx`,
+  `gravity_force_idx`, `coriolis_force_idx`, `joint_f_idx`) from the joint
+  impedance controllers. Bind an indexed view to the port instead —
+  `inputs.joint_q_des = sim_q_des[controller.q_start]` replaces a gather override, and
+  `outputs.joint_f = control.joint_f[controller.qd_start]` replaces `joint_f_idx`.
+  `ControllerJointImpedanceModelFree` also drops its `robot_count` and `max_dofs`
+  arguments, both of which are now derived from `controlled_dofs_per_robot`.
+- Remove the deprecated `Model.mujoco.dof_passive_damping` alias and its `mujoco:dof_passive_damping` custom attribute (deprecated in 1.3.0); use `Model.joint_damping` instead. USD `mjc:damping` now resolves natively through `SchemaResolverMjc`, and MJCF `damping` continues to parse directly into `joint_damping`.
+- Replace the experimental `HydroelasticSDF` constructor argument `max_num_blocks_per_shape` with `total_num_active_tiles`, the summed number of non-empty narrow-band subgrids in the SDF selected for each shape pair. Prefer constructing hydroelastic collision handling through `CollisionPipeline`.
+
+### Fixed
+
+- Prevent `SolverXPBD` restitution from gaining unbounded energy by using integrated pre-solve velocities and avoiding in-place writes to autodiff-recorded arrays. ([#1289](https://github.com/newton-physics/newton/issues/1289))
+- Render `newton.Gaussian` splat shapes in `ViewerViser`. `log_gaussian()` was previously a no-op there, so Gaussian splat assets silently vanished when viewing with `--viewer viser`. Local-space centers, covariances, colors, and opacities are uploaded to viser's native Gaussian splat renderer once per asset and cached; only the node's position and orientation are updated on subsequent frames. ([#2099](https://github.com/newton-physics/newton/issues/2099))
+- Stop `ViewerViser` from flickering ground-plane and plane-shape grids. Plane grid handles were torn down and rebuilt on every frame regardless of whether the pose changed, so the grid briefly disappeared each frame while the removal and re-add messages round-tripped over the websocket. Grid handles are now reused and just repositioned when their instance count and extents are unchanged. ([#2099](https://github.com/newton-physics/newton/issues/2099))
+- Fix holes and spurious capacity errors in anisotropic particle surface reconstruction on sparse voxel grids. ([#2909](https://github.com/newton-physics/newton/issues/2909))
+- Keep triangle areas and custom attributes aligned when bulk triangle creation filters degenerate elements. ([#3450](https://github.com/newton-physics/newton/issues/3450))
+- Treat empty CoACD and V-HACD decompositions as failures so mesh approximation raises or uses the documented fallbacks. ([#3507](https://github.com/newton-physics/newton/issues/3507))
+- Stop forcing MuJoCo Warp's iterative line-search block dimension to 32 in `SolverMuJoCo`. The override worked around a CUDA registers-per-block failure that MuJoCo Warp has since capped upstream at 256 for `nv > 500`, so models above that threshold no longer run the line search at a needlessly small block size. Models at or below the threshold are unaffected, the forced value matching the upstream default there. ([#3544](https://github.com/newton-physics/newton/issues/3544))
+- Apply MJCF tendon default classes when importing fixed tendons, while preserving explicit per-tendon overrides. ([#3668](https://github.com/newton-physics/newton/issues/3668))
+- Import actuators and equality constraints from repeated MJCF sections. ([#3679](https://github.com/newton-physics/newton/issues/3679))
+- Preserve `refsite` targets for MJCF site actuators. ([#3680](https://github.com/newton-physics/newton/issues/3680))
+- Warn when joint drive targets are set on a free joint under `SolverMuJoCo`. MuJoCo does not support actuators on free joints, so `joint_target_mode`, `joint_target_ke`, and `joint_target_kd` were silently ignored. A `UserWarning` is now emitted at solver construction time pointing at `Control.joint_f` as the supported workaround. ([#3701](https://github.com/newton-physics/newton/issues/3701))
+- Preserve authored damping for MJCF ball joints when `ModelBuilder.default_joint_cfg.damping` is nonzero. ([#3703](https://github.com/newton-physics/newton/issues/3703))
+- Keep Newton joint-limit stiffness and damping defaults when importing MJCF or MuJoCo-schema USD instead of deriving generic gains from MuJoCo's `solreflimit`; preserve native values through MuJoCo-specific attributes and honor gain edits made before solver construction. ([#3762](https://github.com/newton-physics/newton/issues/3762))
+- Cap the `SolverVBD` proxy-body wrench harvest at the per-body soft-contact list capacity, `rigid_body_particle_contact_buffer_size`. The harvest walked the whole soft-contact stream while the destination solve applied only the records the per-body list kept, so a proxy-coupled body carrying more soft contacts than the list holds fed the source solver a reaction it never applied, injecting momentum that grew with the overflow. Both now read the same list. Below the cap nothing changes. ([#3795](https://github.com/newton-physics/newton/issues/3795))
+- Skip the initialization-only MuJoCo collision pass without reducing Newton-generated contact or constraint capacity. ([#3824](https://github.com/newton-physics/newton/issues/3824))
+- Skip USD mesh approximation for disabled colliders. ([#3830](https://github.com/newton-physics/newton/issues/3830))
+- Accept `(N, 3)` Warp triangle indices when computing mesh vertex normals. ([#3832](https://github.com/newton-physics/newton/issues/3832))
+- Fix distance-dependent drift in analytic IK Jacobians for FREE and DISTANCE joints. ([#3866](https://github.com/newton-physics/newton/issues/3866))
+- Fix MJCF heightfield import to match MuJoCo's per-source row conventions (inline `elevation` and PNG rows arrive reversed, the custom binary format as stored) — mirrored terrain also ejected bodies authored near the true low side — and normalize elevation data exactly as MuJoCo compiles it, including constant data becoming zeros. ([#3897](https://github.com/newton-physics/newton/issues/3897))
+- Use authored colors for imported shapes that bind no material, rather than a debug palette color. ([#3910](https://github.com/newton-physics/newton/issues/3910))
+- Fix `ModelBuilder()` raising `TypeError` on Python 3.10, caused by eager evaluation of a PEP 604 annotation over a subscripted Warp type in `SolverBase`. ([#3941](https://github.com/newton-physics/newton/issues/3941))
+- Support Warp mesh indices with non-`int32` integer dtypes in `compute_vertex_normals()`. ([#3985](https://github.com/newton-physics/newton/issues/3985))
+- Apply logged mesh color, roughness, metallic, backface culling, and opacity consistently in USD-based viewers; preserve distinct mesh color and opacity in ViewerFile recordings; and render mixed opaque/translucent ViewerGL instance batches in the correct depth, shadow, and transparency passes.
+- Cap the viewer camera's per-frame damping factor to avoid overshoot-driven oscillation at low framerates.
+- Capture initial Kamino simulation steps directly without an uncaptured warm-up step.
+- Correct the USD import fallbacks for `newton:torsionalFriction` and `newton:rollingFriction`, which resolved to 0.25 and 0.0005 when unauthored instead of the schema values of 0.005 and 0.0001, and so disagreed with the equivalent `ModelBuilder.ShapeConfig` defaults. Document both coefficients as length-dimensioned in metres rather than dimensionless, matching how `SolverXPBD` and `SolverMuJoCo` consume them.
+- Correct the `USER` ordinals in `SolverMuJoCo`'s actuator enums, which collided with MuJoCo's `DCMOTOR`. Authoring `gaintype="user"`, `biastype="user"`, or `dyntype="user"` in MJCF or USD produced a DC motor actuator: `gaintype` and `dyntype` failed model compilation, while `biastype` compiled with DC motor bias dynamics. The enums now list every MuJoCo actuator type, including the ones Newton does not support, so Newton's ordinals track MuJoCo's. An unrecognized `dyntype`, `gaintype`, or `biastype` name now warns instead of silently becoming whichever type occupies ordinal 0; `trntype` warns on the MJCF path.
+- Detect immovable bodies in the Newton-to-MuJoCo contact converter from the degrees of freedom of a body's weld group instead of testing `body_weldid == 0`. MuJoCo 3.12 gives mocap bodies their own weld id, so contacts between two immovable bodies were no longer filtered when either side was an articulated fixed root, which Newton maps to a MuJoCo mocap body.
+- Eliminate duplicate sphere contacts on coplanar triangle-mesh seams by using exact sphere-triangle contact geometry.
+- Fix Kamino's USD importer failing to load any mesh that does not author normals. `normals` is a built-in attribute of the `UsdGeom.Mesh` schema, so the previous `IsDefined()` guard was always true and passed `None` through, raising `cannot reshape array of size 1 into shape (3)`. Mesh reading now goes through Newton's shared USD reader, which also adds `primvars:normals` precedence, indexed primvars, face-varying interpolation, and n-gon triangulation to that importer.
+- Fix USD distance-joint limit import and XPBD enforcement of minimum and maximum anchor distance, including coincident anchors.
+- Fix `SolverVBD.notify_model_changed(JOINT_DOF_PROPERTIES)` to refresh rod stretch/shear/bend/twist material stiffness and damping, and the derived per-body structural summary used for contact conditioning, which were frozen at construction so live `joint_target_ke`/`joint_target_kd` edits were silently ignored. Also refreshes the legacy AVBD penalty cache for REVOLUTE/PRISMATIC/D6 drive/limit slots; compliant ALM already gathered those coefficients live.
+- Fix `hide_collision_shapes=True` in `ModelBuilder.add_usd()` not hiding viewport-drawn colliders that carry `physics:approximation`. Approximating such a collider splits its authored topology off as a separate visual shape, and that copy was produced regardless of the flag, so it stayed drawn and could not be hidden by the viewer's "Show Collision" toggle either.
+- Fix the documentation navigation drawer on narrow screens opening on a flat, unindented copy of the table of contents instead of the captioned table of contents shown on wide screens.
+- Honor `--num-frames` when running examples with the headless OpenGL viewer. `newton.viewer.ViewerGL` gained a `num_frames` argument; in headless mode `ViewerGL.is_running()` now returns False once that many frames have been rendered, so headless runs terminate instead of looping forever. Windowed runs still ignore `num_frames` and close with the window.
+- Honor `skip_validation_shapes` and `skip_all_validations` when finalizing models with insufficient hydroelastic SDF padding.
+- Import USD spheres whose scale is uniform to within floating-point round-off
+  without warning that non-uniform sphere scaling is unsupported. Scales reach the
+  importer through a single-precision transform decomposition, so an exactly
+  uniform scale composed through a nested transform chain could arrive with its
+  components a few ULP apart and trip an exact equality check. The warning now
+  also names the prim it applies to.
+- Import authored `uniform` mesh normals instead of dropping them.
+- Improve `SolverKamino` DVI contact convergence, warm-starting, and performance for dense contact manifolds.
+- Keep the Panda hydroelastic example's cup placement stable by enabling deterministic contact generation by default and using compliant finger actuator gains.
+- Preserve contacts that are already separating during the XPBD rigid restitution pass, including when the material restitution is zero.
+- Preserve reduced mesh-SDF contacts in dense batched scenes when speculative candidates would otherwise exhaust the intermediate contact buffer.
+- Preserve standard UsdTransform2d mappings in Newton viewers.
+- Preserve the Newton 1.5 broad-phase and narrow-phase extension call contracts unless speculative contacts are enabled.
+- Prevent installed test discovery from importing repository-only ASV modules.
+- Print the Rerun web viewer URL so examples remain accessible when the browser does not open automatically.
+- Reject invalid triangle-mesh and particle-topology indices before simulation data is created.
+- Reject malformed SDF caches, unsafe viewer recording type tags, and USD references that escape their download cache.
+- Reject models whose corresponding joints have differing linear/angular DOF counts in `SolverMuJoCo`.
+- Require GitPython 3.1.58 or newer to prevent config option-name injection.
+- Scale contact normals, mode disks, and force arrows relative to the smaller contacting shape, preventing oversized glyphs in global-only and mixed-scale scenes.
+- Scale hydroelastic buffers from the sparse surface grids each shape pair actually refines, and omit reduction-only storage for unreduced contacts. This substantially reduces memory use for replicated scenes while retaining dense traversal for deep contacts.
+- Skip non-1-coordinate/1-DOF joints (Free, Ball, Distance, a multi-axis D6,
+  ...) in `ControllerJointImpedance`'s default `joints` selection instead of
+  letting them through and then rejecting the whole construction. A model
+  mixing a floating base or ball joint with controllable joints no longer
+  needs its `joints` pruned by hand; naming such a joint explicitly still
+  raises.
+- Speed up :class:`~newton.solvers.SolverMuJoCo` initialization for replicated models by querying collision filters only for the selected MuJoCo template shapes.
+- Use supported NumPy ufunc names when building anisotropic Style3D cloth.
+
+
 ## [1.5.1] - 2026-08-27
 
 ### Fixed
