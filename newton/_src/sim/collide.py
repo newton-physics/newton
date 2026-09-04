@@ -945,7 +945,7 @@ def _world_compatible_pairs(
 
     Pairs are stably sorted by shape index so consecutive candidates process the same shape: on CUDA
     a warp then reads one shape's transform/scale/SDF data and takes one type-dispatch branch. The
-    order is deterministic on every device; each contact record stores its candidate tid, so
+    sort runs on the host at construction; each contact record stores its candidate tid, so
     downstream mapping does not depend on candidate order.
 
     Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so this filtering is safe to

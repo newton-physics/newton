@@ -2406,14 +2406,10 @@ def gather_particle_body_contact_force_and_hessian(
 ):
     """Gather all body-contact contributions for one colored particle without output atomics.
 
-    Contacts are consumed in increasing node order rather than linked-list order. Node ids are
-    positions in the contact buffer, so for a given set of detected contact records the
-    floating-point sum is deterministic on every device and determinism mode, with no output
-    atomics. (End-to-end run-to-run reproducibility additionally requires the collision pipeline
-    to emit records at reproducible slot indices; soft-contact slots are claimed with an atomic
-    counter during generation.) Selection scans the list once per consumed node
-    (O(k^2) link reads for k contacts on one particle); k is small in practice and the scan cost is
-    trivial next to one contact evaluation.
+    Contacts are consumed in increasing node order rather than linked-list order, so the
+    summation order follows the contact buffer instead of the lists' insertion order. Selection
+    scans the list once per consumed node (O(k^2) link reads for k contacts on one particle);
+    k is small in practice and the scan cost is trivial next to one contact evaluation.
     """
     particle_index = particle_ids_in_color[wp.tid()]
     force = wp.vec3(0.0)

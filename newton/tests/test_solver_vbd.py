@@ -2119,7 +2119,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
 
 
 def _particle_contact_gather_order_pinned(test, device):
-    """Produce bitwise-identical gather sums for any chain permutation with the same membership.
+    """Produce identical gather sums for any chain permutation with the same membership.
 
     The adjacency build's atomic insertions make chain order scheduling-dependent; the gather's
     ascending-node-id consumption must erase that. Reversing every per-particle chain is one such
@@ -2326,7 +2326,7 @@ def _particle_contact_gather_capture_replays_device_count(test, device):
 
 
 def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
-    """Exercise production gather dispatch, capture replay, and deterministic-mode reproducibility."""
+    """Exercise production gather dispatch, capture replay, and repeated-step consistency."""
     with wp.ScopedDevice(device):
         model, _vertices = _build_edge_over_post(device)
         pipeline = newton.CollisionPipeline(
@@ -2376,8 +2376,7 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
                     test.assertTrue(np.any(head >= 0))
                 test.assertTrue(np.all(np.isfinite(state_out.particle_q.numpy())))
 
-        # The gather is the only contact-force path; in deterministic mode its canonical
-        # node-order consumption must make repeated identical steps bitwise reproducible.
+        # Repeated identical steps on the same contact buffer must produce identical results.
         deterministic_solver = newton.solvers.SolverVBD(
             model,
             iterations=1,
