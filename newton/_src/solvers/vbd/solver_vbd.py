@@ -34,7 +34,7 @@ from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
-from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from . import particle_vbd_kernels, rigid_sparse_articulation_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -54,6 +54,7 @@ from .particle_vbd_kernels import (
 )
 from .rigid_sparse_articulation import build_rigid_articulation_sparse_layout
 from .rigid_sparse_articulation_kernels import (
+    SPARSE_ARTICULATION_CTA_THREADS,
     apply_articulation_sparse_delta_scalar,
     assemble_articulation_body_diagonal_scalar,
     assemble_articulation_joints_scalar,
@@ -530,7 +531,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 per-body diagonal VBD solve. ``"block_sparse_joints"`` enables a block-sparse
                 articulation solve for joint coupling while keeping contacts on body-diagonal
                 Hessian blocks. The implementation uses a serial block solve on CPU and a
-                cooperative single-CTA solve on CUDA.
+                cooperative single-CTA solve on CUDA. The experimental sparse mode groups bodies
+                by connectivity over all joints, including loop closures outside tree articulation
+                ranges. It is intended for moderate-size connected mechanisms; the local mode may
+                be faster for very long chains because sparse factorization is sequential in the
+                elimination order.
             rigid_articulation_relaxation: Under-relaxation factor for the experimental coupled
                 articulation position update. A value of ``1`` applies the full Newton update.
                 The default damps sparse articulation updates so they do not overstep stale
@@ -764,6 +769,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         if integrates_rigid_bodies:
             self._set_module_options(options, module=rigid_vbd_kernels)
+            self._set_module_options(options, module=rigid_sparse_articulation_kernels)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -844,8 +850,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.rigid_articulation_sparse_values_scalar = None
         self.rigid_articulation_sparse_rhs_scalar = None
         self.rigid_articulation_sparse_delta_scalar = None
+        self.rigid_articulation_sparse_joint_dof_dim = model.joint_dof_dim
         if self.rigid_articulation_solve == "block_sparse_joints":
             self.rigid_articulation_sparse_layout = build_rigid_articulation_sparse_layout(model, self.device)
+            if model.joint_count == 0:
+                self.rigid_articulation_sparse_joint_dof_dim = wp.empty((0, 2), dtype=wp.int32, device=self.device)
             if self.rigid_articulation_sparse_layout is not None:
                 self.rigid_articulation_sparse_values = wp.zeros(
                     self.rigid_articulation_sparse_layout.block_count, dtype=mat66f, device=self.device
@@ -3892,6 +3901,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             model.joint_X_p,
             model.joint_X_c,
             model.joint_axis,
+            self.joint_rod_rest_kb_local,
+            self.joint_rod_rest_twist,
             model.joint_qd_start,
             model.joint_target_q_start,
             self.joint_constraint_start,
@@ -3901,7 +3912,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.joint_penalty_kd,
             self.joint_sigma_start,
             self.joint_C_fric,
-            model.joint_dof_dim,
+            self.rigid_articulation_sparse_joint_dof_dim,
             self.joint_rest_angle,
             model.joint_target_ke,
             model.joint_target_kd,
@@ -3972,6 +3983,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
+                    self.joint_rod_rest_kb_local,
+                    self.joint_rod_rest_twist,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -3981,7 +3994,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
-                    model.joint_dof_dim,
+                    self.rigid_articulation_sparse_joint_dof_dim,
                     self.joint_rest_angle,
                     model.joint_target_ke,
                     model.joint_target_kd,
@@ -4005,7 +4018,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 outputs=[self.rigid_articulation_sparse_values_scalar, self.rigid_articulation_sparse_rhs_scalar],
                 device=self.device,
-                block_dim=128,
+                block_dim=SPARSE_ARTICULATION_CTA_THREADS,
             )
 
         if not use_block32:
@@ -4019,14 +4032,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                 kernel=solve_articulation_sparse_serial,
                 dim=layout.articulation_count,
                 inputs=solve_phase_inputs,
-                outputs=[state_out.body_q],
+                outputs=[state_in.body_q],
                 device=self.device,
             )
 
         if use_block32:
             wp.launch(
                 kernel=solve_articulation_sparse_block32_scalar,
-                dim=layout.articulation_count * 128,
+                dim=layout.articulation_count * SPARSE_ARTICULATION_CTA_THREADS,
                 inputs=[
                     layout.articulation_body_offsets,
                     layout.articulation_block_row_offsets,
@@ -4044,7 +4057,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 outputs=[self.rigid_articulation_sparse_delta_scalar],
                 device=self.device,
-                block_dim=128,
+                block_dim=SPARSE_ARTICULATION_CTA_THREADS,
             )
 
             wp.launch(
@@ -4058,12 +4071,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_articulation_relaxation,
                     self.rigid_articulation_sparse_delta_scalar,
                 ],
-                outputs=[state_out.body_q],
+                outputs=[state_in.body_q],
                 device=self.device,
                 block_dim=32,
             )
-
-        wp.copy(state_in.body_q, state_out.body_q)
 
         if contacts is not None and contacts.rigid_contact_max > 0:
             wp.launch(
@@ -4098,28 +4109,28 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-            if model.particle_count > 0:
-                wp.launch(
-                    kernel=update_duals_body_particle_contacts,
-                    dim=contacts.soft_contact_max,
-                    inputs=[
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_indices,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_normal,
-                        contacts.soft_contact_barycentric,
-                        state_in.particle_q,
-                        model.particle_radius,
-                        model.shape_body,
-                        model.shape_margin,
-                        state_in.body_q,
-                        self.body_particle_contact_material_ke,
-                        self.rigid_linear_beta,
-                        self.body_particle_contact_penalty_k,  # input/output
-                    ],
-                    device=self.device,
-                )
+        if contacts is not None and model.particle_count > 0:
+            wp.launch(
+                kernel=update_duals_body_particle_contacts,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    state_in.particle_q,
+                    model.particle_radius,
+                    model.shape_body,
+                    model.shape_margin,
+                    state_in.body_q,
+                    self.body_particle_contact_material_ke,
+                    self.rigid_linear_beta,
+                    self.body_particle_contact_penalty_k,  # input/output
+                ],
+                device=self.device,
+            )
 
         if model.joint_count > 0:
             wp.launch(

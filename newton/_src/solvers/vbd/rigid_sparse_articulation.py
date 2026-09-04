@@ -78,17 +78,20 @@ def _minimum_degree_order(body_count: int, edges: set[tuple[int, int]]) -> list[
 def build_rigid_articulation_sparse_layout(
     model, device: wp.context.Devicelike
 ) -> RigidArticulationSparseLayout | None:
-    """Build the static articulation sparse layout from Newton articulation ranges.
+    """Build the static sparse layout from rigid-body joint connectivity.
 
     This host analysis runs once from :class:`SolverVBD` construction, never
     from the per-step or per-iteration path. Repeated articulation topologies,
     such as replicated RL environments, share cached ordering and fill analysis.
+
+    Newton articulation ranges contain only tree joints. Loop-closing joints,
+    world-root joints, and orphan joints may legally live outside those ranges,
+    so solver groups are connected components over all model joints instead.
     """
 
     if model.body_count == 0:
         return None
 
-    articulation_start = np.asarray(model.articulation_start.to("cpu").numpy(), dtype=np.int32)
     joint_parent = np.asarray(model.joint_parent.to("cpu").numpy(), dtype=np.int32)
     joint_child = np.asarray(model.joint_child.to("cpu").numpy(), dtype=np.int32)
 
@@ -110,31 +113,54 @@ def build_rigid_articulation_sparse_layout(
 
     body_articulation_sparse_host = np.full((model.body_count,), -1, dtype=np.int32)
     body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
-    body_seen = np.zeros((model.body_count,), dtype=bool)
+    component_parent = np.arange(model.body_count, dtype=np.int32)
 
-    articulation_groups: list[tuple[list[int], list[int]]] = []
-    for articulation_id in range(model.articulation_count):
-        joint_start = int(articulation_start[articulation_id])
-        joint_end = int(articulation_start[articulation_id + 1])
-        joints = list(range(joint_start, joint_end))
+    def find(body: int) -> int:
+        root = body
+        while int(component_parent[root]) != root:
+            root = int(component_parent[root])
+        while body != root:
+            next_body = int(component_parent[body])
+            component_parent[body] = root
+            body = next_body
+        return root
 
-        bodies: list[int] = []
-        for joint_idx in joints:
-            parent = int(joint_parent[joint_idx])
-            child = int(joint_child[joint_idx])
-            if parent >= 0 and parent not in bodies:
-                bodies.append(parent)
-            if child >= 0 and child not in bodies:
-                bodies.append(child)
+    def union(body_a: int, body_b: int):
+        root_a = find(body_a)
+        root_b = find(body_b)
+        if root_a != root_b:
+            component_parent[max(root_a, root_b)] = min(root_a, root_b)
 
-        if bodies:
-            articulation_groups.append((bodies, joints))
-            for body in bodies:
-                body_seen[body] = True
+    for joint_idx in range(model.joint_count):
+        parent = int(joint_parent[joint_idx])
+        child = int(joint_child[joint_idx])
+        if parent >= model.body_count or child >= model.body_count:
+            raise ValueError(
+                f"Joint {joint_idx} references an out-of-range body: parent={parent}, child={child}, "
+                f"body_count={model.body_count}."
+            )
+        if parent >= 0 and child >= 0:
+            union(parent, child)
+        elif parent < 0 and child < 0:
+            raise ValueError(f"Joint {joint_idx} has no rigid-body endpoint.")
 
+    component_bodies: dict[int, list[int]] = {}
     for body in range(model.body_count):
-        if not body_seen[body]:
-            articulation_groups.append(([body], []))
+        component_bodies.setdefault(find(body), []).append(body)
+
+    component_joints: dict[int, list[int]] = {root: [] for root in component_bodies}
+    for joint_idx in range(model.joint_count):
+        parent = int(joint_parent[joint_idx])
+        child = int(joint_child[joint_idx])
+        endpoint = child if child >= 0 else parent
+        root = find(endpoint)
+        if parent >= 0 and find(parent) != root:
+            raise ValueError(f"Joint {joint_idx} parent and child resolve to different sparse solver groups.")
+        component_joints[root].append(joint_idx)
+
+    articulation_groups = [
+        (bodies, component_joints[root]) for root, bodies in sorted(component_bodies.items(), key=lambda item: item[0])
+    ]
 
     symbolic_cache: dict[
         tuple[int, tuple[tuple[int, int], ...]],
@@ -172,6 +198,8 @@ def build_rigid_articulation_sparse_layout(
         articulation_joint_offsets_host.append(len(articulation_joints_host))
 
         for local_body, body in enumerate(ordered_bodies):
+            if body_articulation_sparse_host[body] >= 0:
+                raise ValueError(f"Body {body} belongs to more than one sparse solver group.")
             body_articulation_sparse_host[body] = articulation_sparse
             body_articulation_local_host[body] = local_body
 

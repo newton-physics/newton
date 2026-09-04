@@ -3563,11 +3563,7 @@ class ModelBuilder:
         validated[builder] = cache_key
 
     def add_articulation(
-        self,
-        joints: list[int],
-        label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-        allow_closed_loops: bool = False,
+        self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
     ):
         """
         Adds an articulation to the model from a list of joint indices.
@@ -3579,9 +3575,6 @@ class ModelBuilder:
             joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
             label: The label of the articulation. If None, a default label will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
-            allow_closed_loops: If True, allow multiple joints in the articulation to share a child body.
-                This is intended for maximal-coordinate solvers that can assemble loop-closing joints directly.
-                Tree-only routines may not support articulations built with this option.
 
         Raises:
             ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
@@ -3642,20 +3635,18 @@ class ModelBuilder:
                     f"{self.current_world}. All joints in an articulation must belong to the same world."
                 )
 
-        if not allow_closed_loops:
-            # Basic tree structure validation (check for cycles, single parent)
-            # Build a simple tree structure check - each child should have only one parent in this articulation
-            child_to_parent = {}
-            for joint_idx in joints:
-                child = self.joint_child[joint_idx]
-                parent = self.joint_parent[joint_idx]
-                if child in child_to_parent and child_to_parent[child] != parent:
-                    raise ValueError(
-                        f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                        f"This creates an invalid tree structure. Pass allow_closed_loops=True only for solvers that "
-                        f"support loop-closing joints in an articulation."
-                    )
-                child_to_parent[child] = parent
+        # Basic tree structure validation (check for cycles, single parent)
+        # Build a simple tree structure check - each child should have only one parent in this articulation
+        child_to_parent = {}
+        for joint_idx in joints:
+            child = self.joint_child[joint_idx]
+            parent = self.joint_parent[joint_idx]
+            if child in child_to_parent and child_to_parent[child] != parent:
+                raise ValueError(
+                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
+                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
+                )
+            child_to_parent[child] = parent
 
         # Validate that only root bodies (parent == -1) can be kinematic
         self._validate_kinematic_articulation_joints(joints)

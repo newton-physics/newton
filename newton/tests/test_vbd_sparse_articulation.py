@@ -10,8 +10,12 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.vbd import rigid_sparse_articulation_kernels
 from newton._src.solvers.vbd.rigid_sparse_articulation_kernels import _joint_projectors
 from newton.examples.cable import example_cable_cross_slide_table
+from newton.tests.unittest_utils import add_function_test, get_test_devices
+
+devices = get_test_devices()
 
 
 @wp.kernel
@@ -794,7 +798,7 @@ def _solve_offset_com_single_body_q(mode: str) -> np.ndarray:
 
 
 class TestVBDSparseArticulation(unittest.TestCase):
-    def test_builder_accepts_closed_loop_articulation(self):
+    def test_builder_rejects_closed_loop_articulation(self):
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
         inertia = wp.mat33(np.eye(3, dtype=np.float32))
         bodies = [
@@ -806,11 +810,8 @@ class TestVBDSparseArticulation(unittest.TestCase):
         joints.append(builder.add_joint_fixed(parent=bodies[1], child=bodies[2]))
         joints.append(builder.add_joint_fixed(parent=bodies[0], child=bodies[2]))
 
-        builder.add_articulation(joints, allow_closed_loops=True)
-        model = builder.finalize(device="cpu")
-
-        self.assertEqual(model.articulation_count, 1)
-        np.testing.assert_array_equal(model.joint_articulation.numpy(), np.zeros(4, dtype=np.int32))
+        with self.assertRaisesRegex(ValueError, "multiple parents"):
+            builder.add_articulation(joints)
 
     def test_sparse_revolute_projector_uses_parent_frame(self):
         axis = np.array([0.2, -0.4, 0.7], dtype=np.float32)
@@ -866,6 +867,22 @@ class TestVBDSparseArticulation(unittest.TestCase):
         )
         self.assertEqual(solver.rigid_articulation_relaxation, 0.65)
 
+    def test_sparse_articulation_honors_deterministic_option(self):
+        original = wp.get_module_options(module=rigid_sparse_articulation_kernels)
+        try:
+            model = _make_single_body_model()
+            newton.solvers.SolverVBD(
+                model,
+                iterations=1,
+                rigid_compliant_alm=False,
+                rigid_articulation_solve="block_sparse_joints",
+                deterministic=wp.DeterministicMode.RUN_TO_RUN,
+            )
+            options = wp.get_module_options(module=rigid_sparse_articulation_kernels)
+            self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
+        finally:
+            wp.set_module_options(original, module=rigid_sparse_articulation_kernels)
+
     def test_sparse_articulation_couples_revolute_armature(self):
         relative_angle, expected_relative_angle, angular_momentum = _solve_coupled_revolute_armature()
         self.assertAlmostEqual(relative_angle, expected_relative_angle, delta=1.0e-6)
@@ -905,10 +922,247 @@ class TestVBDSparseArticulation(unittest.TestCase):
         joint_offsets = layout.articulation_joint_offsets.numpy()
         joint_counts = np.diff(joint_offsets)
         self.assertEqual(int(np.max(joint_counts)), example.model.joint_count)
+        self.assertEqual(len(np.unique(layout.articulation_bodies.numpy())), example.model.body_count)
 
         example.step()
         example.test_post_step()
         self.assertTrue(np.isfinite(example.state_0.body_q.numpy()).all())
+
+
+class TestVBDSparseArticulationDevices(unittest.TestCase):
+    pass
+
+
+def _run_unregistered_fixed_body(device, mode: str) -> np.ndarray:
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    body = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.01),
+    )
+    builder.add_joint_fixed(
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve=mode,
+    )
+    for _ in range(20):
+        solver.step(state_in, state_out, None, None, 1.0 / 120.0)
+        state_in, state_out = state_out, state_in
+    return state_in.body_q.numpy()
+
+
+def test_sparse_includes_joint_outside_articulation(test, device):
+    local_q = _run_unregistered_fixed_body(device, "local")
+    sparse_q = _run_unregistered_fixed_body(device, "block_sparse_joints")
+    np.testing.assert_allclose(sparse_q, local_q, rtol=1.0e-4, atol=1.0e-4)
+    test.assertGreater(float(sparse_q[0, 2]), 0.99)
+
+
+def _make_cross_articulation_closure_model(device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.1)
+    groups = []
+    for y in (0.0, 2.0):
+        root = builder.add_link(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+        tip = builder.add_link(xform=wp.transform((1.0, y, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+        root_joint = builder.add_joint_fixed(parent=-1, child=root)
+        tip_joint = builder.add_joint_revolute(parent=root, child=tip, axis=newton.Axis.Z)
+        builder.add_articulation([root_joint, tip_joint])
+        groups.append((root, tip))
+    builder.add_joint_fixed(parent=groups[0][1], child=groups[1][1])
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def test_sparse_merges_cross_articulation_closure(test, device):
+    model = _make_cross_articulation_closure_model(device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=False,
+        rigid_articulation_solve="block_sparse_joints",
+        rigid_articulation_relaxation=1.0,
+    )
+    layout = solver.rigid_articulation_sparse_layout
+    test.assertIsNotNone(layout)
+    test.assertEqual(layout.articulation_count, 1)
+    bodies = layout.articulation_bodies.numpy()
+    np.testing.assert_array_equal(np.sort(bodies), np.arange(model.body_count))
+    np.testing.assert_array_equal(np.sort(layout.articulation_joints.numpy()), np.arange(model.joint_count))
+
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    for _ in range(5):
+        solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+        state_in, state_out = state_out, state_in
+    test.assertTrue(np.isfinite(state_in.body_q.numpy()).all())
+
+
+def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    points, quaternions = newton.utils.rod_straight_points_and_quaternions(
+        start=wp.vec3(0.0, 0.0, 1.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.4,
+        num_segments=4,
+    )
+    bodies, _joints = builder.add_rod(
+        positions=points,
+        quaternions=quaternions,
+        radius=0.02,
+        stretch_stiffness=1.0e4,
+        shear_stiffness=1.0e3,
+        bend_stiffness=1.0e2,
+        twist_stiffness=5.0e2,
+        wrap_in_articulation=True,
+        body_frame_origin="start",
+    )
+    builder.add_joint_fixed(
+        parent=-1,
+        child=bodies[0],
+        parent_xform=wp.transform(points[0], wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=100,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve=mode,
+        rigid_articulation_relaxation=0.5,
+    )
+    for _ in range(10):
+        solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+        state_in, state_out = state_out, state_in
+    return state_in.body_q.numpy()
+
+
+def test_sparse_anisotropic_rod_matches_local_trajectory(test, device):
+    local_q = _run_anisotropic_rod(device, "local")
+    sparse_q = _run_anisotropic_rod(device, "block_sparse_joints")
+    test.assertTrue(np.isfinite(sparse_q).all())
+    np.testing.assert_allclose(sparse_q[:, :3], local_q[:, :3], rtol=2.0e-3, atol=2.0e-3)
+
+
+def test_sparse_default_relaxation_with_contact(test, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.add_ground_plane()
+    body = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 0.12), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.01),
+    )
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+    test.assertEqual(solver.rigid_articulation_relaxation, 0.65)
+    for _ in range(20):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
+        state_in, state_out = state_out, state_in
+    pose = state_in.body_q.numpy()[body]
+    test.assertTrue(np.isfinite(pose).all())
+    test.assertGreater(float(pose[2]), 0.08)
+
+
+def test_sparse_updates_soft_contact_penalty_without_rigid_capacity(test, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.default_shape_cfg.ke = 1.0e3
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.01))
+    builder.add_shape_box(body, hx=0.4, hy=0.4, hz=0.1)
+    root_joint = builder.add_joint_fixed(parent=-1, child=body)
+    builder.add_articulation([root_joint])
+    builder.add_cloth_grid(
+        pos=(-0.15, -0.15, 0.25),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=3,
+        dim_y=3,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.05,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0,
+        edge_ke=10.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=0, soft_contact_max=256)
+    contacts = pipeline.contacts()
+    test.assertEqual(contacts.rigid_contact_max, 0)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        rigid_compliant_alm=False,
+        rigid_avbd_linear_beta=1.0e3,
+        rigid_contact_k_start=1.0,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+    for _ in range(30):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
+        state_in, state_out = state_out, state_in
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+    test.assertGreater(float(np.max(solver.body_particle_contact_penalty_k.numpy())), 1.0)
+
+
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_includes_joint_outside_articulation",
+    test_sparse_includes_joint_outside_articulation,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_merges_cross_articulation_closure",
+    test_sparse_merges_cross_articulation_closure,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_anisotropic_rod_matches_local_trajectory",
+    test_sparse_anisotropic_rod_matches_local_trajectory,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_default_relaxation_with_contact",
+    test_sparse_default_relaxation_with_contact,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_updates_soft_contact_penalty_without_rigid_capacity",
+    test_sparse_updates_soft_contact_penalty_without_rigid_capacity,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

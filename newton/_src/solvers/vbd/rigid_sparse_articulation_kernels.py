@@ -14,8 +14,12 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _load_joint_axis_drive_limit,
     _load_solve_weight,
     _material_force_terms,
+    _measure_rod_bend_twist_z,
+    _rod_bend_twist_jacobian_z_from_measure,
+    _structural_row_has_stiffness,
     compute_kappa_and_jacobian,
     compute_kappa_dot,
+    evaluate_rod_joint_force_hessian,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -32,6 +36,7 @@ class mat66f(wp.types.matrix(shape=(6, 6), dtype=wp.float32)):
 _SPARSE_BLOCK_DIM = wp.constant(6)
 _SPARSE_BLOCK_SIZE = wp.constant(36)
 _SPARSE_CTA_THREADS = wp.constant(32)
+SPARSE_ARTICULATION_CTA_THREADS = 128
 
 
 # Warp has no public device-side block or warp barriers for ordinary kernels.
@@ -205,7 +210,7 @@ def _cholesky66_serial(A_in: mat66f) -> mat66f:
                     if k < j:
                         value = value - L[i, k] * L[j, k]
                 if i == j:
-                    L[i, j] = wp.sqrt(wp.max(value, 1.0e-9))
+                    L[i, j] = wp.sqrt(value)
                 else:
                     L[i, j] = value / L[j, j]
     return L
@@ -1279,20 +1284,7 @@ def _load_sparse_structural_coefficients(
     kd_linear = float(0.0)
     kd_angular = float(0.0)
 
-    if jt == JointType.ROD:
-        solve_weight_linear = wp.max(
-            _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm),
-            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm),
-        )
-        solve_weight_angular = wp.max(
-            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 2, joint_compliant_alm),
-            _load_solve_weight(joint_penalty_k, joint_rho, c_start + 3, joint_compliant_alm),
-        )
-        material_k_linear = wp.max(joint_material_k[c_start], joint_material_k[c_start + 1])
-        material_k_angular = wp.max(joint_material_k[c_start + 2], joint_material_k[c_start + 3])
-        kd_linear = wp.max(joint_penalty_kd[c_start], joint_penalty_kd[c_start + 1])
-        kd_angular = wp.max(joint_penalty_kd[c_start + 2], joint_penalty_kd[c_start + 3])
-    elif jt == JointType.BALL:
+    if jt == JointType.BALL:
         solve_weight_linear = _load_solve_weight(joint_penalty_k, joint_rho, c_start, joint_compliant_alm)
         material_k_linear = joint_material_k[c_start]
         kd_linear = joint_penalty_kd[c_start]
@@ -1312,6 +1304,255 @@ def _load_sparse_structural_coefficients(
         kd_linear,
         kd_angular,
     )
+
+
+@wp.func
+def _evaluate_sparse_rod_body(
+    body: int,
+    joint: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_rho: wp.array[float],
+    joint_material_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    avbd_alpha: float,
+    joint_compliant_alm: int,
+    dt: float,
+):
+    return evaluate_rod_joint_force_hessian(
+        body,
+        joint,
+        body_q,
+        body_q_prev,
+        body_com,
+        joint_parent,
+        joint_child,
+        joint_X_p,
+        joint_X_c,
+        joint_rod_rest_kb_local,
+        joint_rod_rest_twist,
+        joint_constraint_start,
+        joint_penalty_k,
+        joint_rho,
+        joint_material_k,
+        joint_penalty_kd,
+        joint_sigma_start,
+        joint_C_fric,
+        joint_lambda_lin,
+        joint_lambda_ang,
+        joint_C0_lin,
+        joint_C0_ang,
+        joint_is_hard,
+        avbd_alpha,
+        joint_compliant_alm,
+        dt,
+    )
+
+
+@wp.func
+def _add_rod_body_contribution(
+    values: wp.array[mat66f],
+    rhs: wp.array[vec6f],
+    articulation_block_row_offsets: wp.array[wp.int32],
+    articulation_block_cols: wp.array[wp.int32],
+    body_start: int,
+    local_body: int,
+    force: wp.vec3,
+    torque: wp.vec3,
+    H_ll: wp.mat33,
+    H_al: wp.mat33,
+    H_aa: wp.mat33,
+):
+    row = body_start + local_body
+    _add_rhs(rhs, row, _vec6_from_parts(force, torque))
+    slot = _find_block_slot(articulation_block_row_offsets, articulation_block_cols, body_start, local_body, local_body)
+    _add_mat66(values, slot, _mat66_from_blocks(H_ll, H_al, H_aa))
+
+
+@wp.func
+def _add_rod_body_contribution_scalar(
+    values_scalar: wp.array[float],
+    rhs_scalar: wp.array[float],
+    articulation_block_row_offsets: wp.array[wp.int32],
+    articulation_block_cols: wp.array[wp.int32],
+    body_start: int,
+    local_body: int,
+    force: wp.vec3,
+    torque: wp.vec3,
+    H_ll: wp.mat33,
+    H_al: wp.mat33,
+    H_aa: wp.mat33,
+):
+    row = body_start + local_body
+    _add_rhs_scalar_atomic(rhs_scalar, row, _vec6_from_parts(force, torque))
+    slot = _find_block_slot(articulation_block_row_offsets, articulation_block_cols, body_start, local_body, local_body)
+    _add_mat66_scalar_atomic(values_scalar, slot, _mat66_from_blocks(H_ll, H_al, H_aa))
+
+
+@wp.func
+def _rod_cross_hessian(
+    dt: float,
+    joint: int,
+    parent: int,
+    child: int,
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_rho: wp.array[float],
+    joint_material_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_C_fric: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    joint_compliant_alm: int,
+):
+    """Return the parent-child Gauss-Newton block for one ROD joint."""
+    cross = mat66f(0.0)
+    c_start = joint_constraint_start[joint]
+    stretch_idx = c_start
+    shear_idx = c_start + 1
+    bend_idx = c_start + 2
+    twist_idx = c_start + 3
+
+    stretch_weight = _load_solve_weight(joint_penalty_k, joint_rho, stretch_idx, joint_compliant_alm)
+    shear_weight = _load_solve_weight(joint_penalty_k, joint_rho, shear_idx, joint_compliant_alm)
+    bend_weight = _load_solve_weight(joint_penalty_k, joint_rho, bend_idx, joint_compliant_alm)
+    twist_weight = _load_solve_weight(joint_penalty_k, joint_rho, twist_idx, joint_compliant_alm)
+
+    k_stretch, _ = _material_force_terms(
+        stretch_weight, joint_material_k[stretch_idx], wp.vec3(0.0), joint_compliant_alm
+    )
+    k_shear, _ = _material_force_terms(shear_weight, joint_material_k[shear_idx], wp.vec3(0.0), joint_compliant_alm)
+    k_bend, _ = _material_force_terms(bend_weight, joint_material_k[bend_idx], wp.vec3(0.0), joint_compliant_alm)
+    k_twist, _ = _material_force_terms(twist_weight, joint_material_k[twist_idx], wp.vec3(0.0), joint_compliant_alm)
+
+    X_wp = body_q[parent] * joint_X_p[joint]
+    X_wc = body_q[child] * joint_X_c[joint]
+    q_wp = wp.transform_get_rotation(X_wp)
+    q_wc = wp.transform_get_rotation(X_wc)
+
+    h_shear = k_shear + joint_penalty_kd[shear_idx] / dt
+    h_stretch = k_stretch + joint_penalty_kd[stretch_idx] / dt
+    if h_shear > 0.0 or h_stretch > 0.0:
+        tangent = wp.quat_rotate(q_wp, wp.vec3(0.0, 0.0, 1.0))
+        K_world = h_shear * wp.identity(3, float) + (h_stretch - h_shear) * wp.outer(tangent, tangent)
+
+        # Match the PSD split used by evaluate_rod_stretch_shear_force_hessian:
+        # the isotropic elastic part acts at the parent anchor while anisotropy
+        # and damping use the shared child-anchor arm on the parent body.
+        k_iso = wp.min(k_shear, k_stretch)
+        K_material = K_world - k_iso * wp.identity(3, float)
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        parent_com_world = wp.transform_point(body_q[parent], body_com[parent])
+        child_com_world = wp.transform_point(body_q[child], body_com[child])
+        r_parent_anchor = x_p - parent_com_world
+        r_parent_material = x_c - parent_com_world
+        r_child = x_c - child_com_world
+        identity = wp.identity(3, float)
+
+        for i in range(6):
+            for j in range(6):
+                value = float(0.0)
+                for row in range(3):
+                    J_parent_iso = _joint_linear_jacobian_value(identity, r_parent_anchor, True, row, i)
+                    J_child_value = _joint_linear_jacobian_value(identity, r_child, False, row, j)
+                    value = value + k_iso * J_parent_iso * J_child_value
+                    J_parent_material = _joint_linear_jacobian_value(identity, r_parent_material, True, row, i)
+                    for col in range(3):
+                        J_child_col = _joint_linear_jacobian_value(identity, r_child, False, col, j)
+                        value = value + J_parent_material * K_material[row, col] * J_child_col
+                cross[i, j] = cross[i, j] + value
+
+    bend_stiff = _structural_row_has_stiffness(bend_weight, joint_material_k[bend_idx], joint_compliant_alm)
+    twist_stiff = _structural_row_has_stiffness(twist_weight, joint_material_k[twist_idx], joint_compliant_alm)
+    bend_hard = bend_stiff and joint_compliant_alm == 0 and joint_is_hard[bend_idx] == 1
+    twist_hard = twist_stiff and joint_compliant_alm == 0 and joint_is_hard[twist_idx] == 1
+    friction = joint_C_fric[joint]
+    h_bend_x = k_bend + joint_penalty_kd[bend_idx] / dt
+    h_bend_y = h_bend_x
+    h_twist = k_twist + joint_penalty_kd[twist_idx] / dt
+    if bend_stiff and not bend_hard:
+        h_bend_x = h_bend_x + friction[0]
+        h_bend_y = h_bend_y + friction[1]
+    if twist_stiff and not twist_hard:
+        h_twist = h_twist + friction[2]
+
+    if h_bend_x > 0.0 or h_bend_y > 0.0 or h_twist > 0.0:
+        measure = _measure_rod_bend_twist_z(q_wp, q_wc)
+        J_parent_angular = _rod_bend_twist_jacobian_z_from_measure(measure, True)
+        J_child_angular = _rod_bend_twist_jacobian_z_from_measure(measure, False)
+        H_local_diag = wp.vec3(h_bend_x, h_bend_y, h_twist)
+        for i in range(3):
+            for j in range(3):
+                value = float(0.0)
+                for row in range(3):
+                    value = value + J_parent_angular[row, i] * H_local_diag[row] * J_child_angular[row, j]
+                cross[i + 3, j + 3] = cross[i + 3, j + 3] + value
+
+    return cross
+
+
+@wp.func
+def _add_rod_cross_block(
+    values: wp.array[mat66f],
+    articulation_block_row_offsets: wp.array[wp.int32],
+    articulation_block_cols: wp.array[wp.int32],
+    body_start: int,
+    parent_local: int,
+    child_local: int,
+    cross: mat66f,
+):
+    if parent_local >= child_local:
+        slot = _find_block_slot(
+            articulation_block_row_offsets, articulation_block_cols, body_start, parent_local, child_local
+        )
+        _add_mat66(values, slot, cross)
+    else:
+        slot = _find_block_slot(
+            articulation_block_row_offsets, articulation_block_cols, body_start, child_local, parent_local
+        )
+        _add_mat66(values, slot, wp.transpose(cross))
+
+
+@wp.func
+def _add_rod_cross_block_scalar(
+    values_scalar: wp.array[float],
+    articulation_block_row_offsets: wp.array[wp.int32],
+    articulation_block_cols: wp.array[wp.int32],
+    body_start: int,
+    parent_local: int,
+    child_local: int,
+    cross: mat66f,
+):
+    if parent_local >= child_local:
+        slot = _find_block_slot(
+            articulation_block_row_offsets, articulation_block_cols, body_start, parent_local, child_local
+        )
+        _add_mat66_scalar_atomic(values_scalar, slot, cross)
+    else:
+        slot = _find_block_slot(
+            articulation_block_row_offsets, articulation_block_cols, body_start, child_local, parent_local
+        )
+        _add_mat66_scalar_atomic(values_scalar, slot, wp.transpose(cross))
 
 
 @wp.func
@@ -1367,46 +1608,6 @@ def _evaluate_sparse_drive_limit(
             1.0 / dt,
         )
     return float(0.0), float(0.0)
-
-
-@wp.kernel
-def assemble_articulation_body_diagonal(
-    dt: float,
-    articulation_bodies: wp.array[wp.int32],
-    articulation_diag_slots: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    body_mass: wp.array[float],
-    body_inv_mass: wp.array[float],
-    body_com: wp.array[wp.vec3],
-    body_inertia: wp.array[wp.mat33],
-    body_inertia_q: wp.array[wp.transform],
-    body_forces: wp.array[wp.vec3],
-    body_torques: wp.array[wp.vec3],
-    body_hessian_ll: wp.array[wp.mat33],
-    body_hessian_al: wp.array[wp.mat33],
-    body_hessian_aa: wp.array[wp.mat33],
-    values: wp.array[mat66f],
-    rhs: wp.array[vec6f],
-):
-    local_body = wp.tid()
-    diag, rhs_value = _body_diagonal_contribution(
-        dt,
-        local_body,
-        articulation_bodies,
-        body_q,
-        body_mass,
-        body_inv_mass,
-        body_com,
-        body_inertia,
-        body_inertia_q,
-        body_forces,
-        body_torques,
-        body_hessian_ll,
-        body_hessian_al,
-        body_hessian_aa,
-    )
-    values[articulation_diag_slots[local_body]] = values[articulation_diag_slots[local_body]] + diag
-    rhs[local_body] = rhs_value
 
 
 @wp.kernel
@@ -1472,6 +1673,8 @@ def assemble_articulation_joints_scalar(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -1532,6 +1735,119 @@ def assemble_articulation_joints_scalar(
     if parent >= 0:
         parent_local = body_articulation_local[parent]
 
+    if jt == JointType.ROD:
+        child_force, child_torque, child_H_ll, child_H_al, child_H_aa = _evaluate_sparse_rod_body(
+            child,
+            joint,
+            body_q,
+            body_q_prev,
+            body_com,
+            joint_parent,
+            joint_child,
+            joint_X_p,
+            joint_X_c,
+            joint_rod_rest_kb_local,
+            joint_rod_rest_twist,
+            joint_constraint_start,
+            joint_penalty_k,
+            joint_rho,
+            joint_material_k,
+            joint_penalty_kd,
+            joint_sigma_start,
+            joint_C_fric,
+            joint_lambda_lin,
+            joint_lambda_ang,
+            joint_C0_lin,
+            joint_C0_ang,
+            joint_is_hard,
+            avbd_alpha,
+            joint_compliant_alm,
+            dt,
+        )
+        _add_rod_body_contribution_scalar(
+            values_scalar,
+            rhs_scalar,
+            articulation_block_row_offsets,
+            articulation_block_cols,
+            body_start,
+            child_local,
+            child_force,
+            child_torque,
+            child_H_ll,
+            child_H_al,
+            child_H_aa,
+        )
+        if parent >= 0:
+            parent_force, parent_torque, parent_H_ll, parent_H_al, parent_H_aa = _evaluate_sparse_rod_body(
+                parent,
+                joint,
+                body_q,
+                body_q_prev,
+                body_com,
+                joint_parent,
+                joint_child,
+                joint_X_p,
+                joint_X_c,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_rho,
+                joint_material_k,
+                joint_penalty_kd,
+                joint_sigma_start,
+                joint_C_fric,
+                joint_lambda_lin,
+                joint_lambda_ang,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_is_hard,
+                avbd_alpha,
+                joint_compliant_alm,
+                dt,
+            )
+            _add_rod_body_contribution_scalar(
+                values_scalar,
+                rhs_scalar,
+                articulation_block_row_offsets,
+                articulation_block_cols,
+                body_start,
+                parent_local,
+                parent_force,
+                parent_torque,
+                parent_H_ll,
+                parent_H_al,
+                parent_H_aa,
+            )
+            cross = _rod_cross_hessian(
+                dt,
+                joint,
+                parent,
+                child,
+                body_q,
+                body_com,
+                joint_X_p,
+                joint_X_c,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_rho,
+                joint_material_k,
+                joint_penalty_kd,
+                joint_C_fric,
+                joint_is_hard,
+                joint_compliant_alm,
+            )
+            _add_rod_cross_block_scalar(
+                values_scalar,
+                articulation_block_row_offsets,
+                articulation_block_cols,
+                body_start,
+                parent_local,
+                child_local,
+                cross,
+            )
+        return
+
     child_pose = body_q[child]
     child_prev_pose = body_q_prev[child]
     child_rest_pose = body_q_rest[child]
@@ -1580,14 +1896,9 @@ def assemble_articulation_joints_scalar(
     lin_C0 = wp.vec3(0.0)
     lin_alpha = float(0.0)
     linear_hard = joint_is_hard[c_start] == 1
-    if jt == JointType.ROD:
-        linear_hard = linear_hard or joint_is_hard[c_start + 1] == 1
     if linear_hard or joint_compliant_alm == 1:
         lin_lambda = joint_lambda_lin[joint]
         lin_C0 = joint_C0_lin[joint]
-        if jt == JointType.ROD:
-            lin_lambda = wp.quat_rotate(parent_anchor_q, lin_lambda)
-            lin_C0 = wp.quat_rotate(parent_anchor_q, lin_C0)
         lin_alpha = avbd_alpha
 
     ang_lambda = wp.vec3(0.0)
@@ -1595,11 +1906,7 @@ def assemble_articulation_joints_scalar(
     ang_alpha = float(0.0)
     ang_hard = int(0)
     if jt != JointType.BALL:
-        if jt == JointType.ROD:
-            if joint_is_hard[c_start + 2] == 1 or joint_is_hard[c_start + 3] == 1:
-                ang_hard = 1
-        else:
-            ang_hard = joint_is_hard[c_start + 1]
+        ang_hard = joint_is_hard[c_start + 1]
         if ang_hard == 1 or joint_compliant_alm == 1:
             ang_lambda = joint_lambda_ang[joint]
             ang_C0 = joint_C0_ang[joint]
@@ -1655,9 +1962,6 @@ def assemble_articulation_joints_scalar(
     if k_angular > 0.0 and jt != JointType.BALL and (jt != JointType.D6 or ang_count < 3):
         sigma0 = wp.vec3(0.0)
         C_fric = wp.vec3(0.0)
-        if jt == JointType.ROD and ang_hard == 0:
-            sigma0 = joint_sigma_start[joint]
-            C_fric = joint_C_fric[joint]
         kappa_cached, J_world_cached = _assemble_angular_joint_scalar(
             values_scalar,
             rhs_scalar,
@@ -1957,7 +2261,7 @@ def _cholesky66_scalar(values: wp.array[float], slot: int):
                     if k < j:
                         value = value - _scalar_block_get(values, slot, i, k) * _scalar_block_get(values, slot, j, k)
                 if i == j:
-                    value = wp.sqrt(wp.max(value, 1.0e-9))
+                    value = wp.sqrt(value)
                 else:
                     value = value / _scalar_block_get(values, slot, j, j)
                 _scalar_block_set(values, slot, i, j, value)
@@ -2185,6 +2489,8 @@ def solve_articulation_sparse_serial(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -2275,6 +2581,119 @@ def solve_articulation_sparse_serial(
         if parent >= 0:
             parent_local = body_articulation_local[parent]
 
+        if jt == JointType.ROD:
+            child_force, child_torque, child_H_ll, child_H_al, child_H_aa = _evaluate_sparse_rod_body(
+                child,
+                joint,
+                body_q,
+                body_q_prev,
+                body_com,
+                joint_parent,
+                joint_child,
+                joint_X_p,
+                joint_X_c,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_rho,
+                joint_material_k,
+                joint_penalty_kd,
+                joint_sigma_start,
+                joint_C_fric,
+                joint_lambda_lin,
+                joint_lambda_ang,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_is_hard,
+                avbd_alpha,
+                joint_compliant_alm,
+                dt,
+            )
+            _add_rod_body_contribution(
+                values,
+                rhs,
+                articulation_block_row_offsets,
+                articulation_block_cols,
+                body_start,
+                child_local,
+                child_force,
+                child_torque,
+                child_H_ll,
+                child_H_al,
+                child_H_aa,
+            )
+            if parent >= 0:
+                parent_force, parent_torque, parent_H_ll, parent_H_al, parent_H_aa = _evaluate_sparse_rod_body(
+                    parent,
+                    joint,
+                    body_q,
+                    body_q_prev,
+                    body_com,
+                    joint_parent,
+                    joint_child,
+                    joint_X_p,
+                    joint_X_c,
+                    joint_rod_rest_kb_local,
+                    joint_rod_rest_twist,
+                    joint_constraint_start,
+                    joint_penalty_k,
+                    joint_rho,
+                    joint_material_k,
+                    joint_penalty_kd,
+                    joint_sigma_start,
+                    joint_C_fric,
+                    joint_lambda_lin,
+                    joint_lambda_ang,
+                    joint_C0_lin,
+                    joint_C0_ang,
+                    joint_is_hard,
+                    avbd_alpha,
+                    joint_compliant_alm,
+                    dt,
+                )
+                _add_rod_body_contribution(
+                    values,
+                    rhs,
+                    articulation_block_row_offsets,
+                    articulation_block_cols,
+                    body_start,
+                    parent_local,
+                    parent_force,
+                    parent_torque,
+                    parent_H_ll,
+                    parent_H_al,
+                    parent_H_aa,
+                )
+                cross = _rod_cross_hessian(
+                    dt,
+                    joint,
+                    parent,
+                    child,
+                    body_q,
+                    body_com,
+                    joint_X_p,
+                    joint_X_c,
+                    joint_constraint_start,
+                    joint_penalty_k,
+                    joint_rho,
+                    joint_material_k,
+                    joint_penalty_kd,
+                    joint_C_fric,
+                    joint_is_hard,
+                    joint_compliant_alm,
+                )
+                _add_rod_cross_block(
+                    values,
+                    articulation_block_row_offsets,
+                    articulation_block_cols,
+                    body_start,
+                    parent_local,
+                    child_local,
+                    cross,
+                )
+            continue
+
         child_pose = body_q[child]
         child_prev_pose = body_q_prev[child]
         child_rest_pose = body_q_rest[child]
@@ -2323,14 +2742,9 @@ def solve_articulation_sparse_serial(
         lin_C0 = wp.vec3(0.0)
         lin_alpha = float(0.0)
         linear_hard = joint_is_hard[c_start] == 1
-        if jt == JointType.ROD:
-            linear_hard = linear_hard or joint_is_hard[c_start + 1] == 1
         if linear_hard or joint_compliant_alm == 1:
             lin_lambda = joint_lambda_lin[joint]
             lin_C0 = joint_C0_lin[joint]
-            if jt == JointType.ROD:
-                lin_lambda = wp.quat_rotate(parent_anchor_q, lin_lambda)
-                lin_C0 = wp.quat_rotate(parent_anchor_q, lin_C0)
             lin_alpha = avbd_alpha
 
         ang_lambda = wp.vec3(0.0)
@@ -2338,11 +2752,7 @@ def solve_articulation_sparse_serial(
         ang_alpha = float(0.0)
         ang_hard = int(0)
         if jt != JointType.BALL:
-            if jt == JointType.ROD:
-                if joint_is_hard[c_start + 2] == 1 or joint_is_hard[c_start + 3] == 1:
-                    ang_hard = 1
-            else:
-                ang_hard = joint_is_hard[c_start + 1]
+            ang_hard = joint_is_hard[c_start + 1]
             if ang_hard == 1 or joint_compliant_alm == 1:
                 ang_lambda = joint_lambda_ang[joint]
                 ang_C0 = joint_C0_ang[joint]
@@ -2398,9 +2808,6 @@ def solve_articulation_sparse_serial(
         if k_angular > 0.0 and jt != JointType.BALL and (jt != JointType.D6 or ang_count < 3):
             sigma0 = wp.vec3(0.0)
             C_fric = wp.vec3(0.0)
-            if jt == JointType.ROD and ang_hard == 0:
-                sigma0 = joint_sigma_start[joint]
-                C_fric = joint_C_fric[joint]
             kappa_cached, J_world_cached = _assemble_angular_joint(
                 values,
                 rhs,
