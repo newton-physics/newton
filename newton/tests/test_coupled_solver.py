@@ -521,7 +521,7 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
     def test_disable_joints_rewrites_rod_type_in_view(self):
-        """Verify disabled rod joints are exposed as D6 in the view."""
+        """Preserve the Rod pose layout as FREE when disabling joints in a view."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -537,7 +537,7 @@ class TestModelView(unittest.TestCase):
         view.disable_joints(wp.array([joint], dtype=int, device="cpu"))
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
-        self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.D6))
+        self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.FREE))
         self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
         np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
 

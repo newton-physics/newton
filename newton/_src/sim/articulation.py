@@ -267,7 +267,7 @@ def eval_joint_motion(
             wp.vec3(joint_qd[qd_start], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
         )
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         X_j = wp.transform(
             wp.vec3(joint_q[q_start], joint_q[q_start + 1], joint_q[q_start + 2]),
             wp.quat(
@@ -366,7 +366,7 @@ def eval_joint_child_state(
 
     linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
     angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         # These joint velocities are COM-referenced, while the tree recurrence is origin-referenced.
         v_joint_origin = com_twist_to_origin_twist(
             wp.spatial_vector(linear_joint_world, angular_joint_world),
@@ -418,9 +418,6 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.ROD:
-            # ROD joints are skipped by generic forward kinematics.
-            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -551,12 +548,6 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
-    .. note::
-
-        :attr:`~newton.JointType.ROD` body transforms are not changed by
-        :func:`newton.eval_fk`; they are advanced directly by
-        :class:`newton.solvers.SolverVBD`.
-
     Args:
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
@@ -600,7 +591,6 @@ def eval_fk(
             kernel = create_eval_articulation_fk_tile(
                 model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
-                model._has_rod_joints,
             )
             inputs = [
                 model._fk_articulation_level_start,
@@ -875,7 +865,7 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -968,7 +958,7 @@ def eval_ik(
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
     The input :attr:`State.body_qd` is interpreted using Newton's public body-twist
-    convention ``(v_com_world, omega_world)``. For FREE and DISTANCE joints,
+    convention ``(v_com_world, omega_world)``. For FREE, DISTANCE, and ROD joints,
     the recovered ``joint_qd`` linear entries are referenced at the child COM
     and expressed in the joint parent frame.
 
@@ -1034,7 +1024,7 @@ def write_free_distance_motion_subspace(
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE/ROD joint.
 
     Linear DOFs follow the parent-anchor axes. Angular columns describe
     rotations about ``pivot_world`` as world-origin spatial twists.
@@ -1043,7 +1033,7 @@ def write_free_distance_motion_subspace(
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
             to rotate the joint's parent-anchor axes into the world frame.
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
-            child); Newton's FREE/DISTANCE joint coordinates live in the
+            child); Newton's FREE/DISTANCE/ROD joint coordinates live in the
             parent-anchor basis.
         pivot_world: World-space point about which angular columns rotate.
         qd_start: Starting velocity-DOF index for this joint.
@@ -1101,9 +1091,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        ROD joints are not currently supported because their material slots do
-        not define generalized-coordinate motion subspaces. Their Jacobian
-        columns remain zero.
+        ROD shares the FREE/DISTANCE subspace because its material response
+        does not impose a kinematic constraint. The Featherstone path remains
+        unchanged because inverse dynamics rejects ROD models.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1157,7 +1147,11 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
+    elif (
+        joint_type_value == JointType.FREE
+        or joint_type_value == JointType.DISTANCE
+        or joint_type_value == JointType.ROD
+    ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
@@ -1593,9 +1587,8 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.ROD` joints are not supported because their material
-    slots are constraints rather than generalized coordinates for this
-    inverse-dynamics formulation.
+    :attr:`~newton.JointType.ROD` joints are not yet supported by the
+    inverse-dynamics pipeline.
 
     .. experimental::
 

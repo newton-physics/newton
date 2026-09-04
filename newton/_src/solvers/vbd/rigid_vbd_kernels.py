@@ -3860,14 +3860,25 @@ def refresh_joint_material_params(
 
     if jt == JointType.ROD:
         for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
-            ke = joint_target_ke[dof0 + s]
+            # ROD material slots are packed from its canonical XYZ velocity axes:
+            # stretch=linear Z, shear=linear X/Y, bend=angular X/Y, twist=angular Z.
+            dof = dof0
+            if s == 0:
+                dof = dof0 + 2
+            elif s == 1:
+                dof = dof0
+            elif s == 2:
+                dof = dof0 + 3
+            else:
+                dof = dof0 + 5
+            ke = joint_target_ke[dof]
             if joint_material_k[c0 + s] != ke:
                 joint_material_k[c0 + s] = ke
                 seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
                 seeded = wp.min(seed, ke) if seed >= 0.0 else ke
                 joint_penalty_k[c0 + s] = seeded
                 joint_penalty_k_min[c0 + s] = seeded
-            joint_penalty_kd[c0 + s] = joint_target_kd[dof0 + s]
+            joint_penalty_kd[c0 + s] = joint_target_kd[dof]
         return
 
     linear_count = int(0)
@@ -4184,11 +4195,9 @@ def _joint_axis_angular_support(
 @wp.kernel
 def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    body_q_rest: wp.array[wp.transform],
+    joint_target_q_start: wp.array[int],
+    joint_target_q: wp.array[float],
+    target_uses_coord_layout: bool,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4200,24 +4209,27 @@ def init_rod_rest_bend_twist(
     if joint_type[j] != JointType.ROD:
         return
 
-    child = joint_child[j]
-    if child < 0:
-        return
-
-    parent = joint_parent[j]
-    if parent >= 0:
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    target_start = joint_target_q_start[j]
+    if target_uses_coord_layout:
+        q_wc_rest = wp.quat(
+            joint_target_q[target_start + 3],
+            joint_target_q[target_start + 4],
+            joint_target_q[target_start + 5],
+            joint_target_q[target_start + 6],
+        )
     else:
-        X_wp_rest = joint_X_p[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
-
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        angles = wp.vec3(
+            joint_target_q[target_start + 3],
+            joint_target_q[target_start + 4],
+            joint_target_q[target_start + 5],
+        )
+        q_wc_rest = wp.quat_from_euler(angles, 2, 1, 0)
+    q_wc_rest = wp.normalize(q_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported
     # material spin), measured once so a pre-curved rest yields zero strain.
-    rest_measure = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
-    joint_rod_rest_kb_local[j] = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest_measure.kb_world)
+    rest_measure = _measure_rod_bend_twist_z(wp.quat_identity(), q_wc_rest)
+    joint_rod_rest_kb_local[j] = rest_measure.kb_world
     joint_rod_rest_twist[j] = rest_measure.twist
 
 

@@ -27,7 +27,7 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE`` and ``DISTANCE`` joints,
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``ROD`` joints,
 :attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
 frame: the linear slice is child-COM velocity and the angular slice is angular
 velocity in that same frame.
@@ -45,6 +45,8 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
+.. _Rod joints:
+
 Rod joints
 ^^^^^^^^^^
 
@@ -55,22 +57,49 @@ joints or modeled with another formulation. Cable centerline geometry uses
 stiffness, and solver mechanics belong to the rod representation and use
 ``rod`` terminology.
 
-:attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its four entries are
-VBD constraint/material slots defined by
-:class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
-shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
-twist (``TWIST``, slot 3). These slots store independent per-rod stiffness
-and damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
-Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
-they are not generalized coordinates or velocities that reconstruct the child
-body pose.
+.. experimental::
 
-Rod body poses and velocities are maximal-coordinate state stored in
-:attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
-:class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update rod child body transforms from ``joint_q`` / ``joint_qd``.
+   :attr:`newton.JointType.ROD`, :meth:`newton.ModelBuilder.add_joint_rod`,
+   and its ``rest_rotation`` parameter may change without prior notice.
+   The ``rest_positions``, ``rest_quaternions``, and ``rest_straight``
+   parameters of :meth:`newton.ModelBuilder.add_rod`, and the
+   ``rest_node_positions`` and ``rest_quaternions`` parameters of
+   :meth:`newton.ModelBuilder.add_rod_graph`, are also experimental.
+   ``JointType.CABLE`` and ``add_joint_cable()`` are deprecated compatibility
+   aliases through Newton 1.6.
+
+:attr:`newton.JointType.ROD` uses the same kinematic state layout as a
+:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
+pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
+relative twist. :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between
+this joint state and body state.
+
+At rod structural rest, the transformed parent and child anchor points
+coincide. Accordingly, the three translation entries in the rod's
+:attr:`newton.Model.joint_target_q` are zero; live anchor separation is
+stretch/shear strain. Rotation defines structural-rest bend and twist using a
+unitless quaternion in coordinate layout or extrinsic ZYX angles [rad] in
+legacy layout. If :meth:`newton.ModelBuilder.add_joint_rod` omits
+``rest_rotation``, the builder copies the initial relative anchor rotation.
+Rod structural rest is sourced from :attr:`newton.Model.joint_target_q`, not
+from :attr:`newton.Control.joint_target_q`.
+
+:meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets rod rest
+rotations to identity, removing intrinsic bend and twist without changing
+initial poses, anchors, or segment lengths. A closed rod's structural-rest
+centerline must have coincident endpoints.
+
+Rod material properties use the six per-axis
+:attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
+order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis
+uses :attr:`~newton.JointTargetMode.NONE`. Each anchor's local ``+Z`` is the
+material tangent. X/Y shear and X/Y bend entries must match because the
+transverse responses are isotropic about that tangent.
+:meth:`newton.ModelBuilder.add_joint_rod` creates the canonical axis layout
+automatically; generic :meth:`newton.ModelBuilder.add_joint` construction uses
+zero linear ``target_pos`` values and its three angular ``target_pos`` values as
+structural rest.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -332,15 +361,12 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.ROD``
-     - Rod joint with 2 linear material slots (stretch/shear) and 2 angular
-       material slots (bend/twist)
-     - 4
-     - 4
+     - Rod joint with relative-pose kinematics and stretch/shear/bend/twist material response
+     - 7 (3D position + 4D quaternion)
+     - 6
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
-For ``JointType.ROD``, both counts represent allocated material slots, not
-generalized coordinates or velocity DOFs; see `Rod joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -524,12 +550,13 @@ A robust pattern is:
         # Start index for this joint in generalized coordinates q
         q_begin = joint_q_start[joint_id]
 
-        # Skip free/ball joints because their q entries include quaternion coordinates.
+        # Skip joints whose q entries include quaternion coordinates.
         jt = joint_type[joint_id]
         if (
             jt == newton.JointType.FREE
             or jt == newton.JointType.BALL
             or jt == newton.JointType.DISTANCE
+            or jt == newton.JointType.ROD
         ):
             return
 
@@ -709,9 +736,9 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 Newton's public :func:`newton.eval_fk` writes :attr:`State.body_qd` using that
 COM/world convention, and :func:`newton.eval_ik` expects the same convention
-when recovering generalized state from maximal body state. For ``FREE`` and
-``DISTANCE`` joints, the
-recovered generalized velocities are rotated back into the joint parent frame.
+when recovering generalized state from maximal body state. For ``FREE``,
+``DISTANCE``, and ``ROD`` joints, the recovered generalized velocities are
+rotated back into the joint parent frame.
 
 
 .. autofunction:: newton.eval_fk
