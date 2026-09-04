@@ -16,6 +16,7 @@ from .kernels import (
     compute_tri_aabbs,
     compute_tri_groups,
     edge_colliding_edges_detection_kernel,
+    init_edge_collision_data_kernel,
     init_triangle_collision_data_kernel,
     triangle_triangle_collision_detection_kernel,
     vertex_triangle_collision_detection_kernel,
@@ -970,8 +971,19 @@ class TriMeshCollisionDetector:
         self._require_collision_info()
         self.edge_colliding_edges.fill_(-1)
         wp.launch(
+            kernel=init_edge_collision_data_kernel,
+            inputs=[max_query_radius],
+            outputs=[self.edge_colliding_edges_count, self.edge_colliding_edges_min_dist, self.resize_flags],
+            dim=self.model.edge_count,
+            device=self.model.device,
+            block_dim=self.collision_detection_block_size,
+        )
+        block_dim = 32 if self.device.is_cuda else 1
+        block_count = (self.model.edge_count + block_dim - 1) // block_dim
+        wp.launch_tiled(
             kernel=edge_colliding_edges_detection_kernel,
             inputs=[
+                self.model.edge_count,
                 max_query_radius,
                 min_query_radius,
                 self.bvh_edges.id,
@@ -993,9 +1005,9 @@ class TriMeshCollisionDetector:
                 self.edge_colliding_edges_min_dist,
                 self.resize_flags,
             ],
-            dim=self.model.edge_count,
+            dim=block_count,
             device=self.model.device,
-            block_dim=self.collision_detection_block_size,
+            block_dim=block_dim,
         )
 
     def triangle_triangle_intersection_detection(self):

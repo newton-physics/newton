@@ -38,6 +38,7 @@ try:
     from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
     from simulation import (
         bench_anymal,
+        bench_cloth,
         bench_contacts,
         bench_kamino,
         bench_mujoco,
@@ -201,6 +202,20 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_deformable_collision_benchmark_stays_out_of_pr_gate(self):
+        """Keep deformable collision benchmarks nightly-only."""
+        benchmark_name = "simulation.bench_cloth.DeformableSelfCollision.time_detect"
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        self.assertIn(benchmark_name, inventory)
+        self.assertFalse(
+            any(pattern.search(benchmark_name) for pattern in patterns),
+            benchmark_name,
+        )
+        self.assertEqual(bench_cloth.DeformableSelfCollision.repeat, 3)
+        self.assertEqual(bench_cloth.DeformableSelfCollision.warmup_count, 3)
+        self.assertEqual(bench_cloth.DeformableSelfCollision.launch_count, 10)
 
     def test_fast_kitchen_g1_validates_kitchen_body_count(self):
         """Validate the configured kitchen body count at runtime."""

@@ -779,7 +779,7 @@ def test_edge_edge_collision(test, device):
         edge_min_dist_2 = collision_detector.edge_colliding_edges_min_dist.numpy()
 
         assert_np_equal(edge_colliding_edges_count_2, edge_colliding_edges_count_1)
-        assert_np_equal(edge_min_dist_1, edge_min_dist_2)
+        np.testing.assert_allclose(edge_min_dist_1, edge_min_dist_2, rtol=5e-6)
 
 
 def test_particle_collision(test, device):

@@ -1578,8 +1578,52 @@ def vertex_triangle_collision_detection_kernel(
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
 
 
+@wp.func
+def _is_filtered_edge_pair(
+    edge: wp.int32,
+    other: wp.int32,
+    filtering_list: wp.array[wp.int32],
+    filtering_list_offsets: wp.array[wp.int32],
+):
+    if not filtering_list:
+        return False
+    start = filtering_list_offsets[edge]
+    end = filtering_list_offsets[edge + 1]
+    if end <= start or other < filtering_list[start] or other > filtering_list[end - 1]:
+        return False
+    index = binary_search(filtering_list, other, start, end)
+    return index > start and filtering_list[index - 1] == other
+
+
+@wp.kernel
+def init_edge_collision_data_kernel(
+    max_query_radius: float,
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
+):
+    edge = wp.tid()
+    edge_colliding_edges_count[edge] = 0
+    edge_colliding_edges_min_dist[edge] = max_query_radius
+    if edge == 0:
+        resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 0
+
+
+EDGE_COLLISION_TILE_SIZE = wp.constant(32)
+EDGE_COLLISION_STACK_CAPACITY = wp.constant(64)
+
+
+@wp.struct
+class EdgeCollisionCandidate:
+    edge: int
+    other: int
+    keep_edge: int
+    keep_other: int
+
+
 @wp.kernel
 def edge_colliding_edges_detection_kernel(
+    edge_count: wp.int32,
     max_query_radius: float,
     min_query_radius: float,
     bvh_id: wp.uint64,
@@ -1594,131 +1638,123 @@ def edge_colliding_edges_detection_kernel(
     edge_filtering_list: wp.array[wp.int32],
     edge_filtering_list_offsets: wp.array[wp.int32],
     min_distance_filtering_ref_pos: wp.array[wp.vec3],
-    # outputs
     edge_colliding_edges: wp.array[wp.int32],
     edge_colliding_edges_count: wp.array[wp.int32],
     edge_colliding_edges_min_dist: wp.array[float],
     resize_flags: wp.array[wp.int32],
 ):
-    """
-    bvh_id: the bvh id you want to do collision detection on
-    max_query_radius: the upper bound of collision distance.
-    min_query_radius: the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
-    pos: positions of all the vertices that make up edges
-    edge_indices: vertex index buffer for each edge
-    edge_colliding_edges_offsets: where each edge's collision buffer starts
-    edge_colliding_edges_buffer_sizes: size of each edge's collision buffer, will be modified if resizing is needed
-    edge_edge_parallel_epsilon: threshold for treating edge directions as parallel
-    edge_filtering_list: edge indices to exclude from collision checks
-    edge_filtering_list_offsets: offsets into the edge filtering list
-    min_distance_filtering_ref_pos: reference positions used for minimum-distance filtering
-    edge_colliding_edges: flattened buffer of colliding edge indices
-    edge_colliding_edges_count: number of edges each edge collides
-    edge_colliding_edges_min_dist: each edge's minimum distance to all non-filtered edges
-    resize_flags: global collision resize flags; this kernel sets the edge-buffer overflow entry
-    """
-    e_index = wp.tid()
+    block, lane = wp.tid()
+    edge = block * wp.block_dim() + lane
+    has_edge = edge < edge_count
+    safe_edge = wp.min(edge, edge_count - 1)
 
-    e0_v0 = edge_indices[e_index, 2]
-    e0_v1 = edge_indices[e_index, 3]
-
+    e0_v0 = edge_indices[safe_edge, 2]
+    e0_v1 = edge_indices[safe_edge, 3]
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
-
-    lower = wp.min(e0_v0_pos, e0_v1_pos)
-    upper = wp.max(e0_v0_pos, e0_v1_pos)
-
-    lower = wp.vec3(lower[0] - max_query_radius, lower[1] - max_query_radius, lower[2] - max_query_radius)
-    upper = wp.vec3(upper[0] + max_query_radius, upper[1] + max_query_radius, upper[2] + max_query_radius)
-
-    colliding_edge_index = wp.int32(0)
-    edge_num_collisions = wp.int32(0)
-    min_dis_to_edges = max_query_radius
+    lower = wp.min(e0_v0_pos, e0_v1_pos) - wp.vec3(max_query_radius)
+    upper = wp.max(e0_v0_pos, e0_v1_pos) + wp.vec3(max_query_radius)
     edge_world = particle_world[e0_v0]
 
-    # Only collide an edge with edges in its own world or in the global (world -1)
-    # group. The BVH is grouped by world, so a real-world edge queries two subtrees:
-    # its own world's, then the global one. A global (world -1) edge can hit any
-    # world, so it runs a single pass starting from the BVH root.
+    # Keep one scalar BVH query per lane, but redistribute its candidate pairs
+    # so lanes with short traversals help with distance tests from longer ones.
+    candidates = wp.tile_stack(capacity=EDGE_COLLISION_STACK_CAPACITY, dtype=EdgeCollisionCandidate)
+    active_flags = wp.tile_zeros(shape=EDGE_COLLISION_TILE_SIZE, dtype=int, storage="shared")
+
     for query_pass in range(2):
-        run_query = bool(False)
-        query_all = bool(False)
-        group_root = wp.int32(-1)
-
+        root = wp.int32(-1)
+        active = False
         if edge_world < 0:
-            if query_pass == 0:
-                run_query = True
-                query_all = True
+            active = has_edge and query_pass == 0
         else:
-            if query_pass == 0:
-                group_root = bvh_group_roots[edge_world]
-            else:
-                group_root = bvh_group_roots[world_count]
-            run_query = group_root >= 0
+            root = bvh_group_roots[edge_world] if query_pass == 0 else bvh_group_roots[world_count]
+            active = has_edge and root >= 0
 
-        if run_query:
-            if query_all:
-                query = wp.bvh_query_aabb(bvh_id, lower, upper)
-            else:
-                query = wp.bvh_query_aabb(bvh_id, lower, upper, group_root)
+        query = wp.bvh_query_aabb(bvh_id, lower, upper, root)
+        wp.tile_scatter_masked(active_flags, lane, wp.int32(active), True)
+        active_count = wp.tile_extract(wp.tile_sum(active_flags), 0)
 
-            colliding_edge_index = wp.int32(0)
-            while wp.bvh_query_next(query, colliding_edge_index):
-                e1_v0 = edge_indices[colliding_edge_index, 2]
-                e1_v1 = edge_indices[colliding_edge_index, 3]
+        while active_count > 0:
+            other = wp.int32(0)
+            add_candidate = False
+            keep_edge = False
+            keep_other = False
+            if active:
+                active = wp.bvh_query_next(query, other)
+                if active and other > edge:
+                    e1_v0 = edge_indices[other, 2]
+                    e1_v1 = edge_indices[other, 3]
+                    if e0_v0 != e1_v0 and e0_v0 != e1_v1 and e0_v1 != e1_v0 and e0_v1 != e1_v1:
+                        keep_edge = not _is_filtered_edge_pair(
+                            edge, other, edge_filtering_list, edge_filtering_list_offsets
+                        )
+                        keep_other = not _is_filtered_edge_pair(
+                            other, edge, edge_filtering_list, edge_filtering_list_offsets
+                        )
+                        add_candidate = keep_edge or keep_other
 
-                if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-                    continue
+            wp.tile_scatter_masked(active_flags, lane, wp.int32(active), True)
+            candidate = EdgeCollisionCandidate()
+            candidate.edge = edge
+            candidate.other = other
+            candidate.keep_edge = wp.int32(keep_edge)
+            candidate.keep_other = wp.int32(keep_other)
+            wp.tile_stack_push(candidates, candidate, add_candidate)
 
-                if edge_filtering_list:
-                    fl_start = edge_filtering_list_offsets[e_index]
-                    fl_end = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
+            active_count = wp.tile_extract(wp.tile_sum(active_flags), 0)
+            if wp.tile_stack_count(candidates) >= wp.block_dim() or active_count == 0:
+                while wp.tile_stack_count(candidates) > 0:
+                    candidate, slot = wp.tile_stack_pop(candidates)
+                    if slot >= 0:
+                        e0 = candidate.edge
+                        e1 = candidate.other
+                        e0_v0_pop = edge_indices[e0, 2]
+                        e0_v1_pop = edge_indices[e0, 3]
+                        e1_v0_pop = edge_indices[e1, 2]
+                        e1_v1_pop = edge_indices[e1, 3]
+                        dist = wp.closest_point_edge_edge(
+                            pos[e0_v0_pop],
+                            pos[e0_v1_pop],
+                            pos[e1_v0_pop],
+                            pos[e1_v1_pop],
+                            edge_edge_parallel_epsilon,
+                        )[2]
 
-                    if fl_end > fl_start:
-                        # Optional fast-fail using first/last elements (remember end is exclusive)
-                        first_val = edge_filtering_list[fl_start]
-                        last_val = edge_filtering_list[fl_end - 1]
-                        if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
-                            idx = binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end)
-                            if idx > fl_start and edge_filtering_list[idx - 1] == colliding_edge_index:
-                                continue
-                        # else: key is out of range, cannot be present -> skip_this remains False
+                        keep = True
+                        if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                            dist_ref = wp.closest_point_edge_edge(
+                                min_distance_filtering_ref_pos[e0_v0_pop],
+                                min_distance_filtering_ref_pos[e0_v1_pop],
+                                min_distance_filtering_ref_pos[e1_v0_pop],
+                                min_distance_filtering_ref_pos[e1_v1_pop],
+                                edge_edge_parallel_epsilon,
+                            )[2]
+                            keep = dist_ref >= min_query_radius
 
-                e1_v0_pos = pos[e1_v0]
-                e1_v1_pos = pos[e1_v1]
+                        if keep and dist < max_query_radius:
+                            if candidate.keep_edge != 0:
+                                output_slot = wp.atomic_add(edge_colliding_edges_count, e0, 1)
+                                if dist < edge_colliding_edges_min_dist[e0]:
+                                    wp.atomic_min(edge_colliding_edges_min_dist, e0, dist)
+                                if output_slot < edge_colliding_edges_buffer_sizes[e0]:
+                                    output = 2 * (edge_colliding_edges_offsets[e0] + output_slot)
+                                    edge_colliding_edges[output] = e0
+                                    edge_colliding_edges[output + 1] = e1
+                                else:
+                                    resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
 
-                std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-                dist = std[2]
+                            if candidate.keep_other != 0:
+                                output_slot = wp.atomic_add(edge_colliding_edges_count, e1, 1)
+                                if dist < edge_colliding_edges_min_dist[e1]:
+                                    wp.atomic_min(edge_colliding_edges_min_dist, e1, dist)
+                                if output_slot < edge_colliding_edges_buffer_sizes[e1]:
+                                    output = 2 * (edge_colliding_edges_offsets[e1] + output_slot)
+                                    edge_colliding_edges[output] = e1
+                                    edge_colliding_edges[output + 1] = e0
+                                else:
+                                    resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
-                    e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
-                    e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
-                    e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
-                    std_ref = wp.closest_point_edge_edge(
-                        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-                    )
-
-                    dist_ref = std_ref[2]
-                    if dist_ref < min_query_radius:
-                        continue
-
-                if dist < max_query_radius:
-                    edge_buffer_offset = edge_colliding_edges_offsets[e_index]
-                    edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
-
-                    # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
-                    min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-                    if edge_num_collisions < edge_buffer_size:
-                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions)] = e_index
-                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions) + 1] = colliding_edge_index
-                    else:
-                        resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
-
-                    edge_num_collisions = edge_num_collisions + 1
-
-    edge_colliding_edges_count[e_index] = edge_num_collisions
-    edge_colliding_edges_min_dist[e_index] = min_dis_to_edges
+        wp.tile_stack_clear(candidates)
 
 
 @wp.kernel
