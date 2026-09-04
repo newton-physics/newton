@@ -6361,6 +6361,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                 if stype == GeoType.PLANE and newton_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
+                if stype not in geom_type_mapping:
+                    raise ValueError(
+                        f"MuJoCo solver does not support shape type '{GeoType(stype).name}' "
+                        f"for shape {model.shape_label[shape]!r} (shape {shape}). "
+                        "Replace it with a supported primitive (sphere, capsule, cylinder, box, "
+                        "ellipsoid) or a convex mesh."
+                    )
                 geom_params = {
                     "type": geom_type_mapping[stype],
                     "name": name,
