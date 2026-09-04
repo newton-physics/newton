@@ -724,6 +724,7 @@ class ModelKamino:
                 q_j=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 q_j_p=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 dq_j=wp.zeros(shape=self.size.sum_of_num_joint_dofs, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_w_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 lambda_kin_j=wp.zeros(
                     shape=self.size.sum_of_num_kinematic_joint_cts, dtype=wp.float32, requires_grad=requires_grad
                 ),

@@ -281,6 +281,12 @@ class PADMMSolver:
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
         self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(block_dim)
 
+    def notify_model_changed(self, flags: object) -> None:
+        del flags
+
+    def validate_model_changed(self) -> None:
+        pass
+
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """
         Resets the all internal solver data to sentinel values.

@@ -944,6 +944,7 @@ def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    skip_fully_prescribed: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -953,6 +954,8 @@ def make_convert_contacts_newton_to_kamino(
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
             with positive margin-shifted distance.
+        skip_fully_prescribed: If ``True``, skip contacts between bodies that
+            cannot respond to contact impulses.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -1038,6 +1041,12 @@ def make_convert_contacts_newton_to_kamino(
         bid_1 = shape_body[sid_1]
         wid_0 = shape_world[sid_0]
         wid_1 = shape_world[sid_1]
+
+        if wp.static(skip_fully_prescribed):
+            dynamic_0 = bid_0 >= 0 and body_inv_mass[bid_0] > 0.0
+            dynamic_1 = bid_1 >= 0 and body_inv_mass[bid_1] > 0.0
+            if not dynamic_0 and not dynamic_1:
+                return
 
         # Determine the world index.  Global shapes (shape_world == -1) can
         # collide with shapes from any world, so fall back to the other shape.
@@ -1403,6 +1412,7 @@ def convert_contacts_newton_to_kamino(
     friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
     restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    skip_fully_prescribed_contacts: bool = False,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1447,6 +1457,9 @@ def convert_contacts_newton_to_kamino(
         cull_speculative_contacts:
             If ``True`` (the default), drop speculative contacts (contacts with
             positive margin-shifted distance).
+        skip_fully_prescribed_contacts:
+            If ``True``, omit contacts between two world-static or zero-mass
+            bodies. Defaults to ``False``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1493,6 +1506,7 @@ def convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
+        skip_fully_prescribed=skip_fully_prescribed_contacts,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.

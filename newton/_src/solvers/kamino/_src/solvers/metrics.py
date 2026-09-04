@@ -1006,6 +1006,165 @@ def _compute_cts_contacts_residual(
 
 
 @wp.kernel
+def _pack_joint_constraint_reactions(
+    model_time_dt: wp.array[wp.float32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_num_dynamic_cts: wp.array[wp.int32],
+    model_joint_num_kinematic_cts: wp.array[wp.int32],
+    model_joint_num_friction_cts: wp.array[wp.int32],
+    model_joint_dynamic_cts_offset: wp.array[wp.int32],
+    model_joint_kinematic_cts_offset: wp.array[wp.int32],
+    model_joint_friction_cts_offset: wp.array[wp.int32],
+    model_joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
+    model_joint_kinematic_cts_offset_total_cts: wp.array[wp.int32],
+    model_joint_friction_cts_offset_total_cts: wp.array[wp.int32],
+    joint_dynamic_reaction: wp.array[wp.float32],
+    joint_kinematic_reaction: wp.array[wp.float32],
+    joint_friction_reaction: wp.array[wp.float32],
+    constraint_impulse: wp.array[wp.float32],
+):
+    """Pack force-valued joint reactions into the dual impulse layout."""
+    joint = wp.tid()
+    world = model_joint_wid[joint]
+    time_step = model_time_dt[world]
+    dynamic_count = model_joint_num_dynamic_cts[joint]
+    kinematic_count = model_joint_num_kinematic_cts[joint]
+    friction_count = model_joint_num_friction_cts[joint]
+    dynamic_source = model_joint_dynamic_cts_offset[joint]
+    kinematic_source = model_joint_kinematic_cts_offset[joint]
+    friction_source = model_joint_friction_cts_offset[joint]
+    dynamic_destination = model_joint_dynamic_cts_offset_total_cts[joint]
+    kinematic_destination = model_joint_kinematic_cts_offset_total_cts[joint]
+    friction_destination = model_joint_friction_cts_offset_total_cts[joint]
+    for row in range(dynamic_count):
+        constraint_impulse[dynamic_destination + row] = time_step * joint_dynamic_reaction[dynamic_source + row]
+    for row in range(kinematic_count):
+        constraint_impulse[kinematic_destination + row] = time_step * joint_kinematic_reaction[kinematic_source + row]
+    for row in range(friction_count):
+        constraint_impulse[friction_destination + row] = time_step * joint_friction_reaction[friction_source + row]
+
+
+@wp.kernel
+def _pack_limit_constraint_reactions(
+    model_time_dt: wp.array[wp.float32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    data_info_limit_cts_group_offset: wp.array[wp.int32],
+    limit_model_num_limits: wp.array[wp.int32],
+    limit_wid: wp.array[wp.int32],
+    limit_lid: wp.array[wp.int32],
+    limit_reaction: wp.array[wp.float32],
+    constraint_impulse: wp.array[wp.float32],
+):
+    """Pack force-valued limit reactions into the dual impulse layout."""
+    limit = wp.tid()
+    if limit >= limit_model_num_limits[0]:
+        return
+    world = limit_wid[limit]
+    destination = model_info_total_cts_offset[world] + data_info_limit_cts_group_offset[world] + limit_lid[limit]
+    constraint_impulse[destination] = model_time_dt[world] * limit_reaction[limit]
+
+
+@wp.kernel
+def _pack_contact_constraint_reactions(
+    model_time_dt: wp.array[wp.float32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    data_info_contact_cts_group_offset: wp.array[wp.int32],
+    contact_model_num_contacts: wp.array[wp.int32],
+    contact_wid: wp.array[wp.int32],
+    contact_cid: wp.array[wp.int32],
+    contact_reaction: wp.array[wp.vec3f],
+    constraint_impulse: wp.array[wp.float32],
+):
+    """Pack force-valued contact reactions into the dual impulse layout."""
+    contact = wp.tid()
+    if contact >= contact_model_num_contacts[0]:
+        return
+    world = contact_wid[contact]
+    destination = (
+        model_info_total_cts_offset[world] + data_info_contact_cts_group_offset[world] + 3 * contact_cid[contact]
+    )
+    impulse = model_time_dt[world] * contact_reaction[contact]
+    for component in range(3):
+        constraint_impulse[destination + component] = impulse[component]
+
+
+@wp.kernel
+def _compute_constraint_velocity_from_body_velocity(
+    model_info_bodies_offset: wp.array[wp.int32],
+    body_velocity_previous: wp.array[wp.spatial_vectorf],
+    body_velocity: wp.array[wp.spatial_vectorf],
+    jacobian_offsets: wp.array[wp.int32],
+    jacobian_data: wp.array[wp.float32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_velocity_bias: wp.array[wp.float32],
+    problem_impact_scale: wp.array[wp.float32],
+    constraint_velocity: wp.array[wp.float32],
+):
+    """Evaluate the unpreconditioned biased constraint velocity at a body velocity."""
+    world, row = wp.tid()
+    if row >= problem_dim[world]:
+        return
+    body_offset = model_info_bodies_offset[world]
+    body_count = model_info_bodies_offset[world + 1] - body_offset
+    body_dof_count = 6 * body_count
+    vector_index = problem_vio[world] + row
+    matrix_index = jacobian_offsets[world] + body_dof_count * row
+    impact_scale = problem_impact_scale[vector_index]
+    value = problem_velocity_bias[vector_index]
+    for body_local in range(body_count):
+        jacobian = wp.spatial_vectorf(0.0)
+        for dof in range(6):
+            jacobian[dof] = jacobian_data[matrix_index + 6 * body_local + dof]
+        value += wp.dot(jacobian, body_velocity[body_offset + body_local])
+        value += impact_scale * wp.dot(jacobian, body_velocity_previous[body_offset + body_local])
+    constraint_velocity[vector_index] = value
+
+
+@wp.kernel
+def _initialize_constraint_velocity_from_body_velocity_sparse(
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_velocity_bias: wp.array[wp.float32],
+    constraint_velocity: wp.array[wp.float32],
+):
+    world, row = wp.tid()
+    if row < problem_dim[world]:
+        vector_index = problem_vio[world] + row
+        constraint_velocity[vector_index] = problem_velocity_bias[vector_index]
+
+
+@wp.kernel
+def _accumulate_constraint_velocity_from_body_velocity_sparse(
+    model_info_bodies_offset: wp.array[wp.int32],
+    body_velocity_previous: wp.array[wp.spatial_vectorf],
+    body_velocity: wp.array[wp.spatial_vectorf],
+    jacobian_num_nzb: wp.array[wp.int32],
+    jacobian_nzb_start: wp.array[wp.int32],
+    jacobian_nzb_coords: wp.array2d[wp.int32],
+    jacobian_nzb_values: wp.array[vec6f],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_impact_scale: wp.array[wp.float32],
+    constraint_velocity: wp.array[wp.float32],
+):
+    world, local_nzb = wp.tid()
+    if local_nzb >= jacobian_num_nzb[world]:
+        return
+    nzb = jacobian_nzb_start[world] + local_nzb
+    coordinates = jacobian_nzb_coords[nzb]
+    row = coordinates[0]
+    if row >= problem_dim[world]:
+        return
+    vector_index = problem_vio[world] + row
+    body = model_info_bodies_offset[world] + coordinates[1] // 6
+    jacobian = jacobian_nzb_values[nzb]
+    value = wp.dot(jacobian, body_velocity[body])
+    value += problem_impact_scale[vector_index] * wp.dot(jacobian, body_velocity_previous[body])
+    wp.atomic_add(constraint_velocity, vector_index, value)
+
+
+@wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
     problem_nbc: wp.array[wp.int32],
@@ -1028,6 +1187,7 @@ def _compute_dual_problem_metrics(
     solution_sigma: wp.array[wp.vec2f],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity_for_ncp: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1072,15 +1232,19 @@ def _compute_dual_problem_metrics(
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
 
-    # Compute the De Saxce correction for each contact as: s = G(v_plus)
+    # Initialize the velocity and De Saxce correction from the frozen dual problem.
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
 
-    # Compute the CCP optimization objective as: f_ccp = 0.5 * lambda.dot(v_plus + v_f)
-    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    # Force-output backends report an accepted velocity independently of the
+    # frozen dual problem. Test their NCP against that actual output state.
+    if use_solution_velocity_for_ncp:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
+        compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
 
-    # Compute the NCP optimization objective as:  f_ncp = f_ccp + lambda.dot(s)
-    f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s)
-    f_ncp += f_ccp
+    # Compute the objectives from the same velocity used by the NCP metrics.
+    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s) + f_ccp
 
     # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
     compute_vector_sum(ncts, vio, buffer_v, buffer_s, buffer_v)
@@ -1193,6 +1357,7 @@ def _compute_dual_problem_metrics_sparse(
     problem_bound_upper: wp.array[wp.float32],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_solution_velocity_for_ncp: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1236,15 +1401,19 @@ def _compute_dual_problem_metrics_sparse(
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
 
-    # Compute the De Saxce correction for each contact as: s = G(v_plus)
+    # Initialize the velocity and De Saxce correction from the frozen dual problem.
     compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
 
-    # Compute the CCP optimization objective as: f_ccp = 0.5 * lambda.dot(v_plus + v_f)
-    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    # Force-output backends report an accepted velocity independently of the
+    # frozen dual problem. Test their NCP against that actual output state.
+    if use_solution_velocity_for_ncp:
+        for row in range(ncts):
+            buffer_v[vio + row] = solution_v_plus[vio + row]
+        compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
 
-    # Compute the NCP optimization objective as:  f_ncp = f_ccp + lambda.dot(s)
-    f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s)
-    f_ncp += f_ccp
+    # Compute the objectives from the same velocity used by the NCP metrics.
+    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s) + f_ccp
 
     # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
     compute_vector_sum(ncts, vio, buffer_v, buffer_s, buffer_v)
@@ -1371,6 +1540,9 @@ class SolutionMetrics:
         # Declare data buffers for metrics computations
         self._buffer_s: wp.array[wp.float32] | None = None
         self._buffer_v: wp.array[wp.float32] | None = None
+        self._constraint_impulse: wp.array[wp.float32] | None = None
+        self._constraint_velocity: wp.array[wp.float32] | None = None
+        self._zero_sigma: wp.array[wp.vec2f] | None = None
 
         # If a model is provided, finalize the metrics data allocations
         if model is not None:
@@ -1395,6 +1567,9 @@ class SolutionMetrics:
             # Allocate reusable buffers for metrics computations
             self._buffer_v = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
             self._buffer_s = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
+            self._constraint_impulse = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
+            self._constraint_velocity = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
+            self._zero_sigma = wp.zeros(model.size.num_worlds, dtype=wp.vec2f)
 
             # Allocate the metrics container data arrays
             self._data = SolutionMetricsData(
@@ -1480,9 +1655,175 @@ class SolutionMetrics:
             v_plus: The array of post-event constraint-space velocities of the current dual problem solution.
         """
         self._assert_has_data()
+        self.evaluate_primal(model, data, state_p, jacobians, limits, contacts)
+        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem)
+
+    def evaluate_primal(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        state_p: StateKamino,
+        jacobians: DenseSystemJacobians | SparseSystemJacobians,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+    ) -> None:
+        """Evaluate backend-neutral EOM and constraint metrics.
+
+        Args:
+            model: The model containing time-invariant simulation data.
+            data: The model data containing the final simulation state.
+            state_p: The state at the beginning of the time step.
+            jacobians: The system Jacobians used by the dynamics solve.
+            limits: Active joint-limit constraints.
+            contacts: Active contact constraints.
+        """
+        self._assert_has_data()
         self._evaluate_constraint_violations_perf(model, data, limits, contacts)
         self._evaluate_primal_problem_perf(model, data, state_p, jacobians)
-        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem)
+
+    def evaluate_from_constraint_forces(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        state_p: StateKamino,
+        problem: DualProblem,
+        jacobians: DenseSystemJacobians | SparseSystemJacobians,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+    ) -> None:
+        """Evaluate metrics from force-valued Kamino constraint outputs.
+
+        This path is intended for dynamics backends that do not natively solve
+        Kamino's dual problem. It packs their force-valued joint, limit, and
+        contact reactions into the same impulse-space layout as PADMM and
+        evaluates the measured constraint velocity from the final body
+        velocity. Velocity-dependent NCP and VI residuals and the reported dual
+        objectives use this measured velocity. ``r_v_plus`` compares it with the
+        velocity implied by the supplied analysis problem. That problem must
+        have been built at the backend's dynamics linearization before its solve.
+
+        Args:
+            model: The model containing time-invariant simulation data.
+            data: The model data containing the final body state and reactions.
+            state_p: The state at the beginning of the time step.
+            problem: Analysis dual problem built before the dynamics solve.
+            jacobians: Constraint Jacobians used by the dynamics solve.
+            limits: Active joint-limit constraints.
+            contacts: Active contact constraints.
+        """
+        self._assert_has_data()
+
+        self._constraint_impulse.zero_()
+        self._constraint_velocity.zero_()
+        if model.size.sum_of_num_joints > 0:
+            wp.launch(
+                _pack_joint_constraint_reactions,
+                dim=model.size.sum_of_num_joints,
+                inputs=[
+                    model.time.dt,
+                    model.joints.wid,
+                    model.joints.num_dynamic_cts,
+                    model.joints.num_kinematic_cts,
+                    model.joints.num_friction_cts,
+                    model.joints.dynamic_cts_offset,
+                    model.joints.kinematic_cts_offset,
+                    model.joints.friction_cts_offset,
+                    model.joints.dynamic_cts_offset_total_cts,
+                    model.joints.kinematic_cts_offset_total_cts,
+                    model.joints.friction_cts_offset_total_cts,
+                    data.joints.lambda_dyn_j,
+                    data.joints.lambda_kin_j,
+                    data.joints.lambda_f_j,
+                ],
+                outputs=[self._constraint_impulse],
+                device=model.device,
+            )
+        if limits is not None and limits.model_max_limits_host > 0:
+            wp.launch(
+                _pack_limit_constraint_reactions,
+                dim=limits.model_max_limits_host,
+                inputs=[
+                    model.time.dt,
+                    model.info.total_cts_offset,
+                    data.info.limit_cts_group_offset,
+                    limits.model_active_limits,
+                    limits.wid,
+                    limits.lid,
+                    limits.reaction,
+                ],
+                outputs=[self._constraint_impulse],
+                device=model.device,
+            )
+        if contacts is not None and contacts.model_max_contacts_host > 0:
+            wp.launch(
+                _pack_contact_constraint_reactions,
+                dim=contacts.model_max_contacts_host,
+                inputs=[
+                    model.time.dt,
+                    model.info.total_cts_offset,
+                    data.info.contact_cts_group_offset,
+                    contacts.model_active_contacts,
+                    contacts.wid,
+                    contacts.cid,
+                    contacts.reaction,
+                ],
+                outputs=[self._constraint_impulse],
+                device=model.device,
+            )
+
+        if isinstance(jacobians, DenseSystemJacobians):
+            wp.launch(
+                _compute_constraint_velocity_from_body_velocity,
+                dim=(model.size.num_worlds, model.size.max_of_max_total_cts),
+                inputs=[
+                    model.info.bodies_offset,
+                    state_p.u_i,
+                    data.bodies.u_i,
+                    jacobians.data.J_cts_offsets,
+                    jacobians.data.J_cts_data,
+                    problem.data.dim,
+                    problem.data.vio,
+                    problem.data.v_b,
+                    problem.data.v_i,
+                ],
+                outputs=[self._constraint_velocity],
+                device=model.device,
+            )
+        else:
+            jacobian = jacobians._J_cts.bsm
+            wp.launch(
+                _initialize_constraint_velocity_from_body_velocity_sparse,
+                dim=(model.size.num_worlds, model.size.max_of_max_total_cts),
+                inputs=[problem.data.dim, problem.data.vio, problem.data.v_b],
+                outputs=[self._constraint_velocity],
+                device=model.device,
+            )
+            wp.launch(
+                _accumulate_constraint_velocity_from_body_velocity_sparse,
+                dim=(model.size.num_worlds, jacobian.max_of_num_nzb),
+                inputs=[
+                    model.info.bodies_offset,
+                    state_p.u_i,
+                    data.bodies.u_i,
+                    jacobian.num_nzb,
+                    jacobian.nzb_start,
+                    jacobian.nzb_coords,
+                    jacobian.nzb_values,
+                    problem.data.dim,
+                    problem.data.vio,
+                    problem.data.v_i,
+                ],
+                outputs=[self._constraint_velocity],
+                device=model.device,
+            )
+        self.evaluate_primal(model, data, state_p, jacobians, limits, contacts)
+        self._evaluate_dual_problem_perf(
+            self._zero_sigma,
+            self._constraint_impulse,
+            self._constraint_velocity,
+            problem,
+            use_solution_velocity_for_ncp=True,
+        )
 
     ###
     # Internals
@@ -1669,6 +2010,7 @@ class SolutionMetrics:
         lambdas: wp.array[wp.float32],
         v_plus: wp.array[wp.float32],
         problem: DualProblem,
+        use_solution_velocity_for_ncp: bool = False,
     ):
         """
         Evaluates the dual problem performance metrics.
@@ -1678,6 +2020,9 @@ class SolutionMetrics:
             sigma: The array of sigma values for the dual problem.
             lambdas: The array of lambda values for the dual problem.
             v_plus: The array of v_plus values for the dual problem.
+            use_solution_velocity_for_ncp: Whether velocity-dependent NCP and
+                VI residuals and objectives use ``v_plus`` instead of the
+                velocity implied by the dual problem.
         """
         # Ensure metrics data is available
         self._assert_has_data()
@@ -1719,6 +2064,7 @@ class SolutionMetrics:
                     problem.data.bound_upper,
                     lambdas,
                     v_plus,
+                    use_solution_velocity_for_ncp,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,
@@ -1764,6 +2110,7 @@ class SolutionMetrics:
                     sigma,
                     lambdas,
                     v_plus,
+                    use_solution_velocity_for_ncp,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,

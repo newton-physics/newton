@@ -355,6 +355,12 @@ class DVISolver:
         if self._sparse_path is not None:
             self._sparse_path.contacts = contacts
 
+    def notify_model_changed(self, flags: object) -> None:
+        del flags
+
+    def validate_model_changed(self) -> None:
+        pass
+
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """Reset scratch state and cached solution data."""
         if world_mask is None:
