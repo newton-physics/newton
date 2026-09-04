@@ -21,15 +21,15 @@ import warp as wp
 from .import_usd_deformable_utils import (
     _attachment_vec3_list,
     _attachment_vec3_tuples,
-    _builder_body_xform,
     _cable_attachment_anchors,
     _DeformableImportContext,
     _is_ignored_path,
     _mark_attachment_unsupported,
+    _resolve_attachment_target,
 )
 
 
-def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junction_attachment_paths: set[str]) -> None:
+def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in_shared_graphs: set[str]) -> None:
     """Lower supported AOUSD ``PhysicsAttachment`` prims onto the imported cables.
 
     Cable ``point`` / ``segment`` sites with ``type1 = "xform"`` become hard ball joints to the
@@ -40,16 +40,11 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
-    stage = ctx.stage
     root_prim = ctx.root_prim
     ignore_paths = ctx.ignore_paths
-    incoming_world_xform = ctx.incoming_world_xform
     verbose = ctx.verbose
     deformable_read = ctx.deformable_read
-    get_prim_world_mat = ctx.get_prim_world_mat
-    get_rigid_body_ancestor_path = ctx.get_rigid_body_ancestor_path
     get_first_target = ctx.get_first_target
-    path_body_map = ctx.path_body_map
     path_cable_segments = ctx.path_cable_segments
     path_cable_point_anchors = ctx.path_cable_point_anchors
     path_cloth_map = ctx.path_cloth_map
@@ -57,39 +52,14 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     path_attachment_map = ctx.path_attachment_map
     path_attachment_attrs = ctx.path_attachment_attrs
 
-    def _attachment_world_point_from_xform(target_path: str, local_point: wp.vec3) -> tuple[int, wp.vec3] | None:
-        if target_path in ("", "/"):
-            # A world target's coords are authored in stage space, so they ride the same
-            # import/up-axis transform applied to the cable geometry (otherwise the anchor
-            # stays in original USD coordinates and yanks a translated cable off-position).
-            return -1, wp.transform_point(incoming_world_xform, local_point)
-
-        target_prim = stage.GetPrimAtPath(target_path)
-        if not target_prim or not target_prim.IsValid():
-            return None
-
-        target_mat = get_prim_world_mat(target_prim, None, incoming_world_xform)
-        # Apply the full affine (incl. non-uniform scale, shear, reflection) to the local anchor.
-        world_point = wp.transform_point(target_mat, local_point)
-
-        body_path = get_rigid_body_ancestor_path(target_prim)
-        if body_path is None:
-            return -1, world_point
-
-        body_idx = path_body_map.get(body_path, -1)
-        if body_idx < 0:
-            return None
-        local_body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(builder, body_idx)), world_point)
-        return body_idx, local_body_point
-
     if not (root_prim and root_prim.IsValid()):
         return
     for prim in ctx.prims.attachments:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue
-        if path in consumed_junction_attachment_paths:
-            continue  # already consumed as rod-graph topology (curve-to-curve junction)
+        if path in attachments_in_shared_graphs:
+            continue
 
         src0 = get_first_target(prim, "physics:src0")
         src1 = get_first_target(prim, "physics:src1")
@@ -119,6 +89,10 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             "damping": damping_val if damping is None else damping,
         }
         path_attachment_attrs[path] = attrs
+
+        if path in path_attachment_map:
+            attrs["joint_indices"] = list(path_attachment_map[path])
+            continue
 
         malformed_gains = [
             (name, value)
@@ -235,7 +209,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
                     f"PhysicsAttachment type0='{type0}' could not be resolved on cable '{src0}'.",
                 )
                 break
-            target_info = _attachment_world_point_from_xform(src1, coords1[site_idx])
+            target_info = _resolve_attachment_target(ctx, src1, coords1[site_idx])
             if target_info is None:
                 warnings.warn(
                     f"{path}: physics:src1 target '{src1}' could not be resolved as an xform; "
