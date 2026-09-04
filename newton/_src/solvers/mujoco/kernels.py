@@ -1540,6 +1540,8 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
+CTRL_TYPE_DCMOTOR = wp.constant(3)
+ACTUATOR_GAIN_TYPE_DCMOTOR = wp.constant(3)
 
 
 @wp.func
@@ -2114,6 +2116,9 @@ def update_axis_properties_kernel(
 def update_ctrl_direct_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
+    newton_actuator_ctrl_type: wp.array[wp.int32],
+    newton_actuator_gain_type: wp.array[wp.int32],
+    newton_actuator_ctrlspec: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
     newton_actuator_dynprm: wp.array[vec10],
@@ -2142,6 +2147,9 @@ def update_ctrl_direct_actuator_properties_kernel(
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_idx: Index into Newton's mujoco:actuator arrays
+        newton_actuator_ctrl_type: Intrinsic actuator shortcut type
+        newton_actuator_gain_type: MuJoCo actuator gain type
+        newton_actuator_ctrlspec: MuJoCo 3.12 DC-motor control-input mask
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
@@ -2163,11 +2171,34 @@ def update_ctrl_direct_actuator_properties_kernel(
         return
 
     world_newton_idx = world * actuators_per_world + newton_idx
-    actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
-    actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
+    # High-level MJCF DC-motor rows keep placeholder general-actuator arrays;
+    # preserve the parameters and force range compiled by set_to_dcmotor().
+    if newton_actuator_ctrl_type[world_newton_idx] != CTRL_TYPE_DCMOTOR:
+        actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
+        actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+        actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
+        actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+
+    # MuJoCo 3.12 stores the DC-motor input signature in actuator_ctrlspec,
+    # while MuJoCo-Warp currently reads its legacy value from gainprm[8].
+    # Patch only that compatibility slot after preserving or copying the
+    # compiled parameters above. A zero ctrlspec denotes legacy compiled data.
+    ctrlspec = newton_actuator_ctrlspec[world_newton_idx]
+    is_dcmotor = (
+        newton_actuator_ctrl_type[world_newton_idx] == CTRL_TYPE_DCMOTOR
+        or newton_actuator_gain_type[world_newton_idx] == ACTUATOR_GAIN_TYPE_DCMOTOR
+    )
+    if is_dcmotor and ctrlspec > 0:
+        gain = actuator_gain[world, actuator]
+        if ctrlspec == 1:  # position
+            gain[8] = 1.0
+        elif ctrlspec == 2:  # velocity
+            gain[8] = 2.0
+        else:  # voltage
+            gain[8] = 0.0
+        actuator_gain[world, actuator] = gain
+
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
-    actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
     actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]

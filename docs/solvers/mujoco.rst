@@ -348,6 +348,26 @@ only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-c
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
+MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer
+preserves their high-level electrical, controller, thermal, cogging, and LuGre
+parameters, and :class:`~newton.solvers.SolverMuJoCo` reconstructs them through
+MuJoCo's native DC-motor compiler for both the CPU and MuJoCo-Warp backends.
+Commands use the MJCF actuator order in ``control.mujoco.ctrl``. The supported
+``input`` signatures each consume one control value: ``voltage``, ``pos``, or
+``vel``; ``position`` and ``velocity`` are accepted as compatibility aliases.
+MuJoCo's ``ff``, ``none``, and combined multi-input signatures are not yet
+supported because they require control handling that MuJoCo-Warp does not yet
+provide. Compiled USD ``MjcActuator`` rows can preserve the low-level parameter
+arrays and a supported ``mjc:ctrlSpec`` value instead.
+When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+actuators must have identical parameters because MuJoCo-Warp replicates one
+compiled template model across worlds.
+
+This native, stateful MuJoCo actuator is distinct from
+:class:`~newton.actuators.ClampingDCMotor`, which is a stateless Newton
+clamping stage and does not model winding current, thermal effects, cogging, or
+LuGre friction.
+
 
 .. _mujoco-equality-constraints:
 
