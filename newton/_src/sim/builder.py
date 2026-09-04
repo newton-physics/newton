@@ -11297,48 +11297,27 @@ class ModelBuilder:
         Raises:
             ValueError: If any validation check fails.
         """
-        if self.joint_count > 0:
-            with self._raw_array_access():
-                if isinstance(self.joint_articulation, np.ndarray) and np.all(self.joint_articulation >= 0):
-                    return
-                joint_articulation = _list_for_iteration(self.joint_articulation)
-                joint_parent = _list_for_iteration(self.joint_parent)
-                joint_child = _list_for_iteration(self.joint_child)
+        if self.joint_count == 0:
+            return
 
-            # First, find all bodies reachable via articulated joints
-            articulated_bodies = set()
-            articulated_bodies.add(-1)  # World is always reachable
-            for i, art in enumerate(joint_articulation):
-                if art >= 0:  # Joint is in an articulation
-                    parent = joint_parent[i]
-                    child = joint_child[i]
-                    articulated_bodies.add(parent)
-                    articulated_bodies.add(child)
+        with self._raw_array_access():
+            joint_articulation = np.asarray(self.joint_articulation)
+            if np.all(joint_articulation >= 0):
+                return
+            joint_parent = np.asarray(self.joint_parent)
+            joint_child = np.asarray(self.joint_child)
 
-            # Now check for true orphan joints: non-articulated joints whose child
-            # is NOT reachable via other articulated joints
-            orphan_joints = []
-            for i, art in enumerate(joint_articulation):
-                if art < 0:  # Joint is not in an articulation
-                    parent = joint_parent[i]
-                    child = joint_child[i]
-                    if parent == -1:
-                        # Exception: a standalone world-root joint is valid without
-                        # articulation metadata. Supported solvers consume it directly
-                        # or provide a topology-specific fallback.
-                        continue
-                    if child not in articulated_bodies:
-                        # This is a true orphan - the child body has no articulated path
-                        orphan_joints.append(i)
-                    # else: this is a loop joint - child is already reachable, so it's allowed
+        articulated = joint_articulation >= 0
+        articulated_bodies = np.concatenate((joint_parent[articulated], joint_child[articulated]))
+        orphan_joints = np.flatnonzero(~articulated & (joint_parent != -1) & ~np.isin(joint_child, articulated_bodies))
 
-            if orphan_joints:
-                joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
-                raise ValueError(
-                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
-                    f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
-                    + ("..." if len(orphan_joints) > 5 else "")
-                )
+        if len(orphan_joints) > 0:
+            joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
+            raise ValueError(
+                f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
+                + ("..." if len(orphan_joints) > 5 else "")
+            )
 
     def _validate_shapes(self) -> bool:
         """Validate shape gaps for stable broad phase detection.
