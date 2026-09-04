@@ -21,7 +21,6 @@ from newton._src.solvers.kamino._src.dynamics.wrenches import (
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -37,6 +36,7 @@ from newton.tests.kamino.utils.make import (
     make_test_problem_heterogeneous,
     update_containers,
 )
+from newton.tests.utils.testing import build_unary_revolute_joint_test
 
 ###
 # Constants
@@ -331,9 +331,8 @@ class TestDynamicsWrenches(unittest.TestCase):
                 implicit_pd=True,
                 ground=False,
             )
-            model, data, state, limits, _detector, jacobians = make_containers(
-                builder, device=self.default_device, sparse=sparse
-            )
+            model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+            model, data, state, limits, _detector, jacobians = make_containers(model=model, sparse=sparse)
             self.assertGreater(int(model.joints.num_dynamic_cts.numpy().sum()), 0)
             update_containers(model, data, state, limits, detector=None, jacobians=jacobians)
             data.joints.tau_j.fill_(1.0)

@@ -669,6 +669,21 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_asroballet",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500, "onnx_required": True},
+    use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_asroballet",
+    devices=cuda_test_devices,
+    test_options={"controller": "lqr", "num-frames": 500},
+    use_viewer=True,
+    test_suffix="LQR",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -693,8 +708,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    # Deterministic contacts keep the pick-and-place check from flaking.
-    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
+    test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
 )
 
@@ -829,6 +843,14 @@ add_example_test(
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+)
+add_example_test(
+    TestSelectionAPIExamples,
+    name="selection.example_selection_cartpole",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -1339,6 +1361,13 @@ add_example_test(
     name="controllers.example_controller_joint_impedance_heterogeneous",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_operational_space_hybrid_force_motion",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 600},
     use_viewer=True,
 )
 

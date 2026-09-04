@@ -16,7 +16,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 ## Attribute Resolution & Transformation Mapping:
 5. **PhysX Joint Armature** - Tests PhysX joint armature values are correctly resolved
 6. **Time Step Resolution** - Validates PhysX timeStepsPerSecond conversion to time_step
-7. **MuJoCo Solref Conversion** - Tests MuJoCo solref parameter conversion to stiffness/damping
+7. **MuJoCo Solref Preservation** - Tests native solref remains separate from generic gains
 8. **Layered Fallback Behavior** - Tests 3-layer fallback: authored → explicit default → solver mapping default
 
 ## Custom Attributes & State Initialization:
@@ -41,6 +41,7 @@ from typing import Any
 import warp as wp
 
 from newton import Model, ModelBuilder
+from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 from newton._src.usd.schema_resolver import SchemaResolverManager
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
@@ -427,14 +428,11 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(gravity_enabled, True)
 
     def test_mjc_solref(self):
-        """
-        Test MuJoCo solref parameter conversion to stiffness and damping values.
+        """Verify that MuJoCo joint solref remains separate from generic Newton gains.
 
-        Uses ant_mixed.usda to test that schema resolver priority correctly selects between
-        PhysX-authored ``physxLimit:angular:stiffness`` (per-degree by UsdPhysics convention)
-        and MuJoCo-derived ``mjc:solreflimit`` (per-radian by mjModel convention). Each path's
-        stored ``joint_limit_ke`` / ``joint_limit_kd`` must end up in Newton's per-radian
-        internal units regardless of authored unit.
+        Uses ant_mixed.usda to verify that PhysX-authored generic gains retain
+        their Newton semantics regardless of resolver order while the authored
+        ``mjc:solreflimit`` remains available as a native MuJoCo parameter.
         """
 
         test_dir = Path(__file__).parent
@@ -459,16 +457,11 @@ class TestSchemaResolver(unittest.TestCase):
             verbose=False,
         )
 
-        # PhysX authors `physxLimit:angular:stiffness = 2.0` per-degree; importer converts
-        # to per-radian: 2.0 / (pi/180).
-        # MJC `mjc:solreflimit = (0.5, 0.05)` -> per-radian k = 1/(0.5^2 * 0.05^2) = 1600,
-        # b = 2/0.5 = 4.0. The MJC angular schema entries pre-multiply by pi/180 to cancel
-        # the importer's later /= DegreesToRadian, so the per-radian value reaches Newton.
+        # PhysX authors generic gains per degree; the importer converts them to
+        # Newton's per-radian units. MuJoCo's native solref must not replace them.
         deg_to_rad = math.pi / 180.0
         expected_physx_ke = 2.0 / deg_to_rad
         expected_physx_kd = 0.1 / deg_to_rad
-        expected_mjc_ke = 1600.0
-        expected_mjc_kd = 4.0
 
         self.assertEqual(len(builder_newton.joint_limit_ke), len(builder_mjc.joint_limit_ke))
         self.assertEqual(len(builder_newton.joint_limit_kd), len(builder_mjc.joint_limit_kd))
@@ -479,16 +472,30 @@ class TestSchemaResolver(unittest.TestCase):
                 continue
             ke_count += 1
             self.assertAlmostEqual(physx_ke, expected_physx_ke, places=3)
-            self.assertAlmostEqual(mjc_ke, expected_mjc_ke, places=3)
+            self.assertAlmostEqual(mjc_ke, expected_physx_ke, places=3)
         kd_count = 0
         for physx_kd, mjc_kd in zip(builder_newton.joint_limit_kd, builder_mjc.joint_limit_kd, strict=False):
             if physx_kd == 0.0 and mjc_kd == 0.0:
                 continue
             kd_count += 1
             self.assertAlmostEqual(physx_kd, expected_physx_kd, places=3)
-            self.assertAlmostEqual(mjc_kd, expected_mjc_kd, places=3)
+            self.assertAlmostEqual(mjc_kd, expected_physx_kd, places=3)
         self.assertGreater(ke_count, 0, "Expected at least one revolute joint with authored limit_ke")
         self.assertGreater(kd_count, 0, "Expected at least one revolute joint with authored limit_kd")
+
+        model_mjc = builder_mjc.finalize(device="cpu")
+        raw_solref_count = 0
+        for mode, solref in zip(
+            model_mjc.mujoco.solreflimit_mode.numpy(),
+            model_mjc.mujoco.solreflimit.numpy(),
+            strict=True,
+        ):
+            if mode != SOLREF_MODE_RAW:
+                continue
+            raw_solref_count += 1
+            self.assertAlmostEqual(float(solref[0]), 0.5, places=6)
+            self.assertAlmostEqual(float(solref[1]), 0.05, places=6)
+        self.assertEqual(raw_solref_count, ke_count)
 
     def test_newton_custom_attributes(self):
         """

@@ -4,10 +4,6 @@
 
 <!-- towncrier release notes start -->
 
-### Added
-
-- Add reduced elastic bodies with sampled modal bases, coupled floating-frame and modal VBD solves, rigid-joint and rigid-contact interaction, deformation-aware rendering, and FEM, POD, beam, and Craig-Bampton modal generators.
-
 ## [1.5.1] - 2026-08-27
 
 ### Fixed

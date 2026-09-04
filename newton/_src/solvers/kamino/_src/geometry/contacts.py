@@ -36,6 +36,7 @@ from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
 from .....sim.state import State
+from ..core.bodies import is_immovable_for_kamino
 from ..core.materials import MaterialMixMode, make_get_mixed_material_pair_property
 from ..core.model import ModelKamino
 from ..core.types import (
@@ -981,6 +982,9 @@ def make_convert_contacts_newton_to_kamino(
         shape_mu: wp.array[wp.float32],
         shape_restitution: wp.array[wp.float32],
         body_q: wp.array[wp.transformf],
+        body_inv_mass: wp.array[wp.float32],
+        body_inv_inertia: wp.array[wp.mat33f],
+        body_flags: wp.array[wp.int32],
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1106,6 +1110,16 @@ def make_convert_contacts_newton_to_kamino(
             pos_B = p1_surf
             margin_A = margin_0
             margin_B = margin_1
+
+        # Skip contacts between two bodies that Kamino treats as immovable
+        # (both masks are zero, so the Delassus row would be structurally zero).
+        # The bid_A == -1 case (world-static A) is intentionally kept: the other
+        # endpoint is exercised against an infinite-mass anchor.
+        if bid_A >= 0 and bid_B >= 0:
+            if is_immovable_for_kamino(
+                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A]
+            ) and is_immovable_for_kamino(body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B]):
+                return
 
         # Retrieve the material properties for this contact
         # TODO: Integrate use of material manager to retrieve material properties
@@ -1507,6 +1521,9 @@ def convert_contacts_newton_to_kamino(
             model.shape_material_mu,
             model.shape_material_restitution,
             state.body_q,
+            model.body_inv_mass,
+            model.body_inv_inertia,
+            model.body_flags,
         ],
         outputs=[
             contacts_out.model_active_contacts,

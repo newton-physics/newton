@@ -83,4 +83,4 @@ newton
    * - ``__version__``
      - ``1.6.0.dev0``
    * - ``use_coord_layout_targets``
-     - ``False``
+     - ``True``

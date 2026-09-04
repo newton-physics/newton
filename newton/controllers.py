@@ -14,10 +14,14 @@ from ._src.controllers import (
     ControllerBase,
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
+    ControllerOperationalSpace,
+    ControllerOperationalSpaceModelFree,
 )
 
 __all__ = [
     "ControllerBase",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
+    "ControllerOperationalSpace",
+    "ControllerOperationalSpaceModelFree",
 ]

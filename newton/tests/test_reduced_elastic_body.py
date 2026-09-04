@@ -1909,8 +1909,9 @@ def test_vbd_elastic_contact_overflow_assembles_consistent_block(test, device):
         model, _body = _build_elastic_ground_contact_model(device, z=0.04, is_kinematic=False)
         state_0 = model.state()
         state_1 = model.state()
-        contacts = model.contacts()
-        model.collide(state_0, contacts)
+        pipeline = newton.CollisionPipeline(model, broad_phase="explicit", deterministic=True)
+        contacts = pipeline.contacts()
+        pipeline.collide(state_0, contacts)
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         test.assertGreater(contact_count, 1)
 
