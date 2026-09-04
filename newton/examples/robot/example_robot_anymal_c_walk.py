@@ -180,7 +180,7 @@ class Example:
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             base_pos = wp.vec3(*self.state_0.joint_q.numpy()[:3])
-            self.viewer.set_camera(pos=base_pos + wp.vec3(10.0, 0.0, 2.0), pitch=0.0, yaw=-180.0)
+            self.viewer.set_camera(pos=base_pos + wp.vec3(10.0, 0.0, 2.0))
             self.viewer.camera.look_at(base_pos)
 
         if use_mujoco_contacts:
