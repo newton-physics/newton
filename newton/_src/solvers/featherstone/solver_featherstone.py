@@ -791,11 +791,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     # print("body_qd:")
                     # print(state_in.body_qd.numpy())
 
-                    if (
-                        self._has_joint_mimics
-                        or self._mass_matrix_dirty
-                        or self._step % self.update_mass_matrix_interval == 0
-                    ):
+                    if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
                         # build J
                         wp.launch(
                             eval_rigid_jacobian,
