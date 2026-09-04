@@ -43,9 +43,45 @@ except ImportError:
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
-# Add warning-clean test modules incrementally. Eventually this should cover
-# the entire test_* surface and be replaced by a single test_.* filter.
-_STRICT_WARNING_TEST_MODULES = ("test_actuators",)
+_TEST_MODULE_PREFIX = r"(?:.*\.)?"
+_STRICT_WARNING_TEST_MODULE = rf"{_TEST_MODULE_PREFIX}test_.*$"
+
+# Keep each exception narrow so warning-cleanup PRs can remove debt without
+# leaving an entire test module permissive.
+_KNOWN_WARNING_DEBT = (
+    {
+        "message": (
+            r"Inertia validation corrected \d+ bodies\. Set validate_inertia_detailed=True for detailed per-body "
+            r"warnings\."
+        ),
+        "category": UserWarning,
+        "module": (
+            rf"{_TEST_MODULE_PREFIX}"
+            r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
+            r"test_controllers_joint_selection|test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
+            r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
+            r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
+        ),
+    },
+    {
+        "message": r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\..*",
+        "category": UserWarning,
+        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
+    },
+    {
+        "message": (
+            r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects "
+            r"2\..*"
+        ),
+        "category": UserWarning,
+        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
+    },
+    {
+        "message": r"invalid value encountered in cast",
+        "category": RuntimeWarning,
+        "module": rf"{_TEST_MODULE_PREFIX}test_recorder$",
+    },
+)
 
 
 def _enable_strict_warnings():
@@ -56,8 +92,9 @@ def _enable_strict_warnings():
     """
     warnings.filterwarnings("error", category=DeprecationWarning)
     warnings.filterwarnings("error", module=r"newton(\.|$)")
-    for module in _STRICT_WARNING_TEST_MODULES:
-        warnings.filterwarnings("error", module=rf"{module}$")
+    warnings.filterwarnings("error", module=_STRICT_WARNING_TEST_MODULE)
+    for warning_filter in _KNOWN_WARNING_DEBT:
+        warnings.filterwarnings("default", **warning_filter)
 
 
 def main(argv=None):
