@@ -16,6 +16,14 @@ from .enums import (
     StateFlags,
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
+from .modal import (
+    ModalBasis,
+    ModalGeneratorBeam,
+    ModalGeneratorCraigBampton,
+    ModalGeneratorFEM,
+    ModalGeneratorPOD,
+    ModalGeneratorSampled,
+)
 from .model import Model
 from .state import State
 
@@ -27,6 +35,12 @@ __all__ = [
     "EqType",
     "JointTargetMode",
     "JointType",
+    "ModalBasis",
+    "ModalGeneratorBeam",
+    "ModalGeneratorCraigBampton",
+    "ModalGeneratorFEM",
+    "ModalGeneratorPOD",
+    "ModalGeneratorSampled",
     "Model",
     "ModelBuilder",
     "ModelFlags",

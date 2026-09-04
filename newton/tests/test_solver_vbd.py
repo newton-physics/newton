@@ -324,6 +324,9 @@ def _eval_compliant_sliding_contact_metric_kernel(
             wp.vec3(0.0),
             wp.vec3(0.0),
             wp.vec3(0.0),
+            wp.vec3(0.0),
+            wp.vec3(0.0),
+            0,
             wp.vec3(0.0, 0.0, 1.0),
             0.01,
             100.0,
@@ -718,8 +721,11 @@ def _eval_rigid_contact_rigid_motion_kernel(
         rigid_body_com,
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.0),
         wp.vec3(0.0),
+        0,
         contact_normal[sample],
         0.06,
         100.0,
@@ -753,8 +759,11 @@ def _eval_rigid_contact_rigid_motion_kernel(
         rigid_body_com,
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.0),
         wp.vec3(0.0),
+        0,
         contact_normal[sample],
         0.06,
         100.0,
@@ -1071,6 +1080,17 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
                 wp.array([150.0], dtype=float, device=device),
                 int(newton.BodyFlags.PROXY),
                 wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+                wp.full(1, -1, dtype=wp.int32, device=device),
+                wp.full(1, -1, dtype=wp.int32, device=device),
+                wp.full(1, -1, dtype=wp.int32, device=device),
+                wp.empty(0, dtype=wp.int32, device=device),
+                wp.empty(0, dtype=wp.int32, device=device),
+                wp.empty(0, dtype=float, device=device),
+                wp.empty(0, dtype=wp.int32, device=device),
+                wp.empty(0, dtype=wp.vec3, device=device),
+                wp.empty(0, dtype=wp.vec3, device=device),
+                wp.empty((0, 6, 6), dtype=float, device=device),
+                0,
                 0,
                 1,
                 1.0,
@@ -1403,6 +1423,11 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
         contact_rho = wp.array([10.0, 10.0], dtype=float, device=device)
         penalty_k = wp.array([10.0, 10.0], dtype=float, device=device)
         contact_lambda = wp.zeros(2, dtype=wp.vec3, device=device)
+        elastic_sample = wp.full(2, -1, dtype=wp.int32, device=device)
+        body_elastic_index = wp.full(3, -1, dtype=wp.int32, device=device)
+        empty_int = wp.empty(0, dtype=wp.int32, device=device)
+        empty_float = wp.empty(0, dtype=float, device=device)
+        empty_vec3 = wp.empty(0, dtype=wp.vec3, device=device)
 
         wp.launch(
             update_duals_body_body_contacts,
@@ -1418,9 +1443,20 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 normal,
                 margin,
                 margin,
+                elastic_sample,
+                elastic_sample,
                 shape_body,
                 body_q,
                 body_q_prev,
+                body_elastic_index,
+                empty_int,
+                empty_int,
+                empty_float,
+                empty_float,
+                empty_int,
+                empty_vec3,
+                empty_vec3,
+                0,
                 contact_mu,
                 zeros3,
                 0.0,
@@ -1563,6 +1599,11 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         drive_limit_support = wp.zeros(1, dtype=float, device=device)
         drive_limit_lambda = wp.zeros(1, dtype=float, device=device)
         limit_lambda = wp.zeros(1, dtype=float, device=device)
+        body_elastic_index = wp.full(1, -1, dtype=wp.int32, device=device)
+        empty_int = wp.empty(0, dtype=wp.int32, device=device)
+        empty_float = wp.empty(0, dtype=float, device=device)
+        empty_vec3 = wp.empty(0, dtype=wp.vec3, device=device)
+        no_endpoint = wp.full(1, -1, dtype=wp.int32, device=device)
 
         wp.launch(
             update_duals_joint,
@@ -1574,6 +1615,17 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_child,
                 joint_x_p,
                 joint_x_c,
+                body_elastic_index,
+                empty_int,
+                empty_int,
+                empty_float,
+                empty_float,
+                empty_int,
+                no_endpoint,
+                no_endpoint,
+                empty_vec3,
+                empty_vec3,
+                0,
                 joint_axis,
                 joint_rod_rest_kb_local,
                 joint_rod_rest_twist,
@@ -1660,6 +1712,11 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
         lambda_ang = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
         drive_limit_lambda = wp.zeros(1, dtype=float, device=device)
         limit_lambda = wp.zeros(1, dtype=float, device=device)
+        body_elastic_index = wp.full(1, -1, dtype=wp.int32, device=device)
+        empty_int = wp.empty(0, dtype=wp.int32, device=device)
+        empty_float = wp.empty(0, dtype=float, device=device)
+        empty_vec3 = wp.empty(0, dtype=wp.vec3, device=device)
+        no_endpoint = wp.full(1, -1, dtype=wp.int32, device=device)
 
         wp.launch(
             update_duals_joint,
@@ -1671,6 +1728,17 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_child,
                 joint_x_p,
                 joint_x_c,
+                body_elastic_index,
+                empty_int,
+                empty_int,
+                empty_float,
+                empty_float,
+                empty_int,
+                no_endpoint,
+                no_endpoint,
+                empty_vec3,
+                empty_vec3,
+                0,
                 joint_axis,
                 joint_rod_rest_kb_local,
                 joint_rod_rest_twist,
@@ -3625,6 +3693,7 @@ def _body_body_contact_lists_skip_static_kinematic(test, device):
     # Effective inverse mass folds together zero-mass and kinematic bodies.
     # Bodies 0 and 2 are dynamic; body 1 is immovable.
     body_inv_mass_effective = wp.array([1.0, 0.0, 1.0], dtype=float, device=device)
+    body_elastic_index = wp.full(3, -1, dtype=wp.int32, device=device)
     shape_body = wp.array([0, 1, 2], dtype=wp.int32, device=device)
     # Both contacts touch body 1, but each dynamic body has only one contact.
     rigid_contact_count = wp.array([2], dtype=int, device=device)
@@ -3644,6 +3713,7 @@ def _body_body_contact_lists_skip_static_kinematic(test, device):
             rigid_contact_shape1,
             shape_body,
             body_inv_mass_effective,
+            body_elastic_index,
             buffer_pre_alloc,
         ],
         outputs=[body_contact_counts, body_contact_indices, body_contact_overflow_max],

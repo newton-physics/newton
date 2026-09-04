@@ -267,7 +267,7 @@ def eval_joint_motion(
             wp.vec3(joint_qd[qd_start], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
         )
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ELASTIC:
         X_j = wp.transform(
             wp.vec3(joint_q[q_start], joint_q[q_start + 1], joint_q[q_start + 2]),
             wp.quat(
@@ -366,7 +366,7 @@ def eval_joint_child_state(
 
     linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
     angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ELASTIC:
         # These joint velocities are COM-referenced, while the tree recurrence is origin-referenced.
         v_joint_origin = com_twist_to_origin_twist(
             wp.spatial_vector(linear_joint_world, angular_joint_world),
@@ -875,7 +875,7 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ELASTIC:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -1157,7 +1157,11 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
+    elif (
+        joint_type_value == JointType.FREE
+        or joint_type_value == JointType.DISTANCE
+        or joint_type_value == JointType.ELASTIC
+    ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 

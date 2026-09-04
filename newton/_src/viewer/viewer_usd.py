@@ -300,6 +300,7 @@ class ViewerUSD(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -321,6 +322,7 @@ class ViewerUSD(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
 
         name = self._qualify(name)
@@ -328,6 +330,9 @@ class ViewerUSD(ViewerBase):
         # Convert warp arrays to numpy
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
+        colors_np = colors.numpy().astype(np.float32) if colors is not None else None
+        if colors_np is not None and colors_np.shape != points_np.shape:
+            raise ValueError(f"colors must have shape {points_np.shape}, got {colors_np.shape}")
         face_vertex_counts = [3] * (len(indices_np) // 3)
 
         if name not in self._meshes:
@@ -349,6 +354,14 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts, self._frame_index)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np, self._frame_index)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
+
+        display_color = mesh_prim.GetDisplayColorPrimvar()
+        if colors_np is not None:
+            if not display_color:
+                display_color = mesh_prim.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex)
+            display_color.Set(np.clip(colors_np, 0.0, 1.0), self._frame_index)
+        elif dynamic and display_color:
+            display_color.Set([], self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
         self._mesh_appearance[name] = {

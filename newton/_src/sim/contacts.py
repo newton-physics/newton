@@ -290,6 +290,10 @@ class Contacts:
             self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
             """Surface thickness for shape 1: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            self.rigid_contact_elastic_sample0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Elastic surface sample for shape 0, or -1 for ordinary rigid/static contact sides."""
+            self.rigid_contact_elastic_sample1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Elastic surface sample for shape 1, or -1 for ordinary rigid/static contact sides."""
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
@@ -500,6 +504,8 @@ class Contacts:
             self.rigid_contact_shape0.fill_(-1)
             self.rigid_contact_shape1.fill_(-1)
             self.rigid_contact_tids.fill_(-1)
+            self.rigid_contact_elastic_sample0.fill_(-1)
+            self.rigid_contact_elastic_sample1.fill_(-1)
             self.rigid_contact_force.zero_()
 
             if self.force is not None:

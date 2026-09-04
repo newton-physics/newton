@@ -336,9 +336,23 @@ Joint types
        material slots (bend/twist)
      - 4
      - 4
+   * - ``JointType.ELASTIC``
+     - Reduced elastic owner joint with a floating frame and modal deformation coordinates
+     - 7 + mode count (3D position + 4D quaternion + modal amplitudes)
+     - 6 + mode count (twist + modal velocities)
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
+Reduced elastic links can be created with :meth:`~newton.ModelBuilder.add_link_elastic`
+or :meth:`~newton.ModelBuilder.add_body_elastic`. The elastic owner joint stores the
+floating frame and modal state; ordinary joints such as
+:meth:`~newton.ModelBuilder.add_joint_revolute` attach to the elastic link through
+their existing parent and child transforms. A :class:`~newton.ModalBasis` stores
+sampled linear mode values that can be reused by multiple elastic body instances.
+Newton samples that basis at joint attachment frames for the VBD solve and at
+visible shape vertices for Viewer rendering. The legacy mode-shape callable path
+is still accepted for custom experiments.
+
 For ``JointType.ROD``, both counts represent allocated material slots, not
 generalized coordinates or velocity DOFs; see `Rod joints`_.
 

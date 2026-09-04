@@ -996,6 +996,7 @@ class ViewerGL(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -1017,11 +1018,13 @@ class ViewerGL(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
+        assert colors is None or isinstance(colors, wp.array)
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
@@ -1056,7 +1059,7 @@ class ViewerGL(ViewerBase):
                 replacement.color = existing.color
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, colors=colors)
             except Exception:
                 replacement.destroy()
                 raise
@@ -1069,7 +1072,7 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity, colors=colors)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 

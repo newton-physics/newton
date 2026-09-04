@@ -115,6 +115,8 @@ class _FullContactArrays:
     damping: wp.array[float]
     friction: wp.array[float]
     match_index: wp.array[wp.int32]
+    elastic_sample0: wp.array[wp.int32]
+    elastic_sample1: wp.array[wp.int32]
     shape0_buf: wp.array[wp.int32]
     shape1_buf: wp.array[wp.int32]
     point0_buf: wp.array[wp.vec3]
@@ -129,8 +131,11 @@ class _FullContactArrays:
     damping_buf: wp.array[float]
     friction_buf: wp.array[float]
     match_index_buf: wp.array[wp.int32]
+    elastic_sample0_buf: wp.array[wp.int32]
+    elastic_sample1_buf: wp.array[wp.int32]
     has_shape_props: int
     has_match_index: int
+    has_elastic_samples: int
 
 
 @wp.kernel(enable_backward=False)
@@ -164,6 +169,9 @@ def _backup_full_kernel(
         data.friction_buf[i] = data.friction[i]
     if data.has_match_index != 0:
         data.match_index_buf[i] = data.match_index[i]
+    if data.has_elastic_samples != 0:
+        data.elastic_sample0_buf[i] = data.elastic_sample0[i]
+        data.elastic_sample1_buf[i] = data.elastic_sample1[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -189,6 +197,9 @@ def _gather_full_kernel(data: _FullContactArrays, perm: wp.array[wp.int32], coun
         data.friction[i] = data.friction_buf[p]
     if data.has_match_index != 0:
         data.match_index[i] = data.match_index_buf[p]
+    if data.has_elastic_samples != 0:
+        data.elastic_sample0[i] = data.elastic_sample0_buf[p]
+        data.elastic_sample1[i] = data.elastic_sample1_buf[p]
 
 
 class ContactSorter:
@@ -254,6 +265,8 @@ class ContactSorter:
                 self._full_damping_buf = wp.zeros(0, dtype=float)
                 self._full_friction_buf = wp.zeros(0, dtype=float)
             self._full_match_index_buf = wp.zeros(capacity, dtype=wp.int32)
+            self._full_elastic_sample0_buf = wp.zeros(capacity, dtype=wp.int32)
+            self._full_elastic_sample1_buf = wp.zeros(capacity, dtype=wp.int32)
 
     # ------------------------------------------------------------------
     # Public API
@@ -338,6 +351,8 @@ class ContactSorter:
         damping: wp.array | None = None,
         friction: wp.array | None = None,
         match_index: wp.array | None = None,
+        elastic_sample0: wp.array | None = None,
+        elastic_sample1: wp.array | None = None,
         device: Devicelike = None,
     ) -> None:
         """Sort contacts written through the full collide.py writer.
@@ -363,12 +378,20 @@ class ContactSorter:
             match_index: Optional int32 array of per-contact match indices
                 from :class:`ContactMatcher`.  When provided, the array is
                 permuted alongside the other contact fields during sorting.
+            elastic_sample0: Optional modal sample indices for shape 0.
+            elastic_sample1: Optional modal sample indices for shape 1.
             device: Device to launch on.
         """
         n = self._capacity
 
         has_props = self._has_shape_props
         has_match = match_index is not None and match_index.shape[0] > 0
+        has_elastic_samples = (
+            elastic_sample0 is not None
+            and elastic_sample1 is not None
+            and elastic_sample0.shape[0] > 0
+            and elastic_sample1.shape[0] > 0
+        )
 
         data = _FullContactArrays()
         data.shape0 = shape0
@@ -389,6 +412,8 @@ class ContactSorter:
             friction if has_props and friction is not None and friction.shape[0] > 0 else self._full_friction_buf
         )
         data.match_index = match_index if has_match else self._full_match_index_buf
+        data.elastic_sample0 = elastic_sample0 if has_elastic_samples else self._full_elastic_sample0_buf
+        data.elastic_sample1 = elastic_sample1 if has_elastic_samples else self._full_elastic_sample1_buf
         data.shape0_buf = self._full_shape0_buf
         data.shape1_buf = self._full_shape1_buf
         data.point0_buf = self._full_point0_buf
@@ -403,8 +428,11 @@ class ContactSorter:
         data.damping_buf = self._full_damping_buf
         data.friction_buf = self._full_friction_buf
         data.match_index_buf = self._full_match_index_buf
+        data.elastic_sample0_buf = self._full_elastic_sample0_buf
+        data.elastic_sample1_buf = self._full_elastic_sample1_buf
         data.has_shape_props = 1 if has_props else 0
         data.has_match_index = 1 if has_match else 0
+        data.has_elastic_samples = 1 if has_elastic_samples else 0
 
         wp.launch(
             _backup_full_kernel,
