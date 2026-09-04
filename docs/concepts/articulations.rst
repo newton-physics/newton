@@ -870,6 +870,13 @@ with a desired acceleration:
 Orphan joints
 -------------
 
+A joint in one articulation cannot use a body from another articulation as its
+parent. This cross-articulation topology is unsupported, and
+:meth:`~newton.ModelBuilder.finalize` rejects it. To compose imported assets with
+:meth:`~newton.ModelBuilder.add_urdf`, :meth:`~newton.ModelBuilder.add_mjcf`, or
+:meth:`~newton.ModelBuilder.add_usd`, pass ``parent_body`` and ``base_joint`` so
+the new joints are appended to the parent's articulation.
+
 An **orphan joint** is a joint that is not part of any articulation **and** whose child body is not reachable through any articulated joint (i.e. the child has no articulated path back to the rest of the model). This situation can arise when:
 
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
@@ -881,7 +888,7 @@ USD import preserves joints outside authored articulations without emitting an a
 
 **Validation and finalization**
 
-By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with another orphan topology, skip this validation explicitly:
+By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for joints that connect separate articulations and for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with either unsupported topology, set ``skip_validation_joints=True`` explicitly:
 
 .. testsetup:: articulation-orphan-joints
 

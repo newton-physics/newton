@@ -3328,6 +3328,27 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("already belongs to articulation", str(context.exception))
         self.assertIn("joint_2", str(context.exception))  # joint2's key
 
+    def test_articulation_validation_rejects_cross_articulation_joint(self):
+        """Reject joints that connect separate articulations during finalization."""
+        builder = ModelBuilder()
+
+        base = builder.add_link(label="base")
+        base_joint = builder.add_joint_revolute(parent=-1, child=base, label="base_joint")
+        builder.add_articulation([base_joint], label="base_articulation")
+
+        pendulum = builder.add_link(label="pendulum")
+        mount_joint = builder.add_joint_revolute(parent=base, child=pendulum, label="mount_joint")
+        builder.add_articulation([mount_joint], label="pendulum_articulation")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("pendulum_articulation", error_msg)
+        self.assertIn("mount_joint", error_msg)
+        self.assertIn("base", error_msg)
+        self.assertIn("cannot be connected", error_msg)
+
     def test_joint_world_validation(self):
         """Test that joints validate parent/child bodies belong to current world"""
         builder = ModelBuilder()

@@ -11157,7 +11157,10 @@ class ModelBuilder:
                 )
 
     def _validate_joints(self):
-        """Validate that joints belong to an articulation, with two exceptions.
+        """Validate articulation topology and joint membership.
+
+        A joint in one articulation cannot have a parent body that belongs to a
+        different articulation. Connected joints must use the same articulation.
 
         Loop-closing joints are allowed when their child is already reachable through
         an articulation. Standalone world-root joints (``parent == -1``) are also
@@ -11168,7 +11171,49 @@ class ModelBuilder:
             ValueError: If any validation check fails.
         """
         if self.joint_count > 0:
-            # First, find all bodies reachable via articulated joints
+            articulation_to_child_bodies = {}
+            child_body_to_articulations = {}
+            for joint_idx, articulation_idx in enumerate(self.joint_articulation):
+                if articulation_idx < 0:
+                    continue
+
+                child = self.joint_child[joint_idx]
+                if articulation_idx not in articulation_to_child_bodies:
+                    articulation_to_child_bodies[articulation_idx] = set()
+                articulation_to_child_bodies[articulation_idx].add(child)
+                if child not in child_body_to_articulations:
+                    child_body_to_articulations[child] = set()
+                child_body_to_articulations[child].add(articulation_idx)
+
+            for joint_idx, articulation_idx in enumerate(self.joint_articulation):
+                if articulation_idx < 0:
+                    continue
+
+                parent = self.joint_parent[joint_idx]
+                if parent == -1 or parent in articulation_to_child_bodies[articulation_idx]:
+                    continue
+
+                # Let structural validation report malformed body references.
+                if parent < -1 or parent >= self.body_count:
+                    continue
+
+                parent_articulations = child_body_to_articulations.get(parent)
+                if not parent_articulations:
+                    continue
+
+                parent_articulation_idx = min(parent_articulations)
+                articulation_label = self.articulation_label[articulation_idx]
+                parent_articulation_label = self.articulation_label[parent_articulation_idx]
+                joint_label = self.joint_label[joint_idx]
+                parent_label = self.body_label[parent]
+                raise ValueError(
+                    f"Joint {joint_idx} ('{joint_label}') in articulation {articulation_idx} "
+                    f"('{articulation_label}') has parent body {parent} ('{parent_label}') in articulation "
+                    f"{parent_articulation_idx} ('{parent_articulation_label}'). Articulations cannot be connected "
+                    "through joints. Add all connected joints to the same articulation."
+                )
+
+            # Find all bodies reachable via articulated joints.
             articulated_bodies = set()
             articulated_bodies.add(-1)  # World is always reachable
             for i, art in enumerate(self.joint_articulation):
@@ -11902,8 +11947,9 @@ class ModelBuilder:
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
                 you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
-            skip_validation_joints: If True, skips articulation-membership validation. By default, non-root joints
-                must belong to an articulation or close a loop; standalone world-root joints are allowed.
+            skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
+                joints cannot connect separate articulations, and non-root joints must belong to an articulation or
+                close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
