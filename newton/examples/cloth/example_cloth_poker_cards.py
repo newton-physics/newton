@@ -39,7 +39,6 @@ CARD_COLOR_PALETTE = (
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
 
@@ -208,8 +207,8 @@ class Example:
             iterations=self.iterations,
             rigid_compliant_alm=True,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.001,  # m (0.1 cm)
-            particle_self_contact_margin=0.0015,  # m (0.15 cm)
+            particle_self_contact_margin=0.001,  # m (0.1 cm)
+            particle_self_contact_gap=0.0005,  # m (0.05 cm)
             particle_topological_contact_filter_threshold=2,
             particle_rest_shape_contact_exclusion_radius=0.0,  # m (0.5 cm)
             rigid_body_particle_contact_buffer_size=1024,
@@ -227,7 +226,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="nxn",
-            soft_contact_margin=0.005,  # m (0.5 cm)
+            soft_contact_gap=0.005,  # m (0.5 cm)
         )
         self.contacts = self.collision_pipeline.contacts()
 

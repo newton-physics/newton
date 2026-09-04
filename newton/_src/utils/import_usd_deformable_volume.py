@@ -18,13 +18,14 @@ import warp as wp
 
 from ..sim.model import Model
 from .import_usd_deformable_utils import (
+    _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_YOUNGS_MODULUS,
     _apply_particle_masses,
     _bake_world_points,
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
-    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _warn_collision_approximated,
@@ -90,7 +91,12 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if is_volume_deformable and _skip_for_deformable_body_owner(ctx, prim, path):
             continue
         if is_volume_deformable:
-            _warn_unsupported_rest_fields(prim, path, ("restShapePoints",), deformable_read)
+            _warn_unsupported_rest_fields(
+                prim,
+                path,
+                ("restShapePoints", "restTetVertexIndices"),
+                deformable_read,
+            )
             _warn_dropped_velocities(prim, path)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
             _warn_subset_material_bindings(prim, path)
@@ -182,6 +188,15 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "opacity": material_props.get("opacity"),
             "label": path,
         }
+        volume_material = None
+        if is_volume_deformable:
+            volume_material = usd._get_volume_deformable_material(prim, deformable_read)
+            if volume_material is not None:
+                youngs = volume_material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * ctx.linear_unit)
+                poissons = volume_material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
+                k_mu, k_lambda = usd._deformable_lame_parameters(youngs, poissons)
+                add_soft_mesh_kwargs["k_mu"] = k_mu
+                add_soft_mesh_kwargs["k_lambda"] = k_lambda
         if _world_matrix_reflects(soft_mesh_mat):
             # A reflection flips each tet's orientation (negative rest volume); swap two vertices per
             # tet to restore a positive orientation while keeping the same reflected shape. tet_indices
@@ -190,29 +205,41 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             flipped[:, [1, 2]] = flipped[:, [2, 1]]
             add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
         # Body density overrides the TetMesh's material density.
-        neutral_weight = False
         if is_volume_deformable:
-            resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density, deformable_read)
-            if resolved_density is not None:
-                add_soft_mesh_kwargs["density"] = resolved_density
-            else:
-                # Mirror add_soft_mesh's own fallback to see the density that would build the
-                # particle masses: a non-positive one leaves nothing for the body-mass rescale
-                # in _apply_particle_masses to distribute. The neutral weight keeps the masses
-                # volume-proportional, which the rescale turns into the proposal's
-                # density-independent m_p = m_tot * V_p / V_tot (as the cable/cloth paths do).
-                fallback_density = tetmesh_for_builder.density
-                if fallback_density is None:
-                    fallback_density = builder.default_tet_density
-                weight_density = _mass_weight_density(prim, fallback_density, deformable_read)
-                if weight_density != fallback_density:
-                    add_soft_mesh_kwargs["density"] = weight_density
-                    neutral_weight = True
+            material_density = (
+                tetmesh_for_builder.density if volume_material is None else volume_material.get("density")
+            )
+            resolved_density = _resolve_deformable_density(
+                prim,
+                material_density,
+                deformable_read,
+                ctx.linear_unit,
+                read_base_material=volume_material is None and tetmesh_for_builder.density is None,
+            )
+            add_soft_mesh_kwargs["density"] = resolved_density
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
+        authored_masses = None
         if is_volume_deformable:
-            _apply_particle_masses(builder, prim, soft_p0, builder.particle_count, deformable_read)
+            mass_indices = np.asarray(
+                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
+            ).reshape(-1, 4)
+            mass_points = np.asarray(world_vertices, dtype=np.float64)
+            edges_a = mass_points[mass_indices[:, 1]] - mass_points[mass_indices[:, 0]]
+            edges_b = mass_points[mass_indices[:, 2]] - mass_points[mass_indices[:, 0]]
+            edges_c = mass_points[mass_indices[:, 3]] - mass_points[mass_indices[:, 0]]
+            mass_volumes = np.abs(np.einsum("ij,ij->i", np.cross(edges_a, edges_b), edges_c)) / 6.0
+            authored_masses = _apply_particle_masses(
+                builder,
+                prim,
+                soft_p0,
+                builder.particle_count,
+                deformable_read,
+                element_name="tetrahedron",
+                element_indices=mass_indices,
+                element_volumes=mass_volumes,
+            )
         path_soft_map[path] = {
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
@@ -222,18 +249,22 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             (soft_p0, builder.particle_count),
             (soft_t0, builder.tet_count),
         )
-        # The density actually used, mirroring add_soft_mesh's own resolution order:
-        # explicit override, else the TetMesh's material density, else the builder default.
-        # A neutral weight only distributes a body-mass total and is not a physical
-        # density, so the metadata reports the unmodified resolution instead.
+        # Marked proposal deformables always supply the resolved density explicitly;
+        # bare TetMeshes retain their legacy material-then-builder-default behavior.
         effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
-        if neutral_weight:
-            effective_density = tetmesh_for_builder.density
         if effective_density is None:
             effective_density = builder.default_tet_density
         path_soft_attrs[path] = {
             "resolved_density": effective_density,
         }
+        if authored_masses is not None:
+            path_soft_attrs[path]["simulation"] = {
+                "masses": {
+                    "values": list(authored_masses.values),
+                    "element_type": authored_masses.element_type,
+                    "legacy_implicit_type": authored_masses.legacy_implicit_type,
+                }
+            }
 
         if verbose:
             print(f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra.")
