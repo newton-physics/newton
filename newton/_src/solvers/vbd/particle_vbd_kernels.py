@@ -2406,10 +2406,12 @@ def gather_particle_body_contact_force_and_hessian(
 ):
     """Gather all body-contact contributions for one colored particle without output atomics.
 
-    Contacts are consumed in increasing node order rather than linked-list order. The list's
-    membership is identical every run (its order is not, because insertion races), so a canonical
-    consumption order makes the floating-point sum deterministic across runs, devices, and
-    determinism modes without any output atomics. Selection scans the list once per consumed node
+    Contacts are consumed in increasing node order rather than linked-list order. Node ids are
+    positions in the contact buffer, so for a given set of detected contact records the
+    floating-point sum is deterministic on every device and determinism mode, with no output
+    atomics. (End-to-end run-to-run reproducibility additionally requires the collision pipeline
+    to emit records at reproducible slot indices; soft-contact slots are claimed with an atomic
+    counter during generation.) Selection scans the list once per consumed node
     (O(k^2) link reads for k contacts on one particle); k is small in practice and the scan cost is
     trivial next to one contact evaluation.
     """
@@ -2492,8 +2494,7 @@ def gather_particle_body_contact_force_and_hessian(
             force += weight * contact_force
             hessian += (weight * weight) * contact_hessian
 
-    # This is the first force/Hessian phase for the color. Writing even an empty list clears any
-    # stale value and leaves later spring/self-contact kernels free to add their contributions.
+    # Plain write, no atomics: later spring/self-contact kernels accumulate on top.
     particle_forces[particle_index] = force
     particle_hessians[particle_index] = hessian
 
@@ -2509,6 +2510,9 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     32-thread warp, reducing with :func:`_warp_half_reduce_sum` to preserve the legacy
     16-lane reduction order bit for bit. Variants are memoized per flag combination.
     """
+
+    # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
+    assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16
 
     @wp.kernel(module="unique")
     def solve_elasticity_tile_kernel(
@@ -2711,6 +2715,8 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 )
                 particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
 
+    # module="unique" kernels do not inherit this file's module options.
+    wp.set_module_options({"enable_backward": False}, module=solve_elasticity_tile_kernel.module)
     return solve_elasticity_tile_kernel
 
 

@@ -2002,7 +2002,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _make_particle_contact_gather_data(device, capacity=17, worker_count=5, particle_count=6):
+def _make_particle_contact_gather_data(device, capacity=17, boundary=5, particle_count=6):
     particle_q = wp.array(
         [[0.03 * i, 0.02 * (i % 2), 0.04] for i in range(particle_count)],
         dtype=wp.vec3,
@@ -2038,7 +2038,7 @@ def _make_particle_contact_gather_data(device, capacity=17, worker_count=5, part
     contact_barycentric = wp.array(barycentric, dtype=wp.vec3, device=device)
     return {
         "capacity": capacity,
-        "worker_count": worker_count,
+        "boundary": boundary,
         "particle_count": particle_count,
         "particle_q": particle_q,
         "particle_q_prev": particle_q_prev,
@@ -2118,12 +2118,109 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
         )
 
 
+def _particle_contact_gather_order_pinned(test, device):
+    """Produce bitwise-identical gather sums for any chain permutation with the same membership.
+
+    The adjacency build's atomic insertions make chain order scheduling-dependent; the gather's
+    ascending-node-id consumption must erase that. Reversing every per-particle chain is one such
+    permutation, so a regression to plain chain-order walking fails this test.
+    """
+    with wp.ScopedDevice(device):
+        data = _make_particle_contact_gather_data(device)
+        capacity = data["capacity"]
+        n = data["particle_count"]
+        contact_count = wp.array([capacity], dtype=int, device=device)
+        head = wp.full(n, -1, dtype=wp.int32, device=device)
+        nxt = wp.empty(3 * capacity, dtype=wp.int32, device=device)
+        forces = wp.zeros(n, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(n, dtype=wp.mat33, device=device)
+        _launch_particle_contact_gather(data, contact_count, head, nxt, forces, hessians, device)
+
+        # Reverse every chain on the host: same membership, opposite link order.
+        head_np = head.numpy()
+        next_np = nxt.numpy()
+        rev_head = np.full_like(head_np, -1)
+        rev_next = next_np.copy()
+        for particle in range(n):
+            chain = []
+            node = head_np[particle]
+            while node >= 0:
+                chain.append(node)
+                node = next_np[node]
+            chain.reverse()
+            if chain:
+                rev_head[particle] = chain[0]
+                for i, node in enumerate(chain):
+                    rev_next[node] = chain[i + 1] if i + 1 < len(chain) else -1
+        rev_head_wp = wp.array(rev_head, dtype=wp.int32, device=device)
+        rev_next_wp = wp.array(rev_next, dtype=wp.int32, device=device)
+        forces_rev = wp.zeros(n, dtype=wp.vec3, device=device)
+        hessians_rev = wp.zeros(n, dtype=wp.mat33, device=device)
+        for color_group in data["color_groups"]:
+            wp.launch(
+                gather_particle_body_contact_force_and_hessian,
+                dim=color_group.size,
+                block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+                inputs=[
+                    0.01,
+                    color_group,
+                    data["particle_q_prev"],
+                    data["particle_q"],
+                    1.0,
+                    data["particle_radius"],
+                    data["contact_indices"],
+                    rev_head_wp,
+                    rev_next_wp,
+                    *_particle_contact_gather_material_inputs(data),
+                ],
+                outputs=[forces_rev, hessians_rev],
+                device=device,
+            )
+
+        np.testing.assert_array_equal(forces.numpy().view(np.uint32), forces_rev.numpy().view(np.uint32))
+        np.testing.assert_array_equal(hessians.numpy().view(np.uint32), hessians_rev.numpy().view(np.uint32))
+
+
+def _particle_contact_adjacency_follows_swapped_contacts(test, device):
+    """Rebuild the contact adjacency from whichever contacts buffer each step consumes.
+
+    Steps with buffer A, an empty equal-capacity buffer B, then A again; the adjacency must track
+    the passed buffer each time, including through the zero-contact intermediate.
+    """
+    with wp.ScopedDevice(device):
+        model, _vertices = _build_edge_over_post(device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_gap=0.1,
+            enable_rigid_soft_full_surface_contact=True,
+        )
+        contacts_a = pipeline.contacts()
+        contacts_b = pipeline.contacts()  # same capacity, never collided: zero contacts
+        state_in = model.state()
+        state_out = model.state()
+        pipeline.collide(state_in, contacts_a)
+        test.assertGreater(int(contacts_a.soft_contact_count.numpy()[0]), 0)
+
+        solver = newton.solvers.SolverVBD(model, iterations=1)
+        solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
+        members_a = solver._particle_contact_head.numpy() >= 0
+        test.assertTrue(np.any(members_a))
+
+        solver.step(state_in, state_out, None, contacts_b, 1.0 / 120.0)
+        test.assertTrue(np.all(solver._particle_contact_head.numpy() == -1))
+
+        solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
+        # Chain fronts are insertion-racy; membership per particle is the stable invariant.
+        np.testing.assert_array_equal(solver._particle_contact_head.numpy() >= 0, members_a)
+
+
 def _particle_contact_gather_matches_legacy(test, device):
     """Linked particle incidence lists match the legacy mixed-record contact scatter."""
     with wp.ScopedDevice(device):
         data = _make_particle_contact_gather_data(device)
         capacity = data["capacity"]
-        worker_count = data["worker_count"]
+        boundary = data["boundary"]
         particle_count = data["particle_count"]
         particle_q = data["particle_q"]
         particle_q_prev = data["particle_q_prev"]
@@ -2132,7 +2229,7 @@ def _particle_contact_gather_matches_legacy(test, device):
         contact_indices = data["contact_indices"]
         common_material_inputs = _particle_contact_gather_material_inputs(data)
 
-        for raw_count in (0, 1, worker_count - 1, worker_count, worker_count + 1, capacity, capacity + 2):
+        for raw_count in (0, 1, boundary - 1, boundary, boundary + 1, capacity, capacity + 2):
             contact_count = wp.array([raw_count], dtype=int, device=device)
             contact_head = wp.full(particle_count, -1, dtype=int, device=device)
             contact_next = wp.empty(3 * capacity, dtype=int, device=device)
@@ -2204,7 +2301,7 @@ def _particle_contact_gather_capture_replays_device_count(test, device):
         graph = capture.graph
         test.assertIsNotNone(graph)
 
-        for replay_count in (0, data["worker_count"] + 1, capacity + 2, 1):
+        for replay_count in (0, data["boundary"] + 1, capacity + 2, 1):
             reference_count = wp.array([replay_count], dtype=int, device=device)
             reference_head = wp.full(particle_count, -1, dtype=int, device=device)
             reference_next = wp.empty(3 * capacity, dtype=int, device=device)
@@ -2369,17 +2466,16 @@ def _expected_body_particle_dual_penalties(raw_count, capacity, beta, initial_pe
 
 
 def _body_particle_dual_active_prefix_boundaries(test, device):
-    """Dual workers update each clamped active-prefix row once and leave the stale tail untouched."""
+    """Update each clamped active-prefix row once and leave the stale tail untouched."""
     with wp.ScopedDevice(device):
         capacity = 11
-        worker_count = 4
         beta = 2.5
         initial_penalty = 1.0
         data = _make_body_particle_dual_prefix_data(device, capacity)
         contact_count = wp.zeros(1, dtype=int, device=device)
         penalty_k = wp.zeros(capacity, dtype=float, device=device)
 
-        counts = [0, 1, worker_count - 1, worker_count, worker_count + 1, 2 * worker_count + 1, capacity, capacity + 2]
+        counts = [0, 1, 3, 4, 5, 9, capacity, capacity + 2]
         for raw_count in counts:
             contact_count.assign([raw_count])
             penalty_k.fill_(initial_penalty)
@@ -2395,10 +2491,9 @@ def _body_particle_dual_active_prefix_boundaries(test, device):
 
 
 def _body_particle_dual_capture_replays_device_count(test, device):
-    """A captured fixed worker grid must consume a changing device-side contact count on replay."""
+    """A captured dual-update launch must consume a changing device-side contact count on replay."""
     with wp.ScopedDevice(device):
         capacity = 11
-        worker_count = 4
         beta = 2.5
         initial_penalty = 1.0
         data = _make_body_particle_dual_prefix_data(device, capacity)
@@ -2428,7 +2523,7 @@ def _body_particle_dual_capture_replays_device_count(test, device):
         graph = capture.graph
         test.assertIsNotNone(graph)
 
-        for replay_count in (0, worker_count + 1, capacity + 2, 1):
+        for replay_count in (0, 5, capacity + 2, 1):
             raw_count.assign([replay_count])
             wp.capture_launch(graph)
 
@@ -4772,6 +4867,18 @@ add_function_test(
     TestSolverVBD,
     "test_particle_contact_gather_solver_step_dispatch_and_capture",
     _particle_contact_gather_solver_step_dispatch_and_capture,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_contact_gather_order_pinned",
+    _particle_contact_gather_order_pinned,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_contact_adjacency_follows_swapped_contacts",
+    _particle_contact_adjacency_follows_swapped_contacts,
     devices=cuda_devices,
 )
 add_function_test(

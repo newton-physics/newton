@@ -393,6 +393,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+                The tiled kernel is specialized once at construction from the model's element
+                materials (e.g. a tetrahedra-only model compiles without triangle/edge code paths);
+                rebuild the solver after changing triangle or edge stiffness.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -878,7 +881,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._tiled_elasticity_particles_per_block = 1
         if self.use_particle_tile_solve:
             include_tets = model.tet_count > 0
-            include_triangles = not (include_tets and _is_tet_only_elasticity_model(model))
+            include_triangles = not _is_tet_only_elasticity_model(model)
             two_particles_per_warp = not include_tets
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
                 include_triangles, include_tets, two_particles_per_warp
@@ -2158,6 +2161,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         rows. For the same reason, do not change a body's solvability (mass or
         kinematic flag) while update is disabled: the per-body lists depend on
         effective inverse mass and are not rebuilt until the next refresh.
+        The per-particle contact adjacency is frozen with the same contract: its
+        node ids index the contact buffer of the previous refresh, so passing a
+        re-collided or smaller-capacity buffer while update is disabled reads
+        the wrong records (or out of bounds).
 
         Joint constraint maintenance (C0 snapshot, lambda retention/decay, and
         automatic rho refresh) runs every step regardless of this flag via
