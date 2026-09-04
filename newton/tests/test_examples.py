@@ -26,6 +26,7 @@ from typing import Any
 
 import warp as wp
 
+import newton.examples
 import newton.tests.unittest_utils
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
@@ -101,6 +102,14 @@ _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
+_AUTO_DISCOVERED_ALLOW_DEPRECATION_WARNINGS = {
+    "basic.example_basic_heightfield",
+    "contacts.example_contacts_rj45_plug",
+    "vbd.example_vbd_rigid_rigid_contact",
+    "vbd.example_vbd_soft_rigid_contact",
+    "vbd.example_vbd_soft_rigid_mix_contact",
+}
+_registered_examples: set[str] = set()
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -150,6 +159,8 @@ def add_example_test(
     _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
     if not os.path.exists(os.path.join(_examples_dir, f"{name.replace('.', '/')}.py")):
         raise ValueError(f"Example {name} does not exist")
+
+    _registered_examples.add(name)
 
     if test_options is None:
         test_options = {}
@@ -1370,6 +1381,25 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 100},
     use_viewer=True,
 )
+
+
+class TestAutoDiscoveredExamples(unittest.TestCase):
+    pass
+
+
+for example_module in newton.examples.get_examples().values():
+    example_name = example_module.removeprefix("newton.examples.")
+    if example_name not in _registered_examples:
+        add_example_test(
+            TestAutoDiscoveredExamples,
+            name=example_name,
+            devices=cuda_test_devices,
+            # Keep newly covered examples in CI while their existing deprecations are migrated.
+            test_options={"allow_deprecation_warnings": True}
+            if example_name in _AUTO_DISCOVERED_ALLOW_DEPRECATION_WARNINGS
+            else None,
+            use_viewer=True,
+        )
 
 
 if __name__ == "__main__":
