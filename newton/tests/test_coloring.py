@@ -481,6 +481,80 @@ def test_coloring_rigid_body_no_joints(test, device):
         test.assertEqual(model.body_color_groups[0].size, 5, "All 5 bodies should be in same color group")
 
 
+def count_unseparated_elements(builder, element_indices, vertices_per_element):
+    """Count elements with two or more vertices sharing a color group."""
+    element_colors = np.full(builder.particle_count, -1, dtype=np.int64)
+    for color, group in enumerate(builder.particle_color_groups):
+        element_colors[np.asarray(group)] = color
+
+    elements = np.array(element_indices).reshape(-1, vertices_per_element)
+    return sum(1 for element in elements if len({element_colors[int(v)] for v in element}) < vertices_per_element)
+
+
+def test_coloring_membrane_with_one_zero_lame_parameter(test, device):
+    """Color every membrane triangle SolverVBD evaluates, including those with one zero Lame parameter."""
+    with wp.ScopedDevice(device):
+        # SolverVBD evaluates a triangle when either Lame parameter is non-zero -- tri_ke and tri_ka
+        # here, columns 0 and 1 of Model.tri_materials -- so both of these meshes are simulated. The
+        # USD cloth importer always sets tri_ka to 0, so the first case is what every cloth imported
+        # from USD gets.
+        for tri_ke, tri_ka in ((1.0e3, 0.0), (0.0, 1.0e3)):
+            builder = ModelBuilder()
+            builder.add_cloth_grid(
+                pos=wp.vec3(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                dim_x=20,
+                dim_y=20,
+                cell_x=0.05,
+                cell_y=0.05,
+                mass=0.1,
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                tri_kd=0.0,
+                edge_ke=0.0,
+                edge_kd=0.0,
+            )
+            builder.color()
+
+            unseparated = count_unseparated_elements(builder, builder.tri_indices, 3)
+            test.assertEqual(
+                unseparated,
+                0,
+                f"tri_ke={tri_ke}, tri_ka={tri_ka}: {unseparated} triangles have two vertices sharing a color group",
+            )
+
+
+def test_coloring_tets_with_one_zero_lame_parameter(test, device):
+    """Color every tetrahedron SolverVBD evaluates, including those with one zero Lame parameter."""
+    with wp.ScopedDevice(device):
+        for k_mu, k_lambda in ((1.0e3, 0.0), (0.0, 1.0e3)):
+            builder = ModelBuilder()
+            builder.add_soft_grid(
+                pos=wp.vec3(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                dim_x=4,
+                dim_y=4,
+                dim_z=4,
+                cell_x=0.1,
+                cell_y=0.1,
+                cell_z=0.1,
+                density=100.0,
+                k_mu=k_mu,
+                k_lambda=k_lambda,
+                k_damp=0.0,
+            )
+            builder.color()
+
+            unseparated = count_unseparated_elements(builder, builder.tet_indices, 4)
+            test.assertEqual(
+                unseparated,
+                0,
+                f"k_mu={k_mu}, k_lambda={k_lambda}: {unseparated} tets have two vertices sharing a color group",
+            )
+
+
 devices = get_test_devices()
 
 
@@ -509,6 +583,20 @@ add_function_test(
 )
 add_function_test(
     TestColoring, "test_coloring_rigid_body_no_joints", test_coloring_rigid_body_no_joints, devices=devices
+)
+
+# Element activity coloring tests
+add_function_test(
+    TestColoring,
+    "test_coloring_membrane_with_one_zero_lame_parameter",
+    test_coloring_membrane_with_one_zero_lame_parameter,
+    devices=devices,
+)
+add_function_test(
+    TestColoring,
+    "test_coloring_tets_with_one_zero_lame_parameter",
+    test_coloring_tets_with_one_zero_lame_parameter,
+    devices=devices,
 )
 
 if __name__ == "__main__":
