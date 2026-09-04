@@ -24,6 +24,40 @@ value, source category, resolver, schema ownership, and source attributes.
 Batched resolution, Warp functions, dynamic schema discovery, and direct
 ModelBuilder buffer population are deliberately deferred.
 
+## Resolution flow
+
+This change shares the rules for choosing property values. Scene traversal, geometry, topology, and `ModelBuilder` construction remain the responsibility of each importer.
+
+```{mermaid}
+:config: {"theme": "forest", "themeVariables": {"lineColor": "#76b900"}}
+
+flowchart LR
+    Setup["SchemaResolution<br/>resolver order + fallback mode<br/>requirements() + schemas()"]
+
+    subgraph EntryPoints["Resolution entry points"]
+        PXR["SchemaResolverManager<br/>PXR prim + SchemaRegistry"]
+        Mapping["SchemaResolution.resolve()<br/>values + schemas + fallbacks"]
+    end
+
+    Shared["_SchemaResolutionPolicy<br/>candidate selection + conversions"]
+
+    subgraph Consumers["Importer-owned work"]
+        Newton["_UsdResolutionPolicy<br/>interpret and assemble properties"]
+        Result["SchemaResolution.Result<br/>value + source + resolver<br/>schema + attributes"]
+        Builder["ModelBuilder"]
+        Other["Non-PXR importer<br/>for example, OVNewton"]
+    end
+
+    Setup -. "configures" .-> PXR
+    Setup -. "configures" .-> Mapping
+    PXR -- "PXR-backed callbacks" --> Shared
+    Mapping -- "mapping-backed callbacks" --> Shared
+    Shared -- "PXR path" --> Newton --> Builder
+    Shared -- "mapping path" --> Result --> Other
+```
+
+The two entry points differ only in how they provide attribute values, schema applicability, and registered fallbacks. The shared policy selects and converts a value. On the PXR path, the existing importer continues interpreting that value and updating `ModelBuilder`. On the mapping path, `SchemaResolution.Result` also reports where the value came from so a non-PXR importer can reuse the same schema-resolution rules.
+
 ## Goals
 
 - Keep core Newton as the single owner of schema precedence and conversion.
