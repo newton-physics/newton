@@ -1101,6 +1101,12 @@ class RendererGL:
     gl = None  # Class-level variable to hold the imported module
     _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
 
+    # Sample count of the multi-sampled framebuffer the scene is rendered into
+    # (see _setup_frame_buffer). The window config asks for the same count so the
+    # two agree, but the scene does not depend on it: it is always resolved into
+    # a texture that is then drawn to the window.
+    MSAA_SAMPLES = 4
+
     @classmethod
     def initialize_gl(cls):
         if cls.gl is None:  # Only import if not already imported
@@ -1188,7 +1194,7 @@ class RendererGL:
 
         try:
             # try to enable MSAA
-            config = pyglet.gl.Config(sample_buffers=1, samples=8, double_buffer=True)
+            config = pyglet.gl.Config(sample_buffers=1, samples=RendererGL.MSAA_SAMPLES, double_buffer=True)
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1198,11 +1204,11 @@ class RendererGL:
                 visible=not headless,
                 config=config,
             )
-            gl.glEnable(gl.GL_MULTISAMPLE)
-            # remember sample count for later (e.g., resolving FBO)
-            self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            print("Warning: Could not get MSAA config, falling back to non-AA.")
+            # Only the window's own buffer loses multi-sampling here, so the
+            # scene keeps its MSAA framebuffer. _setup_frame_buffer still turns
+            # MSAA off if that framebuffer comes back incomplete.
+            print("Warning: Could not get an MSAA window config.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1211,7 +1217,10 @@ class RendererGL:
                 vsync=vsync,
                 visible=not headless,
             )
-            self.msaa_samples = 0
+
+        gl.glEnable(gl.GL_MULTISAMPLE)
+        # remember sample count for later (e.g., resolving FBO)
+        self.msaa_samples = RendererGL.MSAA_SAMPLES
 
         self._set_icon()
 
