@@ -224,7 +224,13 @@ KINEMATIC_TEST_WRENCH = np.array([20.0, -15.0, 10.0, 0.5, -0.4, 0.3], dtype=np.f
 
 
 def _uses_maximal_coordinates(solver) -> bool:
-    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit | newton.solvers.SolverVBD)
+    return isinstance(
+        solver,
+        newton.solvers.SolverKamino
+        | newton.solvers.SolverXPBD
+        | newton.solvers.SolverSemiImplicit
+        | newton.solvers.SolverVBD,
+    )
 
 
 def _create_contacts(model: newton.Model, solver):
@@ -693,7 +699,10 @@ def test_kinematic_runtime_toggle(
     pos_after_dynamic = state_0.body_q.numpy()[body, :3].copy()
     test.assertGreater(pos_after_dynamic[0], 0.05, "Dynamic body should move under applied force")
 
-    # Toggle back to kinematic.
+    # Toggle back to kinematic and prescribe a stationary state.
+    body_qd = state_0.body_qd.numpy()
+    body_qd[body] = 0.0
+    state_0.body_qd.assign(body_qd)
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.KINEMATIC)
     model.body_flags.assign(flags)
@@ -723,6 +732,10 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "vbd": lambda model: newton.solvers.SolverVBD(model, rigid_compliant_alm=True),
+    "lox": lambda model: newton.solvers.SolverKamino(
+        model,
+        config=newton.solvers.SolverKamino.Config.from_model(model, dynamics_solver="lox"),
+    ),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -752,13 +765,15 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        add_function_test(
-            TestKinematicLinksCanonical,
-            f"test_kinematic_runtime_toggle_{solver_name}",
-            test_kinematic_runtime_toggle,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
+        # Kamino freezes body immovability when constructing the solver.
+        if solver_name != "lox":
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_runtime_toggle_{solver_name}",
+                test_kinematic_runtime_toggle,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
 
 if __name__ == "__main__":

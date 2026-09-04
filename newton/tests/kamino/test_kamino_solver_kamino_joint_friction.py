@@ -73,6 +73,17 @@ def _build_revolute(
     return model
 
 
+def _make_lox_sparse_config(**kwargs) -> SolverKamino.Config:
+    """Create a sparse-constraint LOX configuration without collision detection."""
+    return SolverKamino.Config(
+        dynamics_solver="lox",
+        use_fk_solver=False,
+        sparse_jacobian=True,
+        use_collision_detector=False,
+        **kwargs,
+    )
+
+
 def _initialize_state(model: newton.Model, q: float = 0.0, qd: float = 0.0) -> newton.State:
     """Initialize generalized and maximal state consistently."""
     model.joint_q.assign([q])
@@ -277,41 +288,43 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
             builder.add_articulation([joint])
             builder.end_world()
         model = builder.finalize()
-        solver = SolverKamino(model, make_padmm_sparse_config())
-        kamino = solver._model_kamino
+        for name, config_factory in (("padmm", make_padmm_sparse_config), ("lox", _make_lox_sparse_config)):
+            with self.subTest(config=name):
+                solver = SolverKamino(model, config_factory())
+                kamino = solver._model_kamino
 
-        friction_prefix = kamino.info.joint_friction_cts_offset.numpy()
-        friction_group = kamino.info.joint_friction_cts_group_offset.numpy()
-        total_prefix = kamino.info.total_cts_offset.numpy()
-        friction_offset = kamino.joints.friction_cts_offset.numpy()
-        friction_total_offset = kamino.joints.friction_cts_offset_total_cts.numpy()
-        joint_world = kamino.joints.wid.numpy()
-        self.assertListEqual(friction_prefix.tolist(), [0, 1])
-        for jid, wid in enumerate(joint_world):
-            self.assertEqual(
-                friction_total_offset[jid],
-                total_prefix[wid] + friction_group[wid] + friction_offset[jid] - friction_prefix[wid],
-            )
+                friction_prefix = kamino.info.joint_friction_cts_offset.numpy()
+                friction_group = kamino.info.joint_friction_cts_group_offset.numpy()
+                total_prefix = kamino.info.total_cts_offset.numpy()
+                friction_offset = kamino.joints.friction_cts_offset.numpy()
+                friction_total_offset = kamino.joints.friction_cts_offset_total_cts.numpy()
+                joint_world = kamino.joints.wid.numpy()
+                self.assertListEqual(friction_prefix.tolist(), [0, 1])
+                for jid, wid in enumerate(joint_world):
+                    self.assertEqual(
+                        friction_total_offset[jid],
+                        total_prefix[wid] + friction_group[wid] + friction_offset[jid] - friction_prefix[wid],
+                    )
 
-        sparse_jacobians = solver._solver_kamino._jacobians
-        expected_rows = kamino.info.num_joint_bilateral_cts.numpy() + kamino.info.num_joint_bounded_cts.numpy()
-        self.assertTrue(np.all(sparse_jacobians._J_cts.bsm.max_dims.numpy()[:, 0] >= expected_rows))
-        world_max_inequalities = (
-            kamino.info.num_joint_bounded_cts.numpy()
-            + kamino.info.max_limits.numpy()
-            + kamino.info.max_contacts.numpy()
-        )
-        self.assertEqual(kamino.size.sum_of_max_inequalities, int(np.sum(world_max_inequalities)))
-        self.assertEqual(kamino.size.max_of_max_inequalities, int(np.max(world_max_inequalities)))
-        np.testing.assert_array_equal(
-            kamino.info.inequalities_offset.numpy(),
-            np.cumsum(np.concatenate(([0], world_max_inequalities[:-1]))),
-        )
+                sparse_jacobians = solver._solver_kamino._jacobians
+                expected_rows = kamino.info.num_joint_bilateral_cts.numpy() + kamino.info.num_joint_bounded_cts.numpy()
+                self.assertTrue(np.all(sparse_jacobians._J_cts.bsm.max_dims.numpy()[:, 0] >= expected_rows))
+                world_max_inequalities = (
+                    kamino.info.num_joint_bounded_cts.numpy()
+                    + kamino.info.max_limits.numpy()
+                    + kamino.info.max_contacts.numpy()
+                )
+                self.assertEqual(kamino.size.sum_of_max_inequalities, int(np.sum(world_max_inequalities)))
+                self.assertEqual(kamino.size.max_of_max_inequalities, int(np.max(world_max_inequalities)))
+                np.testing.assert_array_equal(
+                    kamino.info.inequalities_offset.numpy(),
+                    np.cumsum(np.concatenate(([0], world_max_inequalities[:-1]))),
+                )
 
-        state_in = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
-        solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
-        np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
+                state_in = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+                solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
+                np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
 
 
 class TestSolverKaminoJointFrictionWarmstart(unittest.TestCase):
@@ -433,6 +446,41 @@ class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
                     np.abs(friction_torques),
                     friction + 1.0e-4,
                 )
+
+    def test_box_natural_map_metrics(self):
+        """Include bounded friction rows in PADMM iteration-info and solution natural maps."""
+        model = _build_revolute(friction=2.0)
+        model.set_gravity((0.0, 0.0, 0.0))
+        solver = SolverKamino(
+            model,
+            make_padmm_dense_config(collect_solver_info=True, compute_solution_metrics=True),
+        )
+        state_in = _initialize_state(model, qd=1.0)
+        solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
+
+        solver_impl = solver._solver_kamino
+        solver_fd = solver_impl.solver_fd
+        metrics = solver_impl.metrics
+        self.assertIsNotNone(metrics)
+        self.assertEqual(int(solver_impl.problem_fd.data.nbc.numpy()[0]), 1)
+
+        problem_data = solver_impl.problem_fd.data
+        row = int(problem_data.vio.numpy()[0] + problem_data.bcgo.numpy()[0])
+        bound_idx = int(problem_data.bcio.numpy()[0])
+        lower = float(problem_data.P.numpy()[row] * problem_data.bound_lower.numpy()[bound_idx])
+        upper = float(problem_data.P.numpy()[row] * problem_data.bound_upper.numpy()[bound_idx])
+
+        iterations = int(solver_fd.data.status.numpy()[0]["iterations"])
+        info_idx = int(solver_fd.data.info.offsets.numpy()[0]) + iterations - 1
+        lambda_info = float(solver_fd.data.info.lambdas.numpy()[row])
+        v_aug_info = float(solver_fd.data.info.v_aug.numpy()[row])
+        expected_info = abs(lambda_info - np.clip(lambda_info - v_aug_info, lower, upper))
+        self.assertAlmostEqual(float(solver_fd.data.info.r_ncp_natmap.numpy()[info_idx]), expected_info, places=6)
+
+        lambda_solution = float(solver_fd.data.solution.lambdas.numpy()[row])
+        v_aug_metrics = float(metrics._buffer_v.numpy()[row])
+        expected_metrics = abs(lambda_solution - np.clip(lambda_solution - v_aug_metrics, lower, upper))
+        self.assertAlmostEqual(float(metrics.data.r_vi_natmap.numpy()[0]), expected_metrics, places=6)
 
 
 class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):

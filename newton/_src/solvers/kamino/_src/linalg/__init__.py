@@ -11,8 +11,9 @@ from .core import (
 )
 from .factorize.hybrid_llt_solver import HybridLLTBlockedSolver
 
-# Import the RCM and hybrid implementations from factorize rather than from
-# linear because both build on the dense solver classes defined there.
+# Import the RCM-reordered and hybrid blocked LLT solvers here (rather than
+# from .linear) to avoid a circular import: both implementations import the
+# dense solver classes from .linear.
 from .factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .linear import (
     ConjugateGradientSolver,

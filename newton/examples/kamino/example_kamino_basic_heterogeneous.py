@@ -10,6 +10,7 @@
 
 import argparse
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -26,6 +27,8 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
+        self.scenario = getattr(args, "scenario", "all") if args else "all"
+        self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -50,6 +53,8 @@ class Example:
         # model builder API, depending on the command-line argument `--from-usd`
         builder = newton.ModelBuilder()
         if args is not None and args.from_usd:
+            if args.z_offset != 0.0:
+                raise ValueError("--z-offset requires --no-from-usd.")
             # Load all basic USD assets and add them to the builder
             asset_names = [
                 "boxes_fourbar",
@@ -59,33 +64,46 @@ class Example:
                 "box_on_plane",
                 "cartpole",
             ]
+            if self.scenario != "all":
+                asset_names = [self.scenario]
             for asset_name in asset_names:
                 asset_file = get_kamino_basics_asset(f"{asset_name}.usda")
                 builder.add_world(builder=load_basic_asset_from_usd(asset_file))
         else:
             # Manually build the heterogeneous basic models using the builder API
-            basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
+            if self.scenario == "all":
+                basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
+            else:
+                build_scenario = getattr(basics, f"build_{self.scenario}")
+                build_scenario(builder=builder, z_offset=args.z_offset if args else 0.0, ground=True)
 
         # Create the model from the builder
         builder.request_contact_attributes("force")  # For contact visualization
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector
-        solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        solver_config = newton.solvers.SolverKamino.Config.from_model(
+            self.model,
+            dynamics_solver=self.dynamics_solver,
+        )
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "primitive"
+        solver_config.collision_detector.pipeline = "primitive" if args is None or args.from_usd else "unified"
         solver_config.collision_detector.max_contacts = 32 * self.model.world_count
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-4
-        solver_config.padmm.dual_tolerance = 1e-4
-        solver_config.padmm.compl_tolerance = 1e-4
-        solver_config.padmm.max_iterations = 200
-        solver_config.padmm.rho_0 = 0.1
-        solver_config.padmm.use_acceleration = True
-        solver_config.padmm.warmstart_mode = "containers"
-        solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
-
+        if self.dynamics_solver == "padmm":
+            solver_config.padmm.primal_tolerance = 1e-4
+            solver_config.padmm.dual_tolerance = 1e-4
+            solver_config.padmm.compl_tolerance = 1e-4
+            solver_config.padmm.max_iterations = 200
+            solver_config.padmm.rho_0 = 0.1
+            solver_config.padmm.use_acceleration = True
+            solver_config.padmm.warmstart_mode = "containers"
+            solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
+        else:
+            tolerance = getattr(args, "lox_tolerance", 1.0e-7) if args else 1.0e-7
+            solver_config.lox.position_tolerance = tolerance
+            solver_config.lox.rotation_tolerance = tolerance
         # Create the Kamino solver for the given model
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
@@ -107,14 +125,19 @@ class Example:
         # If only a single-world is created, set initial
         # camera position for better view of the system
         if hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(0.0, -15.0, 1.6)
-            pitch = -1.5
-            yaw = 92.0
+            if self.scenario == "all":
+                camera_pos = wp.vec3(0.0, -15.0, 1.6)
+                pitch = -1.5
+                yaw = 92.0
+            else:
+                camera_pos = wp.vec3(1.5, -2.5, 1.0)
+                pitch = -10.0
+                yaw = 115.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda and not wp.config.verify_cuda:
+        if not self.device.is_cuda or not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -146,7 +169,12 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        assert self.graph is not None
+        arrays = (self.state_0.body_q, self.state_0.body_qd, self.state_0.joint_q, self.state_0.joint_qd)
+        assert all(np.isfinite(array.numpy()).all() for array in arrays)
+        if self.dynamics_solver == "lox":
+            solver = self.solver._solver_kamino.solver_fd
+            assert not solver.world_failed.numpy().any()
 
     @staticmethod
     def create_parser():
@@ -156,6 +184,38 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=True,
             help="Load the heterogeneous basic models from USD (otherwise build them manually).",
+        )
+        parser.add_argument(
+            "--scenario",
+            choices=(
+                "all",
+                "box_on_plane",
+                "box_pendulum",
+                "boxes_hinged",
+                "boxes_nunchaku",
+                "boxes_fourbar",
+                "cartpole",
+            ),
+            default="all",
+            help="Run all basic worlds or one selected model.",
+        )
+        parser.add_argument(
+            "--z-offset",
+            type=float,
+            default=0.0,
+            help="Initial vertical offset for a manually built selected model [m].",
+        )
+        parser.add_argument(
+            "--dynamics-solver",
+            choices=("padmm", "lox"),
+            default="padmm",
+            help="Kamino rigid-body dynamics backend.",
+        )
+        parser.add_argument(
+            "--lox-tolerance",
+            type=float,
+            default=1.0e-7,
+            help="Position and rotation tolerance for the LOX backend.",
         )
         return parser
 

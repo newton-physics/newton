@@ -447,6 +447,7 @@ def _reset_body_wrenches(
     # Outputs
     body_w: wp.array[wp.spatial_vectorf],
     body_w_e: wp.array[wp.spatial_vectorf],
+    lambda_w_i: wp.array[wp.spatial_vectorf],
 ):
     # Get thread id as body id
     body_id = wp.tid()
@@ -459,6 +460,7 @@ def _reset_body_wrenches(
     # Reset wrenches to zero
     body_w[body_id] = wp.spatial_vectorf(0.0)
     body_w_e[body_id] = wp.spatial_vectorf(0.0)
+    lambda_w_i[body_id] = wp.spatial_vectorf(0.0)
 
 
 @wp.kernel
@@ -891,6 +893,6 @@ def reset_body_wrenches(
     wp.launch(
         _reset_body_wrenches,
         dim=model.size.sum_of_num_bodies,
-        inputs=[model.bodies.wid, world_mask, state.w_i, state.w_i_e],
+        inputs=[model.bodies.wid, world_mask, state.w_i, state.w_i_e, state.lambda_w_i],
         device=model.device,
     )

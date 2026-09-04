@@ -25,6 +25,7 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
+        self.dynamics_solver = str(getattr(args, "dynamics_solver", "padmm")).lower()
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -59,14 +60,18 @@ class Example:
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(
+            self.model,
+            dynamics_solver=self.dynamics_solver,
+        )
         self.config.use_collision_detector = False
         self.config.use_fk_solver = False
-        self.config.padmm.max_iterations = 200
-        self.config.padmm.primal_tolerance = 1e-6
-        self.config.padmm.dual_tolerance = 1e-6
-        self.config.padmm.compl_tolerance = 1e-6
-        self.config.padmm.rho_0 = 0.01
+        if self.dynamics_solver == "padmm":
+            self.config.padmm.max_iterations = 200
+            self.config.padmm.primal_tolerance = 1e-6
+            self.config.padmm.dual_tolerance = 1e-6
+            self.config.padmm.compl_tolerance = 1e-6
+            self.config.padmm.rho_0 = 0.01
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -91,7 +96,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda and not wp.config.verify_cuda:
+        if not self.device.is_cuda or not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -125,6 +130,7 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.add_argument("--dynamics-solver", choices=("padmm", "lox"), default="padmm")
         return parser
 
 

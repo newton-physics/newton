@@ -10,6 +10,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -26,6 +27,12 @@ class Example:
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
+        self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
+        self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
+        self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
+        self.actuated = getattr(args, "actuated", False) if args else False
+        self.max_iterations = getattr(args, "max_iterations", 25) if args else 25
+        self.projection_iterations = getattr(args, "projection_iterations", 3) if args else 3
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -50,6 +57,7 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.request_contact_attributes("force")
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
@@ -58,11 +66,43 @@ class Example:
 
         # Create the model from the builder
         self.model = builder.finalize()
+        self.model.rigid_contact_max = 1000 * self.world_count
+
+        if self.actuated:
+            # Match the public ANYmal D pose controller without actuating the floating base.
+            target_ke = self.model.joint_target_ke.numpy()
+            target_kd = self.model.joint_target_kd.numpy()
+            target_mode = self.model.joint_target_mode.numpy()
+            joint_type = self.model.joint_type.numpy()
+            joint_dof_start = self.model.joint_qd_start.numpy()
+            for joint in range(self.model.joint_count):
+                if joint_type[joint] != newton.JointType.REVOLUTE:
+                    continue
+                dof_slice = slice(joint_dof_start[joint], joint_dof_start[joint + 1])
+                target_ke[dof_slice] = 150.0
+                target_kd[dof_slice] = 5.0
+                target_mode[dof_slice] = int(newton.JointTargetMode.POSITION_VELOCITY)
+            self.model.joint_target_ke.assign(target_ke)
+            self.model.joint_target_kd.assign(target_kd)
+            self.model.joint_target_mode.assign(target_mode)
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(
+            self.model,
+            dynamics_solver=self.dynamics_solver,
+        )
         self.config.use_collision_detector = self.use_kamino_contacts
-        self.config.padmm.warmstart_mode = "none"
+        self.config.dynamics.linear_solver_type = self.linear_solver_type
+        self.config.dynamics.linear_solver_kwargs = self.linear_solver_kwargs
+        if self.dynamics_solver == "padmm":
+            self.config.padmm.warmstart_mode = "none"
+            self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
+        else:
+            # The simple row metric settles the passive robot more reliably
+            # with a moderate penalty and projected structural feedback.
+            self.config.lox.joint_penalty_scale = 20.0
+            self.config.lox.max_iterations = self.max_iterations
+            self.config.lox.projection_iterations = self.projection_iterations
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -92,8 +132,7 @@ class Example:
         )
         self.solver.reset(state=self.state_0, config=reset_config)
 
-        # Capture the simulation graph if running on CUDA
-        # NOTE: This only has an effect on GPU devices
+        # Capture with CUDA graphs on GPU or APIC graphs on CPU.
         self.capture()
 
         # If only a single-world is created, set initial
@@ -106,7 +145,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda and not wp.config.verify_cuda:
+        if not self.device.is_cuda or not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -138,7 +177,34 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    def _test_state_finite(self):
+        invalid = []
+        for name, array in (
+            ("body_q", self.state_0.body_q),
+            ("body_qd", self.state_0.body_qd),
+            ("joint_q", self.state_0.joint_q),
+            ("joint_qd", self.state_0.joint_qd),
+            ("contact_force", self.contacts.rigid_contact_force),
+        ):
+            if not np.isfinite(array.numpy()).all():
+                invalid.append(name)
+        if self.dynamics_solver == "lox":
+            solver = self.solver._solver_kamino.solver_fd
+            if solver.world_failed.numpy().any():
+                invalid.append("LOX backend status")
+        assert not invalid, f"Non-finite or failed ANYmal state: {', '.join(invalid)}"
+
+    def test_post_step(self):
+        self._test_state_finite()
+
     def test_final(self):
+        self._test_state_finite()
+        if self.dynamics_solver == "lox":
+            structural_residual = self.solver._solver_kamino.solver_fd.problem.structural_residual.numpy()
+            assert np.max(np.abs(structural_residual), initial=0.0) < 0.02, (
+                "ANYmal structural joint residual must settle below 0.02 m or rad"
+            )
+
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -156,14 +222,52 @@ class Example:
                     max(abs(qd)) < 0.25
                 ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
+        assert int(self.contacts.rigid_contact_count.numpy()[0]) > 0, "ANYmal must finish in contact with the ground"
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--dynamics-solver",
+            choices=("padmm", "lox"),
+            default="padmm",
+            help="Kamino rigid-body dynamics backend.",
+        )
+        parser.add_argument(
+            "--actuated",
+            action="store_true",
+            help="Enable position-velocity drives that hold the imported joint pose.",
+        )
+        parser.add_argument(
+            "--max-iterations",
+            type=int,
+            default=25,
+            help="Maximum LOX splitting iterations per solve.",
+        )
+        parser.add_argument(
+            "--projection-iterations",
+            type=int,
+            default=3,
+            help="Sequential projection sweeps per LOX splitting iteration.",
+        )
+        parser.add_argument(
+            "--linear-solver-type",
+            choices=("LLTB", "LLTBRCM", "CR"),
+            default="LLTB",
+            type=str.upper,
+            help="Kamino dynamics linear solver to use.",
+        )
+        parser.add_argument(
+            "--no-graph-conditionals",
+            dest="use_graph_conditionals",
+            action="store_false",
+            help="Disable graph conditional loops in Kamino PADMM.",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
+        parser.set_defaults(use_graph_conditionals=True)
         return parser
 
 

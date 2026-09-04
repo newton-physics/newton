@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
@@ -27,6 +28,7 @@ __all__ = [
     "ConstraintStabilizationConfig",
     "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
+    "LOXSolverConfig",
     "PADMMSolverConfig",
 ]
 
@@ -965,6 +967,277 @@ class DVISolverConfig:
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(
                 f"DVI contact warmstart method is not implemented: {self.contact_warmstart_method}. "
+                f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
+            )
+
+    @override
+    def __post_init__(self):
+        """Post-initialization to validate configurations."""
+        self.validate()
+
+
+@dataclass(kw_only=True)
+class LOXSolverConfig:
+    """A container to hold configurations for the LOX forward dynamics solver.
+
+    .. experimental::
+
+        The LOX backend supports rigid bodies only. Cable and deformable
+        extensions are not supported.
+    """
+
+    max_iterations: int = 25
+    """Maximum LOX splitting iterations per forward-dynamics solve."""
+
+    use_graph_conditionals: bool = True
+    """Whether to terminate LOX splitting with a device condition.
+
+    Outside graph capture, this permits early termination through an eager
+    :func:`warp.capture_while` loop. When disabled, or when CUDA graph
+    conditional nodes are unavailable during capture, the solver unrolls
+    :attr:`max_iterations` iterations instead.
+    """
+
+    fixed_iterations: bool = False
+    """Whether to skip convergence checks and run exactly :attr:`max_iterations`.
+
+    This reduces per-iteration synchronization for throughput-oriented
+    simulations. Failed projections still deactivate their worlds.
+    """
+
+    eliminate_fixed_world_islands: bool = True
+    """Whether to eliminate fixed-joint tree islands attached to the world.
+
+    Disable this to retain those bodies in the dynamic solve and compute their
+    fixed-joint support reactions. Bodies marked with :attr:`newton.BodyFlags.KINEMATIC`
+    remain prescribed.
+    """
+
+    projection_iterations: int = 5
+    """Primary unilateral projection sweeps per splitting iteration.
+
+    One colored Gauss--Seidel iteration visits every unilateral color; after
+    these iterations, one global mass-split Jacobi sweep smooths the resulting
+    impulses.
+    """
+
+    projection_method: Literal["jacobi", "gauss_seidel", "apgd"] = "gauss_seidel"
+    """Body-space unilateral projection method.
+
+    Select ``"jacobi"`` for mass-split parallel sweeps, ``"gauss_seidel"``
+    for sequential sweeps, or ``"apgd"`` for restarted acceleration of the
+    mass-split Jacobi map.
+    """
+
+    inertial_warmstart_fraction: float = 0.0
+    """Fraction of external-force acceleration pre-applied to the initial LOX guess.
+
+    Dynamic rigid bodies start from their step-start
+    velocity plus this fraction of ``dt`` times the acceleration due to State
+    forces and gravity. Prescribed rigid twists are always used in full.
+    """
+
+    joint_proximal_relaxation: float = 0.0
+    """Relaxation factor for exact candidate-pose structural joint residuals.
+
+    Zero retains the frozen linear residual. Positive values relax a stored
+    nonlinear residual correction toward the exact candidate-pose residual
+    while reusing the frozen Jacobian, primal matrix, and factorization. The
+    relaxation changes convergence speed without changing the nonlinear fixed
+    point.
+    """
+
+    position_tolerance: float = 1.0e-5
+    """Translational end-of-step convergence tolerance [m]."""
+
+    rotation_tolerance: float = 1.0e-5
+    """Rotational end-of-step convergence tolerance [rad]."""
+
+    velocity_tolerance: float = 1.0e-5
+    """Velocity-space convergence tolerance for actuator residuals [m/s or rad/s]."""
+
+    weight_sigma: float = 1.0e-3
+    """Relative lower scale used by the inertia-normalized body-weight clamp."""
+
+    weight_beta: float = 4.0
+    """Normalized smooth-weight transition threshold used by the body-weight heuristic.
+
+    The conditioning floor set by :attr:`weight_sigma` may dominate this
+    threshold for sufficiently stiff modes.
+    """
+
+    selective_weights: bool = True
+    """Whether to restrict proximal weights to unilateral-constraint incidence.
+
+    When enabled, the LOX splitting operator applies its proximal metric only
+    to rigid bodies incident to a unilateral constraint.
+    """
+
+    joint_penalty_scale: float = 100.0
+    """Dimensionless scale for effective-mass structural penalties and consensus weights."""
+
+    joint_multiplier_projected_fraction: float = 1.0
+    """Fraction of projected-twist feedback in structural updates, in [0, 1].
+
+    The default reconciles structural reactions with the twist that will be
+    integrated. Zero recovers the global-twist product-space ADMM update.
+    """
+
+    joint_warmstart_factor: float = 0.5
+    """Fraction of the previous structural reaction used to warm-start the next time step."""
+
+    impact_velocity_threshold: float = 1.0e-3
+    """Minimum approaching normal speed that enables restitution [m/s]."""
+
+    contact_recoverable_response: bool = False
+    """Whether speculative contacts permit overlap recoverable as the unreduced restitution response."""
+
+    contact_warmstart_method: Literal[
+        "key_and_position",
+        "geom_pair_net_force",
+        "key_and_position_with_net_force_backup",
+        "key_and_position_with_tangential_net_force",
+        "key_and_position_with_net_force_backup_and_tangential_net_force",
+    ] = "key_and_position"
+    """Method used to warm-start contacts."""
+
+    gauss_seidel_max_colors: int = 4
+    """Maximum colors used by Gauss--Seidel unilateral projection.
+
+    One selects the existing mass-split Jacobi projection. Values greater than
+    one process approximate colors sequentially while solving each color with
+    mass-split Jacobi. The multi-color path uses the smaller of this value and
+    its allocated
+    unilateral capacity, retaining one inert internal color for an empty
+    system. It finishes with one global Jacobi smoothing sweep.
+    """
+
+    @override
+    @staticmethod
+    def register_custom_attributes(builder: ModelBuilder) -> None:
+        """Register LOX custom attributes supported by the Kamino USD schema.
+
+        LOX-specific tuning options are currently Python-only. The shared
+        ``max_solver_iterations`` attribute is registered by
+        :class:`PADMMSolverConfig`.
+        """
+
+    @override
+    @staticmethod
+    def from_model(model: Model, **kwargs: dict[str, Any]) -> LOXSolverConfig:
+        """Creates a :class:`LOXSolverConfig` from model attributes if available.
+
+        Args:
+            model: The Newton model from which to parse configurations.
+        """
+        cfg = LOXSolverConfig(**kwargs)
+        kamino_attrs = getattr(model, "kamino", None)
+        if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
+            max_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_iterations >= 0:
+                cfg.max_iterations = max_iterations
+        cfg.validate()
+        return cfg
+
+    @override
+    def validate(self) -> None:
+        """Validates the current values held by this config instance."""
+        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
+
+        iteration_fields = {
+            "max_iterations": self.max_iterations,
+            "projection_iterations": self.projection_iterations,
+        }
+        for name, value in iteration_fields.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"Invalid {name}: {value}. Must be an integer greater than or equal to one.")
+        if not isinstance(self.use_graph_conditionals, bool):
+            raise ValueError(f"Invalid use_graph_conditionals: {self.use_graph_conditionals}. Must be a boolean.")
+        if not isinstance(self.fixed_iterations, bool):
+            raise ValueError(f"Invalid fixed_iterations: {self.fixed_iterations}. Must be a boolean.")
+        if not isinstance(self.eliminate_fixed_world_islands, bool):
+            raise ValueError(
+                f"Invalid eliminate_fixed_world_islands: {self.eliminate_fixed_world_islands}. Must be a boolean."
+            )
+        if (
+            not np.isfinite(self.joint_proximal_relaxation)
+            or self.joint_proximal_relaxation < 0.0
+            or self.joint_proximal_relaxation > 1.0
+        ):
+            raise ValueError(
+                f"Invalid joint_proximal_relaxation: {self.joint_proximal_relaxation}. Must be in range [0, 1]."
+            )
+        if self.projection_method not in ("jacobi", "gauss_seidel", "apgd"):
+            raise ValueError(
+                f"Invalid projection_method: {self.projection_method}. Must be 'jacobi', 'gauss_seidel', or 'apgd'."
+            )
+        if (
+            not isinstance(self.gauss_seidel_max_colors, int)
+            or isinstance(self.gauss_seidel_max_colors, bool)
+            or self.gauss_seidel_max_colors < 0
+            or (self.projection_method == "gauss_seidel" and self.gauss_seidel_max_colors == 0)
+        ):
+            raise ValueError(
+                f"Invalid gauss_seidel_max_colors: {self.gauss_seidel_max_colors}. "
+                "Must be positive for Gauss-Seidel and non-negative otherwise."
+            )
+        if (
+            not np.isfinite(self.inertial_warmstart_fraction)
+            or self.inertial_warmstart_fraction < 0.0
+            or self.inertial_warmstart_fraction > 1.0
+        ):
+            raise ValueError(
+                f"Invalid inertial_warmstart_fraction: {self.inertial_warmstart_fraction}. Must be in range [0, 1]."
+            )
+
+        if not np.isfinite(self.position_tolerance) or self.position_tolerance <= 0.0:
+            raise ValueError(f"Invalid position_tolerance: {self.position_tolerance}. Must be greater than zero.")
+        if not np.isfinite(self.rotation_tolerance) or self.rotation_tolerance <= 0.0:
+            raise ValueError(f"Invalid rotation_tolerance: {self.rotation_tolerance}. Must be greater than zero.")
+        if not np.isfinite(self.velocity_tolerance) or self.velocity_tolerance <= 0.0:
+            raise ValueError(f"Invalid velocity_tolerance: {self.velocity_tolerance}. Must be greater than zero.")
+        if not np.isfinite(self.weight_sigma) or self.weight_sigma <= 0.0 or self.weight_sigma > 1.0:
+            raise ValueError(f"Invalid weight_sigma: {self.weight_sigma}. Must be in range (0, 1].")
+        if not np.isfinite(self.weight_beta) or self.weight_beta < 1.0:
+            raise ValueError(f"Invalid weight_beta: {self.weight_beta}. Must be at least one.")
+        if not isinstance(self.selective_weights, bool):
+            raise ValueError(f"Invalid selective_weights: {self.selective_weights}. Must be a boolean.")
+        if not np.isfinite(self.joint_penalty_scale) or self.joint_penalty_scale <= 0.0:
+            raise ValueError(f"Invalid joint_penalty_scale: {self.joint_penalty_scale}. Must be greater than zero.")
+        if (
+            not np.isfinite(self.joint_multiplier_projected_fraction)
+            or self.joint_multiplier_projected_fraction < 0.0
+            or self.joint_multiplier_projected_fraction > 1.0
+        ):
+            raise ValueError(
+                "Invalid joint_multiplier_projected_fraction: "
+                f"{self.joint_multiplier_projected_fraction}. Must be in range [0, 1]."
+            )
+        if (
+            not np.isfinite(self.joint_warmstart_factor)
+            or self.joint_warmstart_factor < 0.0
+            or self.joint_warmstart_factor > 1.0
+        ):
+            raise ValueError(f"Invalid joint_warmstart_factor: {self.joint_warmstart_factor}. Must be in range [0, 1].")
+        if not np.isfinite(self.impact_velocity_threshold) or self.impact_velocity_threshold < 0.0:
+            raise ValueError(
+                f"Invalid impact_velocity_threshold: {self.impact_velocity_threshold}. Must be non-negative."
+            )
+        if not isinstance(self.contact_recoverable_response, bool):
+            raise ValueError(
+                f"Invalid contact_recoverable_response: {self.contact_recoverable_response}. Must be a boolean."
+            )
+        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
+        implemented_contact_warmstart_methods = {
+            "key_and_position",
+            "geom_pair_net_force",
+            "key_and_position_with_net_force_backup",
+            "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
+        }
+        if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
+            raise ValueError(
+                f"LOX contact warmstart method is not implemented: {self.contact_warmstart_method}. "
                 f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
             )
 
