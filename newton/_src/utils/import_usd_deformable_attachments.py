@@ -37,6 +37,8 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     already consumed as rod-graph topology are skipped, and unsupported sites (cloth/volume source,
     non-xform target, ...) are warned and preserved in ``path_attachment_attrs``.
     """
+    from ..usd import utils as usd  # noqa: PLC0415
+
     builder = ctx.builder
     stage = ctx.stage
     root_prim = ctx.root_prim
@@ -101,8 +103,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
         enabled = True if enabled_val is None else bool(enabled_val)
         stiffness_val = deformable_read(prim, "stiffness")
         damping_val = deformable_read(prim, "damping")
-        stiffness = math.inf if stiffness_val is None else float(stiffness_val)
-        damping = 0.0 if damping_val is None else float(damping_val)
+        stiffness, damping = usd._resolve_attachment_gains(prim, stiffness_val, damping_val)
 
         attrs: dict[str, Any] = {
             "src0": src0,
@@ -114,11 +115,27 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             "coords0": _attachment_vec3_tuples(coords0),
             "coords1": _attachment_vec3_tuples(coords1),
             "enabled": enabled,
-            "stiffness": stiffness,
-            "damping": damping,
+            "stiffness": stiffness_val if stiffness is None else stiffness,
+            "damping": damping_val if damping is None else damping,
         }
         path_attachment_attrs[path] = attrs
 
+        malformed_gains = [
+            (name, value)
+            for name, value, resolved in (
+                ("stiffness", stiffness_val, stiffness),
+                ("damping", damping_val, damping),
+            )
+            if value is not None and resolved is None
+        ]
+        if malformed_gains:
+            details = ", ".join(f"physics:{name}={value!r}" for name, value in malformed_gains)
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                f"invalid PhysicsAttachment scalar {details} (expected a numeric scalar); preserved as metadata.",
+            )
+            continue
         if not enabled:
             continue
         # The proposal gives attachment stiffness the range [0, inf] with +inf meaning hard
