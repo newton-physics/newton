@@ -371,6 +371,80 @@ def ldlt6_solve(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33, rhs_lin: wp.vec3
 
 
 @wp.func
+def _angular_compliance_from_hessian(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33) -> wp.mat33:
+    """Return ``[H^-1]_aa`` for ``H=[[h_ll, h_al.T], [h_al, h_aa]]``.
+
+    A single LDL^T factorization recovers the angular compliance while
+    retaining linear-angular coupling, avoiding three full spatial solves.
+    This uses the same 6x6 LDL^T factorization as ``ldlt6_solve()``.
+    """
+    A11 = h_ll[0, 0]
+    A21 = h_ll[1, 0]
+    A22 = h_ll[1, 1]
+    A31 = h_ll[2, 0]
+    A32 = h_ll[2, 1]
+    A33 = h_ll[2, 2]
+    A41 = h_al[0, 0]
+    A42 = h_al[0, 1]
+    A43 = h_al[0, 2]
+    A44 = h_aa[0, 0]
+    A51 = h_al[1, 0]
+    A52 = h_al[1, 1]
+    A53 = h_al[1, 2]
+    A54 = h_aa[1, 0]
+    A55 = h_aa[1, 1]
+    A61 = h_al[2, 0]
+    A62 = h_al[2, 1]
+    A63 = h_al[2, 2]
+    A64 = h_aa[2, 0]
+    A65 = h_aa[2, 1]
+    A66 = h_aa[2, 2]
+
+    L21 = A21 / A11
+    L31 = A31 / A11
+    L41 = A41 / A11
+    L51 = A51 / A11
+    L61 = A61 / A11
+
+    D2 = A22 - L21 * L21 * A11
+
+    L32 = (A32 - L21 * L31 * A11) / D2
+    L42 = (A42 - L21 * L41 * A11) / D2
+    L52 = (A52 - L21 * L51 * A11) / D2
+    L62 = (A62 - L21 * L61 * A11) / D2
+
+    D3 = A33 - (L31 * L31 * A11 + L32 * L32 * D2)
+
+    L43 = (A43 - L31 * L41 * A11 - L32 * L42 * D2) / D3
+    L53 = (A53 - L31 * L51 * A11 - L32 * L52 * D2) / D3
+    L63 = (A63 - L31 * L61 * A11 - L32 * L62 * D2) / D3
+
+    D4 = A44 - (L41 * L41 * A11 + L42 * L42 * D2 + L43 * L43 * D3)
+
+    L54 = (A54 - L41 * L51 * A11 - L42 * L52 * D2 - L43 * L53 * D3) / D4
+    L64 = (A64 - L41 * L61 * A11 - L42 * L62 * D2 - L43 * L63 * D3) / D4
+
+    D5 = A55 - (L51 * L51 * A11 + L52 * L52 * D2 + L53 * L53 * D3 + L54 * L54 * D4)
+
+    L65 = (A65 - L51 * L61 * A11 - L52 * L62 * D2 - L53 * L63 * D3 - L54 * L64 * D4) / D5
+
+    D6 = A66 - (L61 * L61 * A11 + L62 * L62 * D2 + L63 * L63 * D3 + L64 * L64 * D4 + L65 * L65 * D5)
+
+    # Recover only the inverse's angular block.
+    inv_D4 = 1.0 / D4
+    inv_D5 = 1.0 / D5
+    inv_D6 = 1.0 / D6
+    L_inv_20 = L54 * L65 - L64
+    C00 = inv_D4 + L54 * L54 * inv_D5 + L_inv_20 * L_inv_20 * inv_D6
+    C01 = -L54 * inv_D5 - L_inv_20 * L65 * inv_D6
+    C02 = L_inv_20 * inv_D6
+    C11 = inv_D5 + L65 * L65 * inv_D6
+    C12 = -L65 * inv_D6
+    C22 = inv_D6
+    return wp.mat33(C00, C01, C02, C01, C11, C12, C02, C12, C22)
+
+
+@wp.func
 def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
     """Compute rest-relative angular rotation vector kappa in the parent frame.
 
@@ -1390,6 +1464,31 @@ def _contact_body_angular_block(
 
 
 @wp.func
+def _contact_angular_conditioning_scales_from_mobility(W: wp.mat33, n: wp.vec3, stiffness_scale: float):
+    """Return torsional and rolling rho as ``stiffness_scale / directional_response``.
+
+    Use ``inv_dt_sq`` for inverse-inertia mobility and one for an already
+    timestep-discretized compliance.
+    """
+    w_torsional = wp.dot(n, W * n)
+    torsional_rho = float(0.0)
+    if w_torsional > 0.0:
+        torsional_rho = stiffness_scale / w_torsional
+
+    tangent_0, tangent_1 = orthonormal_basis(n)
+    w00 = wp.dot(tangent_0, W * tangent_0)
+    w01 = wp.dot(tangent_0, W * tangent_1)
+    w11 = wp.dot(tangent_1, W * tangent_1)
+    rolling_rho = float(0.0)
+    trace = w00 + w11
+    if trace > 0.0:
+        discriminant = wp.sqrt(wp.max((w00 - w11) * (w00 - w11) + 4.0 * w01 * w01, 0.0))
+        w_max = 0.5 * (trace + discriminant)
+        rolling_rho = stiffness_scale / w_max
+    return torsional_rho, rolling_rho
+
+
+@wp.func
 def _contact_angular_conditioning_scales(
     body_id_0: int,
     body_id_1: int,
@@ -1408,23 +1507,7 @@ def _contact_angular_conditioning_scales(
     W = _contact_body_angular_block(body_id_0, body_q, body_inv_mass, body_inv_inertia) + _contact_body_angular_block(
         body_id_1, body_q, body_inv_mass, body_inv_inertia
     )
-
-    w_torsional = wp.dot(n, W * n)
-    torsional_rho = float(0.0)
-    if w_torsional > 0.0:
-        torsional_rho = inv_dt_sq / w_torsional
-
-    tangent_0, tangent_1 = orthonormal_basis(n)
-    w00 = wp.dot(tangent_0, W * tangent_0)
-    w01 = wp.dot(tangent_0, W * tangent_1)
-    w11 = wp.dot(tangent_1, W * tangent_1)
-    rolling_rho = float(0.0)
-    trace = w00 + w11
-    if trace > 0.0:
-        discriminant = wp.sqrt(wp.max((w00 - w11) * (w00 - w11) + 4.0 * w01 * w01, 0.0))
-        w_max = 0.5 * (trace + discriminant)
-        rolling_rho = inv_dt_sq / w_max
-    return torsional_rho, rolling_rho
+    return _contact_angular_conditioning_scales_from_mobility(W, n, inv_dt_sq)
 
 
 @wp.func
@@ -4977,8 +5060,8 @@ def init_body_body_contacts_alm(
                     )
                 lam_new += lam_t_new
             contact_lambda[i] = lam_new
-            # Sticky sliding history is carried through C0. Angular friction has no
-            # reference orientation, so matched hard/ALM rows retain its projected multiplier.
+            # Sticky ALM sliding memory is carried through C0. Angular friction has
+            # no orientation anchor, so matched hard/ALM rows restore its multiplier.
             lam_angular_hist = history.lambda_angular[slot]
             lam_torsional = n_new * wp.dot(lam_angular_hist, n_old)
             lam_rolling = lam_angular_hist - n_old * wp.dot(lam_angular_hist, n_old)
@@ -5778,7 +5861,8 @@ def compute_rigid_contact_forces(
     contact_mu_rolling = contact_material_mu_rolling[contact_idx]
     contact_lam_angular = contact_lambda_angular[contact_idx]
 
-    # Proxy harvesting reconstructs r x f, so export only the angular-friction couple.
+    # The proxy path reconstructs r x f from the contact force; export only the
+    # angular-friction couple to avoid counting the point-force moment twice.
     (
         _force_0,
         _torque_0,
@@ -6005,6 +6089,7 @@ def accumulate_body_particle_contacts_per_body(
 @wp.kernel
 def solve_rigid_body(
     dt: float,
+    refresh_contact_angular_conditioning: int,
     body_ids_in_color: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -6012,8 +6097,10 @@ def solve_rigid_body(
     body_mass: wp.array[float],
     body_inv_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
+    body_inv_inertia: wp.array[wp.mat33],
     body_inertia_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    body_contact_counts: wp.array[wp.int32],
     adjacency: RigidForceElementAdjacencyInfo,
     # Joint data
     joint_type: wp.array[int],
@@ -6066,6 +6153,7 @@ def solve_rigid_body(
     external_hessian_aa: wp.array[wp.mat33],
     # Output
     body_q_new: wp.array[wp.transform],
+    body_contact_free_angular_compliance: wp.array[wp.mat33],
 ):
     """
     AVBD solve step for rigid bodies.
@@ -6080,14 +6168,17 @@ def solve_rigid_body(
 
     Args:
         dt: Time step.
+        refresh_contact_angular_conditioning: Whether to refresh per-body angular contact compliance.
         body_ids_in_color: Body indices in current color group (for parallel coloring).
         body_q_prev: Previous body transforms (for damping and friction).
         body_q_rest: Rest transforms (for joint targets).
         body_mass: Body masses.
         body_inv_mass: Inverse masses (0 for kinematic bodies).
         body_inertia: Inertia tensors (local body frame).
+        body_inv_inertia: Effective inverse inertia tensors (local body frame).
         body_inertia_q: Inertial target transforms (from forward integration).
         body_com: Center of mass offsets (local body frame).
+        body_contact_counts: Number of active rigid-rigid contacts per body.
         adjacency: Body-joint adjacency (CSR format).
         joint_*: Joint configuration arrays.
         joint_penalty_k: Per-constraint legacy penalty stiffness.
@@ -6100,6 +6191,7 @@ def solve_rigid_body(
         external_hessian_aa: Preaccumulated rigid-contact angular block.
         body_q: Current body transforms (input).
         body_q_new: Updated body transforms (output) for the current solve sweep.
+        body_contact_free_angular_compliance: Angular block of the inverse contact-free body Hessian.
 
     Note:
       - All forces, torques, and Hessian blocks are expressed in the world frame.
@@ -6109,8 +6201,10 @@ def solve_rigid_body(
 
     q_current = body_q[body_index]
 
-    # Early exit for kinematic bodies
+    # Immovable bodies contribute no angular compliance.
     if body_inv_mass[body_index] == 0.0:
+        if refresh_contact_angular_conditioning == 1:
+            body_contact_free_angular_compliance[body_index] = wp.mat33(0.0)
         body_q_new[body_index] = q_current
         return
 
@@ -6157,6 +6251,10 @@ def solve_rigid_body(
     R_cur = wp.quat_to_matrix(rot_current)
     I_world = R_cur * I_body * wp.transpose(R_cur)
     angular_hessian = dt_sqr_reciprocal * I_world
+    num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
+
+    refresh_body_angular_compliance = refresh_contact_angular_conditioning == 1 and body_contact_counts[body_index] != 0
+    compute_joint_aware_angular_compliance = refresh_body_angular_compliance and num_adj_joints > 0
 
     # Accumulate external forces (rigid contacts)
     # Read external contributions
@@ -6169,22 +6267,27 @@ def solve_rigid_body(
     f_torque = tau_world + ext_torque
     f_force = f_lin + ext_force
 
-    h_aa = angular_hessian + ext_h_aa
-    h_al = ext_h_al
-    h_ll = wp.mat33(
-        ext_h_ll[0, 0] + inertial_coeff,
-        ext_h_ll[0, 1],
-        ext_h_ll[0, 2],
-        ext_h_ll[1, 0],
-        ext_h_ll[1, 1] + inertial_coeff,
-        ext_h_ll[1, 2],
-        ext_h_ll[2, 0],
-        ext_h_ll[2, 1],
-        ext_h_ll[2, 2] + inertial_coeff,
-    )
+    if compute_joint_aware_angular_compliance:
+        # Exclude contact Hessians so a contact row does not condition itself.
+        h_aa = angular_hessian
+        h_al = wp.mat33(0.0)
+        h_ll = wp.identity(3, float) * inertial_coeff
+    else:
+        h_aa = angular_hessian + ext_h_aa
+        h_al = ext_h_al
+        h_ll = wp.mat33(
+            ext_h_ll[0, 0] + inertial_coeff,
+            ext_h_ll[0, 1],
+            ext_h_ll[0, 2],
+            ext_h_ll[1, 0],
+            ext_h_ll[1, 1] + inertial_coeff,
+            ext_h_ll[1, 2],
+            ext_h_ll[2, 0],
+            ext_h_ll[2, 1],
+            ext_h_ll[2, 2] + inertial_coeff,
+        )
 
     # Accumulate joint forces (constraints)
-    num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
     for joint_counter in range(num_adj_joints):
         joint_idx = get_body_adjacent_joint_id(adjacency, body_index, joint_counter)
         joint_force, joint_torque, joint_H_ll, joint_H_al, joint_H_aa = evaluate_joint_force_hessian(
@@ -6241,6 +6344,25 @@ def solve_rigid_body(
         h_ll = h_ll + joint_H_ll
         h_al = h_al + joint_H_al
         h_aa = h_aa + joint_H_aa
+
+    if compute_joint_aware_angular_compliance:
+        conditioning_h_aa = h_aa
+        # Regularize the contact-free angular block before inversion.
+        conditioning_trace = wp.trace(conditioning_h_aa) / 3.0
+        conditioning_epsilon = 1.0e-9 * (conditioning_trace + 1.0)
+        conditioning_h_aa[0, 0] += conditioning_epsilon
+        conditioning_h_aa[1, 1] += conditioning_epsilon
+        conditioning_h_aa[2, 2] += conditioning_epsilon
+        body_contact_free_angular_compliance[body_index] = _angular_compliance_from_hessian(
+            h_ll, conditioning_h_aa, h_al
+        )
+        h_ll += ext_h_ll
+        h_al += ext_h_al
+        h_aa += ext_h_aa
+    elif refresh_body_angular_compliance:
+        body_contact_free_angular_compliance[body_index] = (
+            dt * dt * R_cur * body_inv_inertia[body_index] * wp.transpose(R_cur)
+        )
 
     # Regularize angular Hessian
     trA = wp.trace(h_aa) / 3.0
@@ -6889,6 +7011,8 @@ def update_duals_body_body_contacts(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
+    body_contact_free_angular_compliance: wp.array[wp.mat33],
+    refresh_contact_angular_conditioning: int,
     contact_material_mu: wp.array[float],
     contact_material_mu_torsional: wp.array[float],
     contact_material_mu_rolling: wp.array[float],
@@ -6992,6 +7116,25 @@ def update_duals_body_body_contacts(
 
         has_angular_friction = contact_material_mu_torsional[idx] > 0.0 or contact_material_mu_rolling[idx] > 0.0
         if has_angular_friction:
+            if refresh_contact_angular_conditioning == 1:
+                pair_angular_compliance = wp.mat33(0.0)
+                if body_id_0 >= 0:
+                    pair_angular_compliance += body_contact_free_angular_compliance[body_id_0]
+                if body_id_1 >= 0:
+                    pair_angular_compliance += body_contact_free_angular_compliance[body_id_1]
+                torsional_rho, rolling_rho = _contact_angular_conditioning_scales_from_mobility(
+                    pair_angular_compliance, n, 1.0
+                )
+                # Keep the initialized inertia-based rho if the local factorization is invalid.
+                if contact_material_mu_torsional[idx] > 0.0 and wp.isfinite(torsional_rho) and torsional_rho > 0.0:
+                    contact_torsional_rho[idx] = torsional_rho
+                elif contact_material_mu_torsional[idx] <= 0.0:
+                    contact_torsional_rho[idx] = 0.0
+                if contact_material_mu_rolling[idx] > 0.0 and wp.isfinite(rolling_rho) and rolling_rho > 0.0:
+                    contact_rolling_rho[idx] = rolling_rho
+                elif contact_material_mu_rolling[idx] <= 0.0:
+                    contact_rolling_rho[idx] = 0.0
+
             # As for sliding, bound angular multipliers by the updated normal multiplier.
             normal_load = wp.max(wp.dot(contact_lambda[idx], n), 0.0)
 

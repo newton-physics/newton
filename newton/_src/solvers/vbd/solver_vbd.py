@@ -154,6 +154,8 @@ class SolverVBD(SolverBase, CouplingInterface):
     Rigid-rigid contacts consume shape ``mu_torsional`` and ``mu_rolling``.
     Their nonzero defaults enable both channels; setting either coefficient to
     zero on either shape disables that channel for the contact pair.
+    VBD clamps sliding force, torsional torque, and rolling torque to separate
+    Coulomb limits; it does not use a single coupled friction cone.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
@@ -891,6 +893,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_hessian_aa = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
             self.body_hessian_al = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
             self.body_hessian_ll = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
+            angular_compliance_capacity = (
+                model.body_count
+                if model.joint_count > 0
+                and model.shape_count > 0
+                and (self.rigid_contact_hard or self.rigid_compliant_alm)
+                else 0
+            )
+            self.body_contact_free_angular_compliance = wp.zeros(
+                angular_compliance_capacity, dtype=wp.mat33, device=self.device
+            )
 
             # Per-body contact lists (CSR-like: per-body counts + flat index array).
             # Tight: pre_alloc = 0 when the contact source is absent (no shapes / no particles).
@@ -2149,7 +2161,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
-            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
+            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt, iter_num)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         # Snapshot solved rigid contact state for next-frame warm-start.
@@ -3136,6 +3148,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts | None,
         dt: float,
+        iter_num: int,
     ):
         """Solve one rigid-body VBD iteration (per-iteration phase).
 
@@ -3143,6 +3156,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         and updates AVBD penalty parameters (dual update).
         """
         model = self.model
+        # Sweep 0 refreshes angular contact conditioning from the current body and joint Hessians.
+        refresh_contact_angular_conditioning = int(
+            iter_num == 0
+            and model.joint_count > 0
+            and model.shape_count > 0
+            and contacts is not None
+            and contacts.rigid_contact_max > 0
+            and (self.rigid_contact_hard or self.rigid_compliant_alm)
+        )
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
@@ -3290,6 +3312,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 kernel=solve_rigid_body,
                 inputs=[
                     dt,
+                    refresh_contact_angular_conditioning,
                     color_group,
                     state_in.body_q,
                     self.body_q_prev,
@@ -3297,8 +3320,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.body_mass,
                     self.body_inv_mass_effective,
                     model.body_inertia,
+                    self.body_inv_inertia_effective,
                     self.body_inertia_q,
                     model.body_com,
+                    self.body_body_contact_counts,
                     self.rigid_adjacency,
                     model.joint_type,
                     model.joint_enabled,
@@ -3346,6 +3371,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 outputs=[
                     state_in.body_q,
+                    self.body_contact_free_angular_compliance,
                 ],
                 dim=color_group.size,
                 device=self.device,
@@ -3369,6 +3395,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.shape_body,
                     state_in.body_q,
                     self.body_q_prev,
+                    self.body_contact_free_angular_compliance,
+                    refresh_contact_angular_conditioning,
                     self.body_body_contact_material_mu,
                     self.body_body_contact_material_mu_torsional,
                     self.body_body_contact_material_mu_rolling,
@@ -3379,8 +3407,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_body_contact_material_ke,
                     self.body_body_contact_tangent_rho,
                     self.body_body_contact_normal_rho,
-                    self.body_body_contact_torsional_rho,
-                    self.body_body_contact_rolling_rho,
+                    self.body_body_contact_torsional_rho,  # input/output
+                    self.body_body_contact_rolling_rho,  # input/output
                     self.rigid_linear_beta,
                     self.body_body_contact_penalty_k,  # input/output
                     self.body_body_contact_lambda,  # input/output

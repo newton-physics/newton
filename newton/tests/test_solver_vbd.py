@@ -24,8 +24,10 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     _alm_relaxed_ascent,
+    _angular_compliance_from_hessian,
     _compliant_alm_coefficients,
     _contact_angular_conditioning_scales,
+    _contact_angular_conditioning_scales_from_mobility,
     _contact_tangent_conditioning_scale,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
@@ -292,41 +294,40 @@ def _eval_joint_angular_rho_seed_kernel(
 
 
 @wp.kernel
-def _eval_crossed_contact_tangent_pair_support_kernel(
+def _eval_contact_pair_conditioning_kernel(
     shape_body: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
-    support: wp.array[float],
+    rho_out: wp.array[wp.vec3],
 ):
     normal = wp.vec3(0.0, 0.0, 1.0)
-    anchor_x = wp.vec3(1.0, 0.0, 0.0)
-    anchor_y = wp.vec3(0.0, 1.0, 0.0)
-    support[0] = _contact_tangent_conditioning_scale(
-        0, 1, anchor_x, anchor_y, normal, shape_body, body_q, body_com, body_inv_mass, body_inv_inertia, 1.0
+    anchor = wp.vec3(1.0, 0.0, 0.0)
+    tangent_rho = _contact_tangent_conditioning_scale(
+        0, 1, anchor, anchor, normal, shape_body, body_q, body_com, body_inv_mass, body_inv_inertia, 1.0
     )
+    torsional_rho, rolling_rho = _contact_angular_conditioning_scales(
+        0, 1, normal, body_q, body_inv_mass, body_inv_inertia, 1.0
+    )
+    rho_out[0] = wp.vec3(tangent_rho, torsional_rho, rolling_rho)
 
 
 @wp.kernel
-def _eval_contact_angular_conditioning_kernel(
-    body_q: wp.array[wp.transform],
-    body_inv_mass: wp.array[float],
-    body_inv_inertia: wp.array[wp.mat33],
-    body1: int,
-    result: wp.array[wp.vec2],
+def _eval_local_angular_compliance_kernel(
+    h_ll: wp.array[wp.mat33],
+    h_aa: wp.array[wp.mat33],
+    h_al: wp.array[wp.mat33],
+    compliance: wp.array[wp.mat33],
+    rho: wp.array[wp.vec2],
 ):
-    """Evaluate torsional and rolling inverse-Delassus conditioning."""
-    torsional_rho, rolling_rho = _contact_angular_conditioning_scales(
-        0,
-        body1,
-        wp.vec3(0.0, 0.0, 1.0),
-        body_q,
-        body_inv_mass,
-        body_inv_inertia,
-        100.0,
+    i = wp.tid()
+    angular_compliance = _angular_compliance_from_hessian(h_ll[i], h_aa[i], h_al[i])
+    torsional_rho, rolling_rho = _contact_angular_conditioning_scales_from_mobility(
+        angular_compliance, wp.vec3(0.0, 0.0, 1.0), 1.0
     )
-    result[0] = wp.vec2(torsional_rho, rolling_rho)
+    compliance[i] = angular_compliance
+    rho[i] = wp.vec2(torsional_rho, rolling_rho)
 
 
 @wp.kernel
@@ -1029,60 +1030,75 @@ def _rigid_joint_angular_rho_seed_uses_mean_mobility(test, device):
         np.testing.assert_allclose(rho.numpy(), [12.0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _rigid_contact_angular_conditioning_uses_world_pair_mobility(test, device):
-    """Verify angular conditioning uses both bodies' anisotropic inverse inertia."""
+def _angular_compliance_from_hessian_matches_dense_inverse(test, device):
+    """Verify angular compliance matches dense coupled-block inverses."""
+    del test
+    h_ll = [np.identity(3) * 2.0]
+    h_al = [np.diag([0.0, 1.0, 2.0])]
+    h_aa = [np.diag([6.0, 5.0, 10.0])]
+    full_hessians = [np.block([[h_ll[0], h_al[0].T], [h_al[0], h_aa[0]]])]
+
+    rng = np.random.default_rng(1234)
+    eigenvalues = np.geomspace(0.25, 16.0, 6)
+    for _ in range(8):
+        basis, _ = np.linalg.qr(rng.standard_normal((6, 6)))
+        hessian = basis @ np.diag(eigenvalues) @ basis.T
+        full_hessians.append(hessian)
+        h_ll.append(hessian[:3, :3])
+        h_al.append(hessian[3:, :3])
+        h_aa.append(hessian[3:, 3:])
+
+    expected = np.array([np.linalg.inv(hessian)[3:, 3:] for hessian in full_hessians])
+    count = len(full_hessians)
+    compliance = wp.empty(count, dtype=wp.mat33, device=device)
+    rho = wp.empty(count, dtype=wp.vec2, device=device)
+    wp.launch(
+        _eval_local_angular_compliance_kernel,
+        dim=count,
+        inputs=[
+            wp.array(h_ll, dtype=wp.mat33, device=device),
+            wp.array(h_aa, dtype=wp.mat33, device=device),
+            wp.array(h_al, dtype=wp.mat33, device=device),
+        ],
+        outputs=[compliance, rho],
+        device=device,
+    )
+
+    np.testing.assert_allclose(compliance.numpy(), expected, rtol=2.0e-5, atol=2.0e-6)
+    np.testing.assert_allclose(rho.numpy()[0], [8.0, 4.5], rtol=1.0e-5)
+
+
+def _rigid_contact_conditioning_uses_world_pair_mobility(test, device):
+    """Verify sliding and angular conditioning assemble both endpoint mobilities."""
     del test
     with wp.ScopedDevice(device):
-        body_inv_mass = wp.ones(2, dtype=float, device=device)
-        body_inv_inertia = wp.array(
-            [np.diag([1.0, 2.0, 4.0]), np.diag([1.0, 2.0, 4.0])],
-            dtype=wp.mat33,
-            device=device,
-        )
-        result = wp.empty(1, dtype=wp.vec2, device=device)
+        shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
         quarter_turn = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * math.pi)
         body_q = wp.array(
             [wp.transform_identity(), wp.transform(wp.vec3(0.0), quarter_turn)],
             dtype=wp.transform,
             device=device,
         )
-        wp.launch(
-            _eval_contact_angular_conditioning_kernel,
-            dim=1,
-            inputs=[body_q, body_inv_mass, body_inv_inertia, 1],
-            outputs=[result],
-            device=device,
-        )
-        # Torsion sums both z mobilities: 4+4=8. The quarter turn swaps the
-        # second body's x/y mobilities, so rolling sees diag(1,2)+diag(2,1)=3I.
-        np.testing.assert_allclose(result.numpy()[0], [12.5, 100.0 / 3.0], rtol=1.0e-6)
-
-
-def _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue(test, device):
-    """Verify tangent support preserves endpoint directions until after pair assembly."""
-    del test
-    with wp.ScopedDevice(device):
-        shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
-        body_q = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
         body_com = wp.zeros(2, dtype=wp.vec3, device=device)
         body_inv_mass = wp.ones(2, dtype=float, device=device)
         body_inv_inertia = wp.array(
-            [np.diag([0.0, 0.0, 9.0]), np.diag([0.0, 0.0, 9.0])],
+            [np.diag([1.0, 2.0, 9.0]), np.diag([1.0, 2.0, 9.0])],
             dtype=wp.mat33,
             device=device,
         )
-        support = wp.empty(1, dtype=float, device=device)
+        rho = wp.empty(1, dtype=wp.vec3, device=device)
 
         wp.launch(
-            _eval_crossed_contact_tangent_pair_support_kernel,
+            _eval_contact_pair_conditioning_kernel,
             dim=1,
             inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
-            outputs=[support],
+            outputs=[rho],
             device=device,
         )
 
-        # diag(1, 10) + diag(10, 1) = 11*I, so reduce after summing.
-        np.testing.assert_allclose(support.numpy(), [1.0 / 11.0], rtol=1.0e-6)
+        # Tangent: diag(1, 10) + diag(10, 1) = 11I.
+        # Angular: diag(1, 2, 9) + diag(2, 1, 9) = diag(3, 3, 18).
+        np.testing.assert_allclose(rho.numpy()[0], [1.0 / 11.0, 1.0 / 18.0, 1.0 / 3.0], rtol=1.0e-6)
 
 
 def _rigid_compliant_sliding_contact_has_solve_metric(test, device):
@@ -1664,6 +1680,8 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 shape_body,
                 body_q,
                 body_q_prev,
+                wp.zeros(3, dtype=wp.mat33, device=device),
+                0,
                 contact_mu,
                 wp.array([0.5, 0.0], dtype=float, device=device),
                 wp.zeros(2, dtype=float, device=device),
@@ -3799,6 +3817,88 @@ def _angular_friction_slows_rotation_without_sliding(test, device):
         test.assertLess(resisted, 0.7 * unresisted, msg=channel)
 
 
+def _torsional_friction_holds_against_stiff_drive(test, device):
+    """Verify torsional friction resists a sub-limit articulated drive."""
+    radius = 0.2
+    dt = 1.0 / 120.0
+    mu_angular = 10.0
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    builder.default_shape_cfg.ke = 5.0e5
+    builder.default_shape_cfg.kd = 0.0
+    builder.default_shape_cfg.mu = 0.0
+    builder.default_shape_cfg.mu_torsional = mu_angular
+    builder.default_shape_cfg.mu_rolling = 0.0
+    builder.add_ground_plane()
+
+    center = wp.vec3(0.0, 0.0, radius - 1.0e-5)
+    body = builder.add_link(xform=wp.transform(center, wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=radius)
+    joint = builder.add_joint_revolute(
+        -1,
+        body,
+        parent_xform=wp.transform(center, wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+        axis=newton.Axis.Z,
+        target_ke=1.0,
+        target_kd=0.0,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    inertia = float(model.body_inertia.numpy()[body, 2, 2])
+    inertial_rho = inertia / (dt * dt)
+    angular_start = int(model.joint_qd_start.numpy()[joint])
+    target_ke = model.joint_target_ke.numpy()
+    # Compliant drive auto-rho makes its effective stiffness 0.9 of authored ke.
+    target_ke[angular_start] = 100.0 * inertial_rho / 0.9
+    model.joint_target_ke.assign(target_ke)
+
+    pipeline = newton.CollisionPipeline(model, contact_matching="sticky")
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=32,
+        rigid_compliant_alm=True,
+        rigid_contact_history=True,
+    )
+    state_in, state_out = model.state(), model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    for _ in range(10):
+        state_in.clear_forces()
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, dt)
+        state_in, state_out = state_out, state_in
+
+    pipeline.collide(state_in, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+
+    normal = contacts.rigid_contact_normal.numpy()[0]
+    normal_load = max(float(np.dot(solver.body_body_contact_lambda.numpy()[0], normal)), 0.0)
+    test.assertGreater(normal_load, 0.0)
+    required_torque = 0.2 * mu_angular * normal_load
+    target_angle = required_torque / (100.0 * inertial_rho)
+    target_index = int(model.joint_target_q_start.numpy()[joint])
+    targets = control.joint_target_q.numpy()
+    targets[target_index] = target_angle
+    control.joint_target_q.assign(targets)
+
+    solver.iterations = 10
+    state_in.clear_forces()
+    solver.step(state_in, state_out, control, contacts, dt)
+
+    yaw_increment = abs(float(state_out.body_qd.numpy()[body, 5])) * dt
+    test.assertLess(yaw_increment, 0.01 * target_angle)
+    normal_load = max(float(np.dot(solver.body_body_contact_lambda.numpy()[0], normal)), 0.0)
+    torsional_torque = abs(float(np.dot(solver.body_body_contact_lambda_angular.numpy()[0], normal)))
+    torque_recovery = torsional_torque / required_torque
+    test.assertGreater(torque_recovery, 0.8)
+    test.assertLess(torque_recovery, 1.2)
+    test.assertLess(torsional_torque, mu_angular * normal_load)
+
+
 def _vbd_proxy_harvest_adds_pure_contact_torque(test, device):
     """Verify proxy harvesting adds the pure angular couple to point-force torque."""
     with wp.ScopedDevice(device):
@@ -4177,14 +4277,14 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_contact_angular_conditioning_uses_world_pair_mobility",
-    _rigid_contact_angular_conditioning_uses_world_pair_mobility,
+    "test_angular_compliance_from_hessian_matches_dense_inverse",
+    _angular_compliance_from_hessian_matches_dense_inverse,
     devices=devices,
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_contact_tangent_support_uses_pair_mobility_eigenvalue",
-    _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue,
+    "test_rigid_contact_conditioning_uses_world_pair_mobility",
+    _rigid_contact_conditioning_uses_world_pair_mobility,
     devices=devices,
 )
 add_function_test(
@@ -4446,6 +4546,12 @@ add_function_test(
     TestSolverVBD,
     "test_angular_friction_slows_rotation_without_sliding",
     _angular_friction_slows_rotation_without_sliding,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_torsional_friction_holds_against_stiff_drive_alm",
+    _torsional_friction_holds_against_stiff_drive,
     devices=devices,
 )
 add_function_test(
