@@ -11,7 +11,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from .schema_resolver import (
     PrimType,
     SchemaResolver,
@@ -296,22 +295,14 @@ class _UsdResolutionPolicy:
         """Resolved limit stiffness [N/m or N·m/rad]."""
         kd: float
         """Resolved limit damping [N·s/m or N·m·s/rad]."""
-        ke_source: Literal["force", "mjc_authored", "mjc_default"]
+        ke_source: Literal["force", "builder_default"]
         """Consumer semantics associated with ``ke``."""
-        kd_source: Literal["force", "mjc_authored", "mjc_default"]
+        kd_source: Literal["force", "builder_default"]
         """Consumer semantics associated with ``kd``."""
 
         @property
-        def solref_mode(self) -> int:
-            if self.ke_source == self.kd_source == "mjc_authored":
-                return SOLREF_MODE_RAW
-            if self.ke_source == self.kd_source == "mjc_default":
-                return SOLREF_MODE_MJCF_DEFAULT
-            return SOLREF_MODE_FORCE_SPACE
-
-        @property
-        def comparison(self) -> tuple[float, float, int]:
-            return self.ke, self.kd, self.solref_mode
+        def comparison(self) -> tuple[float, float, str, str]:
+            return self.ke, self.kd, self.ke_source, self.kd_source
 
     @dataclass(frozen=True)
     class _JointLimitAudit:
@@ -333,16 +324,12 @@ class _UsdResolutionPolicy:
         degrees_to_radian: float,
         default_joint_damping: float,
         default_joint_velocity_limit: float,
-        mjc_resolver: SchemaResolver | None,
-        mjc_schema_is_applied: Callable[[Any, str], bool] | None,
         verbose: bool,
     ) -> None:
         self._resolver = resolver
         self._degrees_to_radian = degrees_to_radian
         self._default_joint_damping = default_joint_damping
         self._default_joint_velocity_limit = default_joint_velocity_limit
-        self._mjc_resolver = mjc_resolver
-        self._mjc_schema_is_applied = mjc_schema_is_applied
         self._mjc_has_priority = False
         for candidate in resolver.resolvers:
             if candidate.name == "mjc":
@@ -1336,31 +1323,8 @@ class _UsdResolutionPolicy:
                 if key not in resolver.mapping.get(PrimType.JOINT, {}):
                     continue
                 state = read_value(resolver, key)
-                if not state.authored:
-                    continue
-                if resolver.name != "mjc":
-                    if not state.usable:
-                        continue
+                if state.authored and state.usable:
                     return _ResolvedValue(state.value, resolver, _ValueSource.AUTHORED, mapping_key=key)
-                value = state.value
-                if value is None:
-                    value = self._get_mjc_joint_limit_default(prim, key)
-                return _ResolvedValue(
-                    builder_default if value is None else value,
-                    resolver,
-                    _ValueSource.AUTHORED,
-                    mapping_key=key,
-                )
-
-            if self._mjc_resolver is not None:
-                value = self._get_mjc_joint_limit_default(prim, key)
-                if value is not None:
-                    return _ResolvedValue(
-                        value,
-                        self._mjc_resolver,
-                        _ValueSource.COMPATIBILITY_DEFAULT,
-                        mapping_key=key,
-                    )
             return _ResolvedValue(builder_default, None, _ValueSource.IMPORTER_DEFAULT)
 
         return self._resolver._resolve_interpreted_policies(
@@ -1497,7 +1461,10 @@ class _UsdResolutionPolicy:
                 changed.update((change.legacy_owners[0], change.composed_owners[0]))
             if not _values_equal(change.legacy.kd, change.composed.kd):
                 changed.update((change.legacy_owners[1], change.composed_owners[1]))
-            if change.legacy.solref_mode != change.composed.solref_mode:
+            if (
+                change.legacy.ke_source != change.composed.ke_source
+                or change.legacy.kd_source != change.composed.kd_source
+            ):
                 changed.update((*change.legacy_owners, *change.composed_owners))
 
         self._resolver._audit_assembled_property(
@@ -1512,26 +1479,15 @@ class _UsdResolutionPolicy:
             ),
         )
 
-    def _get_mjc_joint_limit_default(self, prim: Any, key: str) -> float | None:
-        resolver = self._mjc_resolver
-        if resolver is None or self._mjc_schema_is_applied is None or not self._mjc_schema_is_applied(prim, key):
-            return None
-        spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
-        if spec is None or spec.default is None:
-            return None
-        if spec.usd_value_transformer is not None:
-            return spec.usd_value_transformer(spec.default)
-        return spec.default
-
     @staticmethod
     def _interpret_joint_limit_gain(
         resolved: _ResolvedValue,
         builder_default: float,
-    ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+    ) -> tuple[float, Literal["force", "builder_default"]]:
         value = builder_default if resolved.value is None else resolved.value
-        if resolved.resolver is None or resolved.resolver.name != "mjc":
-            return value, "force"
-        return value, "mjc_authored" if resolved.authored else "mjc_default"
+        if resolved.source in (_ValueSource.IMPORTER_DEFAULT, _ValueSource.UNRESOLVED):
+            return value, "builder_default"
+        return value, "force"
 
     def _interpret_joint_velocity_limit(self, resolved: _ResolvedValue, *, is_revolute: bool) -> float:
         value = _interpret_usd_joint_velocity_limit(resolved.value)

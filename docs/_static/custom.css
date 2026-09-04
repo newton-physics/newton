@@ -85,3 +85,11 @@ dl.py.attribute {
     outline: 2px solid var(--pst-color-accent);
     outline-offset: 2px;
 }
+
+/* The theme moves the top navbar links into the navigation drawer, where they
+   repeat the table of contents as a flat list without its captions. No media
+   query is needed: the theme already hides this section above 960px. The
+   selector mirrors the theme's own specificity for this element. */
+.bd-sidebar-primary .sidebar-header-items .sidebar-header-items__center {
+    display: none;
+}

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import inspect
-import math
 import os
 import warnings
 from collections.abc import Callable, Sequence
@@ -149,8 +148,8 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
-    use_compatibility_defaults: ClassVar[bool] = False
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _use_mapping_defaults: ClassVar[bool] = False
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "NewtonSceneAPI",
         PrimType.JOINT: dict.fromkeys(
             ("armature", "damping", "friction", "limit_ke", "limit_kd", "velocity_limit"),
@@ -466,7 +465,7 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: {
             "max_solver_iterations": "PhysxSceneAPI",
             "time_steps_per_second": "PhysxSceneAPI",
@@ -656,31 +655,11 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
-# `parse_usd` divides revolute and D6-angular `limit_ke` / `limit_kd` by
-# DegreesToRadian (= pi/180) on the assumption that resolver-supplied gains are
-# authored in per-degree units (UsdPhysics convention). MuJoCo's `mjc:solreflimit`
-# always produces per-radian stiffness/damping (mjModel never expresses stiffness
-# per-degree). Pre-multiplying here cancels the importer's later division so the
-# per-radian value survives. Linear axes are unaffected and use the un-scaled
-# helpers above.
-_RAD_PER_DEG = math.pi / 180.0
-
-
-def _solref_to_stiffness_per_rad(solref: Sequence[float] | None) -> float | None:
-    s = solref_to_stiffness(solref)
-    return s * _RAD_PER_DEG if s is not None else None
-
-
-def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
-    d = solref_to_damping(solref)
-    return d * _RAD_PER_DEG if d is not None else None
-
-
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "MjcSceneAPI",
         PrimType.JOINT: "MjcJointAPI",
         PrimType.SHAPE: {
@@ -711,23 +690,6 @@ class SchemaResolverMjc(SchemaResolver):
             # MuJoCo authors angular damping per radian rather than per degree.
             "damping": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
-            # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
-            "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_linear_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_angular_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_linear_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_angular_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
         },
         PrimType.SHAPE: {
             # Mesh

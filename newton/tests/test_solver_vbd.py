@@ -1436,12 +1436,12 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
             device=device,
         )
 
-        # With K=rho: s=0.5, k_eff=5 -> lambda_n = k_eff*C_n = 0.5.
-        # Cone uses normal_force = k_eff*C_n + s*lambda_n = 0.75 -> limit 0.375.
+        # With K=rho: s=0.5, k_eff=5 -> lambda_n = k_eff*C_n = 0.5,
+        # and the Coulomb limit is mu*lambda_n = 0.25.
         np.testing.assert_allclose(
             contact_lambda.numpy(),
             [
-                [-0.375, 0.0, 0.5],
+                [-0.25, 0.0, 0.5],
                 [0.0, 0.0, 0.5],
             ],
             rtol=1.0e-6,
@@ -2336,8 +2336,9 @@ def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
 
     # The latch is solver-local so independently constructed solvers remain testable.
     for _ in range(2):
-        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it"):
+        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it") as warning:
             newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        test.assertEqual(warning.filename, __file__)
 
 
 def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(test, device):
@@ -3249,6 +3250,7 @@ def _rigid_contact_reset_lifecycle(test, device):
 
 
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
+    """Verify zero Dahl defaults and rejection of the removed compatibility option."""
     del device
 
     builder = newton.ModelBuilder()
@@ -3260,12 +3262,13 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
+    with test.assertRaisesRegex(TypeError, "dahl_defaults_enabled"):
+        newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
+
 
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -3729,7 +3732,7 @@ def _soft_contact_presize_is_world_aware(test, device):
             sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
             test.assertEqual(
                 sizes[world_count],
-                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_pair_count,
                 f"{globals_kind=} {world_count=}",
             )
         test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
@@ -4102,17 +4105,23 @@ def _build_edge_over_post(device):
 
 
 def test_edge_face_pushes_vertices_out(test, device):
-    """A soft edge/face penetrating a rigid box pushes its triangle's vertices out (+y).
+    """A soft edge/face penetrating a rigid box pushes its triangle's vertices out.
 
     With section 2 absent the particle force stays zero (legacy count is 0, gravity off),
     so the vertices never move. With section 2 present the barycentric distribution drives
-    v0 and v1 (the spanning edge) up out of the box.
+    v0 and v1 (the spanning edge) out of the box along the contact normal.
+
+    The +y penetration depth is constant along the part of the edge inside the post, so the
+    contact point is degenerate there and lands where the +y and +x exits are nearly
+    equidistant (they differ by ~4e-5). Which face the contact resolves to is therefore
+    decided by rounding and varies across devices, so assert the push along the emitted
+    contact normal rather than along +y.
     """
     model, (v0, v1, _v2) = _build_edge_over_post(device)
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4126,15 +4135,24 @@ def test_edge_face_pushes_vertices_out(test, device):
     test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "vertices should be outside the legacy particle margin")
     test.assertGreater(total, 0, "edge/face contacts must be detected")
 
+    # Every record lies on one flat face of the post, so they share a normal. Assert that
+    # rather than letting the push check below depend silently on record 0.
+    normals = contacts.soft_contact_normal.numpy()[:total]
+    test.assertTrue(
+        bool(np.allclose(normals, normals[0], atol=1.0e-6)), "edge/face records should share one face normal"
+    )
+    normal = normals[0]
+
     solver = newton.solvers.SolverVBD(model)
 
-    y0_before = state_in.particle_q.numpy()[:, 1].copy()
+    q_before = state_in.particle_q.numpy().copy()
     solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0)
-    y0_after = state_out.particle_q.numpy()[:, 1]
+    q_after = state_out.particle_q.numpy()
 
-    # The two vertices of the spanning edge are pushed up out of the +y face.
-    test.assertGreater(y0_after[v0] - y0_before[v0], 1.0e-3, "v0 should be pushed +y")
-    test.assertGreater(y0_after[v1] - y0_before[v1], 1.0e-3, "v1 should be pushed +y")
+    # The two vertices of the spanning edge are pushed out along the contact normal.
+    for name, v in (("v0", v0), ("v1", v1)):
+        push = float(np.dot(q_after[v] - q_before[v], normal))
+        test.assertGreater(push, 1.0e-3, f"{name} should be pushed along the contact normal")
 
 
 def _build_sphere_on_fixed_soft_triangle(device):
@@ -4181,7 +4199,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4226,7 +4244,7 @@ def test_edge_face_reacts_through_coupled_proxy(test, device):
         ),
     )
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -4266,7 +4284,7 @@ def _run_face_section2(device, shape_margin):
     model = builder.finalize(device=device)
 
     smax = 8
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=smax)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, soft_contact_max=smax)
     contacts = pipeline.contacts()
     state = model.state()
 
@@ -4422,7 +4440,7 @@ def test_flag_off_is_inert(test, device):
     model, _verts = _build_edge_over_post(device)
     # Flag OFF at construction: the buffer has no edge/face headroom and the passes never run.
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4452,7 +4470,7 @@ def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
     model = builder.finalize(device=device)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()  # capability marker set True
     solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)

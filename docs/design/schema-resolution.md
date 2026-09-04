@@ -71,9 +71,11 @@ Registered-schema precedence is evaluated per resolver, in priority order:
    resolver mapping.
 
 Typed schemas participate like applied API schemas. By default, the importer
-returns the legacy value and audits the registered-schema result. It emits a
+returns the legacy value without evaluating registered-schema precedence.
+Callers can explicitly audit the registered-schema result with
+`audit_registered_schema_fallbacks=True`; the audit emits a
 `DeprecationWarning` when the interpreted property would change. Callers can
-select registered-schema precedence with
+instead select registered-schema precedence with
 `use_registered_schema_fallbacks=True`, either on `SchemaResolution` or directly
 on `add_usd()` when no shared object is supplied. Unowned and unregistered
 entries may retain compatibility defaults after importer defaults. A schema
@@ -127,10 +129,10 @@ builder.add_usd(stage, schema_resolution=resolution)
 
 `schema_resolvers` and `schema_resolution` are mutually exclusive. The former
 is a compatibility shorthand for configuring the same internal policy. The
-shared object owns the fallback-policy choice, so explicitly passing either
-value for `use_registered_schema_fallbacks` at the same time is rejected. The
-importer tracks omission separately while preserving the public `False`
-default for signature inspection.
+shared object owns the fallback-policy and audit choices, so explicitly passing
+either setting at the same time is rejected. The importer tracks omission
+separately while preserving the public `False` defaults for signature
+inspection.
 
 After consumers have had time to migrate to a reusable object, the shorthand
 can be deprecated and then removed without changing resolution semantics.
@@ -279,8 +281,8 @@ contracts exist. The narrow typed facade leaves those choices open.
 ## Implementation status
 
 The typed setup object, shared scalar engine, PXR adapter, ownership metadata,
-public scalar provenance, migration audit, and importer property policy are
-implemented. The default still returns legacy values while auditing
+public scalar provenance, opt-in migration audit, and importer property policy
+are implemented. The default returns legacy values without evaluating
 registered-schema precedence.
 
 Remaining work is to adopt the scalar facade in non-PXR scene integrations,

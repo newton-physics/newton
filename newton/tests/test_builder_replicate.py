@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
-from newton.actuators import ControllerPD
+from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
@@ -88,7 +88,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_custom_values(**{"test:ref_body": child, "test:world": -1})
         builder.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=builder.joint_qd_start[child_joint],
             pos_index=builder.joint_q_start[child_joint],
             kp=100.0,
@@ -152,7 +152,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(set(expected.actuator_entries), set(actual.actuator_entries))
         for key, expected_entry in expected.actuator_entries.items():
             actual_entry = actual.actuator_entries[key]
-            for field in ("indices", "pos_indices", "controller_args", "delay_args", "clamping_args"):
+            for field in ("indices", "pos_indices", "drive_args", "delay_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
@@ -609,3 +609,35 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
+    """Per-world label prefixes on the batched replication path."""
+
+    @staticmethod
+    def _source(root: str = "") -> ModelBuilder:
+        """A two-link prototype whose labels are relative to ``root`` (empty names the root)."""
+        builder = ModelBuilder()
+        body = builder.add_link(xform=wp.transform(), label=root)
+        builder.add_shape_box(body=body, label=f"{root}/box" if root else "box")
+        return builder
+
+    def test_each_world_gets_its_own_prefix(self):
+        """Each replicated world's labels are prefixed with its own entry from label_prefixes."""
+        scene = ModelBuilder()
+        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
+        scene.replicate(self._source(), 3, label_prefixes=prefixes)
+
+        self.assertEqual(scene.shape_label, [f"{prefix}/box" for prefix in prefixes])
+
+    def test_a_none_prefix_leaves_that_world_alone(self):
+        """A None entry in label_prefixes copies that world's labels unprefixed."""
+        scene = ModelBuilder()
+        scene.replicate(self._source("root"), 2, label_prefixes=["left", None])
+
+        self.assertEqual(scene.shape_label, ["left/root/box", "root/box"])
+
+    def test_prefix_count_must_match_world_count(self):
+        """label_prefixes must have exactly one entry per replicated world."""
+        with self.assertRaises(ValueError):
+            ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])

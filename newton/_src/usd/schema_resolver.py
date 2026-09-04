@@ -99,6 +99,7 @@ def _track_omitted_usd_import_defaults(*, mesh_maxhullvert: int) -> Callable[[Ca
         enable_self_collisions=True,
         mesh_maxhullvert=mesh_maxhullvert,
         use_registered_schema_fallbacks=False,
+        audit_registered_schema_fallbacks=False,
     )
 
 
@@ -232,17 +233,7 @@ _VALUE_SOURCE_LABELS = {
 
 
 class SchemaResolver:
-    """Base class mapping USD schema attributes to Newton attributes.
-
-    Subclasses may declare static schema ownership and control whether
-    compatibility defaults remain eligible for unregistered schemas or
-    unowned mappings.
-
-    .. experimental::
-
-        The ``schema_names`` and ``use_compatibility_defaults`` extension
-        hooks may change without prior notice.
-    """
+    """Base class mapping USD schema attributes to Newton attributes."""
 
     @dataclass
     class SchemaAttribute:
@@ -283,11 +274,13 @@ class SchemaResolver:
     # Name of the schema resolver
     name: ClassVar[str]
 
-    #: Schema ownership by prim type. A schema name owns every mapped key for
-    #: that prim type. A key-to-schema mapping declares ownership per key.
-    schema_names: ClassVar[Mapping[PrimType, str | Mapping[str, str]]] = {}
-    #: Whether unregistered or unowned mappings may use compatibility defaults.
-    use_compatibility_defaults: ClassVar[bool] = True
+    # Internal schema ownership by prim type. A schema name owns every mapped
+    # key for that prim type; a key-to-schema mapping declares ownership per key.
+    _schema_ownership: ClassVar[Mapping[PrimType, str | Mapping[str, str]]] = {}
+    # Whether registered-schema resolution may use defaults stored in this
+    # resolver's mapping. These defaults are considered after the importer
+    # default, and only for unowned properties or applied unregistered schemas.
+    _use_mapping_defaults: ClassVar[bool] = True
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
     extra_attr_namespaces: ClassVar[list[str]] = []
@@ -320,31 +313,31 @@ class SchemaResolver:
         self._solver_attributes: list[str] = list(names)
 
     def _validate_schema_ownership(self) -> None:
-        if not isinstance(self.schema_names, Mapping):
-            raise TypeError(f"{type(self).__name__}.schema_names must be a mapping")
-        if not isinstance(self.use_compatibility_defaults, bool):
-            raise TypeError(f"{type(self).__name__}.use_compatibility_defaults must be a bool")
+        if not isinstance(self._schema_ownership, Mapping):
+            raise TypeError(f"{type(self).__name__}._schema_ownership must be a mapping")
+        if not isinstance(self._use_mapping_defaults, bool):
+            raise TypeError(f"{type(self).__name__}._use_mapping_defaults must be a bool")
 
-        for prim_type, ownership in self.schema_names.items():
+        for prim_type, ownership in self._schema_ownership.items():
             if not isinstance(prim_type, PrimType):
-                raise TypeError(f"{type(self).__name__}.schema_names keys must be PrimType values")
+                raise TypeError(f"{type(self).__name__}._schema_ownership keys must be PrimType values")
             if isinstance(ownership, str):
                 if not ownership:
-                    raise ValueError(f"{type(self).__name__}.schema_names cannot contain an empty schema name")
+                    raise ValueError(f"{type(self).__name__}._schema_ownership cannot contain an empty schema name")
                 continue
             if not isinstance(ownership, Mapping):
                 raise TypeError(
-                    f"{type(self).__name__}.schema_names values must be schema names or key-to-schema mappings"
+                    f"{type(self).__name__}._schema_ownership values must be schema names or key-to-schema mappings"
                 )
             mapped_keys = self.mapping.get(prim_type, {})
             for key, schema_name in ownership.items():
                 if key not in mapped_keys:
                     raise ValueError(
-                        f"{type(self).__name__}.schema_names declares unknown key '{prim_type.name.lower()}:{key}'"
+                        f"{type(self).__name__}._schema_ownership declares unknown key '{prim_type.name.lower()}:{key}'"
                     )
                 if not isinstance(schema_name, str) or not schema_name:
                     raise ValueError(
-                        f"{type(self).__name__}.schema_names['{prim_type.name.lower()}']['{key}'] "
+                        f"{type(self).__name__}._schema_ownership['{prim_type.name.lower()}']['{key}'] "
                         "must be a non-empty schema name"
                     )
 
@@ -404,10 +397,10 @@ class SchemaResolver:
         return _ResolverValue(None, authored)
 
     def _schema_name(self, prim_type: PrimType, key: str) -> str | None:
-        schema_names = self.schema_names.get(prim_type)
-        if isinstance(schema_names, str):
-            return schema_names if key in self.mapping.get(prim_type, {}) else None
-        return schema_names.get(key) if schema_names is not None else None
+        ownership = self._schema_ownership.get(prim_type)
+        if isinstance(ownership, str):
+            return ownership if key in self.mapping.get(prim_type, {}) else None
+        return ownership.get(key) if ownership is not None else None
 
     def _schema_is_applied(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> bool:
         schema_name = self._schema_name(prim_type, key)
@@ -648,7 +641,7 @@ class _SchemaResolutionPolicy:
             spec = resolver.mapping.get(prim_type, {}).get(key)
             if (
                 spec is None
-                or not resolver.use_compatibility_defaults
+                or not resolver._use_mapping_defaults
                 or (resolver._schema_name(prim_type, key) is not None and id(resolver) not in compatibility_fallbacks)
                 or spec.default is None
             ):
@@ -715,6 +708,9 @@ class SchemaResolution:
         use_registered_schema_fallbacks: Use registered schema fallbacks
             before importer defaults. Defaults to ``False`` during the
             compatibility period.
+        audit_registered_schema_fallbacks: While retaining legacy precedence,
+            compare its results with registered-schema precedence and warn when
+            they differ. Defaults to ``False``.
     """
 
     class Source(IntEnum):
@@ -759,9 +755,13 @@ class SchemaResolution:
         resolvers: Sequence[SchemaResolver],
         *,
         use_registered_schema_fallbacks: bool = False,
+        audit_registered_schema_fallbacks: bool = False,
     ):
+        if use_registered_schema_fallbacks and audit_registered_schema_fallbacks:
+            raise ValueError("audit_registered_schema_fallbacks requires use_registered_schema_fallbacks=False")
         self._resolvers = tuple(resolvers)
         self._use_registered_schema_fallbacks = use_registered_schema_fallbacks
+        self._audit_registered_schema_fallbacks = audit_registered_schema_fallbacks
         self._policy = _SchemaResolutionPolicy(self._resolvers)
 
     def _selected_keys(self, prim_type: PrimType, keys: Sequence[str] | None) -> set[str] | None:
@@ -943,23 +943,21 @@ class SchemaResolution:
         for key in logical_keys:
             has_default = key in defaults
             default = defaults.get(key)
-            registered = self._policy._resolve_value(
-                read_value,
-                lambda resolver, current_key: resolver._schema_name(prim_type, current_key) in applied_schemas,
-                lambda resolver, current_key: self._fallback(
-                    resolver,
-                    prim_type,
-                    current_key,
-                    values,
-                    schema_fallbacks,
-                ),
-                prim_type,
-                key,
-                default=_ImporterDefault(default) if has_default else None,
-            )
-
             if self._use_registered_schema_fallbacks:
-                selected_value = registered
+                selected_value = self._policy._resolve_value(
+                    read_value,
+                    lambda resolver, current_key: resolver._schema_name(prim_type, current_key) in applied_schemas,
+                    lambda resolver, current_key: self._fallback(
+                        resolver,
+                        prim_type,
+                        current_key,
+                        values,
+                        schema_fallbacks,
+                    ),
+                    prim_type,
+                    key,
+                    default=_ImporterDefault(default) if has_default else None,
+                )
             else:
                 selected_value = self._policy._resolve_legacy_value(
                     read_value,
@@ -967,8 +965,23 @@ class SchemaResolution:
                     key,
                     default=_ImporterDefault(default) if has_default else None,
                 )
-                if not _values_equal(selected_value.value, registered.value):
-                    compatibility_changes.add(self._fallback_label(registered, prim_type, key))
+                if self._audit_registered_schema_fallbacks:
+                    registered = self._policy._resolve_value(
+                        read_value,
+                        lambda resolver, current_key: resolver._schema_name(prim_type, current_key) in applied_schemas,
+                        lambda resolver, current_key: self._fallback(
+                            resolver,
+                            prim_type,
+                            current_key,
+                            values,
+                            schema_fallbacks,
+                        ),
+                        prim_type,
+                        key,
+                        default=_ImporterDefault(default) if has_default else None,
+                    )
+                    if not _values_equal(selected_value.value, registered.value):
+                        compatibility_changes.add(self._fallback_label(registered, prim_type, key))
             resolved[key] = self._public_result(selected_value, prim_type, key)
 
         if compatibility_changes:
@@ -976,7 +989,8 @@ class SchemaResolution:
             warnings.warn(
                 "This resolution used deprecated legacy USD property precedence; "
                 f"registered-schema precedence changes {properties}. Set "
-                "use_registered_schema_fallbacks=True on SchemaResolution to adopt the future behavior.",
+                "use_registered_schema_fallbacks=True on SchemaResolution to adopt the future behavior, or "
+                "audit_registered_schema_fallbacks=False to disable this audit.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -1145,6 +1159,7 @@ class SchemaResolverManager:
         *,
         resolution: SchemaResolution | None = None,
         use_registered_schema_fallbacks: bool | _ImporterDefault = _OMITTED_SCHEMA_FALLBACK_POLICY,
+        audit_registered_schema_fallbacks: bool | _ImporterDefault = _OMITTED_SCHEMA_FALLBACK_POLICY,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
@@ -1157,26 +1172,36 @@ class SchemaResolverManager:
                 schema definitions supply these fallbacks; unregistered resolver
                 defaults remain after importer defaults. Omit this argument when
                 ``resolution`` owns the policy. Defaults to False.
+            audit_registered_schema_fallbacks: Compare legacy results with registered
+                schema fallback precedence. Omit this argument when ``resolution``
+                owns the policy. Defaults to False.
         """
         policy_was_omitted = isinstance(use_registered_schema_fallbacks, _ImporterDefault)
         if policy_was_omitted:
             use_registered_schema_fallbacks = use_registered_schema_fallbacks.value
+        audit_was_omitted = isinstance(audit_registered_schema_fallbacks, _ImporterDefault)
+        if audit_was_omitted:
+            audit_registered_schema_fallbacks = audit_registered_schema_fallbacks.value
 
         if resolution is not None:
             if resolvers is not None:
                 raise ValueError("resolvers and resolution are mutually exclusive")
             if not policy_was_omitted:
                 raise ValueError("use_registered_schema_fallbacks cannot be supplied when resolution owns the policy")
+            if not audit_was_omitted:
+                raise ValueError("audit_registered_schema_fallbacks cannot be supplied when resolution owns the policy")
             self._schema_resolution = resolution
         elif resolvers is not None:
             self._schema_resolution = SchemaResolution(
                 resolvers,
                 use_registered_schema_fallbacks=bool(use_registered_schema_fallbacks),
+                audit_registered_schema_fallbacks=bool(audit_registered_schema_fallbacks),
             )
         else:
             raise ValueError("resolvers or resolution is required")
         self.resolvers = list(self._schema_resolution._resolvers)
         self._use_registered_schema_fallbacks = self._schema_resolution._use_registered_schema_fallbacks
+        self._audit_registered_schema_fallbacks = self._schema_resolution._audit_registered_schema_fallbacks
         self._resolution = self._schema_resolution._policy
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: dict[SchemaResolverManager._MigrationTransition, set[str]] = {}
@@ -1380,6 +1405,10 @@ class SchemaResolverManager:
     def _uses_composed_fallbacks(self) -> bool:
         return self._use_registered_schema_fallbacks
 
+    @property
+    def _audits_composed_fallbacks(self) -> bool:
+        return self._audit_registered_schema_fallbacks
+
     def _active_default(self, default: Any, legacy_default: Any) -> Any:
         if not self._uses_composed_fallbacks and legacy_default is not _SAME_AS_DEFAULT:
             return legacy_default
@@ -1445,7 +1474,7 @@ class SchemaResolverManager:
                 resolved.compatibility_resolver,
                 resolved.mapping_key,
             )
-        if not self._uses_composed_fallbacks and audit_fallbacks:
+        if self._audits_composed_fallbacks and audit_fallbacks:
             self._record_legacy_fallback(
                 prim,
                 prim_type,
@@ -1479,16 +1508,17 @@ class SchemaResolverManager:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
         else:
             resolved = resolve_legacy(tuple(self.resolvers), read_value)
-            self._record_legacy_fallback(
-                prim,
-                prim_type,
-                key,
-                default,
-                resolved,
-                audit_provenance=self._AuditProvenance.SOURCE,
-                result_interpreter=result_interpreter,
-                read_value=read_value,
-            )
+            if self._audits_composed_fallbacks:
+                self._record_legacy_fallback(
+                    prim,
+                    prim_type,
+                    key,
+                    default,
+                    resolved,
+                    audit_provenance=self._AuditProvenance.SOURCE,
+                    result_interpreter=result_interpreter,
+                    read_value=read_value,
+                )
 
         if resolved.resolver is not None:
             self._collect_on_first_use(resolved.resolver, prim)
@@ -1539,6 +1569,9 @@ class SchemaResolverManager:
             legacy = resolve_legacy(tuple(self.resolvers), read_value)
             if legacy.resolver is not None:
                 self._collect_on_first_use(legacy.resolver, prim)
+
+        if not self._audits_composed_fallbacks:
+            return self._PolicyValues(legacy, None, None)
 
         try:
             composed = self._resolve_value(
@@ -1632,7 +1665,7 @@ class SchemaResolverManager:
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
     ) -> None:
         """Record properties whose legacy and composed resolution diverge."""
-        if self._uses_composed_fallbacks:
+        if not self._audits_composed_fallbacks:
             return
 
         try:
@@ -1693,7 +1726,7 @@ class SchemaResolverManager:
         candidates: Sequence[SchemaResolverManager._PolicyChangeCandidate],
     ) -> None:
         """Audit inputs that contribute to an assembled property change."""
-        if self._uses_composed_fallbacks or _values_equal(legacy_comparison, composed_comparison):
+        if not self._audits_composed_fallbacks or _values_equal(legacy_comparison, composed_comparison):
             return
 
         for candidate in candidates:
@@ -1806,7 +1839,7 @@ class SchemaResolverManager:
 
     def _fallback_migration_warning(self) -> str | None:
         """Build one actionable warning for audited precedence changes."""
-        if self._uses_composed_fallbacks or not self._legacy_fallback_properties:
+        if not self._audits_composed_fallbacks or not self._legacy_fallback_properties:
             return None
 
         properties = self._format_fallback_locations(self._legacy_fallback_properties)

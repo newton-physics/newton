@@ -402,11 +402,10 @@ properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
 velocity targets at :attr:`newton.Control.joint_target_qd`.
 
 The position targets at :attr:`newton.Control.joint_target_q` instead match
-:attr:`newton.Model.joint_q` (coord layout) when
-:attr:`newton.use_coord_layout_targets` is ``True``; index those with
-:attr:`newton.Model.joint_q_start`. Under the legacy default
-(``use_coord_layout_targets = False``) the array is still DOF-shaped and
-indexed via :attr:`newton.Model.joint_qd_start` — see the
+:attr:`newton.Model.joint_q` (coord layout) by default; index those with
+:attr:`newton.Model.joint_q_start`. Under the deprecated legacy layout
+(``use_coord_layout_targets = False``) the array is DOF-shaped and indexed
+via :attr:`newton.Model.joint_qd_start` — see the
 :ref:`migration guide <joint-target-layout>` for details.
 
 For every generalized-coordinate joint, these per-DOF arrays are stored

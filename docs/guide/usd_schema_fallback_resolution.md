@@ -9,9 +9,7 @@ orphan: true
 
 ## Status
 
-This document describes registered USD schema fallback precedence and its
-source-neutral resolution interface. The implementation continues the work
-from PR #3572, PR #3568, and PR #3888 and addresses issue #3307.
+This document describes registered USD schema fallback precedence and the source-neutral resolution interface built on it. PR #3888 continues and supersedes PR #3572 and addresses the fallback-precedence part of issue #3307. PR #3984 depends on that work and continues and supersedes PR #3568 by exposing the common resolution interface and provenance.
 
 ## Goal
 
@@ -29,12 +27,13 @@ These sources have different authority. The resolution policy makes that authori
 
 The {ref}`schema resolver guide <schema_resolvers>` is authoritative for user-visible behavior. The two policies are summarized here to explain the implementation:
 
-| Policy | Resolution order |
+| Mode | Resolution order |
 | --- | --- |
-| Legacy: omitted or `False` | Authored value → importer default → compatibility default → unresolved. |
-| Registered schema: `True` | Explicit override → each resolver's authored value or registered fallback → importer default → eligible compatibility default → unresolved. |
+| Legacy: both flags `False` | Authored value → importer default → compatibility default → unresolved. |
+| Legacy with audit: `audit_registered_schema_fallbacks=True` | Return the legacy result and compare it with registered-schema precedence. |
+| Registered schema: `use_registered_schema_fallbacks=True` | Explicit override → each resolver's authored value or registered fallback → importer default → eligible compatibility default → unresolved. |
 
-Legacy behavior is deprecated and audited against registered-schema precedence. One quirk is intentionally preserved: after selecting a compatibility default, a property transformer may turn it into `None`, but resolution does not continue to a later compatibility default.
+Legacy behavior is deprecated. Its optional audit compares it with registered-schema precedence. One quirk is intentionally preserved: after selecting a compatibility default, a property transformer may turn it into `None`, but resolution does not continue to a later compatibility default.
 
 Under registered-schema precedence, resolver priority applies to each resolver's complete candidate. An earlier resolver's registered fallback therefore wins over a later resolver's authored value.
 
@@ -64,6 +63,8 @@ The implementation has three roles:
 
 Registered fallbacks come from the composed prim definition in `Usd.SchemaRegistry`. Newton does not copy vendor fallback catalogs into Python.
 
+The `newton[importers]` extra requires `newton-usd-schemas>=0.5.0`; the repository lock currently tests version 0.5.0. PhysX and MuJoCo schema plugins are optional. Their resolvers still read authored vendor attributes when a plugin is missing, but only a registered plugin can provide authoritative schema fallbacks. The schema packages, rather than Newton, own plugin registration and fallback metadata.
+
 Registration and fallback presence are distinct:
 
 | Schema state | Result |
@@ -72,7 +73,7 @@ Registration and fallback presence are distinct:
 | Registered property without fallback | The schema supplies no fallback for that property. |
 | Unregistered schema | A compatibility default may be considered after the importer default. |
 
-Public `SchemaResolver` subclasses declare static ownership with `schema_names`. A schema name owns every mapped key for a prim type, while a nested mapping declares ownership per key. `use_compatibility_defaults` controls whether unregistered or unowned mappings retain their compatibility defaults.
+Newton's built-in `SchemaResolver` subclasses declare ownership internally with `_schema_ownership`. A schema name owns every mapped key for a prim type, while a nested mapping declares ownership per key. `_use_mapping_defaults` controls whether unregistered or unowned mappings retain their compatibility defaults. Custom resolvers without an internal ownership declaration keep their existing compatibility behavior.
 
 ### Usable candidates
 
@@ -98,13 +99,13 @@ Equal numbers are normally equivalent. Source provenance is compared only when t
 
 ## Migration diagnostics
 
-Legacy imports resolve the registered-schema result using cached reads and emit at most one aggregated `DeprecationWarning` per import. The warning is emitted only for a proven interpreted value or relevant source change; audit failures alone do not warn. It identifies the old and new suppliers, bounds the list of prim paths, and explains how to adopt or preserve the behavior.
+Set `audit_registered_schema_fallbacks=True` to make a legacy import resolve the registered-schema result using cached reads and emit at most one aggregated `DeprecationWarning`. The warning is emitted only for a proven interpreted value or relevant source change; audit failures alone do not warn. It identifies the old and new suppliers, bounds the list of prim paths, and explains how to adopt or preserve the behavior.
 
 An explicit importer override suppresses migration auditing for that property because the caller has already selected its future value.
 
 ## Performance
 
-The policy extraction adds no stage traversal and does not build a second model. Registered-schema mode evaluates only the selected policy. Legacy mode also evaluates the future result for migration diagnostics, but authored reads and composed schema definitions are cached for the import.
+The policy extraction adds no stage traversal and does not build a second model. Normal legacy and registered-schema imports evaluate only their selected policy. The optional migration audit evaluates both policies, but authored reads and composed schema definitions are cached for the import.
 
 Local before-and-after timings should cover a large authored-value stage and a fallback-heavy stage. This is an engineering check rather than a committed benchmark or public performance guarantee.
 
@@ -112,7 +113,7 @@ Local before-and-after timings should cover a large authored-value stage and a f
 
 When adding a resolved property:
 
-1. Declare its mapping and schema ownership.
+1. Add its mapping and, for a built-in resolver, its internal schema ownership.
 2. Separate its importer default from any explicit override.
 3. Define property-specific unset and interpretation rules.
 4. Use ordinary resolution unless the consumer observes source semantics.

@@ -18,9 +18,10 @@ from .core.conversions import (
     convert_model_joint_actuation,
     convert_model_joint_transforms,
     convert_model_materials,
+    refresh_masked_body_inertia,
     validate_model_structural_updates,
 )
-from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
+from .core.joints import JOINT_QMAX, JOINT_QMIN, DofActuationPath, JointActuationType
 from .core.model import ModelKamino
 from .core.state import StateKamino
 from .geometry.contacts import (
@@ -42,6 +43,7 @@ __all__ = [
     "CollisionDetector",
     "ContactsKamino",
     "ControlKamino",
+    "DofActuationPath",
     "JointActuationType",
     "ModelKamino",
     "SolverKaminoImpl",
@@ -58,5 +60,6 @@ __all__ = [
     "convert_model_joint_transforms",
     "convert_model_materials",
     "msg",
+    "refresh_masked_body_inertia",
     "validate_model_structural_updates",
 ]
