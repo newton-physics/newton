@@ -29,12 +29,12 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
-from ..joint_mimic import has_supported_joint_mimics, project_joint_mimics
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces
+from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -3547,7 +3547,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.body_inv_inertia_effective,
                 self._mimic_body_deltas,
                 dt,
-                8,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0:

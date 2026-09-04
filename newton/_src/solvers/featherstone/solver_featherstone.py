@@ -6,14 +6,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
-from ...sim.articulation import eval_mimic_joints
+from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..joint_mimic import (
-    expand_mimic_accelerations,
-    has_supported_joint_mimics,
-    reduce_mimic_forces,
-    reduce_mimic_inertia,
-)
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -53,8 +47,11 @@ from .kernels import (
     eval_rigid_jacobian,
     eval_rigid_mass,
     eval_rigid_tau,
+    expand_mimic_accelerations,
     integrate_generalized_joints,
     reconstruct_free_distance_joint_q_from_body_pose,
+    reduce_mimic_forces,
+    reduce_mimic_inertia,
     zero_kinematic_body_forces,
     zero_kinematic_joint_qdd,
 )
