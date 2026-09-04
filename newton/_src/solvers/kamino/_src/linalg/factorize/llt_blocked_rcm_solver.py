@@ -24,8 +24,12 @@ for debugging/introspection.
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Sequence
+from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ......core.types import override
@@ -37,6 +41,7 @@ from .llt_blocked_rcm import (
     llt_blocked_rcm_factorize,
     llt_blocked_rcm_factorize_parallel,
     llt_blocked_rcm_fused_permute_and_tp,
+    llt_blocked_rcm_permute_matrix,
     llt_blocked_rcm_permute_vector,
     llt_blocked_rcm_solve,
     llt_blocked_rcm_solve_inplace,
@@ -44,6 +49,7 @@ from .llt_blocked_rcm import (
     make_llt_blocked_rcm_factorize_kernel,
     make_llt_blocked_rcm_fused_permute_and_tp_kernel,
     make_llt_blocked_rcm_parallel_factorize_kernels,
+    make_llt_blocked_rcm_permute_matrix_kernel,
     make_llt_blocked_rcm_permute_vector_kernel,
     make_llt_blocked_rcm_solve_inplace_kernel,
     make_llt_blocked_rcm_solve_kernel,
@@ -62,6 +68,123 @@ __all__ = ["LLTBlockedRCMSolver"]
 ###
 
 wp.set_module_options({"enable_backward": False})
+
+
+def _reverse_cuthill_mckee(adjacency: Sequence[set[int]]) -> list[int]:
+    """Compute a deterministic RCM permutation for a host-side graph."""
+    degrees = [len(neighbors) for neighbors in adjacency]
+    remaining = set(range(len(adjacency)))
+    order = []
+    while remaining:
+        root = min(remaining, key=lambda vertex: (degrees[vertex], vertex))
+        queue = deque([root])
+        remaining.remove(root)
+        while queue:
+            vertex = queue.popleft()
+            order.append(vertex)
+            neighbors = sorted(
+                (neighbor for neighbor in adjacency[vertex] if neighbor in remaining),
+                key=lambda neighbor: (degrees[neighbor], neighbor),
+            )
+            for neighbor in neighbors:
+                remaining.remove(neighbor)
+                queue.append(neighbor)
+    order.reverse()
+    return order
+
+
+@lru_cache(maxsize=32)
+def _fixed_symbolic_block_data(
+    dimension: int,
+    adjacency_rows: tuple[tuple[int, ...], ...],
+    block_size: int,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    """Build reusable symbolic data for one matrix block."""
+    if len(adjacency_rows) != dimension:
+        raise ValueError("Each symbolic adjacency graph must match its matrix dimension.")
+    adjacency = []
+    for row, neighbors in enumerate(adjacency_rows):
+        neighbor_set = {int(neighbor) for neighbor in neighbors}
+        if any(neighbor < 0 or neighbor >= dimension for neighbor in neighbor_set):
+            raise ValueError("Symbolic adjacency indices must reference their matrix block.")
+        neighbor_set.discard(row)
+        adjacency.append(neighbor_set)
+    if any(row not in adjacency[neighbor] for row, neighbors in enumerate(adjacency) for neighbor in neighbors):
+        raise ValueError("symbolic_adjacency must be symmetric.")
+
+    permutation = _reverse_cuthill_mckee(adjacency)
+    inverse = [0] * dimension
+    for reordered, original in enumerate(permutation):
+        inverse[original] = reordered
+
+    tile_count = (dimension + block_size - 1) // block_size
+    tile_pattern = [0] * (tile_count * tile_count)
+    for tile in range(tile_count):
+        tile_pattern[tile * tile_count + tile] = 1
+    for original_row, neighbors in enumerate(adjacency):
+        tile_row = inverse[original_row] // block_size
+        for original_col in neighbors:
+            tile_col = inverse[original_col] // block_size
+            high = max(tile_row, tile_col)
+            low = min(tile_row, tile_col)
+            tile_pattern[high * tile_count + low] = 1
+
+    for column in range(tile_count):
+        for row in range(column + 1, tile_count):
+            if tile_pattern[row * tile_count + column] != 0:
+                continue
+            for previous in range(column):
+                if tile_pattern[row * tile_count + previous] != 0 and tile_pattern[column * tile_count + previous] != 0:
+                    tile_pattern[row * tile_count + column] = 1
+                    break
+
+    tile_traversal = [-1] * (2 * tile_count * tile_count)
+    backward_offset = tile_count * tile_count
+    for row in range(tile_count):
+        forward = [column for column in range(row) if tile_pattern[row * tile_count + column] != 0]
+        backward = [
+            following for following in range(row + 1, tile_count) if tile_pattern[following * tile_count + row] != 0
+        ]
+        row_offset = row * tile_count
+        tile_traversal[row_offset : row_offset + len(forward)] = forward
+        tile_traversal[backward_offset + row_offset : backward_offset + row_offset + len(backward)] = backward
+    return tuple(permutation), tuple(inverse), tuple(tile_pattern), tuple(tile_traversal)
+
+
+def _fixed_symbolic_data(
+    dimensions: Sequence[int],
+    adjacency_blocks: Sequence[Sequence[Sequence[int]]],
+    block_size: int,
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    """Build packed permutations, filled tile patterns, and ordered solve work."""
+    if len(adjacency_blocks) != len(dimensions):
+        raise ValueError("symbolic_adjacency must contain one graph per matrix block.")
+
+    packed_permutation = []
+    packed_inverse = []
+    packed_tile_pattern = []
+    packed_tile_traversal = []
+    block_cache = {}
+    for dimension, adjacency_rows in zip(dimensions, adjacency_blocks, strict=True):
+        cache_key = (dimension, id(adjacency_rows))
+        block_data = block_cache.get(cache_key)
+        if block_data is None:
+            try:
+                hash(adjacency_rows)
+                normalized_adjacency = adjacency_rows
+            except TypeError:
+                normalized_adjacency = tuple(
+                    tuple(int(neighbor) for neighbor in neighbors) for neighbors in adjacency_rows
+                )
+            block_data = _fixed_symbolic_block_data(dimension, normalized_adjacency, block_size)
+            block_cache[cache_key] = block_data
+        permutation, inverse, tile_pattern, tile_traversal = block_data
+        packed_permutation.extend(permutation)
+        packed_inverse.extend(inverse)
+        packed_tile_pattern.extend(tile_pattern)
+        packed_tile_traversal.extend(tile_traversal)
+
+    return packed_permutation, packed_inverse, packed_tile_pattern, packed_tile_traversal
 
 
 class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
@@ -111,6 +234,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         rcm_max_bfs_iters: int | None = None,
         reuse_permutation: bool = True,
         parallel_factorization: bool = False,
+        symbolic_adjacency: Sequence[Sequence[Sequence[int]]] | None = None,
         dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
@@ -131,6 +255,10 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 pattern is still rebuilt each time. Defaults to ``True``.
             parallel_factorization: whether to solve off-diagonal tiles of
                 each Cholesky panel in parallel. Defaults to ``False``.
+            symbolic_adjacency: optional fixed structural adjacency for every
+                matrix block. When provided, ordering and symbolic Cholesky
+                fill are computed once during allocation and reused by every
+                numeric factorization.
         """
         # The underlying kernels (factorize / solve / permute / tile-pattern)
         # are hard-coded to wp.float32, so reject any other dtype up front
@@ -147,6 +275,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._P: wp.array[wp.int32] | None = None
         self._inv_P: wp.array[wp.int32] | None = None
         self._tile_pattern: wp.array[wp.int32] | None = None
+        self._tile_traversal: wp.array[wp.int32] | None = None
         self._tpo: wp.array[wp.int32] | None = None
         # Batched-RCM scratch (owned here so the recorded launches in
         # ``_reorder_callback`` never reference buffers that outlive our
@@ -173,15 +302,18 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
         self._reuse_permutation = reuse_permutation
         self._parallel_factorization = parallel_factorization
+        self._symbolic_adjacency = symbolic_adjacency
 
         # Build kernels (cached by block_size / max_dim at allocate time).
         self._factorize_kernel = make_llt_blocked_rcm_factorize_kernel(block_size)
         self._parallel_factorize_kernels = make_llt_blocked_rcm_parallel_factorize_kernels(block_size)
-        self._solve_kernel = make_llt_blocked_rcm_solve_kernel(block_size)
-        self._solve_inplace_kernel = make_llt_blocked_rcm_solve_inplace_kernel(block_size)
+        compact_traversal = symbolic_adjacency is not None
+        self._solve_kernel = make_llt_blocked_rcm_solve_kernel(block_size, compact_traversal)
+        self._solve_inplace_kernel = make_llt_blocked_rcm_solve_inplace_kernel(block_size, compact_traversal)
         # Auxiliary kernels resolved in _allocate_impl once we know max_dim.
         self._permute_vector_kernel = None
         self._fused_permute_and_tp_kernel = None
+        self._permute_matrix_kernel = None
         self._symbolic_fill_in_kernel = None
 
         # Initialize base class members
@@ -232,6 +364,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             raise ValueError("Tile pattern array has not been allocated!")
         return self._tile_pattern
 
+    @property
+    def block_size(self) -> int:
+        """Return the tile size used by factorization and solve kernels."""
+        return self._block_size
+
     ###
     # Implementation
     ###
@@ -256,18 +393,24 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._fused_permute_and_tp_kernel = make_llt_blocked_rcm_fused_permute_and_tp_kernel(
             self._block_size, self._max_dim
         )
+        self._permute_matrix_kernel = make_llt_blocked_rcm_permute_matrix_kernel(self._max_dim)
         max_n_tiles = (self._max_dim + self._block_size - 1) // self._block_size
         self._symbolic_fill_in_kernel = make_llt_blocked_rcm_symbolic_fill_in_kernel(max_n_tiles)
 
         # Per-block tile-pattern layout: n_tiles_i^2 entries per block.
-        # Computed on host once from info.dimensions (a cheap list).
+        # Compute all offsets at once from the cached host dimensions.
         dims = list(info.dimensions)
         bs = self._block_size
-        tp_sizes = [((d + bs - 1) // bs) ** 2 for d in dims]
-        tp_offsets = [0]
-        for s in tp_sizes:
-            tp_offsets.append(tp_offsets[-1] + s)
-        total_tp_size = tp_offsets[-1]
+        dims_np = np.asarray(dims, dtype=np.int64)
+        tile_counts = (dims_np + bs - 1) // bs
+        tp_offsets = np.empty(len(dims) + 1, dtype=np.int64)
+        tp_offsets[0] = 0
+        np.cumsum(tile_counts * tile_counts, out=tp_offsets[1:])
+        total_tp_size = int(tp_offsets[-1])
+
+        fixed_symbolic_data = None
+        if self._symbolic_adjacency is not None:
+            fixed_symbolic_data = _fixed_symbolic_data(dims, self._symbolic_adjacency, self._block_size)
 
         with wp.ScopedDevice(self._device):
             # Factorization + intermediate buffers.
@@ -284,6 +427,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
             # Tile-pattern flat storage + offsets.
             self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=wp.int32)
+            traversal_size = len(fixed_symbolic_data[3]) if fixed_symbolic_data is not None else 0
+            self._tile_traversal = wp.empty(shape=(max(1, traversal_size),), dtype=wp.int32)
             self._tpo = to_warp_int32_array(tp_offsets[:-1])
 
             # Batched-RCM scratch. Owning these here matches how the other
@@ -294,6 +439,14 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 num_blocks=info.num_blocks,
                 device=self._device,
             )
+
+            if fixed_symbolic_data is not None:
+                permutation, inverse, tile_pattern, tile_traversal = fixed_symbolic_data
+                self._P.assign(permutation)
+                self._inv_P.assign(inverse)
+                self._tile_pattern.assign(tile_pattern)
+                if tile_traversal:
+                    self._tile_traversal.assign(tile_traversal)
 
         # The batched-RCM launch callback (``self._reorder_callback``) is
         # (re)built lazily in ``_ensure_reorder_launches_bound`` the first
@@ -308,14 +461,15 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._y.zero_()
         self._A_hat.zero_()
         self._x_hat.zero_()
-        self._P.zero_()
-        self._rcm_scratch["permutation_valid"].zero_()
-        self._rcm_scratch["permutation_dim"].zero_()
-        self._inv_P.zero_()
-        self._permutation_initialized = False
-        self._permutation_initialized_during_capture = False
-        self._permutation_capture_id = None
-        self._tile_pattern.zero_()
+        if self._symbolic_adjacency is None:
+            self._P.zero_()
+            self._rcm_scratch["permutation_valid"].zero_()
+            self._rcm_scratch["permutation_dim"].zero_()
+            self._inv_P.zero_()
+            self._permutation_initialized = False
+            self._permutation_initialized_during_capture = False
+            self._permutation_capture_id = None
+            self._tile_pattern.zero_()
         self._has_factors = False
 
     def _ensure_reorder_launches_bound(self, A: wp.array[Any]) -> None:
@@ -349,6 +503,56 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
     @override
     def _factorize_impl(self, A: wp.array[Any]) -> None:
+        info = self._operator.info
+        num_blocks = info.num_blocks
+
+        if self._symbolic_adjacency is not None:
+            llt_blocked_rcm_permute_matrix(
+                kernel=self._permute_matrix_kernel,
+                dim=info.dim,
+                mio=info.mio,
+                vio=info.vio,
+                P=self._P,
+                A=A,
+                A_hat=self._A_hat,
+                num_blocks=num_blocks,
+                max_dim=self._max_dim,
+                device=self._device,
+            )
+        else:
+            self._factorize_symbolic_and_permute(A)
+
+        # Numeric factorization with tile-pattern skips.
+        if self._parallel_factorization:
+            llt_blocked_rcm_factorize_parallel(
+                kernels=self._parallel_factorize_kernels,
+                dim=info.dim,
+                mio=info.mio,
+                tpo=self._tpo,
+                A=self._A_hat,
+                tile_pattern=self._tile_pattern,
+                L=self._L,
+                num_blocks=num_blocks,
+                max_tiles=(self._max_dim + self._block_size - 1) // self._block_size,
+                block_dim=self._factorize_block_dim,
+                device=self._device,
+            )
+        else:
+            llt_blocked_rcm_factorize(
+                kernel=self._factorize_kernel,
+                dim=info.dim,
+                mio=info.mio,
+                tpo=self._tpo,
+                A=self._A_hat,
+                tile_pattern=self._tile_pattern,
+                L=self._L,
+                num_blocks=num_blocks,
+                block_dim=self._factorize_block_dim,
+                device=self._device,
+            )
+
+    def _factorize_symbolic_and_permute(self, A: wp.array[Any]) -> None:
+        """Refresh numeric-derived symbolic data for the compatibility path."""
         info = self._operator.info
         num_blocks = info.num_blocks
         is_capturing = bool(self._device.is_capturing)
@@ -424,35 +628,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             device=self._device,
         )
 
-        # 4. Numeric factorization with tile-pattern skips.
-        if self._parallel_factorization:
-            llt_blocked_rcm_factorize_parallel(
-                kernels=self._parallel_factorize_kernels,
-                dim=info.dim,
-                mio=info.mio,
-                tpo=self._tpo,
-                A=self._A_hat,
-                tile_pattern=self._tile_pattern,
-                L=self._L,
-                num_blocks=num_blocks,
-                max_tiles=(self._max_dim + self._block_size - 1) // self._block_size,
-                block_dim=self._factorize_block_dim,
-                device=self._device,
-            )
-        else:
-            llt_blocked_rcm_factorize(
-                kernel=self._factorize_kernel,
-                dim=info.dim,
-                mio=info.mio,
-                tpo=self._tpo,
-                A=self._A_hat,
-                tile_pattern=self._tile_pattern,
-                L=self._L,
-                num_blocks=num_blocks,
-                block_dim=self._factorize_block_dim,
-                device=self._device,
-            )
-
     @override
     def _reconstruct_impl(self, A: wp.array[Any]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
@@ -472,6 +647,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             P=self._P,
             L=self._L,
             tile_pattern=self._tile_pattern,
+            tile_traversal=self._tile_traversal,
             b=b,
             y=self._y,
             x_hat=self._x_hat,
@@ -508,6 +684,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             tpo=self._tpo,
             L=self._L,
             tile_pattern=self._tile_pattern,
+            tile_traversal=self._tile_traversal,
             y=self._y,
             x=self._x_hat,
             num_blocks=num_blocks,
