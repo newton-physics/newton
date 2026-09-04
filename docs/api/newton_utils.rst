@@ -13,6 +13,7 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
+   CableSplineShape
    ColorSpace
    EventTracer
    MeshAdjacency
@@ -26,6 +27,7 @@ newton.utils
    :signatures: long
 
    bourke_color_map
+   cable_spline_shape
    cable_straight_points
    color_graph
    color_linear_to_srgb

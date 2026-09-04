@@ -72,7 +72,9 @@ __all__ += [
 # cable and rod utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
+    CableSplineShape,
     RodStiffness,
+    cable_spline_shape,
     cable_straight_points,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
@@ -87,8 +89,10 @@ if TYPE_CHECKING:
     CableStiffness = RodStiffness
 
 __all__ += [
+    "CableSplineShape",
     "CableStiffness",
     "RodStiffness",
+    "cable_spline_shape",
     "cable_straight_points",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
