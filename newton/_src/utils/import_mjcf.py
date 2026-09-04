@@ -568,7 +568,31 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                mesh_assets[name] = {"file": fname, "scale": mesh_scale, "maxhullvert": maxhullvert}
+                try:
+                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"MJCF mesh {name!r} has invalid refpos data.") from exc
+                try:
+                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"MJCF mesh {name!r} has invalid refquat data.") from exc
+                if refpos.shape != (3,):
+                    raise ValueError(f"MJCF mesh {name!r} refpos must have 3 values.")
+                if refquat.shape != (4,):
+                    raise ValueError(f"MJCF mesh {name!r} refquat must have 4 values.")
+                refquat_norm = np.linalg.norm(refquat)
+                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+                    raise ValueError(f"MJCF mesh {name!r} refquat must be finite and nonzero.")
+                if not np.all(np.isfinite(refpos)):
+                    raise ValueError(f"MJCF mesh {name!r} refpos must contain only finite values.")
+                refquat /= refquat_norm
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": mesh_scale,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "maxhullvert": maxhullvert,
+                }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
                 if not name:
@@ -721,13 +745,52 @@ def parse_mjcf(
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
         if "file" in mesh_asset:
-            return load_meshes_from_file(
+            refpos = mesh_asset["refpos"]
+            refquat = mesh_asset["refquat"]
+            if np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)):
+                return load_meshes_from_file(
+                    mesh_asset["file"],
+                    scale=scaling,
+                    maxhullvert=maxhullvert,
+                    override_color=override_color,
+                    override_texture=override_texture,
+                )
+
+            meshes = load_meshes_from_file(
                 mesh_asset["file"],
-                scale=scaling,
+                scale=(1.0, 1.0, 1.0),
                 maxhullvert=maxhullvert,
                 override_color=override_color,
                 override_texture=override_texture,
             )
+            rotation = np.asarray(
+                wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+                dtype=np.float32,
+            ).reshape(3, 3)
+            transformed_meshes = []
+            for mesh in meshes:
+                vertices = ((mesh.vertices - refpos) @ rotation) * scaling
+                normals = mesh.normals
+                if normals is not None:
+                    normals = (normals @ rotation) / scaling
+                    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+                    normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+                transformed_meshes.append(
+                    Mesh(
+                        vertices=vertices,
+                        indices=mesh.indices,
+                        normals=normals,
+                        uvs=mesh.uvs,
+                        compute_inertia=mesh.has_inertia,
+                        is_solid=mesh.is_solid,
+                        maxhullvert=mesh.maxhullvert,
+                        color=mesh.color,
+                        roughness=mesh.roughness,
+                        metallic=mesh.metallic,
+                        texture=mesh.texture,
+                    )
+                )
+            return transformed_meshes
 
         refquat = mesh_asset["refquat"]
         rotation = np.asarray(
@@ -1134,11 +1197,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
-                    else:
-                        mesh_scale = mesh_assets[mesh_name]["scale"]
-                    scaling = np.array(mesh_scale) * scale
+                    scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
                     m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)

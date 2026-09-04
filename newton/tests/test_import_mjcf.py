@@ -1358,6 +1358,55 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 </mujoco>""")
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
+    def test_mesh_reference_pose_precedes_asset_scale(self):
+        """Apply a mesh reference pose before nonuniform asset scaling."""
+        builder = self._build("""\
+<mujoco>
+  <default>
+    <default class="referenced">
+      <mesh refpos="1 2 3" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
+    </default>
+  </default>
+  <asset>
+    <mesh name="m" class="referenced" file="mesh.obj" scale="2 3 4"/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+        vertices = np.asarray(builder.shape_source[0].vertices)
+        expected = np.array(
+            [
+                [-4.0, 3.0, -12.0],
+                [-4.0, 0.0, -12.0],
+                [-2.0, 3.0, -12.0],
+            ]
+        )
+        np.testing.assert_allclose(
+            vertices,
+            expected,
+            atol=1e-5,
+        )
+
+    def test_mesh_reference_pose_rejects_nonfinite_values(self):
+        """Reject non-finite mesh reference positions and quaternions."""
+        for attribute in ('refpos="nan 0 0"', 'refquat="nan 0 0 1"'):
+            with self.subTest(attribute=attribute):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    self._build(f"""\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj" {attribute}/>
+  </asset>
+  <worldbody>
+    <body>
+      <geom type="mesh" mesh="m"/>
+    </body>
+  </worldbody>
+</mujoco>""")
+
 
 class TestImportMjcfInlineMesh(unittest.TestCase):
     """Tests for MJCF mesh assets authored with inline arrays."""
@@ -3360,6 +3409,63 @@ f 4 5 8
             # shape_scale stores (hx, hy, hz)
             s = builder.shape_scale[0]
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
+
+    def test_fit_box_applies_mesh_reference_pose(self):
+        """Apply a mesh reference pose before fitting a primitive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <asset>
+        <mesh name="box" file="box.stl"
+              refpos="3 0 0" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
+    </asset>
+    <worldbody>
+        <body name="b">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" type="box" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        scale = builder.shape_scale[0]
+        np.testing.assert_allclose([scale[0], scale[1], scale[2]], [0.5, 1.0, 2.0], atol=1e-4)
+        transform = builder.shape_transform[0]
+        np.testing.assert_allclose([transform.p[0], transform.p[1], transform.p[2]], [0.0, 3.0, 0.0], atol=1e-4)
+
+    def test_fit_box_uses_resolved_asset_scale(self):
+        """Fit a primitive using its mesh asset scale rather than geom defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "box.stl")
+            self._write_box_stl(stl_path, hx=1.0, hy=0.5, hz=2.0)
+            mjcf = f"""\
+<mujoco>
+    <compiler fitaabb="true" meshdir="{tmpdir}"/>
+    <default>
+        <default class="geom_defaults">
+            <mesh scale="0.5 0.5 0.5"/>
+            <geom type="box"/>
+        </default>
+    </default>
+    <asset>
+        <mesh name="box" file="box.stl" scale="2 2 2"/>
+    </asset>
+    <worldbody>
+        <body name="b" childclass="geom_defaults">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom name="g" mesh="box"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        scale = builder.shape_scale[0]
+        np.testing.assert_allclose([scale[0], scale[1], scale[2]], [2.0, 1.0, 4.0], atol=1e-4)
 
     def test_fit_sphere_to_mesh_aabb(self):
         """type='sphere' mesh='...' with fitaabb='true' uses max half-extent as radius."""
