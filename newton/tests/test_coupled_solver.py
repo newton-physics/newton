@@ -2364,9 +2364,18 @@ def _harvest_wrench_on_one_proxy_body(particle_count, depth=0.01, radius=0.05, d
         hz=0.5,
         xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
     )
+    # Square grid so counts past the legacy 256/body budget still fit the box face.
+    side = int(particle_count**0.5)
+    if side * side < particle_count:
+        side += 1
     for i in range(particle_count):
+        row, col = divmod(i, side)
         builder.add_particle(
-            pos=(2.0 * radius * (i - 0.5 * (particle_count - 1)), 0.0, radius - depth),
+            pos=(
+                2.0 * radius * (col - 0.5 * (side - 1)),
+                2.0 * radius * (row - 0.5 * (side - 1)),
+                radius - depth,
+            ),
             vel=(0.0, 0.0, 0.0),
             mass=1.0,
             radius=radius,
@@ -2412,9 +2421,10 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
 
         Per-body lists are exact-size, so the harvested wrench reflects the whole contact
         stream; with identical contacts, half as many contacts feed back half the linear
-        reaction.
+        reaction. 300 contacts on one body exceed the removed 256-entry per-body budget,
+        so a reintroduced cap would break the half/full ratio here.
         """
-        particle_count = 12
+        particle_count = 300
 
         full = _harvest_wrench_on_one_proxy_body(particle_count)
         self.assertEqual(full["soft_contact_count"], particle_count)
@@ -2424,7 +2434,9 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
 
         half = _harvest_wrench_on_one_proxy_body(particle_count // 2)
         self.assertEqual(half["listed"], particle_count // 2)
-        np.testing.assert_allclose(half["wrench"][:3], force_full * 0.5, rtol=1.0e-5, atol=1.0e-6)
+        # float32 sums over hundreds of contacts carry ~1e-4 relative noise; a
+        # reintroduced 256-entry cap would skew the ratio by ~17%.
+        np.testing.assert_allclose(half["wrench"][:3], force_full * 0.5, rtol=2.0e-4, atol=1.0e-3)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
