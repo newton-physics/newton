@@ -3239,7 +3239,7 @@ class ModelBuilder:
 
         array_starts = {}
         if array_backed:
-            for attr in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            for attr, warp_dtype in _ARRAY_BACKED_ATTRIBUTE_DTYPES.items():
                 spec = attribute_specs.get(attr)
                 if spec is None or spec.compaction_policy != "generic":
                     continue
@@ -3251,7 +3251,8 @@ class ModelBuilder:
                 prefix = np.asarray(prefix_values)
                 source = np.asarray(source_values)
                 populated = [values for values in (prefix, source) if len(values) > 0]
-                numpy_dtype = np.result_type(*(values.dtype for values in populated))
+                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
+                numpy_dtype = np.result_type(wp.dtype_to_numpy(scalar_dtype), *(values.dtype for values in populated))
                 shaped = source if len(source) > 0 else prefix
                 element_shape = shaped.shape[1:] if shaped.ndim > 1 else ()
                 existing = self._array_backed_attributes.get(attr)

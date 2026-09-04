@@ -581,6 +581,22 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(scene.particle_world, [0, 1, 2])
         np.testing.assert_array_equal(np.asarray(scene.particle_q), np.tile(np.asarray(source.particle_q), (3, 1)))
 
+    def test_array_backed_dtype_is_at_least_declared_dtype(self):
+        """Do not truncate offsets when a source reference array uses a narrow dtype."""
+        source = ModelBuilder()
+        particles = [source.add_particle(wp.vec3(), wp.vec3(), 1.0) for _ in range(2)]
+        source.add_spring(*particles, 1.0, 1.0, 0.0)
+        source.spring_indices = np.asarray(source.spring_indices, dtype=np.int8)
+
+        scene = ModelBuilder()
+        for _ in range(128):
+            scene.add_particle(wp.vec3(), wp.vec3(), 1.0)
+        scene.replicate(source, 1)
+
+        spring_indices = scene._array_backed_attributes["spring_indices"][0]
+        self.assertEqual(spring_indices.dtype, np.dtype(np.int32))
+        np.testing.assert_array_equal(spring_indices, [128, 129])
+
     def test_finalize_consumes_array_backing_without_materializing(self):
         """Finalize directly from array-backed attributes without materializing them."""
         source = ModelBuilder()
