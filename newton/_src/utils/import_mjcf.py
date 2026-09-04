@@ -3283,7 +3283,7 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
-            if actuator_type == "position":
+            if actuator_type in ("position", "intvelocity"):
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 dampratio = parse_float(merged_attrib, "dampratio", 0.0)
@@ -3292,7 +3292,7 @@ def parse_mjcf(
                 if kv > 0.0:
                     if dampratio > 0.0 and verbose:
                         print(
-                            f"Warning: position actuator '{act_name}' sets both kv={kv} "
+                            f"Warning: {actuator_type} actuator '{act_name}' sets both kv={kv} "
                             f"and dampratio={dampratio}; using kv and ignoring dampratio."
                         )
                     biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3303,16 +3303,25 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if actuator_type == "intvelocity" and inheritrange > 0 and "actrange" in merged_attrib:
+                    raise ValueError("MJCF intvelocity actuator cannot define both actrange and inheritrange.")
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
                     upper = builder.joint_limit_upper[qd_start]
                     if lower < upper:
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange
-                        merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
-                        merged_attrib["ctrllimited"] = "true"
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
+                        if actuator_type == "intvelocity":
+                            merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
+                            merged_attrib["actlimited"] = "true"
+                        else:
+                            merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
+                            merged_attrib["ctrllimited"] = "true"
+                if actuator_type == "intvelocity" and "actrange" not in merged_attrib:
+                    raise ValueError("MJCF intvelocity actuator requires actrange or a resolvable inheritrange.")
+                # Non-joint actuators must use CTRL_DIRECT. intvelocity also
+                # carries activation state that JOINT_TARGET cannot represent.
+                if actuator_type == "intvelocity" or trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
@@ -3390,13 +3399,17 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "intvelocity": {
+                    "mujoco:actuator_biastype": 1,  # affine
+                    "mujoco:actuator_dyntype": 1,  # integrator
+                },
             }
             for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
                 if key not in parsed_attrs:
                     parsed_attrs[key] = value
 
             # Intrinsic actuator kind, known directly from the MJCF shortcut tag.
-            if actuator_type == "position":
+            if actuator_type in ("position", "intvelocity"):
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)

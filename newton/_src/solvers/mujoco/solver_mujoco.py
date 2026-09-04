@@ -3643,7 +3643,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Position shortcut: biasprm = [0, -kp, -kv]
                 # A positive biasprm[2] indicates a dampratio placeholder
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
-                    shortcut = "position"
+                    if general_args.get("dyntype") == mujoco.mjtDyn.mjDYN_INTEGRATOR:
+                        shortcut = "intvelocity"
+                    else:
+                        shortcut = "position"
                     shortcut_args["kp"] = kp
                     if bp[2] < 0.0:
                         shortcut_args["kv"] = -bp[2]
@@ -3675,6 +3678,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
+            elif shortcut == "intvelocity":
+                act.set_to_intvelocity(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl

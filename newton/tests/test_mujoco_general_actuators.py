@@ -928,6 +928,25 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_INTVELOCITY_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_intvelocity_actuator">
+    <option gravity="0 0 0" timestep="0.01"/>
+    <default>
+        <intvelocity kp="10" kv="2" actrange="-0.5 0.5"/>
+    </default>
+    <worldbody>
+        <body name="body">
+            <joint name="slide" type="slide" range="-1 1"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <intvelocity name="drive" joint="slide"/>
+    </actuator>
+</mujoco>
+"""
+
+
 MJCF_JOINT_IN_PARENT_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_joint_in_parent_actuator">
     <option gravity="0 0 0"/>
@@ -976,6 +995,64 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
     </actuator>
 </mujoco>
 """
+
+
+class TestMuJoCoIntegratedVelocityActuators(unittest.TestCase):
+    """Tests for integrated-velocity actuator shortcuts."""
+
+    def test_intvelocity_actuator_parsed_from_mjcf(self):
+        """Expand intvelocity defaults into stateful actuator metadata."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_INTVELOCITY_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[0, :3], [10.0, 0.0, 0.0])
+        np.testing.assert_allclose(model.mujoco.actuator_biasprm.numpy()[0, :3], [0.0, -10.0, -2.0])
+        np.testing.assert_allclose(model.mujoco.actuator_actrange.numpy(), [[-0.5, 0.5]])
+
+    def test_intvelocity_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo activation and force evolution."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_INTVELOCITY_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_INTVELOCITY_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        self.assertEqual(solver.mj_model.na, 1)
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, native_model.actuator_dyntype)
+        np.testing.assert_allclose(solver.mj_model.actuator_actrange, native_model.actuator_actrange)
+        solver.mj_model.opt.timestep = native_model.opt.timestep
+        solver.mj_model.opt.integrator = native_model.opt.integrator
+        solver.mj_model.opt.gravity[:] = native_model.opt.gravity
+
+        native_data.ctrl[:] = 0.25
+        solver.mj_data.ctrl[:] = 0.25
+        for _ in range(5):
+            mujoco.mj_step(native_model, native_data)
+            mujoco.mj_step(solver.mj_model, solver.mj_data)
+            np.testing.assert_allclose(solver.mj_data.act, native_data.act, atol=1.0e-8)
+            np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+            np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
+
+    def test_intvelocity_actuator_requires_activation_range(self):
+        """Reject intvelocity actuators without an activation range."""
+        mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' actrange="-0.5 0.5"', "")
+        with self.assertRaisesRegex(ValueError, "requires actrange"):
+            ModelBuilder().add_mjcf(mjcf, ctrl_direct=True)
+
+    def test_intvelocity_actuator_rejects_conflicting_ranges(self):
+        """Reject actrange with inheritrange even for an unlimited joint."""
+        mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' range="-1 1"', "")
+        mjcf = mjcf.replace('joint="slide"/>', 'joint="slide" inheritrange="1"/>')
+
+        with self.assertRaisesRegex(ValueError, "cannot define both actrange and inheritrange"):
+            ModelBuilder().add_mjcf(mjcf, ctrl_direct=True)
 
 
 class TestMuJoCoJointInParentActuators(unittest.TestCase):
