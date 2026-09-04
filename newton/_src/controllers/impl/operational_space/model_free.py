@@ -9,10 +9,10 @@ then robot 1's — for `outputs.joint_f`, the controller's only per-DOF port.
 Every other port is per-robot: exactly one entry per robot, since the task
 itself is always 6-dimensional regardless of how many DOFs a robot has.
 
-This increment implements motion control (a task-space spring-damper term,
-with optional inertial decoupling through the operational-space mass matrix
-Lambda), contact-wrench control combined through per-axis, dual-frame
-selection matrices, gravity compensation, and null-space posture control.
+Implements motion control (a task-space spring-damper term, with optional
+inertial decoupling through the operational-space mass matrix Lambda),
+contact-wrench control combined through per-axis, dual-frame selection
+matrices, gravity compensation, and null-space posture control.
 
 Every task-space quantity here — the Jacobian, Lambda, the PD/wrench terms,
 the selection masks — is computed and combined entirely in the operational
@@ -112,27 +112,27 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _validate_array
+from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
+    _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
+    _invert_spd_block_kernel,
+    _null_space_projector_kernel,
     _pd_term_kernel,
+    _pose_error_kernel,
     _read_port,
     _scatter_port_kernel,
+    _task_matrix_times_jacobian_kernel,
 )
 from ._common import (
     _apply_generalized_task_specification_matrix_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
-    _apply_spatial_matrix_kernel,
-    _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
-    _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
-    _pose_error_kernel,
     _pose_twist_to_frame_kernel,
     _rotate_jacobian_to_frame_kernel,
-    _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _wrench_feedback_kernel,
     _wrench_feedforward_kernel,
@@ -869,9 +869,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             self._joint_qd_buf = _compact_buf()
             self._joint_q_des_null_buf = _compact_buf()
             self._joint_qd_des_null_buf = _compact_buf()
-            self._null_stiffness_baked = self._bake_joint_gain(null_space_stiffness)
+            self._null_stiffness_baked = _bake_optional_float_array(
+                null_space_stiffness, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+            )
             self._null_stiffness_buf = _compact_buf() if self._null_stiffness_baked is None else None
-            self._null_damping_baked = self._bake_joint_gain(null_space_damping)
+            self._null_damping_baked = _bake_optional_float_array(
+                null_space_damping, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+            )
             self._null_damping_buf = _compact_buf() if self._null_damping_baked is None else None
             self._posture_acc_buf = _compact_buf()
             self._null_space_jacobian_pinv_transpose = wp.zeros(
@@ -1027,32 +1031,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             device=self._device,
             requires_grad=self._requires_grad,
         )
-
-    def _bake_joint_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh joint-space (compact, per-DOF) buffer.
-
-        Returns ``None`` for live gains, which are read from the input struct
-        each step instead. A wp.array is already validated by
-        :func:`_validate_array`.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return wp.full(
-                self._total_controlled_dofs,
-                float(value),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=self._requires_grad,
-            )
-        baked = wp.zeros(
-            self._total_controlled_dofs,
-            dtype=wp.float32,
-            device=self._device,
-            requires_grad=self._requires_grad,
-        )
-        wp.copy(baked, value)
-        return baked
 
     @property
     def controlled_robot_count(self) -> int:
