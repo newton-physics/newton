@@ -3554,7 +3554,24 @@ def parse_usd(
             _load_visual_shapes_impl(-1, prim, recurse=False)
 
     no_collision_shapes = set()
-    collision_group_ids = {}
+    # OpenUSD groups are allow-by-default filters and cannot be represented by Newton's
+    # equality-based positive group IDs, so their disabled pairs are lowered explicitly after
+    # all rigid shapes exist. A positive builder default already enables every imported pair;
+    # otherwise unique negative IDs provide the same baseline without colliding by identity.
+    imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
+    reserved_negative_groups = [
+        group for group in (*builder.shape_collision_group, builder.default_shape_cfg.collision_group) if group < 0
+    ]
+    next_imported_collision_group = min(reserved_negative_groups, default=0) - 1
+
+    def _imported_collision_group() -> int:
+        nonlocal next_imported_collision_group
+        if builder.default_shape_cfg.collision_group > 0:
+            return builder.default_shape_cfg.collision_group
+        collision_group = next_imported_collision_group
+        next_imported_collision_group -= 1
+        return collision_group
+
     rigid_body_mass_info_map = {}
     rigid_body_mass_fallback_density = {}
     rigid_body_fallback_collider_paths = collections.defaultdict(list)
@@ -3658,14 +3675,8 @@ def parse_usd(
                     print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
                 body_id = path_body_map.get(body_path, -1)
                 scale = usd.get_scale(prim, local=False)
-                collision_group = builder.default_shape_cfg.collision_group
-
-                if len(shape_spec.collisionGroups) > 0:
-                    cgroup_name = str(shape_spec.collisionGroups[0])
-                    if cgroup_name not in collision_group_ids:
-                        # Start from 1 to avoid collision_group = 0 (which means "no collisions")
-                        collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
-                    collision_group = collision_group_ids[cgroup_name]
+                collision_group = _imported_collision_group()
+                collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
@@ -3956,6 +3967,8 @@ def parse_usd(
                     inertia_margin = margin_val
 
                 if shape_already_added:
+                    builder.shape_collision_group[path_shape_map[path]] = collision_group
+                    imported_rigid_collider_groups[path] = collision_groups
                     _record_fallback_collider_mass_information(
                         path,
                         prim,
@@ -4149,6 +4162,7 @@ def parse_usd(
 
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
+                imported_rigid_collider_groups[path] = collision_groups
 
                 # Restore the real collision margin when shell thickness was substituted.
                 # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
@@ -4686,6 +4700,67 @@ def parse_usd(
         if not target_prim or not target_prim.IsValid():
             return [], "the target path does not exist"
         return [], "it produced no collision participant (it may be disabled, ignored, malformed, or non-colliding)"
+
+    # Lower OpenUSD collision groups to explicit Newton filter pairs. Group colliders by their
+    # complete membership signature so table queries scale with the number of distinct group
+    # combinations, while materializing only the pairs that OpenUSD actually disables.
+    if imported_rigid_collider_groups:
+        collision_group_table = UsdPhysics.CollisionGroup.ComputeCollisionGroupTable(stage)
+        colliders_by_groups: dict[tuple[str, ...], list[tuple[str, int]]] = collections.defaultdict(list)
+        for collider_path, collision_groups in imported_rigid_collider_groups.items():
+            colliders_by_groups[collision_groups].append((collider_path, path_shape_map[collider_path]))
+
+        inverted_groups: set[str] = set()
+        groups_by_merge_name: dict[str, set[str]] = collections.defaultdict(set)
+        group_merge_names: dict[str, str] = {}
+        for prim in stage.Traverse():
+            if not prim.IsA(UsdPhysics.CollisionGroup):
+                continue
+            group = UsdPhysics.CollisionGroup(prim)
+            group_path = str(prim.GetPath())
+            if group.GetInvertFilteredGroupsAttr().Get():
+                inverted_groups.add(group_path)
+            merge_name = group.GetMergeGroupNameAttr().Get() or ""
+            group_merge_names[group_path] = merge_name
+            if merge_name:
+                groups_by_merge_name[merge_name].add(group_path)
+
+        def _groups_collide(groups_a: tuple[str, ...], groups_b: tuple[str, ...]) -> bool:
+            if groups_a and groups_b:
+                return all(
+                    collision_group_table.IsCollisionEnabled(Sdf.Path(group_a), Sdf.Path(group_b))
+                    for group_a in groups_a
+                    for group_b in groups_b
+                )
+            groups = groups_a or groups_b
+            for group_path in groups:
+                merge_name = group_merge_names.get(group_path, "")
+                effective_groups = groups_by_merge_name[merge_name] if merge_name else (group_path,)
+                if any(effective_group in inverted_groups for effective_group in effective_groups):
+                    return False
+            return True
+
+        existing_filter_pairs = set(builder.shape_collision_filter_pairs)
+        group_classes = sorted(colliders_by_groups.items())
+        for class_index_a, (groups_a, colliders_a) in enumerate(group_classes):
+            for class_index_b in range(class_index_a, len(group_classes)):
+                groups_b, colliders_b = group_classes[class_index_b]
+                if class_index_a == class_index_b:
+                    if len(colliders_a) < 2:
+                        continue
+                    collider_pairs = itertools.combinations(colliders_a, 2)
+                else:
+                    collider_pairs = itertools.product(colliders_a, colliders_b)
+
+                if _groups_collide(groups_a, groups_b):
+                    continue
+                for (_, shape_a), (_, shape_b) in collider_pairs:
+                    if shape_a == shape_b:
+                        continue
+                    pair = (shape_a, shape_b) if shape_a < shape_b else (shape_b, shape_a)
+                    if pair not in existing_filter_pairs:
+                        existing_filter_pairs.add(pair)
+                        builder.add_shape_collision_filter_pair(*pair)
 
     # physics:filteredPairs may also be authored on a rigid-body prim (UsdPhysics allows
     # collider, body, or articulation endpoints); the collider loop never visits body prims.
