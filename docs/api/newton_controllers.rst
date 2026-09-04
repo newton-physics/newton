@@ -22,7 +22,10 @@ subclass of :class:`ControllerBase`.
    :nosignatures:
 
    ControllerBase
+   ControllerDifferentialIK
+   ControllerDifferentialIKModelFree
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
    ControllerOperationalSpace
    ControllerOperationalSpaceModelFree
+   DifferentialIKMethod
