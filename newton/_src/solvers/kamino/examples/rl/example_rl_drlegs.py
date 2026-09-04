@@ -16,8 +16,8 @@
 #   + joint_positions (36D) + action_history (24D)
 #
 # Usage:
-#   python example_rl_drlegs.py --policy path/to/model.pt
-#   python example_rl_drlegs.py --policy path/to/model.pt --mode async
+#   python example_rl_drlegs.py --policy path/to/model.onnx
+#   python example_rl_drlegs.py --policy path/to/model.onnx --mode async
 #   python example_rl_drlegs.py --headless --num-steps 200
 ###########################################################################
 
@@ -36,10 +36,10 @@ from newton._src.solvers.kamino._src.utils.viewer import MeshColors, ViewerConfi
 from newton._src.solvers.kamino.examples import run_headless
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.observations import DrlegsBaseObservation
+from newton._src.solvers.kamino.examples.rl.onnx_policy import WarpOnnxPolicy
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.simulation_runner import SimulationRunner
 from newton._src.solvers.kamino.examples.rl.utils import (
-    _load_policy_checkpoint,
     periodic_encoding,
     quat_inv_mul,
     quat_rotate_inv,
@@ -78,8 +78,10 @@ _DEFAULTS = {
     "control_decimation": 5,
     "body_pose_offset_z": 0.265,
     "usd_model": "dr_legs/usd/dr_legs_with_meshes_and_boxes.usda",
-    "policy_file": "drlegs_walk.pt",
+    "policy_file": "drlegs_walk.onnx",
 }
+
+_DRLEGS_ASSET_REF = "a0547548eaa966c2f5478bee496c3cfba1fa98fc"
 
 
 def _load_drlegs_config(asset_path: Path) -> dict:
@@ -122,7 +124,7 @@ class Example:
         num_worlds = 1
 
         # USD model path
-        asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
+        asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
         usd_model_path = str(asset_path / config["usd_model"])
 
         # Create generic articulated body simulator
@@ -479,7 +481,7 @@ if __name__ == "__main__":
         "--sim-dt", type=float, default=None, help="Physics substep duration in seconds (overrides YAML)"
     )
     parser.add_argument(
-        "--policy", type=str, default=None, help="Path to an rsl_rl checkpoint .pt file (overrides asset default)"
+        "--policy", type=str, default=None, help="Path to an ONNX policy file (overrides asset default)"
     )
     parser.add_argument(
         "--mode",
@@ -506,11 +508,8 @@ if __name__ == "__main__":
 
     msg.info(f"device: {device}")
 
-    # Convert warp device to torch device string
-    torch_device = "cuda" if device.is_cuda else "cpu"
-
     # Load config from YAML (with hardcoded fallback defaults)
-    asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
+    asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
     config = _load_drlegs_config(asset_path)
 
     # CLI overrides
@@ -522,12 +521,15 @@ if __name__ == "__main__":
     # Load policy: explicit --policy flag > asset default > random actions
     policy = None
     if args.policy:
-        policy = _load_policy_checkpoint(args.policy, device=torch_device)
-        msg.info(f"Loaded policy from: {args.policy}")
+        policy_path = Path(args.policy)
+        if policy_path.suffix.lower() != ".onnx" or not policy_path.is_file():
+            raise FileNotFoundError(f"Expected an existing ONNX policy, got '{policy_path}'")
+        policy = WarpOnnxPolicy(policy_path, device=device, batch_size=1)
+        msg.info(f"Loaded policy from: {policy_path}")
     else:
         default_policy = asset_path / "dr_legs" / "rl_policies" / config["policy_file"]
         if default_policy.exists():
-            policy = _load_policy_checkpoint(str(default_policy), device=torch_device)
+            policy = WarpOnnxPolicy(default_policy, device=device, batch_size=1)
             msg.info(f"Loaded default policy from: {default_policy}")
         else:
             msg.info(f"No policy at {default_policy} -- using random actions")
