@@ -1,0 +1,1 @@
+Add a `load_usd` example that loads an arbitrary USD file (`.usd`, `.usda`, `.usdc`, or `.usdz`) from a filesystem path and simulates it, exposing the common `ModelBuilder.add_usd()` options and a choice of solver, plus a viewer UI control to browse for and load a different file without restarting: `python -m newton.examples load_usd <path>`.
