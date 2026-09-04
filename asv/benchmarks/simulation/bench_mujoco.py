@@ -329,6 +329,9 @@ class FastAllegro(_KpiBenchmark):
     environment = "None"
 
     def setup_cache(self):
+        if os.environ.get("NEWTON_ASV_PR_GATE"):
+            self.num_frames = 200
+            self.samples = 1
         return self._collect_metrics()
 
 

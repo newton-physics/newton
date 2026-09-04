@@ -24,6 +24,7 @@ from .broad_phase_common import (
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
     precompute_world_map,
+    test_group_pair,
     test_world_and_group_pair,
     write_pair,
 )
@@ -31,13 +32,13 @@ from .broad_phase_common import (
 wp.set_module_options({"enable_backward": False})
 
 
-SAPSortMode = Literal["segmented", "tile"]
+SAPSortMode = Literal["segmented", "tile", "auto"]
 
 
 def _normalize_sort_mode(mode: str) -> SAPSortMode:
     normalized = mode.strip().lower()
-    if normalized not in ("segmented", "tile"):
-        raise ValueError(f"Unsupported SAP sort mode: {mode!r}. Expected 'segmented' or 'tile'.")
+    if normalized not in ("segmented", "tile", "auto"):
+        raise ValueError(f"Unsupported SAP sort mode: {mode!r}. Expected 'segmented', 'tile', or 'auto'.")
     return normalized
 
 
@@ -314,6 +315,115 @@ def _process_single_sap_pair(
         )
 
 
+@wp.func
+def _process_sap_work_package(
+    flat_id: int,
+    workid: int,
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],
+    shape_displacement: wp.array[wp.vec3],
+    collision_group: wp.array[int],
+    shape_world: wp.array[int],
+    world_index_map: wp.array[int],
+    world_slice_ends: wp.array[int],
+    sap_sort_index_in: wp.array[int],
+    sap_cumulative_sum_in: wp.array[int],
+    max_shapes_per_world: int,
+    num_regular_worlds: int,
+    single_segment_identity_map: bool,
+    filter_pairs: wp.array[wp.vec2i],
+    num_filter_pairs: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],
+    max_candidate_pair: int,
+):
+    """Process one mapped SAP work package."""
+    j = flat_id + workid + 1
+    if flat_id > 0:
+        j -= sap_cumulative_sum_in[flat_id - 1]
+
+    # With no regular worlds, the map contains only the dedicated global
+    # segment. Avoid per-pair segment arithmetic and redundant world reads.
+    single_segment = num_regular_worlds == 0
+    world_id = int(0)
+    i = flat_id
+    world_slice_start = int(0)
+    if not single_segment:
+        world_id = flat_id // max_shapes_per_world
+        i = flat_id % max_shapes_per_world
+        j = j % max_shapes_per_world
+        if world_id > 0:
+            world_slice_start = world_slice_ends[world_id - 1]
+    world_slice_end = world_slice_ends[world_id]
+    num_shapes_in_world = world_slice_end - world_slice_start
+
+    if i >= num_shapes_in_world or j >= num_shapes_in_world:
+        return
+    if i >= j:
+        return
+
+    idx_i = world_id * max_shapes_per_world + i
+    idx_j = world_id * max_shapes_per_world + j
+    local_shape1 = sap_sort_index_in[idx_i]
+    local_shape2 = sap_sort_index_in[idx_j]
+    if local_shape1 < 0 or local_shape2 < 0:
+        return
+
+    shape1_tmp = local_shape1
+    shape2_tmp = local_shape2
+    if not single_segment_identity_map:
+        shape1_tmp = world_index_map[world_slice_start + local_shape1]
+        shape2_tmp = world_index_map[world_slice_start + local_shape2]
+    if shape1_tmp == shape2_tmp:
+        return
+
+    shape1 = wp.min(shape1_tmp, shape2_tmp)
+    shape2 = wp.max(shape1_tmp, shape2_tmp)
+
+    col_group1 = collision_group[shape1]
+    col_group2 = collision_group[shape2]
+    process_pair = False
+    if single_segment:
+        process_pair = test_group_pair(col_group1, col_group2)
+    else:
+        world1 = shape_world[shape1]
+        world2 = shape_world[shape2]
+        is_dedicated_minus_one_segment = world_id >= num_regular_worlds
+        if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
+            process_pair = False
+        else:
+            process_pair = test_world_and_group_pair(world1, world2, col_group1, col_group2)
+
+    if process_pair:
+        _process_single_sap_pair(
+            wp.vec2i(shape1, shape2),
+            shape_bounding_box_lower,
+            shape_bounding_box_upper,
+            shape_gap,
+            shape_displacement,
+            candidate_pair,
+            candidate_pair_count,
+            max_candidate_pair,
+            filter_pairs,
+            num_filter_pairs,
+            shape_body,
+            body_flags,
+            include_static_kinematic_pairs,
+        )
+
+
+@wp.func
+def _advance_sap_chunk_base(chunk_base: int, chunk_stride: int, total_work_packages: int) -> int:
+    """Advance a dense SAP chunk without overflowing signed int32 arithmetic."""
+    if total_work_packages - chunk_base <= chunk_stride:
+        return total_work_packages
+    return chunk_base + chunk_stride
+
+
 @wp.kernel(enable_backward=False)
 def _sap_broadphase_kernel(
     # Input arrays
@@ -331,6 +441,7 @@ def _sap_broadphase_kernel(
     max_shapes_per_world: int,
     nsweep_in: int,
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
+    single_segment_identity_map: bool,
     filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
     shape_body: wp.array[int],
@@ -345,94 +456,81 @@ def _sap_broadphase_kernel(
 
     total_work_packages = sap_cumulative_sum_in[world_count * max_shapes_per_world - 1]
 
-    workid = tid
-    while workid < total_work_packages:
-        # Binary search to find which (world, local_shape) this work package belongs to
-        flat_id = binary_search(sap_cumulative_sum_in, workid, 0, world_count * max_shapes_per_world)
+    total_intervals = world_count * max_shapes_per_world
 
-        # Calculate j from flat_id and workid
-        j = flat_id + workid + 1
-        if flat_id > 0:
-            j -= sap_cumulative_sum_in[flat_id - 1]
-
-        # Convert flat_id to world and local indices
-        world_id = flat_id // max_shapes_per_world
-        i = flat_id % max_shapes_per_world
-        j = j % max_shapes_per_world
-
-        # Get slice boundaries for this world
-        world_slice_start = 0
-        if world_id > 0:
-            world_slice_start = world_slice_ends[world_id - 1]
-        world_slice_end = world_slice_ends[world_id]
-        num_shapes_in_world = world_slice_end - world_slice_start
-
-        # Check validity: ensure indices are within bounds
-        if i >= num_shapes_in_world or j >= num_shapes_in_world:
-            workid += nsweep_in
-            continue
-
-        # Skip self-pairs (i == j) and invalid pairs (i > j) - pairs must have distinct geometries with i < j
-        if i >= j:
-            workid += nsweep_in
-            continue
-
-        # Get sorted local indices using manual indexing
-        idx_i = world_id * max_shapes_per_world + i
-        idx_j = world_id * max_shapes_per_world + j
-        local_shape1 = sap_sort_index_in[idx_i]
-        local_shape2 = sap_sort_index_in[idx_j]
-
-        # Check for invalid indices (padding)
-        if local_shape1 < 0 or local_shape2 < 0:
-            workid += nsweep_in
-            continue
-
-        # Map to actual geometry indices
-        shape1_tmp = world_index_map[world_slice_start + local_shape1]
-        shape2_tmp = world_index_map[world_slice_start + local_shape2]
-
-        # Skip if mapped to the same geometry (shouldn't happen, but defensive check)
-        if shape1_tmp == shape2_tmp:
-            workid += nsweep_in
-            continue
-
-        # Ensure canonical ordering
-        shape1 = wp.min(shape1_tmp, shape2_tmp)
-        shape2 = wp.max(shape1_tmp, shape2_tmp)
-
-        # Get collision and world groups
-        col_group1 = collision_group[shape1]
-        col_group2 = collision_group[shape2]
-        world1 = shape_world[shape1]
-        world2 = shape_world[shape2]
-
-        # Skip pairs where both geometries are global (world -1), unless we're in the dedicated -1 segment
-        # The dedicated -1 segment is the last segment (world_id >= num_regular_worlds)
-        is_dedicated_minus_one_segment = world_id >= num_regular_worlds
-        if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
-            workid += nsweep_in
-            continue
-
-        # Check both world and collision groups
-        if test_world_and_group_pair(world1, world2, col_group1, col_group2):
-            _process_single_sap_pair(
-                wp.vec2i(shape1, shape2),
+    # Keep chunk multiplications within signed int32 range.
+    if total_work_packages <= nsweep_in or nsweep_in > 2147483647 // 4:
+        workid = tid
+        while workid < total_work_packages:
+            flat_id = binary_search(sap_cumulative_sum_in, workid, 0, total_intervals)
+            _process_sap_work_package(
+                flat_id,
+                workid,
                 shape_bounding_box_lower,
                 shape_bounding_box_upper,
                 shape_gap,
                 shape_displacement,
-                candidate_pair,
-                candidate_pair_count,
-                max_candidate_pair,
+                collision_group,
+                shape_world,
+                world_index_map,
+                world_slice_ends,
+                sap_sort_index_in,
+                sap_cumulative_sum_in,
+                max_shapes_per_world,
+                num_regular_worlds,
+                single_segment_identity_map,
                 filter_pairs,
                 num_filter_pairs,
                 shape_body,
                 body_flags,
                 include_static_kinematic_pairs,
+                candidate_pair,
+                candidate_pair_count,
+                max_candidate_pair,
             )
+            workid += nsweep_in
+        return
 
-        workid += nsweep_in
+    # Reuse interval lookups only when the original threads would loop.
+    chunk_size = 4
+    chunk_base = tid * chunk_size
+    chunk_stride = nsweep_in * chunk_size
+    while chunk_base < total_work_packages:
+        flat_id = binary_search(sap_cumulative_sum_in, chunk_base, 0, total_intervals)
+        chunk_offset = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
+        while chunk_offset < chunk_size:
+            workid = chunk_base + chunk_offset
+            chunk_offset += 1
+            if workid >= total_work_packages:
+                continue
+            if sap_cumulative_sum_in[flat_id] <= workid:
+                flat_id = binary_search(sap_cumulative_sum_in, workid, flat_id + 1, total_intervals)
+            _process_sap_work_package(
+                flat_id,
+                workid,
+                shape_bounding_box_lower,
+                shape_bounding_box_upper,
+                shape_gap,
+                shape_displacement,
+                collision_group,
+                shape_world,
+                world_index_map,
+                world_slice_ends,
+                sap_sort_index_in,
+                sap_cumulative_sum_in,
+                max_shapes_per_world,
+                num_regular_worlds,
+                single_segment_identity_map,
+                filter_pairs,
+                num_filter_pairs,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
+                candidate_pair,
+                candidate_pair_count,
+                max_candidate_pair,
+            )
+        chunk_base = _advance_sap_chunk_base(chunk_base, chunk_stride, total_work_packages)
 
 
 class BroadPhaseSAP:
@@ -448,7 +546,7 @@ class BroadPhaseSAP:
         shape_world: wp.array[wp.int32] | np.ndarray,
         shape_flags: wp.array[wp.int32] | np.ndarray | None = None,
         sweep_thread_count_multiplier: int = 5,
-        sort_type: Literal["segmented", "tile"] = "segmented",
+        sort_type: SAPSortMode = "segmented",
         tile_block_dim: int | None = None,
         device: Devicelike | None = None,
     ) -> None:
@@ -461,9 +559,11 @@ class BroadPhaseSAP:
                 only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
                 This efficiently filters out visual-only shapes.
             sweep_thread_count_multiplier: Multiplier for number of threads used in sweep phase
-            sort_type: SAP sort mode. Use ``"segmented"`` (default) for
-                ``wp.utils.segmented_sort_pairs`` or ``"tile"`` for
-                tile-based sorting via ``wp.tile_sort``.
+            sort_type: SAP sort mode. Use ``"segmented"`` (default) for general
+                segmented sorting; a single segment uses equivalent ordinary radix sorting.
+                Use ``"tile"`` for tile-based
+                sorting via ``wp.tile_sort``, or ``"auto"`` to use one of
+                three bounded tile sizes for medium-sized worlds.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
                 If None, will be set to next power of 2 >= ``max_shapes_per_world``, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
@@ -507,12 +607,31 @@ class BroadPhaseSAP:
         # Calculate world information
         self.world_count = len(slice_ends_np)
         self.num_regular_worlds = int(num_regular_worlds)
+        self._single_segment_identity_map = self.num_regular_worlds == 0 and np.array_equal(
+            index_map_np, np.arange(len(index_map_np), dtype=np.int32)
+        )
         self.max_shapes_per_world = 0
         start_idx = 0
         for end_idx in slice_ends_np:
             num_shapes = end_idx - start_idx
             self.max_shapes_per_world = max(self.max_shapes_per_world, num_shapes)
             start_idx = end_idx
+
+        # The collision pipeline uses auto mode. Restrict it to three fixed
+        # tile sizes so arbitrary model sizes cannot create arbitrary kernel
+        # variants, and keep padding at or below 2x. Small and large worlds retain
+        # the general segmented sort.
+        if self.sort_type == "auto":
+            if 64 <= self.max_shapes_per_world <= 512:
+                self.sort_type = "tile"
+                if self.max_shapes_per_world <= 128:
+                    self.max_shapes_per_world = 128
+                elif self.max_shapes_per_world <= 256:
+                    self.max_shapes_per_world = 256
+                else:
+                    self.max_shapes_per_world = 512
+            else:
+                self.sort_type = "segmented"
 
         # Create tile sort kernel if using tile-based sorting
         self.tile_sort_kernel = None
@@ -533,7 +652,7 @@ class BroadPhaseSAP:
             self.tile_sort_kernel = _create_tile_sort_kernel(self.tile_size)
 
         # Allocate 1D arrays for per-world SAP data
-        # Note: projection_lower and sort_index need 2x space for segmented sort scratch memory
+        # Note: projection_lower and sort_index need 2x space for radix-sort scratch memory
         total_elements = int(self.world_count * self.max_shapes_per_world)
         self.sap_projection_lower = wp.zeros(2 * total_elements, dtype=wp.float32, device=device)
         self.sap_projection_upper = wp.zeros(total_elements, dtype=wp.float32, device=device)
@@ -628,6 +747,7 @@ class BroadPhaseSAP:
 
         if device is None:
             device = shape_lower.device
+        device_obj = wp.get_device(device)
 
         if shape_count < 0 or shape_count > shape_lower.shape[0]:
             raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
@@ -685,8 +805,8 @@ class BroadPhaseSAP:
             record_tape=False,
         )
 
-        # Perform segmented sort - each world is sorted independently
-        # Two strategies: tile-based (faster for certain sizes) or segmented (more flexible)
+        # Sort projections while preserving independent world segments
+        # Tile sorting handles bounded medium worlds; radix sorting handles the general cases.
         if self.sort_type == "tile" and self.tile_sort_kernel is not None:
             # Use tile-based sort with shared memory
             wp.launch_tiled(
@@ -701,8 +821,17 @@ class BroadPhaseSAP:
                 device=device,
                 record_tape=False,
             )
+        elif self.world_count == 1 and not device_obj.is_capturing:
+            # A single segment does not need segmented-sort bookkeeping.
+            wp.utils.radix_sort_pairs(
+                keys=self.sap_projection_lower,
+                values=self.sap_sort_index,
+                count=self.max_shapes_per_world,
+            )
         else:
-            # Use segmented sort (default)
+            # Warp versions before 1.17 may resize radix-sort scratch storage
+            # during CUDA graph capture (NVIDIA/warp#1373). Retain the
+            # capture-safe segmented path for a single segment while capturing.
             # The count is the number of actual elements to sort (not including scratch space)
             wp.utils.segmented_sort_pairs(
                 keys=self.sap_projection_lower,
@@ -753,6 +882,7 @@ class BroadPhaseSAP:
                 self.max_shapes_per_world,
                 nsweep_in,
                 self.num_regular_worlds,
+                self._single_segment_identity_map,
                 filter_pairs_arr,
                 n_filter,
                 shape_body,

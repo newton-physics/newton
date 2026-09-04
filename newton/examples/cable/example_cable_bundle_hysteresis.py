@@ -150,7 +150,6 @@ class Example:
         return positions
 
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
@@ -210,7 +209,7 @@ class Example:
             off_y, off_z = bundle_positions[i]
             cable_start = wp.vec3(start_x, start_y + off_y, start_z + off_z)
 
-            points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+            points, quats = newton.utils.rod_straight_points_and_quaternions(
                 start=cable_start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=float(self.cable_length),

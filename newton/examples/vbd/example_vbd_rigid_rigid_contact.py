@@ -87,7 +87,7 @@ def build_model(builder, params, seed=42):
     # Floor
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
         hx=hx + t,
         hy=hy + t,
         hz=t / 2,
@@ -96,7 +96,7 @@ def build_model(builder, params, seed=42):
     # Front wall (-Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -105,7 +105,7 @@ def build_model(builder, params, seed=42):
     # Back wall (+Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -114,7 +114,7 @@ def build_model(builder, params, seed=42):
     # Left wall (-X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,
@@ -123,7 +123,7 @@ def build_model(builder, params, seed=42):
     # Right wall (+X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,

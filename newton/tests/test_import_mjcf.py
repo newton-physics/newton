@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import io
 import os
 import struct
@@ -19,6 +20,7 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
 from newton._src.solvers.mujoco.constants import (
+    SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
@@ -60,6 +62,42 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_geom_rgba_preserves_opacity(self):
+        """Preserve authored MJCF geometry opacity."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="body">
+                    <geom type="sphere" size="0.1" rgba="0.2 0.3 0.4 0.25"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertEqual(builder.shape_count, 1)
+        np.testing.assert_allclose(builder.shape_color[0], [0.2, 0.3, 0.4], atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(builder.shape_opacity[0], 0.25, places=6)
+
+    def test_geom_rgba_clamps_authored_opacity(self):
+        """Clamp out-of-range MJCF geometry opacity."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="body">
+                    <geom type="sphere" size="0.1" rgba="0.2 0.3 0.4 11.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "Clamping opacity"):
+            builder.add_mjcf(mjcf)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">
@@ -1789,7 +1827,7 @@ f 4 5 8
             )
 
     def test_solreflimit_parsing(self):
-        """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
+        """Verify that joint ``solreflimit`` is preserved without changing Newton limit gains."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="solreflimit_test">
     <worldbody>
@@ -1815,6 +1853,8 @@ f 4 5 8
 """
 
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = 4321.0
+        builder.default_joint_cfg.limit_kd = 76.0
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1823,28 +1863,22 @@ f 4 5 8
         self.assertEqual(len(model.joint_limit_ke), 3)
         self.assertEqual(len(model.joint_limit_kd), 3)
 
-        # Convert warp arrays to numpy for testing
         joint_limit_ke = model.joint_limit_ke.numpy()
         joint_limit_kd = model.joint_limit_kd.numpy()
+        solreflimit = model.mujoco.solreflimit.numpy()
+        solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # Test joint1: standard mode solreflimit="0.03 0.9"
-        # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
-        expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
-        expected_kd_1 = 2.0 / 0.03
-        self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
-        self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
-
-        # Test joint2: direct mode solreflimit="-100 -1"
-        # Expected: ke = 100, kd = 1
-        self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
-        self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
-
-        # Test joint3: no solreflimit (should use default 0.02, 1.0)
-        # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
-        expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
-        expected_kd_3 = 2.0 / 0.02
-        self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
-        self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+        # Native MuJoCo parameters retain their own provenance while Newton's
+        # configured generic gains remain force-space inputs.
+        np.testing.assert_allclose(joint_limit_ke, [4321.0, 4321.0, 4321.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(joint_limit_kd, [76.0, 76.0, 76.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[0], [0.03, 0.9], rtol=1.0e-6, atol=0.0)
+        np.testing.assert_allclose(solreflimit[1], [-100.0, -1.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[2], [0.0, 0.0], rtol=0.0, atol=0.0)
+        np.testing.assert_array_equal(
+            solreflimit_mode,
+            [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE],
+        )
 
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""
@@ -10453,6 +10487,189 @@ class TestMjcfPrimitiveColors(unittest.TestCase):
         builder.add_mjcf(mjcf)
 
         np.testing.assert_allclose(builder.shape_color[0], [0.0, 1.0, 0.0], atol=1.0e-6)
+
+
+class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
+    def test_hfield_row_orientation_matches_mujoco(self):
+        """Import an asymmetric MJCF heightfield and verify MuJoCo's data layout.
+
+        MuJoCo stores heightfield rows starting at maximum y (the image-top
+        convention, verified against mujoco 3.10 with mj_ray probes) and
+        columns starting at minimum x. The model below raises only the
+        quadrant covered by the FIRST rows and FIRST columns of the data --
+        (+y, -x) in world space -- to 1 m. Spheres dropped on three
+        quadrants must rest at the matching heights, pinning both grid
+        axes: a row-mirrored import (the pre-fix behavior, issue #3897)
+        rests the (+y, -x) probe on the low surface, and a full data
+        reversal would relocate the plateau to (-y, +x). Pre-fix builds
+        also ejected bodies authored near the true low side, which spawned
+        inside the mirrored terrain.
+        """
+        mjcf = """\
+<mujoco>
+    <option gravity="0 0 -9.81"/>
+    <asset>
+        <hfield name="terrain" nrow="4" ncol="4" size="2 2 1 0.1"
+                elevation="1 1 0 0  1 1 0 0  0 0 0 0  0 0 0 0"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path)
+            # (x, y, expected-high?) probes: the plateau covers (+y, -x).
+            probe_spots = [(-1.5, 1.5, True), (1.5, 1.5, False), (-1.5, -1.5, False)]
+            probes = []
+            for x_pos, y_pos, _high in probe_spots:
+                body = builder.add_body(xform=wp.transform(wp.vec3(x_pos, y_pos, 1.5), wp.quat_identity()), mass=1.0)
+                builder.add_shape_sphere(body=body, radius=0.1)
+                probes.append(body)
+            builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+
+            model = builder.finalize()
+            solver = newton.solvers.SolverXPBD(model, iterations=10)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            dt = 0.002
+            for _ in range(int(1.5 / dt)):
+                state_0.clear_forces()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            body_q = state_0.body_q.numpy()
+            for (x_pos, y_pos, high), body in zip(probe_spots, probes, strict=True):
+                z = float(body_q[body, 2])
+                if high:
+                    self.assertGreater(z, 0.9, f"probe at ({x_pos}, {y_pos}) rests low (z={z:.3f}): rows mirrored")
+                else:
+                    self.assertLess(
+                        z, 0.3, f"probe at ({x_pos}, {y_pos}) rests high (z={z:.3f}): data mirrored or reversed"
+                    )
+
+    def test_hfield_constant_inline_data_matches_mujoco(self):
+        """Import constant inline heightfield data and match MuJoCo's compilation.
+
+        MuJoCo normalizes elevation by the data's own range, so CONSTANT data
+        compiles to zeros and the surface sits at the geom origin regardless
+        of the value or ``size_z`` (verified against mujoco 3.10/3.11 with
+        mj_ray). The importer must reproduce that rather than let the
+        ``Heightfield`` constructor's explicit-range handling of uniform
+        data lift the surface to the raw value.
+        """
+        mjcf = """\
+<mujoco>
+    <option gravity="0 0 -9.81"/>
+    <asset>
+        <hfield name="terrain" nrow="4" ncol="4" size="2 2 0.8 0.1"
+                elevation="0.5 0.5 0.5 0.5  0.5 0.5 0.5 0.5  0.5 0.5 0.5 0.5  0.5 0.5 0.5 0.5"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path)
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+            builder.add_shape_sphere(body=body, radius=0.1)
+            builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+
+            model = builder.finalize()
+            solver = newton.solvers.SolverXPBD(model, iterations=10)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            dt = 0.002
+            for _ in range(int(1.5 / dt)):
+                state_0.clear_forces()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            final_z = float(state_0.body_q.numpy()[body, 2])
+            # MuJoCo: constant data -> zeros -> surface at z=0; rest at radius.
+            self.assertAlmostEqual(final_z, 0.1, delta=0.02)
+
+    def test_hfield_row_order_per_source(self):
+        """Import the same asymmetric pattern from all three elevation sources.
+
+        MuJoCo's row conventions differ per source (verified against mujoco
+        3.10/3.11 with mj_ray): it reverses rows for the inline ``elevation``
+        string and for PNG images, but loads its custom binary format as
+        stored. The same stored pattern (rows 0-1 high) must therefore land
+        high at +y for inline and PNG, and high at -y for binary. This
+        asserts the imported grids directly (Newton grid: row 0 = minimum y,
+        column 0 = minimum x), so no simulation is involved.
+        """
+        high_low = np.zeros((4, 4), dtype=np.float32)
+        high_low[:2] = 1.0  # stored rows 0-1 high
+
+        def imported_grid(mjcf_asset, files=None):
+            mjcf = f"""\
+<mujoco>
+    <asset>
+        {mjcf_asset}
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for name, payload in (files or {}).items():
+                    with open(os.path.join(tmpdir, name), "wb") as f:
+                        f.write(payload)
+                model_path = os.path.join(tmpdir, "model.xml")
+                with open(model_path, "w") as f:
+                    f.write(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(model_path)
+                return np.asarray(builder.shape_source[0].data)
+
+        # Newton grid row 0 = minimum y. MuJoCo's high side:
+        flipped = high_low[::-1]  # high rows at +y -> grid rows 2-3 high
+
+        # Inline elevation string: MuJoCo reverses rows -> high at +y.
+        inline = (
+            '<hfield name="terrain" nrow="4" ncol="4" size="2 2 1 0.1" elevation="1 1 1 1  1 1 1 1  0 0 0 0  0 0 0 0"/>'
+        )
+        np.testing.assert_allclose(imported_grid(inline), flipped)
+
+        # Custom binary: MuJoCo loads as stored -> high at -y (no flip).
+        bin_payload = struct.pack("<ii", 4, 4) + high_low.tobytes()
+        binary = '<hfield name="terrain" file="terrain.bin" nrow="4" ncol="4" size="2 2 1 0.1"/>'
+        np.testing.assert_allclose(imported_grid(binary, {"terrain.bin": bin_payload}), flipped[::-1])
+
+        # PNG: image top row = maximum y in MuJoCo -> high at +y (flip).
+        def gray_png(pixels):
+            def chunk(tag, payload):
+                data = tag + payload
+                return struct.pack(">I", len(payload)) + data + struct.pack(">I", zlib.crc32(data))
+
+            h, w = pixels.shape
+            ihdr = struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0)
+            raw = b"".join(b"\x00" + pixels[r].tobytes() for r in range(h))
+            return (
+                b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+            )
+
+        if importlib.util.find_spec("PIL") is not None:
+            png_payload = gray_png((high_low * 255).astype(np.uint8))
+            png = '<hfield name="terrain" file="terrain.png" nrow="4" ncol="4" size="2 2 1 0.1"/>'
+            np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
 
 
 if __name__ == "__main__":

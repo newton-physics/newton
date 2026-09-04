@@ -6,7 +6,6 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
@@ -85,7 +84,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
-          CABLE joints are not supported.
+          ROD joints are not supported.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
@@ -132,7 +131,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

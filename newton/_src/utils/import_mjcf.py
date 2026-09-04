@@ -23,9 +23,8 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF,
+    SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
@@ -36,10 +35,12 @@ from ..solvers.mujoco.utils import (
     mjc_add_equality_mimic,
     mjc_parse_polycoef,
     mjc_polycoef_has_higher_order,
+    solref_invalid_mask,
 )
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
+    clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
     is_xml_content,
     parse_custom_attributes,
@@ -363,6 +364,12 @@ def parse_mjcf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_limit_ke = builder.default_joint_cfg.limit_ke
+    default_joint_limit_kd = builder.default_joint_cfg.limit_kd
+    canonical_joint_cfg = ModelBuilder.JointDofConfig()
+    default_joint_limit_gains_configured = (
+        default_joint_limit_ke != canonical_joint_cfg.limit_ke or default_joint_limit_kd != canonical_joint_cfg.limit_kd
+    )
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_damping = builder.default_joint_cfg.damping
@@ -408,6 +415,8 @@ def parse_mjcf(
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
+    solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
+    has_solreflimit_gain_baseline = solreflimit_gain_baseline_key in builder.custom_attributes
     solref_mode_key = "mujoco:solref_mode"
     has_solref_mode = solref_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -816,6 +825,32 @@ def parse_mjcf(
 
         return wp.types.vector(length, wp.float32)(out)
 
+    def warn_invalid_joint_solreflimit(joint_attrib: dict[str, Any]) -> None:
+        if "solreflimit" not in joint_attrib:
+            return
+        solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
+        if not bool(solref_invalid_mask(solreflimit)):
+            return
+        warnings.warn(
+            f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
+            f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
+            "same-sign non-zero components or the '0 0' sentinel); Newton "
+            "joint_limit_ke/kd are not derived from this native value, which "
+            "is forwarded to MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). "
+            "MuJoCo may silently disable the limit or divide by zero — fix the "
+            "authored solreflimit or set model.mujoco.solreflimit_mode = "
+            "SOLREF_MODE_FORCE_SPACE to switch to Newton force-space scaling.",
+            stacklevel=3,
+        )
+
+    def imported_joint_solreflimit_mode(joint_attrib: dict[str, Any]) -> int:
+        """Return native/raw or generic-gain provenance for an imported MJCF joint."""
+        if "solreflimit" in joint_attrib:
+            return SOLREF_MODE_RAW
+        if default_joint_limit_gains_configured:
+            return SOLREF_MODE_FORCE_SPACE
+        return SOLREF_MODE_MJCF_DEFAULT
+
     def quat_from_euler_mjcf(e: wp.vec3, seq: str) -> wp.quat:
         """Convert MJCF euler to quaternion respecting per-character ``eulerseq`` case.
 
@@ -1080,6 +1115,10 @@ def parse_mjcf(
                         float(rgba_values[2]),
                     )
                     shape_kwargs["color"] = material_color
+                if len(rgba_values) >= 4:
+                    opacity = clamp_imported_opacity(rgba_values[3], "MJCF geom rgba")
+                    if opacity is not None:
+                        shape_kwargs["opacity"] = opacity
 
             texture = None
             texture_name = material_info.get("texture")
@@ -1315,12 +1354,37 @@ def parse_mjcf(
                 hfield_asset = hfield_assets[hfield_name]
                 nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
 
+                # MuJoCo's row conventions are PER SOURCE (verified against
+                # mujoco 3.10/3.11 with mj_ray probes on asymmetric fields):
+                # it reverses rows when parsing the inline XML ``elevation``
+                # string and when loading PNG images (row 0 lands at maximum
+                # y, the image-top convention), but loads its custom binary
+                # format as stored (row 0 = minimum y, which already matches
+                # Newton's grid).
                 if hfield_asset["elevation"] is not None:
                     elevation = hfield_asset["elevation"]
+                    flip_rows = True
                 elif hfield_asset["file"] is not None:
                     elevation = load_heightfield_elevation(hfield_asset["file"], nrow, ncol)
+                    flip_rows = hfield_asset["file"].lower().endswith(".png")
                 else:
                     elevation = np.zeros((nrow, ncol), dtype=np.float32)
+                    flip_rows = False
+
+                # Reproduce MuJoCo's elevation normalization exactly:
+                # (v - min) / (max - min), with CONSTANT data compiling to
+                # zeros (surface at the geom origin — verified against
+                # mujoco 3.10/3.11).
+                elevation = np.asarray(elevation, dtype=np.float32)
+                e_min, e_max = float(elevation.min()), float(elevation.max())
+                if e_max > e_min:
+                    elevation = (elevation - e_min) / (e_max - e_min)
+                else:
+                    elevation = np.zeros_like(elevation)
+
+                if flip_rows:
+                    elevation = elevation[::-1]
+                elevation = np.ascontiguousarray(elevation)
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
@@ -1915,6 +1979,7 @@ def parse_mjcf(
                     break
                 if joint_type_str == "ball":
                     joint_type = JointType.BALL
+                    warn_invalid_joint_solreflimit(joint_attrib)
                     dof_attr = parse_custom_attributes(
                         joint_attrib,
                         builder_custom_attr_dof,
@@ -1932,13 +1997,18 @@ def parse_mjcf(
                         # solreflimit="0 0" from the "not authored" sentinel.
                         # Track whether MJCF provided a raw value or merely
                         # inherited MuJoCo's implicit default.
-                        solreflimit_mode = (
-                            SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
-                        )
+                        solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
                         dof_custom_attributes.setdefault(solreflimit_mode_key, {})
                         for dof_offset in range(3):
                             dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
                                 solreflimit_mode
+                            )
+                    if has_solreflimit_gain_baseline:
+                        gain_baseline = wp.vec2(default_joint_limit_ke, default_joint_limit_kd)
+                        dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})
+                        for dof_offset in range(3):
+                            dof_custom_attributes[solreflimit_gain_baseline_key][current_dof_index + dof_offset] = (
+                                gain_baseline
                             )
                     # Lift frictionloss and damping into the builder's per-DOF arrays
                     # so they reach the MuJoCo spec on export.
@@ -1955,46 +2025,13 @@ def parse_mjcf(
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
 
-                # Parse solreflimit for joint limit stiffness and damping
-                solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
-                limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
-                # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)``
-                # for the standard mode or ``(< 0, < 0)`` for direct mode;
-                # mixed signs are rejected by ``solref_to_stiffness_damping``
-                # which returns ``(None, None)``. The ``"0 0"`` sentinel is
-                # also rejected by the conversion but is intentionally used by
-                # MJCF authors as a marker preserved verbatim through the
-                # ``mujoco.solreflimit`` custom attribute (see
-                # ``test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter``),
-                # so we keep ``SOLREF_MODE_RAW`` semantics for the runtime
-                # ``jnt_solref`` path. Newton-side ``joint_limit_ke``/``kd``
-                # fall back to the MuJoCo defaults; warn so authors of
-                # genuinely malformed configurations notice the mismatch
-                # between the Newton gains (defaults) and the raw solref
-                # (forwarded verbatim) before they switch the mode to
-                # ``SOLREF_MODE_FORCE_SPACE``.
-                if (
-                    "solreflimit" in joint_attrib
-                    and (limit_ke is None or limit_kd is None)
-                    and not (float(solreflimit[0]) == 0.0 and float(solreflimit[1]) == 0.0)
-                ):
-                    warnings.warn(
-                        f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
-                        f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
-                        "same-sign non-zero components or the '0 0' sentinel); "
-                        f"joint_limit_ke/kd fall back to ({DEFAULT_LIMIT_KE}, "
-                        f"{DEFAULT_LIMIT_KD}) while the raw value is forwarded to "
-                        "MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may "
-                        "silently disable the limit or divide by zero — fix the "
-                        "authored solreflimit or set "
-                        "model.mujoco.solreflimit_mode = SOLREF_MODE_FORCE_SPACE "
-                        "to switch to the Newton force-space scaling.",
-                        stacklevel=2,
-                    )
-                if limit_ke is None:
-                    limit_ke = DEFAULT_LIMIT_KE  # From MuJoCo's default solref.
-                if limit_kd is None:
-                    limit_kd = DEFAULT_LIMIT_KD  # From MuJoCo's default solref.
+                # ``solreflimit`` is a native MuJoCo solver parameter, not a
+                # force-space gain. Preserve it through the custom attribute and
+                # keep Newton's generic joint-limit gains at their configured
+                # defaults instead of assigning an inertia-independent conversion.
+                limit_ke = default_joint_limit_ke
+                limit_kd = default_joint_limit_kd
+                warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
@@ -2055,10 +2092,14 @@ def parse_mjcf(
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
                     # authored solreflimit is raw MuJoCo data, while an
                     # unauthored limit starts from MuJoCo's implicit default
-                    # and only switches to Newton scaling after the gains move
-                    # away from their imported default values.
-                    solreflimit_mode = SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
+                    # and only switches to Newton scaling after the generic
+                    # gains are edited.
+                    solreflimit_mode = imported_joint_solreflimit_mode(joint_attrib)
                     dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
+                if has_solreflimit_gain_baseline:
+                    dof_custom_attributes.setdefault(solreflimit_gain_baseline_key, {})[current_dof_index] = wp.vec2(
+                        limit_ke, limit_kd
+                    )
 
                 # Track this MJCF joint's name and DOF offset within the combined Newton joint
                 mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
@@ -2877,6 +2918,9 @@ def parse_mjcf(
         "tendon_wrap_shape",
         "tendon_wrap_sidesite",
         "tendon_wrap_prm",
+        "tendon_articulation",
+        "tendon_joint_articulation",
+        "tendon_wrap_articulation",
     }
     builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
         attr
@@ -3106,6 +3150,7 @@ def parse_mjcf(
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
 
             joint_name = merged_attrib.get("joint")
+            joint_in_parent_name = merged_attrib.get("jointinparent")
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
             site_name = merged_attrib.get("site")
@@ -3116,6 +3161,8 @@ def parse_mjcf(
             # Sanitize names to match how they were stored in the builder
             if joint_name:
                 joint_name = sanitize_name(joint_name)
+            if joint_in_parent_name:
+                joint_in_parent_name = sanitize_name(joint_in_parent_name)
             if body_name:
                 body_name = sanitize_name(body_name)
             if tendon_name:
@@ -3136,6 +3183,7 @@ def parse_mjcf(
             crank_length = None
             qd_start = -1
             total_dofs = 0
+            target_joint_name = joint_name or joint_in_parent_name
 
             if crank_site_name or slider_site_name:
                 if not crank_site_name or not slider_site_name:
@@ -3168,27 +3216,27 @@ def parse_mjcf(
                 target_idx_alt = slider_site_idx
                 target_name_for_log = crank_site_name
                 trntype = int(SolverMuJoCo.TrnType.SLIDERCRANK)
-            elif joint_name:
-                # Joint transmission (trntype=0)
+            elif target_joint_name:
+                # Joint transmissions (trntype=0 or parent-frame trntype=1)
                 # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
-                if joint_name in mjcf_joint_name_to_dof:
-                    qd_start = mjcf_joint_name_to_dof[joint_name]
+                if target_joint_name in mjcf_joint_name_to_dof:
+                    qd_start = mjcf_joint_name_to_dof[target_joint_name]
                     total_dofs = 1  # Individual MJCF joints always map to exactly 1 DOF
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
-                elif joint_name in joint_name_to_idx:
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
+                elif target_joint_name in joint_name_to_idx:
                     # Fallback: combined Newton joint (applies to all DOFs)
-                    joint_idx = joint_name_to_idx[joint_name]
+                    joint_idx = joint_name_to_idx[target_joint_name]
                     qd_start = builder.joint_qd_start[joint_idx]
                     lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
                     total_dofs = lin_dofs + ang_dofs
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
                 else:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                        print(f"Warning: {actuator_type} actuator references unknown joint '{target_joint_name}'")
                     continue
             elif body_name:
                 # Body transmission (trntype=4)
@@ -3335,8 +3383,13 @@ def parse_mjcf(
                     print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
                 continue
 
-            # Add actuator via custom attributes
-            parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+            # Add actuator via custom attributes; the context lets transformers name it when they warn.
+            parsed_attrs = parse_custom_attributes(
+                merged_attrib,
+                builder_custom_attr_actuator,
+                parsing_mode="mjcf",
+                context={"actuator_name": act_name},
+            )
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
@@ -3391,7 +3444,14 @@ def parse_mjcf(
                 source_name = (
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
-                trn_name = {0: "joint", 2: "tendon", 3: "site", 4: "body", 5: "slidercrank"}.get(trntype, "unknown")
+                trn_name = {
+                    0: "joint",
+                    1: "jointinparent",
+                    2: "tendon",
+                    3: "site",
+                    4: "body",
+                    5: "slidercrank",
+                }.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"

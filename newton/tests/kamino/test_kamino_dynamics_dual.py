@@ -10,13 +10,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
-from newton._src.solvers.kamino._src.models.builders.basics import make_basics_heterogeneous_builder
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.print import print_model_info
+from newton.tests.utils.basics import make_basics_heterogeneous_builder
 
 ###
 # Tests
@@ -42,10 +43,11 @@ class TestDualProblem(unittest.TestCase):
 
         # Construct the model description using model builders for different systems
         builder = make_basics_heterogeneous_builder()
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Create the model and containers from the builder
         model, data, _state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Create the Delassus operator
@@ -71,6 +73,8 @@ class TestDualProblem(unittest.TestCase):
             print(f"problem.data.v_i (shape): {problem.data.v_i.shape}")
             print(f"problem.data.v_f (shape): {problem.data.v_f.shape}")
             print(f"problem.data.mu (shape): {problem.data.mu.shape}")
+            print(f"problem.data.bound_lower (shape): {problem.data.bound_lower.shape}")
+            print(f"problem.data.bound_upper (shape): {problem.data.bound_upper.shape}")
             print(f"problem.data.D (shape): {problem.data.D.shape}")
 
         # Extract expected allocation sizes
@@ -78,7 +82,9 @@ class TestDualProblem(unittest.TestCase):
         nb = model.size.sum_of_num_bodies
         maxnl = limits.model_max_limits_host
         maxnc = detector.contacts.model_max_contacts_host
-        maxdims = model.size.sum_of_num_joint_cts + maxnl + 3 * maxnc
+        maxdims = (
+            model.size.sum_of_num_bilateral_joint_cts + model.size.sum_of_num_bounded_joint_cts + maxnl + 3 * maxnc
+        )
 
         # Check allocations
         self.assertEqual(problem.data.config.size, nw)
@@ -92,6 +98,8 @@ class TestDualProblem(unittest.TestCase):
         self.assertEqual(problem.data.v_i.size, maxdims)
         self.assertEqual(problem.data.v_f.size, maxdims)
         self.assertEqual(problem.data.mu.size, maxnc)
+        self.assertEqual(problem.data.bound_lower.size, model.size.sum_of_num_bounded_joint_cts)
+        self.assertEqual(problem.data.bound_upper.size, model.size.sum_of_num_bounded_joint_cts)
         maxdim_np = problem.data.maxdim.numpy()
         self.assertEqual(int(np.sum(maxdim_np)), maxdims)
         dim_np = problem.data.dim.numpy()
@@ -106,11 +114,12 @@ class TestDualProblem(unittest.TestCase):
 
         # Construct the model description using model builders for different systems
         builder = make_basics_heterogeneous_builder()
-        num_worlds = builder.num_worlds
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        num_worlds = model.info.num_worlds
 
         # Create the model and containers from the builder
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -154,6 +163,8 @@ class TestDualProblem(unittest.TestCase):
             print(f"problem.data.v_i:\n{problem.data.v_i}")
             print(f"problem.data.v_f:\n{problem.data.v_f}")
             print(f"problem.data.mu:\n{problem.data.mu}")
+            print(f"problem.data.bound_lower:\n{problem.data.bound_lower}")
+            print(f"problem.data.bound_upper:\n{problem.data.bound_upper}")
             for w in range(num_worlds):
                 print(f"problem.data.v_b[{w}]:\n{v_b_np[w]}")
             for w in range(num_worlds):

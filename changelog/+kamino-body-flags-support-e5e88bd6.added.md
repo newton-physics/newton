@@ -1,0 +1,1 @@
+Add support for body flags (kinematic/dynamic/proxy) in Kamino.

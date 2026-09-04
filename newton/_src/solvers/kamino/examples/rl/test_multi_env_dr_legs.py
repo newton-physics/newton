@@ -16,11 +16,6 @@ import time
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.models.builders.utils import (
-    build_usd,
-    make_homogeneous_builder,
-    set_uniform_body_pose_offset,
-)
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 
@@ -47,28 +42,24 @@ def make_settings(sim_dt: float = 0.004) -> Simulator.Config:
 
 def run_test(num_worlds: int, num_steps: int, device):
     asset_path = newton.utils.download_asset("disneyresearch")
-    usd_path = str(asset_path / "dr_legs/usd/dr_legs_with_boxes.usda")
+    usd_path = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
 
     msg.notif(f"--- Testing {num_worlds} environments ---")
 
     # Build model
     msg.info("Building model...")
-    builder = make_homogeneous_builder(
-        num_worlds=num_worlds,
-        build_fn=build_usd,
-        source=usd_path,
-        load_static_geometry=True,
-        load_drive_dynamics=True,
-        ground=True,
-    )
-    builder.max_contacts_per_pair = 8  # Cap contact budget to avoid Warp tile API shared memory bug
+    builder_single = newton.ModelBuilder()
+    builder_single.add_usd(source=usd_path)
+    builder = newton.ModelBuilder()
+    builder.replicate(builder=builder_single, world_count=num_worlds)
     offset = wp.transformf(0.0, 0.0, 0.265, 0.0, 0.0, 0.0, 1.0)
-    set_uniform_body_pose_offset(builder=builder, offset=offset)
+    builder.body_q = [wp.mul(offset, q) for q in builder.body_q]
+    model = builder.finalize(device=device)
 
     # Create simulator
     msg.info("Creating simulator...")
     settings = make_settings(0.004)
-    sim = Simulator(builder=builder, config=settings, device=device)
+    sim = Simulator(model=model, config=settings)
     sim.set_control_callback(lambda _: None)
 
     msg.info(f"Model size: {sim.model.size}")

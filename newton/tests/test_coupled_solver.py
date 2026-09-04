@@ -520,12 +520,12 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(parent_flags[1] & dynamic, 0)
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
-    def test_disable_joints_rewrites_cable_type_in_view(self):
-        """disable_joints should expose disabled cable joints as D6 in the view."""
+    def test_disable_joints_rewrites_rod_type_in_view(self):
+        """Verify disabled rod joints are exposed as D6 in the view."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_cable(
+        joint = builder.add_joint_rod(
             parent=parent,
             child=child,
             parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
@@ -538,7 +538,7 @@ class TestModelView(unittest.TestCase):
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.D6))
-        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.CABLE))
+        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
         np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
 
     def test_zero_particle_mass(self):
@@ -1257,7 +1257,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def _seeded_full_surface_contacts(model, corners, particle=None):
         """Build contacts with a face record and an optional particle record."""
         pipeline = newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+            model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
         contacts = pipeline.contacts()
 
@@ -1429,6 +1429,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
+        self.assertIsNotNone(model._fk_articulation_level_start)
+        self.assertGreater(model._fk_level_capacity, 0)
+        self.assertIsNone(view._fk_articulation_level_start)
+        self.assertIsNone(view._fk_level_joint_start)
+        self.assertIsNone(view._fk_level_joints)
+        self.assertIsNone(view._fk_level_parent_pos)
+        self.assertEqual(view._fk_level_capacity, 0)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
@@ -2341,8 +2348,86 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
     np.testing.assert_allclose(state_out.body_qd.numpy()[source_bodies], model_qd[source_bodies], atol=1.0e-5)
 
 
+def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, radius=0.05, dt=1.0 / 60.0):
+    """Harvest the proxy wrench for one body pressed by ``particle_count`` identical soft contacts.
+
+    The particles sit at the same depth on a flat, uniform face, so every contact carries the same
+    force and any subset of them of a given size sums to the same linear reaction. The body is
+    heavy enough that a single step leaves that geometry intact.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(mass=1.0e6, inertia=wp.mat33(np.eye(3) * 1.0e6))
+    builder.add_shape_box(
+        body=body,
+        hx=5.0,
+        hy=5.0,
+        hz=0.5,
+        xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
+    )
+    for i in range(particle_count):
+        builder.add_particle(
+            pos=(2.0 * radius * (i - 0.5 * (particle_count - 1)), 0.0, radius - depth),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+            radius=radius,
+        )
+    builder.color()
+    model = builder.finalize(device="cpu")
+
+    solver = SolverVBD(
+        model=model,
+        iterations=1,
+        integrate_with_external_rigid_solver=False,
+        rigid_body_particle_contact_buffer_size=buffer_size,
+        rigid_compliant_alm=True,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, control=None, contacts=contacts, dt=dt)
+
+    out_body_f = wp.zeros(1, dtype=wp.spatial_vector, device=model.device)
+    solver.coupling_harvest_proxy_wrenches(
+        wp.array([0], dtype=int, device=model.device),
+        out_body_f,
+        body_qd_before=state_in.body_qd,
+        state=state_in,
+        state_out=state_out,
+        contacts=contacts,
+        dt=dt,
+    )
+    return {
+        "soft_contact_count": int(contacts.soft_contact_count.numpy()[0]),
+        "listed": int(solver.body_particle_contact_counts.numpy()[0]),
+        "overflow_max": int(solver.body_particle_contact_overflow_max.numpy()[0]),
+        "wrench": out_body_f.numpy()[0],
+    }
+
+
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
+
+    def test_proxy_wrench_harvest_respects_body_particle_contact_buffer_cap(self):
+        particle_count = 12
+        cap = 4
+
+        full = _harvest_wrench_on_one_proxy_body(particle_count, particle_count)
+        self.assertEqual(full["soft_contact_count"], particle_count)
+        self.assertEqual(full["listed"], particle_count)
+        self.assertEqual(full["overflow_max"], 0, "the uncapped reference must not overflow")
+        force_full = full["wrench"][:3]
+        self.assertGreater(abs(force_full[2]), 0.0, "the contacts must actually push the body")
+
+        capped = _harvest_wrench_on_one_proxy_body(cap, particle_count)
+        self.assertEqual(capped["soft_contact_count"], particle_count)
+        self.assertGreater(capped["overflow_max"], cap, "the small buffer must actually overflow")
+
+        # The solve applied only the `cap` records its per-body list kept, so the reaction fed back
+        # to the source is that same fraction of the whole stream -- not all of it.
+        expected = force_full * (cap / particle_count)
+        np.testing.assert_allclose(capped["wrench"][:3], expected, rtol=1.0e-5, atol=1.0e-6)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
