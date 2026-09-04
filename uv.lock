@@ -3730,7 +3730,7 @@ dev = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
 docs = [
@@ -3761,7 +3761,7 @@ docs = [
     { name = "sphinxcontrib-mermaid" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "viser" },
 ]
 examples = [
@@ -3786,7 +3786,7 @@ examples = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
 importers = [
@@ -3803,7 +3803,7 @@ importers = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 notebook = [
     { name = "alphashape" },
@@ -3830,7 +3830,7 @@ notebook = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
@@ -3857,7 +3857,7 @@ rtx = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "usd-exchange", marker = "(python_full_version < '3.13' and platform_machine == 'aarch64') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sim = [
     { name = "mujoco" },
@@ -3886,7 +3886,7 @@ torch-cu12 = [
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
     { name = "trimesh" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64'" },
-    { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64'" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu12'" },
 ]
 torch-cu13 = [
@@ -3912,7 +3912,7 @@ torch-cu13 = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "trimesh" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64'" },
-    { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64'" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64'" },
     { name = "warp-nn", extra = ["onnx"], marker = "extra == 'extra-6-newton-torch-cu13'" },
 ]
 
@@ -3973,8 +3973,8 @@ requires-dist = [
     { name = "torch", marker = "extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "newton", extra = "torch-cu12" } },
     { name = "torch", marker = "extra == 'torch-cu13'", specifier = ">=2.10.0", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "newton", extra = "torch-cu13" } },
     { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5,<26.5" },
-    { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.2.0,<3" },
+    { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5,<26.9" },
+    { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.3.0,<4" },
     { name = "viser", marker = "extra == 'docs'", specifier = "==1.0.26" },
     { name = "viser", marker = "extra == 'notebook'", specifier = "==1.0.26" },
     { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
@@ -7247,37 +7247,43 @@ wheels = [
 
 [[package]]
 name = "usd-core"
-version = "26.3"
+version = "26.8"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/41/e6/860340b17bc78a284208b4d4f0dbc7f87bb16678fb76c3a2ffaa0a853744/usd_core-26.3-cp310-none-macosx_10_15_universal2.whl", hash = "sha256:80b97d567c813df04292cb4aff580b89ce2b23844530a714fe1d4bcd78790491", size = 39353010, upload-time = "2026-02-24T23:05:33.69Z" },
-    { url = "https://files.pythonhosted.org/packages/90/98/c7c0ce6953fa1e1785b8e66302642402ea1fd2136f0272c2a527db7cdb0b/usd_core-26.3-cp310-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:acb10f57f7302571115857f29b8ca49b9f9e553abfb5240d58b65d8ded964ace", size = 28547807, upload-time = "2026-02-24T23:05:37.135Z" },
-    { url = "https://files.pythonhosted.org/packages/b7/d0/f6e6741bdca95e247d18061097af7a494e5b3858eb8ff6333ffd1d98f824/usd_core-26.3-cp310-none-win_amd64.whl", hash = "sha256:0d737fcde0dc82c96ae15bea2fee4311b8625f0f6286bc305232b5c88184933f", size = 13358017, upload-time = "2026-02-24T23:05:40.229Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/4a/1b8663cc3dfe45bfba3ef611904f34498d1ab9394c16f6322b81f0464af0/usd_core-26.3-cp311-none-macosx_10_15_universal2.whl", hash = "sha256:ede5c02f23e22d3143af7eaab326b411c858edcfc0c070d30b9d74752df28267", size = 39352085, upload-time = "2026-02-24T23:05:43.637Z" },
-    { url = "https://files.pythonhosted.org/packages/a1/ff/f46504457ef5c5b6e1691aff15aabdd92fd278f877b8e484537612237a62/usd_core-26.3-cp311-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2317ca228cb7b3d3bbbc618cf86887188504d55b39d5305596152dad24e935fd", size = 28552867, upload-time = "2026-02-24T23:05:46.749Z" },
-    { url = "https://files.pythonhosted.org/packages/16/ad/40faa8d9b149f62ff460f629358fa107954a66d9d7ec2ee1df445ce30797/usd_core-26.3-cp311-none-win_amd64.whl", hash = "sha256:3182af84bcd1f0c8b3d7d5a44027844e8d4a1861b1af6e9329730516fd1b6a7e", size = 13358130, upload-time = "2026-02-24T23:05:49.271Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/aa/817cb9873b10cc21d3666499823cee008fb62c0b832ae13ba4c771ddd758/usd_core-26.3-cp312-none-macosx_10_15_universal2.whl", hash = "sha256:23864f61b7ec9cc4ed04cc46c006190d6930f3663d6e324bd0b8b5ca85bdcc22", size = 39402081, upload-time = "2026-02-24T23:05:51.935Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/90/bc0310887ce7d2d821a672ecaabb85f9c453c0f2dd180a9c27b6d4bdf963/usd_core-26.3-cp312-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:132433bb28f47f29907a41a90d36a3a7126189885088dd87d72dde9649991efa", size = 28468800, upload-time = "2026-02-24T23:05:54.731Z" },
-    { url = "https://files.pythonhosted.org/packages/34/21/e2a51a872dbf9af30dfd1a023f764c2171a453ce7327b966344b76d764ca/usd_core-26.3-cp312-none-win_amd64.whl", hash = "sha256:c436aef60e9e60e391dcd93f94565dda81137c6c91330aabed26653106cf0a35", size = 13396142, upload-time = "2026-02-24T23:05:57.545Z" },
-    { url = "https://files.pythonhosted.org/packages/05/51/003cae380540b6319b97b76404565daed917410c63a88224882a827670c7/usd_core-26.3-cp313-none-macosx_10_15_universal2.whl", hash = "sha256:8cad17c9649589b9113f1b3a03dc0497228e289c3852c4c13945ae13d7686a0e", size = 39402266, upload-time = "2026-02-24T23:06:00.343Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/75/4c4c57f544acffa77743afc5c515bbe18e50d5262f7b9b5531028e252bce/usd_core-26.3-cp313-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:28d7003859cd98f6d9b0349198458c81f4caad204783fbc50c648669ac2c3041", size = 28469105, upload-time = "2026-02-24T23:06:03.761Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/8d/85893369128deafccabcf45006fa94e2d6c806a6332d0ac43c1af092625b/usd_core-26.3-cp313-none-win_amd64.whl", hash = "sha256:e2195e1782f7673ba31d861602df8a6444cfe8425f1f3806c03702eea5047cf0", size = 13396170, upload-time = "2026-02-24T23:06:06.31Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/87/ee3611de8006030b4855ebf6243a4f302256f7f3f4cfec4b98eb54f9ce0a/usd_core-26.8-cp310-none-macosx_10_15_universal2.whl", hash = "sha256:f89c1492782f3882a7e16e488e9042718616ef45f8452bad4fb271521471a166", size = 40653920, upload-time = "2026-07-20T14:32:02.229Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/cd/6627b9a45d5bf96b8368902f164c00bfab5eac49161406a6c95245f677fc/usd_core-26.8-cp310-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:98ca82fceca81ddb3e1d47c55173fc3117312d2e22dac677bc4d7aeb3f89ac0e", size = 29604993, upload-time = "2026-07-20T14:32:05.744Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/f2/c544477979230b5d1a40d1eedc9d85f1776ed235818d358d19e01fa681bc/usd_core-26.8-cp310-none-win_amd64.whl", hash = "sha256:9dbfb76a4aa24e2d6d33716f3918c85860633a4983dfd06bd58e83932f2071fd", size = 13848462, upload-time = "2026-07-20T14:32:08.701Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/7b/fd674dc4c3273e18cede49c50be75d90649d38dbec6180bda83b4047a8f0/usd_core-26.8-cp311-none-macosx_10_15_universal2.whl", hash = "sha256:781ddef732e3a6d300a5fa2d0c5b8af103aa8589a88c4af77ac6608f39293880", size = 40653076, upload-time = "2026-07-20T14:32:11.676Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/d7/491a3dd0f62424f92f59240c5aa5c64c03588c1b4920b00f5df2ac4f4087/usd_core-26.8-cp311-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:53ebbc130108c7e0e7b4af9a4fe3bdac2ae084a12db13496a50f895db527382e", size = 29611915, upload-time = "2026-07-20T14:32:14.833Z" },
+    { url = "https://files.pythonhosted.org/packages/66/18/7ccfb5c69366fa0d7590697e0f62adb4b5c20f02a3c3a674331b4bf40d43/usd_core-26.8-cp311-none-win_amd64.whl", hash = "sha256:d39cef20efdfc29473e92887487bb8c10c45e966c492b5356d32a52724c3578f", size = 13848082, upload-time = "2026-07-20T14:32:17.701Z" },
+    { url = "https://files.pythonhosted.org/packages/97/44/fb780d02b04bbebc410bfb6decccc66aec07fb0322172ad019c4579ad80a/usd_core-26.8-cp312-none-macosx_10_15_universal2.whl", hash = "sha256:aaf1a68bf4c7ab959b9f4d3a6e0ef9347ff6135a1452676bb40916060146c53e", size = 40698020, upload-time = "2026-07-20T14:32:20.788Z" },
+    { url = "https://files.pythonhosted.org/packages/19/0b/efe5c0d7c273149ac94083831e5b36649925a621a73cd2ddf9616e160c8c/usd_core-26.8-cp312-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:204fb1ef1fc977b827c491f4e9fa39b57518504ed0cacfe12e026e95123cacf1", size = 29530957, upload-time = "2026-07-20T14:32:24.255Z" },
+    { url = "https://files.pythonhosted.org/packages/79/d3/749edc4d2eea3ffb94aa0526d5da6f4a3f185ef7004ceeb6b5ecdb6a0c68/usd_core-26.8-cp312-none-win_amd64.whl", hash = "sha256:6db0031224b718cae53e4b19ecd80aea0a7ed4348e330fd82ccfbdc9b8b311ed", size = 13887898, upload-time = "2026-07-20T14:32:27.452Z" },
+    { url = "https://files.pythonhosted.org/packages/79/fd/7060951a8fef299c9adcd89493219884c9f53f14492f7972238b83a6eb17/usd_core-26.8-cp313-none-macosx_10_15_universal2.whl", hash = "sha256:150bc967f4760000b8087ab4bd669f1477043f07433dcbcd8a80a97c73c47545", size = 40698029, upload-time = "2026-07-20T14:32:30.566Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/e8/aee0809bedc47032a4bee4cd0b1b65e7bc65522c5ac9b28418974a47b5c7/usd_core-26.8-cp313-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cd08c65edccd3fd3b5be5354593a8b54175adb8b45e3d84eb5e1644af5e904fb", size = 29531140, upload-time = "2026-07-20T14:32:34.047Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/54/83e0f3810f74c88a85a56dc9cf950bc7b74a342cea3d5c4e441b3a11b4bb/usd_core-26.8-cp313-none-win_amd64.whl", hash = "sha256:8de2d62f148d11a33936634b9e43ded9c691ce565430218b606e8235bdb9cbf2", size = 13888333, upload-time = "2026-07-20T14:32:36.645Z" },
+    { url = "https://files.pythonhosted.org/packages/94/56/1b14f82eaa8db9d054246ec6c4abad146c21eb4e914e742d4ad153f8325a/usd_core-26.8-cp314-none-macosx_10_15_universal2.whl", hash = "sha256:fec6ba0ddcf6b285e1757494fcb66e57c23993098cb3cb26bf8db263567bb945", size = 40856543, upload-time = "2026-07-20T14:32:39.783Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/ce/76e0476d04c387cbf435f11aafb36ff4f79345215d7b9dbb677a7a1efa11/usd_core-26.8-cp314-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:114f39723ccfc9a269cfdf6a7b80fec53aa96530806e510a6cccfd577401a07c", size = 29575839, upload-time = "2026-07-20T14:32:43.582Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/87/d5cd29f5326bb945cf90198d28c7f3fca45a950e7512851360ced2e0a7e9/usd_core-26.8-cp314-none-win_amd64.whl", hash = "sha256:c780f28b624f4efb3d8f78af805f17082b3976f61ba18da8171bb898ce31f2be", size = 14451875, upload-time = "2026-07-20T14:32:46.461Z" },
 ]
 
 [[package]]
 name = "usd-exchange"
-version = "2.3.0"
+version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/55/a701619354b8e28fe23e4ee4c252c4b36250240f3a1e9554fdc4444dd5dc/usd_exchange-2.3.0-cp310-cp310-manylinux_2_35_aarch64.whl", hash = "sha256:d9e0cf5c124e2bb00b3edf6beba6893163a9720169da5176bee40356fab8fba7", size = 20426919, upload-time = "2026-05-20T20:35:57.164Z" },
-    { url = "https://files.pythonhosted.org/packages/7e/9d/d750fdcb09b5c6f45f1d5449a2902aa0eadab95a94d6d18cb5cdf9bf2b12/usd_exchange-2.3.0-cp310-cp310-manylinux_2_35_x86_64.whl", hash = "sha256:357f7e4f233c3470ee9eba4763eee6320757629fb0bcf2ef6f4b5a30f7ac48d4", size = 20820627, upload-time = "2026-05-20T20:36:07.355Z" },
-    { url = "https://files.pythonhosted.org/packages/92/1f/fe664eea328911a42a7099aac06386485bb0643b606eef42de30e0d350e1/usd_exchange-2.3.0-cp310-cp310-win_amd64.whl", hash = "sha256:17cc377da6c9cc93fd91572056756333b4c0dc5a89992922c9a08a2dd5028e57", size = 29010332, upload-time = "2026-05-20T20:36:00.75Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/ba/0f1a4c76c46c0a3ec3f0fb06a7920a429acafbbbb75a80db897a350dca13/usd_exchange-2.3.0-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:1c8f470bf52c9d96d95c65ccd275377679ae349b8dac8044995ce5ff43ffd2e1", size = 20424378, upload-time = "2026-05-20T20:36:00.629Z" },
-    { url = "https://files.pythonhosted.org/packages/42/0f/9d81d3273c8e1149427dd420404ab61c597e128c4df7464812a7bcc09645/usd_exchange-2.3.0-cp311-cp311-manylinux_2_35_x86_64.whl", hash = "sha256:ec80c6baddbb16dbf62a2050a25886b4292684c90d86bd2000f5a57819a3a7f3", size = 20823249, upload-time = "2026-05-20T20:36:00.21Z" },
-    { url = "https://files.pythonhosted.org/packages/bb/73/84358ce77968c99b7762fb71f109fda703abefa7bb222094d29a0d1b0f5f/usd_exchange-2.3.0-cp311-cp311-win_amd64.whl", hash = "sha256:72497aa288e79732964bb1cb5a1f0446863f2987e219a46da61878e9894eda17", size = 29014784, upload-time = "2026-05-20T20:36:00.445Z" },
-    { url = "https://files.pythonhosted.org/packages/9a/66/9a630f44a6fc980e3fbc728c13efc79736ac8cf02b50b3215149a4e07310/usd_exchange-2.3.0-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:3beddb68abb89b1f3be207a35275604a6eb89b179ba052ca3eada5cd7202e534", size = 20462820, upload-time = "2026-05-20T20:36:03.947Z" },
-    { url = "https://files.pythonhosted.org/packages/09/61/65cfeab3319fb57d598393dc680ee9707b6da2b0dd3068bc9cae686bde95/usd_exchange-2.3.0-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:358c858fafebc0ca37a0e62608e595d894ff732eb723ed871292755f5882e8b4", size = 20891027, upload-time = "2026-05-20T20:36:02.772Z" },
-    { url = "https://files.pythonhosted.org/packages/11/f2/dbf7a49c7b33dd07b22fe1cb21f06a0e1c9a3b28db0f8a29006e63fca1c6/usd_exchange-2.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:f5ab1b54ce670d8e36786c40750f86396463f2185cfaa5f5e813d6c5207e35ae", size = 29040115, upload-time = "2026-05-20T20:36:04.446Z" },
+    { url = "https://files.pythonhosted.org/packages/14/f4/892f37a278f7b6111a74e8e7e5541d30e8b1d17f90746b75ae6125ad67d0/usd_exchange-3.0.0-cp310-cp310-manylinux_2_35_aarch64.whl", hash = "sha256:22faa3cd6541921b5ced8c40279fe23836052a8fc3867d8260f28c15946d4b16", size = 26124750, upload-time = "2026-08-20T21:17:06.537Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/70/7558982aa56630db1f727f0f7792e8476103629ce528b5324ac750b12b7c/usd_exchange-3.0.0-cp310-cp310-manylinux_2_35_x86_64.whl", hash = "sha256:e928900745c7b6e75491c5c66a0eeaf5fc1aad97c9fe10adea0c1b4d1fd49251", size = 26834320, upload-time = "2026-08-20T21:17:33.423Z" },
+    { url = "https://files.pythonhosted.org/packages/09/55/a48e0bb6d256fb132904892d5dff0b4763f188f48fafaa12275ad2bdf676/usd_exchange-3.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:03831af25818563da2f646b9c190ef80573759267fb7744895991ce4f4bece56", size = 15977214, upload-time = "2026-08-20T21:18:01.571Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/69/a216f1bf12678f8f64f893885dd6808e2b31b80442d528719c4bafc2bcbd/usd_exchange-3.0.0-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:02b6f47f6d97b00c3c79a33862a5b7f53cac5e87311cc6b636a4742f7ba5270e", size = 26123597, upload-time = "2026-08-20T21:18:20.081Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/56/a4df2a0a3d561a89baf938782fe5cf75ceb2058e425a79dc1b28e5624861/usd_exchange-3.0.0-cp311-cp311-manylinux_2_35_x86_64.whl", hash = "sha256:e349a5792deee29a9cf86c95e3fbcec501caaa89d59844041813d2040c448c02", size = 26831797, upload-time = "2026-08-20T21:18:43.19Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/b5/2f8ef05cb1fd4e117833e6195beb72224876ed57453ab2ba0ddd8e2d4e85/usd_exchange-3.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:4428b021601fd0b7c26a65b0130f5d475ebe53263573359a596770f4e5719b55", size = 15978917, upload-time = "2026-08-20T21:19:06.147Z" },
+    { url = "https://files.pythonhosted.org/packages/67/34/585377aab3b09f1f039dc78db23e967814dfc669392dcb115c97c9e7b055/usd_exchange-3.0.0-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:59a3b8ef4bc545c76059f7efc5fec94023e0818c5a714fae40f8e0411de79db5", size = 25988564, upload-time = "2026-08-20T21:19:27.866Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/b7/746eb09779f624e593c025366f7d227f7376e0fef6226a7783ba5cff18a8/usd_exchange-3.0.0-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:3d5a3ca9f6153abaf2bb4f8fda6c4026e174b6b050eb904a6e4a5bdf89a52926", size = 26729798, upload-time = "2026-08-20T21:19:50.636Z" },
+    { url = "https://files.pythonhosted.org/packages/31/43/d25c80097b3e975452bc5648b6b9fbcfe75457bf7e402cfaad9ef6730cd7/usd_exchange-3.0.0-cp312-cp312-win_amd64.whl", hash = "sha256:374499c3d06bd10f4cda2036239935222527f17e1f3ee059fc093aeb9058439b", size = 16032363, upload-time = "2026-08-20T21:20:14.5Z" },
+    { url = "https://files.pythonhosted.org/packages/20/4d/dbace3235366d0b8bf49181e1880428e3614f6051d83d526c62afa370d06/usd_exchange-3.0.0-cp313-cp313-manylinux_2_35_aarch64.whl", hash = "sha256:15ef92fedf3f26018a11caf1fb7d2c3293693b3465eff1bd20c5eaab14431185", size = 25987040, upload-time = "2026-08-20T21:20:39.081Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/c5/fd2a764ae01c19a0e28b03a71115a1f29aa73f9aa119f5e953441dc03eb6/usd_exchange-3.0.0-cp313-cp313-manylinux_2_35_x86_64.whl", hash = "sha256:5557c7ba24c03cc7bd54186c93111c2f3a678b8228a91cb782578d6ef4aef607", size = 26730210, upload-time = "2026-08-20T21:21:00.813Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/23/e756780c82dd054531ec21efb42beec13c8504fab65ab5854e74c9e7aa62/usd_exchange-3.0.0-cp313-cp313-win_amd64.whl", hash = "sha256:4ad3ef6125f716b4bc934cf30f54c8e99089a27ceaa52483683adf5333c6eb1c", size = 16032782, upload-time = "2026-08-20T21:21:19.269Z" },
 ]
 
 [[package]]
