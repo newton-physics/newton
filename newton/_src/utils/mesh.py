@@ -1141,6 +1141,7 @@ def load_meshes_from_file(
     maxhullvert: int,
     override_color: np.ndarray | list[float] | tuple[float, float, float] | None = None,
     override_texture: np.ndarray | str | None = None,
+    preserve_submeshes: bool = False,
 ) -> list[Mesh]:
     """Load meshes from a file using trimesh and capture texture data if present.
 
@@ -1150,6 +1151,7 @@ def load_meshes_from_file(
         maxhullvert: Maximum vertices for convex hull approximation.
         override_color: Optional base color override (RGB).
         override_texture: Optional texture path/URL or image override.
+        preserve_submeshes: Preserve scene geometry as separate meshes instead of merging it.
 
     Returns:
         List of Mesh objects.
@@ -1356,10 +1358,10 @@ def load_meshes_from_file(
                 category=DeprecationWarning,
                 module=r"^collada\.",
             )
-            tri = trimesh.load(filename, force="mesh")
+            tri = trimesh.load(filename, force="scene" if preserve_submeshes else "mesh")
     else:
-        tri = trimesh.load(filename, force="mesh")
-    tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
+        tri = trimesh.load(filename, force="scene" if preserve_submeshes else "mesh")
+    tri_meshes = tri.dump() if hasattr(tri, "geometry") else [tri]
 
     meshes = []
     for tri_mesh in tri_meshes:
