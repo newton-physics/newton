@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -40,6 +40,78 @@ def _scatter_add_kernel(
     output[idx] = output[idx] + forces[i]
     if computed_output:
         computed_output[idx] = computed_output[idx] + computed_forces[i]
+
+
+def _assign_state_value(dst: Any, src: Any, name: str) -> None:
+    """Copy a supported state value without replacing its storage."""
+    if dst is None and src is None:
+        return
+    if dst is None or src is None:
+        raise ValueError(f"Cannot assign '{name}': present in one state and missing in the other.")
+
+    dst_is_warp = isinstance(dst, wp.array)
+    src_is_warp = isinstance(src, wp.array)
+    if dst_is_warp or src_is_warp:
+        if not (dst_is_warp and src_is_warp):
+            raise ValueError(f"Cannot assign '{name}': a Warp array in one state and not in the other.")
+        dst.assign(src)
+        return
+
+    dst_is_torch = type(dst).__module__.startswith("torch")
+    src_is_torch = type(src).__module__.startswith("torch")
+    if dst_is_torch or src_is_torch:
+        if not (dst_is_torch and src_is_torch):
+            raise ValueError(f"Cannot assign '{name}': a Torch tensor in one state and not in the other.")
+        if dst.shape != src.shape:
+            raise ValueError(f"Cannot assign '{name}': tensor shapes differ ({dst.shape} and {src.shape}).")
+        import torch
+
+        with torch.inference_mode():
+            dst.copy_(src)
+        return
+
+    raise ValueError(f"Cannot assign '{name}': expected Warp arrays or Torch tensors.")
+
+
+def _assign_component_state(dst: Any, src: Any, name: str) -> None:
+    """Copy one actuator component state from *src* into *dst*.
+
+    Args:
+        dst: Component state to copy into.
+        src: Component state to copy from.
+        name: Component name, used in error messages.
+
+    Raises:
+        ValueError: The two actuator states have incompatible components or
+            fields.
+        NotImplementedError: A custom state is not a dataclass and does not
+            implement ``assign()``.
+    """
+    if dst is None and src is None:
+        return
+    if dst is None or src is None:
+        raise ValueError(f"Cannot assign '{name}': one state has it allocated and the other does not.")
+    if type(dst) is not type(src):
+        raise ValueError(f"Cannot assign '{name}': state types differ ({type(dst).__name__} and {type(src).__name__}).")
+
+    custom_assign = getattr(dst, "assign", None)
+    if custom_assign is not None:
+        custom_assign(src)
+        return
+
+    if "__dataclass_fields__" not in type(dst).__dict__:
+        raise NotImplementedError(f"{type(dst).__qualname__} must be decorated with @dataclass or implement assign")
+
+    state_fields = fields(dst)
+    field_names = {field.name for field in state_fields}
+    attributes = set(getattr(dst, "__dict__", ())) | set(getattr(src, "__dict__", ()))
+    undeclared = attributes - field_names
+    if undeclared:
+        names = ", ".join(sorted(undeclared))
+        raise ValueError(f"Cannot assign '{name}': undeclared state attributes: {names}.")
+
+    for field in state_fields:
+        _assign_state_value(getattr(dst, field.name), getattr(src, field.name), f"{name}.{field.name}")
 
 
 class Actuator:
@@ -129,6 +201,33 @@ class Actuator:
                 self.delay_state.reset(mask)
             if self.drive_state is not None:
                 self.drive_state.reset(mask)
+
+        def assign(self, other: Actuator.State) -> None:
+            """Copy the state held by *other* into this one.
+
+            A CUDA graph records buffer addresses rather than the caller's
+            Python names. Assigning at the boundary of an odd-length captured
+            region, in place of its final state swap, preserves the advanced
+            state for the next replay::
+
+                for i in range(steps):
+                    control.joint_f.zero_()
+                    actuator.step(state, control, state_0, state_1, dt=0.01)
+                    if steps % 2 == 1 and i == steps - 1:
+                        state_0.assign(state_1)
+                    else:
+                        state_0, state_1 = state_1, state_0
+
+            Args:
+                other: State to copy from.
+
+            Raises:
+                ValueError: The two states do not hold the same components.
+                NotImplementedError: A custom state does not implement
+                    assignment.
+            """
+            _assign_component_state(self.delay_state, other.delay_state, "delay_state")
+            _assign_component_state(self.drive_state, other.drive_state, "drive_state")
 
     def __init__(
         self,
