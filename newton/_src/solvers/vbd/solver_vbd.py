@@ -490,8 +490,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     continue to honor this control during migration; keep the effective beta
                     at ``0`` (the default behavior) and author fixed contact stiffness instead.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Deprecated and ignored. Per-body soft-contact
-                lists are exact-size, so no per-body capacity is needed.
+            rigid_body_particle_contact_buffer_size: Deprecated and ignored; remove the argument.
+                Per-body soft-contact lists are exact-size, so no per-body capacity is needed.
             rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots [N/m].
             rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots [N·m/rad].
             rigid_joint_linear_k_start: Linear penalty seed for legacy AVBD ramping [N/m]. Used when

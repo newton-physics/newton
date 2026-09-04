@@ -3675,7 +3675,7 @@ def _build_body_particle_contact_lists(
 
 
 def _body_particle_contact_lists_skip_static_kinematic(test, device):
-    """Immovable bodies collect no list entries and dynamic segments stay exact."""
+    """Skip immovable bodies in the per-body lists and keep dynamic segments exact."""
     # Body 0 is dynamic; body 1 represents a static or kinematic body.
     body_inv_mass_effective = wp.array([1.0, 0.0], dtype=float, device=device)
     shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
@@ -3692,7 +3692,7 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
 
 
 def _body_particle_contact_lists_exact_beyond_legacy_capacity(test, device):
-    """Per-body segments are exact-size, so heavy contact loads are never truncated.
+    """Keep every contact of a heavily loaded body in its exact-size segment.
 
     300 contacts on one body exceed the removed 256-entry per-body budget that previously
     dropped the surplus contacts from the body's response.
