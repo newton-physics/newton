@@ -562,6 +562,27 @@ providing web-based 3D visualization that works in any browser and has native Ju
     # Close the viewer when done
     viewer.close()
 
+**Application extensions**
+
+Use :attr:`~newton.viewer.ViewerViser.extension_context` to add application-owned
+scene nodes and GUI controls to the viewer's Viser session:
+
+.. code-block:: python
+
+    context = viewer.extension_context
+    origin = context.scene.add_frame("/editor/origin")
+    visible = context.gui.add_checkbox("Show editor origin", initial_value=True)
+
+    @visible.on_update
+    def _(_event):
+        origin.visible = visible.value
+
+    context.initial_camera.position = (3.0, 3.0, 2.0)
+
+The context does not expose the underlying Viser server. Newton owns the server
+and its lifecycle; the application owns the nodes, controls, callbacks, and
+background work that it creates through the context.
+
 **Recording and playback**
 
 ViewerViser can record simulations to ``.viser`` files for later playback:
