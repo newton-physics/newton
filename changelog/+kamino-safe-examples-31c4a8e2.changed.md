@@ -1,1 +1,1 @@
-Improve Kamino contact allocation, warmstarting, and factorization, and make it available in selection cartpole example.
+Improve Kamino DVI robustness and performance, including contact allocation, warm-starting, factorization, and articulated sparse CUDA solves, and enable it in the selection cartpole example. Review custom tuning because the defaults for `omega` and `bilateral_solve_interval` are now `1.2` and `24`, and contact warm-starting now includes a net-force fallback.

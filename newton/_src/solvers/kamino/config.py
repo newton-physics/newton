@@ -811,10 +811,10 @@ class DVISolverConfig:
     Must be positive. Defaults to `1e-6`.
     """
 
-    omega: float = 1.0
+    omega: float = 1.2
     """
     Relaxation factor applied to projected Gauss-Seidel updates.
-    Must be in the range `(0, 2]`. Defaults to `1.0`.
+    Must be in the range `(0, 2]`. Defaults to `1.2`.
     """
 
     max_alternating_iterations: int = 24
@@ -832,11 +832,13 @@ class DVISolverConfig:
     on CUDA. Must be greater than zero. Defaults to `2`.
     """
 
-    bilateral_solve_interval: int = 1
+    bilateral_solve_interval: int = 24
     """
     Number of alternating DVI iterations between repeated direct bilateral solves.
-    A value of `1` re-solves after every projected inequality block, preserving
-    the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    The default matches :attr:`max_alternating_iterations`, so the direct bilateral
+    block is solved after the fused inequality schedule. Smaller values trade GPU
+    launch overhead for tighter bilateral-inequality coupling. Must be greater than
+    zero. Defaults to `24`.
     """
 
     tangential_warmstart_scale: float = 0.97
@@ -872,11 +874,11 @@ class DVISolverConfig:
         "key_and_position_with_net_force_backup",
         "key_and_position_with_tangential_net_force",
         "key_and_position_with_net_force_backup_and_tangential_net_force",
-    ] = "key_and_position_with_tangential_net_force"
+    ] = "key_and_position_with_net_force_backup_and_tangential_net_force"
     """
     The contact warmstart method used when `warmstart_mode` is `containers`.
     See :class:`WarmstarterContacts.Method` for available options.
-    Defaults to `key_and_position_with_tangential_net_force`.
+    Defaults to `key_and_position_with_net_force_backup_and_tangential_net_force`.
     """
 
     @override

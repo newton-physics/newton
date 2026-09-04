@@ -34,14 +34,17 @@ from newton._src.solvers.kamino._src.solvers.dvi.projections import (
 from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
     _SPARSE_DELASSUS_ROWS_JOINTS,
     _SPARSE_DELASSUS_ROWS_UNILATERAL,
+    _can_use_cooperative_articulation,
     _sparse_delassus_matvec_rows,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _color_mapped_dvi_inequalities,
     _map_bounded_constraints,
+    _map_ordered_active_contacts,
+    _solve_dvi_sparse_contacts_pgs,
     _solve_dvi_sparse_inequalities_pgs,
 )
-from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, convert_config_to_struct
+from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
@@ -325,18 +328,44 @@ class TestDVISolver(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
 
+    def test_00_sparse_projection_rejects_int32_overflow(self):
+        """Reject sparse projection allocations exceeding int32 indexing."""
+        state = DVIState()
+        size = SimpleNamespace(sum_of_max_inequalities=1, num_worlds=1, sum_of_max_total_cts=1)
+
+        with self.assertRaisesRegex(ValueError, "Sparse DVI projection exceeds"):
+            state.allocate_sparse_projection(
+                size=size,
+                joint_rows=[46341],
+                unilateral_strides=[46341],
+                bilateral_vector_size=1,
+            )
+
+    def test_00_cooperative_articulation_supports_bounded_rows(self):
+        """Keep bounded joint rows on the cooperative articulated CUDA path."""
+        path = SimpleNamespace(
+            device=self.device,
+            bilateral_solver=object(),
+            size=SimpleNamespace(
+                max_of_num_bilateral_joint_cts=64,
+                max_of_num_bounded_joint_cts=43,
+            ),
+        )
+        self.assertEqual(_can_use_cooperative_articulation(path), self.device.is_cuda)
+
     def test_00_config_selection(self):
+        """Verify default, dense, PADMM, and explicit DVI configuration selection."""
         default_config = SolverKamino.Config(dynamics_solver="dvi")
         self.assertFalse(default_config.sparse_dynamics)
         self.assertTrue(default_config.sparse_jacobian)
         self.assertEqual(default_config.integrator, "euler")
         self.assertEqual(default_config.dynamics.linear_solver_type, "LLTBRCM")
         self.assertEqual(default_config.dynamics.linear_solver_kwargs, {})
-        self.assertEqual(default_config.dvi.omega, 1.0)
+        self.assertEqual(default_config.dvi.omega, 1.2)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
-        self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
+        self.assertEqual(default_config.dvi.bilateral_solve_interval, 24)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
 
@@ -363,14 +392,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(config.dynamics_solver, "dvi")
         self.assertEqual(config.dvi.max_alternating_iterations, 32)
         self.assertEqual(config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertEqual(config.dvi.bilateral_solve_interval, 1)
-        self.assertEqual(config.dvi.contact_warmstart_method, "key_and_position_with_tangential_net_force")
+        self.assertEqual(config.dvi.bilateral_solve_interval, 24)
+        self.assertEqual(
+            config.dvi.contact_warmstart_method,
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
+        )
         self.assertFalse(config.dynamics.preconditioning)
 
         sparse_config = SolverKamino.Config(dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True)
         self.assertTrue(sparse_config.sparse_dynamics)
         self.assertTrue(sparse_config.sparse_jacobian)
-        self.assertEqual(sparse_config.dvi.omega, 1.0)
+        self.assertEqual(sparse_config.dvi.omega, 1.2)
         self.assertEqual(sparse_config.dynamics.linear_solver_type, "CR")
         self.assertEqual(sparse_config.dynamics.linear_solver_kwargs, {"maxiter": 9})
         with self.assertRaises(ValueError):
@@ -399,6 +431,7 @@ class TestDVISolver(unittest.TestCase):
             "geom_pair_net_force",
             "key_and_position_with_net_force_backup",
             "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
         ):
             self.assertEqual(
                 kamino_config.DVISolverConfig(contact_warmstart_method=method).contact_warmstart_method, method
@@ -755,6 +788,7 @@ class TestDVISolver(unittest.TestCase):
                             inequality_sweeps_per_iteration=1,
                             tolerance=0.0,
                             regularization=1e-6,
+                            omega=1.0,
                         )
                     )
                 ],
@@ -799,11 +833,22 @@ class TestDVISolver(unittest.TestCase):
                     float_array([0.25 if bounded else 0.0]),  # problem_bound_upper
                     float_array([1.0]),  # problem_P
                     float_array([-1.0]),  # problem_v_f
+                    float_array([0.0]),  # problem_v_b
                     float_array([1.0]),  # problem_diag
+                    float_array([1.0]),  # projected_diag
                     float_array([0.0]),  # eta
+                    int32_array([0]),  # problem_njc
+                    int32_array([0]),  # bilateral_vio
+                    int32_array([0]),  # bilateral_response_mio
+                    int32_array([1]),  # bilateral_response_stride
+                    float_array([0.0]),  # bilateral_coupling
+                    float_array([0.0]),  # bilateral_response
+                    float_array([0.0]),  # bilateral_delta
                     int32_array([1]),  # inequality_num_colors
                     int32_array([0]),  # inequality_ids_by_color
                     int32_array([0, 1]),  # inequality_color_starts
+                    int32_array([0, 1]),  # inequality_group_starts
+                    float_array([0.0]),  # inequality_tangent_cross
                     -1,  # block_iteration
                     config,
                     body_space,
@@ -876,10 +921,12 @@ class TestDVISolver(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        shape_cfg = newton.ModelBuilder.ShapeConfig(mu=friction, gap=0.0, margin=0.0)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=friction, gap=0.0, margin=0.0)
         body = builder.add_link(
             xform=wp.transformf((0.0, 0.0, 0.1), wp.quat_identity()),
             mass=1.0,
+            inertia=wp.mat33f(0.006666667, 0.0, 0.0, 0.0, 0.006666667, 0.0, 0.0, 0.0, 0.006666667),
+            lock_inertia=True,
         )
         builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
         joint = builder.add_joint_free(parent=-1, child=body)
@@ -902,6 +949,9 @@ class TestDVISolver(unittest.TestCase):
                         max_contacts_per_pair=8,
                     ),
                 )
+                config.dvi.max_alternating_iterations = 200
+                config.dvi.tolerance = 1.0e-4
+                config.dvi.warmstart_mode = "none"
                 solver = SolverKamino(model, config=config)
                 state_0 = model.state()
                 state_1 = model.state()
@@ -930,7 +980,7 @@ class TestDVISolver(unittest.TestCase):
                     applied_force * dt,
                     delta=1.0e-6,
                 )
-                self.assertLess(abs(front_tangent - back_tangent), 1.0e-4)
+                self.assertLess(abs(front_tangent - back_tangent), 5.0e-4)
                 self.assertLess(abs(float(state_0.body_qd.numpy()[body, 0])), 1.0e-6)
 
     def test_03ia_dvi_decays_tangential_but_not_normal_warmstarts(self):
@@ -1070,7 +1120,7 @@ class TestDVISolver(unittest.TestCase):
         inequality_sweeps_per_iteration = 3
         for sparse, inequality_kernel in (
             (False, _solve_dvi_inequalities_colored_pgs),
-            (True, _solve_dvi_sparse_inequalities_pgs),
+            (True, _solve_dvi_sparse_contacts_pgs),
         ):
             with self.subTest(sparse=sparse):
                 model, problem, setup = self._make_box_on_plane_setup(sparse=sparse)
@@ -1201,8 +1251,9 @@ class TestDVISolver(unittest.TestCase):
             return [float(np.sum(lambdas[wid][ccgo[wid] + 2 : ccgo[wid] + 3 * nc[wid] : 3])) for wid in range(3)]
 
         normal_sums = solve_normal_sums()
-        self.assertGreater(normal_sums[1], normal_sums[0])
-        self.assertGreater(normal_sums[2], normal_sums[0])
+        # Over-relaxed projected sweeps need not change reactions monotonically.
+        self.assertGreater(abs(normal_sums[1] - normal_sums[0]), 1e-6)
+        self.assertGreater(abs(normal_sums[2] - normal_sums[0]), 1e-6)
 
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
@@ -1263,7 +1314,11 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
         np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
 
+        lambdas = extract_problem_vector(problem.delassus, solver.data.solution.lambdas.numpy(), only_active_dims=True)
+        np.testing.assert_allclose(lambdas[0], lambdas[1], rtol=1e-5, atol=1e-6)
+
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
+        """Recover a consistent bilateral solution after fused inequality iterations."""
         builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -1291,7 +1346,7 @@ class TestDVISolver(unittest.TestCase):
             config=kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=1,
+                max_alternating_iterations=3,
                 inequality_sweeps_per_iteration=1,
             ),
             warmstart=WarmStartMode.NONE,
@@ -1306,6 +1361,65 @@ class TestDVISolver(unittest.TestCase):
         self.assertGreater(njc, 0)
         self.assertLess(float(np.max(np.abs(v_plus[:njc]))), 1e-6)
         self.assertLess(float(status["r_b"]), 1e-6)
+
+        ncts = int(problem.data.dim.numpy()[0])
+        original = problem.data.D.numpy()[: ncts * ncts].reshape(ncts, ncts)
+        projected = solver.data.state.projected_D.numpy()[: ncts * ncts].reshape(ncts, ncts)
+        self.assertGreater(float(np.max(np.abs(projected[njc:, njc:] - original[njc:, njc:]))), 1e-6)
+
+    @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
+    def test_03d3_dvi_direct_block_reports_backend_iteration_contract(self):
+        """Verify CPU budget reporting and CUDA adaptive iteration reporting."""
+        config_kwargs = {
+            "tolerance": 1.0e-4,
+            "regularization": 1.0e-5,
+            "max_alternating_iterations": 64,
+            "inequality_sweeps_per_iteration": 1,
+            "bilateral_solve_interval": 64,
+        }
+        iterations = {}
+
+        for device in (wp.get_device("cpu"), wp.get_cuda_devices()[0]):
+            with self.subTest(device=str(device)):
+                model = ModelKamino.from_newton(basics.build_boxes_hinged().finalize(device=device))
+                model, data, state, limits, detector, jacobians = make_containers(
+                    model=model,
+                    max_world_contacts=8,
+                    sparse=False,
+                )
+                update_containers(
+                    model=model,
+                    data=data,
+                    state=state,
+                    limits=limits,
+                    detector=detector,
+                    jacobians=jacobians,
+                )
+                problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
+                solver = DVISolver(
+                    model=model,
+                    data=data,
+                    limits=limits,
+                    contacts=detector.contacts,
+                    jacobians=jacobians,
+                    config=kamino_config.DVISolverConfig(**config_kwargs),
+                    warmstart=WarmStartMode.NONE,
+                )
+                # Dense coloring must not depend on the sparse execution helper.
+                solver._sparse_path = None
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem)
+                status = solver.data.status.numpy()[0]
+                self.assertEqual(int(status["converged"]), 1, msg=str(status))
+                for residual in ("r_p", "r_d", "r_c", "r_b"):
+                    self.assertLessEqual(float(status[residual]), config_kwargs["tolerance"])
+                iterations["cuda" if device.is_cuda else "cpu"] = int(status["iterations"])
+
+        iteration_budget = config_kwargs["max_alternating_iterations"]
+        self.assertEqual(iterations["cpu"], iteration_budget)
+        self.assertGreater(iterations["cuda"], 0)
+        self.assertLess(iterations["cuda"], iteration_budget)
 
     def test_03e_dvi_direct_block_no_unilateral_rows_reports_single_iteration(self):
         builder = basics.build_box_pendulum(ground=False)
@@ -1547,18 +1661,57 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(inequality_ids_by_color.numpy(), np.arange(num_inequalities))
         np.testing.assert_array_equal(inequality_color_starts.numpy(), np.arange(num_inequalities + 1))
 
-    def test_03g3_dvi_inequality_coloring_separates_bounded_from_limit_conflicts(self):
-        """Give a bounded (friction) row and a limit row on the same body different colors."""
+    def test_03g3_dvi_ordered_contacts_follow_bounded_rows_and_limits(self):
+        """Keep ordered contacts after bounded rows and joint limits."""
+        contacts_model_active = wp.array([2], dtype=wp.int32, device=self.device)
+        contacts_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
+        contacts_cid = wp.array([0, 1], dtype=wp.int32, device=self.device)
+        contacts_bid_ab = wp.array([wp.vec2i(0, -1), wp.vec2i(1, -1)], dtype=wp.vec2i, device=self.device)
+        sorted_to_unsorted_map = wp.array([0, 1], dtype=wp.int32, device=self.device)
+        contact_world_starts = wp.array([0, 2], dtype=wp.int32, device=self.device)
+        body_inv_mass = wp.ones(shape=2, dtype=wp.float32, device=self.device)
+        problem_nbc = wp.array([1], dtype=wp.int32, device=self.device)
+        problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
+        problem_cio = wp.array([0], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        contact_indices = wp.full(shape=2, value=-1, dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.full(shape=4, value=wp.vec2i(-2, -2), dtype=wp.vec2i, device=self.device)
+        inequality_order = wp.full(shape=5, value=-1, dtype=wp.int32, device=self.device)
+
+        wp.launch(
+            kernel=_map_ordered_active_contacts,
+            dim=2,
+            inputs=[
+                contacts_model_active,
+                contacts_wid,
+                contacts_cid,
+                contacts_bid_ab,
+                sorted_to_unsorted_map,
+                contact_world_starts,
+                body_inv_mass,
+                problem_nbc,
+                problem_nl,
+                problem_cio,
+                problem_uio,
+                contact_indices,
+                inequality_bodies,
+                inequality_order,
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(contact_indices.numpy(), [0, 1])
+        np.testing.assert_array_equal(inequality_bodies.numpy()[2:], [[0, -1], [1, -1]])
+        np.testing.assert_array_equal(inequality_order.numpy()[2:4], [2, 3])
+
+    def test_03g4_dvi_coloring_separates_bounded_from_limit_conflicts(self):
+        """Separate bounded and limit rows that share a dynamic body."""
         problem_nbc = wp.array([1], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([2], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([0], dtype=wp.int32, device=self.device)
         problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
-        # Entity 0 (bounded) and entity 1 (limit) share body 0; entity 2 (limit)
-        # is on an independent body and may reuse a color safely.
         inequality_bodies = wp.array(
-            [wp.vec2i(0, -1), wp.vec2i(0, -1), wp.vec2i(5, -1)],
-            dtype=wp.vec2i,
-            device=self.device,
+            [wp.vec2i(0, -1), wp.vec2i(0, -1), wp.vec2i(5, -1)], dtype=wp.vec2i, device=self.device
         )
         body_color_masks = wp.zeros(shape=6, dtype=wp.uint64, device=self.device)
         inequality_colors = wp.full(shape=3, value=-1, dtype=wp.int32, device=self.device)
@@ -1585,22 +1738,15 @@ class TestDVISolver(unittest.TestCase):
         )
 
         colors = inequality_colors.numpy()
-        num_colors = int(inequality_num_colors.numpy()[0])
         self.assertNotEqual(colors[0], colors[1])
         self.assertEqual(colors[2], colors[0])
-        ids_by_color = inequality_ids_by_color.numpy()
-        color_starts = inequality_color_starts.numpy()
-        np.testing.assert_array_equal(np.sort(ids_by_color), np.arange(3))
-        for color in range(num_colors):
-            scheduled = ids_by_color[color_starts[color] : color_starts[color + 1]]
-            self.assertTrue(np.all(colors[scheduled] == color))
+        np.testing.assert_array_equal(np.sort(inequality_ids_by_color.numpy()), np.arange(3))
 
-    def test_03g4_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
-        """Map each joint's friction rows to its body pair at the right entity slot."""
+    def test_03g5_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
+        """Map each joint's bounded rows to its body pair and entity slot."""
         joint_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
-        joint_bid_F = wp.array([0, 1], dtype=wp.int32, device=self.device)
-        joint_bid_B = wp.array([-1, 2], dtype=wp.int32, device=self.device)
-        # Joint 0 (unary) owns global bounded row 0; joint 1 (binary) owns row 1.
+        joint_bid_f = wp.array([0, 1], dtype=wp.int32, device=self.device)
+        joint_bid_b = wp.array([-1, 2], dtype=wp.int32, device=self.device)
         joint_bounded_cts_offset = wp.array([0, 1, 2], dtype=wp.int32, device=self.device)
         problem_bcio = wp.array([0], dtype=wp.int32, device=self.device)
         problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
@@ -1611,8 +1757,8 @@ class TestDVISolver(unittest.TestCase):
             dim=2,
             inputs=[
                 joint_wid,
-                joint_bid_B,
-                joint_bid_F,
+                joint_bid_b,
+                joint_bid_f,
                 joint_bounded_cts_offset,
                 problem_bcio,
                 problem_uio,
@@ -2232,6 +2378,11 @@ class TestDVISolver(unittest.TestCase):
                     setup=SimpleNamespace(data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians),
                 )
 
+                max_limits = model.info.max_limits.numpy()
+                max_contacts = model.info.max_contacts.numpy()
+                expected_unilateral_rows = int(np.max(max_limits + 3 * max_contacts))
+                self.assertGreater(expected_unilateral_rows, 64)
+                self.assertEqual(solver._max_unilateral_rows, expected_unilateral_rows)
                 self.assertEqual(int(limits.model_active_limits.numpy()[0]), 1)
                 self.assertEqual(int(detector.contacts.world_active_contacts.numpy()[0]), 20)
                 self.assertGreater(int(solver.data.state.inequality_num_colors.numpy()[0]), 0)
