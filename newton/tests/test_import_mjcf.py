@@ -10489,6 +10489,69 @@ class TestMjcfPrimitiveColors(unittest.TestCase):
         np.testing.assert_allclose(builder.shape_color[0], [0.0, 1.0, 0.0], atol=1.0e-6)
 
 
+_WELD_BODIES = """
+    <body name="a"><freejoint/><geom type="sphere" size="0.1" mass="1"/><site name="s1" pos="0.1 0 0"/></body>
+    <body name="b" pos="1 0 0"><freejoint/><geom type="sphere" size="0.1" mass="1"/><site name="s2" pos="0.2 0 0"/></body>
+"""
+
+
+def _weld_mjcf(weld: str) -> str:
+    return f"<mujoco><worldbody>{_WELD_BODIES}</worldbody><equality>{weld}</equality></mujoco>"
+
+
+def _imported_relpose(weld: str, scale: float):
+    builder = newton.ModelBuilder()
+    builder.add_mjcf(
+        _weld_mjcf(weld),
+        scale=scale,
+        parse_sites=True,
+        convert_mjc_equality_constraints=False,
+    )
+    return list(builder.custom_attributes["mujoco:equality_constraint_relpose"].values[0])
+
+
+class TestImportMjcfWeldRelposeScale(unittest.TestCase):
+    """Cover `scale=` applied to MJCF equality weld `relpose`.
+
+    Issue #3691. The weld `anchor` was scaled but `relpose` was not, so an import
+    with `scale != 1` produced a constraint whose anchor and relative pose used
+    different length units — a mechanism silently welded to the wrong offset.
+    """
+
+    BODY_WELD = '<weld body1="a" body2="b" anchor="0.3 0 0" relpose="0.4 0 0 1 0 0 0"/>'
+    SITE_WELD = '<weld site1="s1" site2="s2" relpose="0.4 0 0 1 0 0 0"/>'
+
+    def test_body_weld_relpose_translation_is_scaled(self):
+        """Scale the relpose translation of a body-based weld."""
+        self.assertAlmostEqual(_imported_relpose(self.BODY_WELD, 1.0)[0], 0.4, places=5)
+        self.assertAlmostEqual(_imported_relpose(self.BODY_WELD, 2.0)[0], 0.8, places=5)
+
+    def test_site_weld_relpose_translation_is_scaled(self):
+        """Scale the relpose translation of a site-based weld too.
+
+        The two weld forms build the transform through separate branches, so a fix
+        applied to only one of them would leave this case behind.
+        """
+        self.assertAlmostEqual(_imported_relpose(self.SITE_WELD, 1.0)[0], 0.4, places=5)
+        self.assertAlmostEqual(_imported_relpose(self.SITE_WELD, 2.0)[0], 0.8, places=5)
+
+    def test_relpose_rotation_is_not_scaled(self):
+        """Leave the relpose quaternion alone — a rotation carries no length."""
+        weld = '<weld body1="a" body2="b" anchor="0.3 0 0" relpose="0.4 0 0 0.7071068 0 0 0.7071068"/>'
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                relpose = _imported_relpose(weld, scale)
+                # wp.transform stores the quaternion xyzw; MJCF authors it wxyz.
+                np.testing.assert_allclose(relpose[3:], [0.0, 0.0, 0.7071068, 0.7071068], rtol=1e-5, atol=1e-6)
+
+    def test_weld_anchor_stays_scaled(self):
+        """Keep scaling the weld anchor, which already worked."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_weld_mjcf(self.BODY_WELD), scale=2.0, convert_mjc_equality_constraints=False)
+        anchor = list(builder.custom_attributes["mujoco:equality_constraint_anchor"].values[0])
+        self.assertAlmostEqual(anchor[0], 0.6, places=5)
+
+
 class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
     def test_hfield_row_orientation_matches_mujoco(self):
         """Import an asymmetric MJCF heightfield and verify MuJoCo's data layout.

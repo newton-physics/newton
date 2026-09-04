@@ -916,6 +916,18 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         return wp.quat_identity()
 
+    def parse_relpose(value: str) -> wp.transform:
+        """Parse an MJCF equality `relpose` (pos + wxyz quat) into a transform.
+
+        The translation is a length and takes the import scale; the rotation is
+        dimensionless and must not.
+        """
+        values = [float(x) for x in value.split()]
+        return wp.transform(
+            wp.vec3(values[0], values[1], values[2]) * scale,
+            wp.quat(values[4], values[5], values[6], values[3]),
+        )
+
     def parse_fromto_transform(
         attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
     ) -> tuple[wp.transform, float]:
@@ -2555,11 +2567,7 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                relpose_list = [float(x) for x in relpose.split()]
-                relpose_transform = wp.transform(
-                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
-                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                )
+                relpose_transform = parse_relpose(relpose)
 
                 if convert_mjc_equality_constraints:
                     add_converted_loop_joint(
@@ -2596,11 +2604,7 @@ def parse_mjcf(
                         continue
                     body1_idx, _ = site1_info
                     body2_idx, anchor_vec = site2_info
-                    relpose_list = [float(x) for x in relpose.split()]
-                    relpose_transform = wp.transform(
-                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
-                        wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
-                    )
+                    relpose_transform = parse_relpose(relpose)
                     if verbose:
                         print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
                     if convert_mjc_equality_constraints:
