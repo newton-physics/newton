@@ -1,0 +1,1 @@
+Accelerate `ModelBuilder.replicate()` and `ModelBuilder.finalize()` for many-world scenes by holding replicated builder fields as NumPy arrays and materializing them as lists only when they are read. Public APIs are unchanged and no migration is required.
