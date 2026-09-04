@@ -160,6 +160,7 @@ class KpiDRLegs(_KpiBenchmark):
 class NotifyDRLegs:
     """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
 
+    version = "2"  # sampling/methodology changed in #3859 -> new ASV series
     number = 1
     repeat = 5
     rounds = 1
