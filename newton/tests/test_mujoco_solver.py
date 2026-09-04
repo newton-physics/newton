@@ -5872,6 +5872,22 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("shape types mismatch at position", str(ctx.exception).lower())
 
+    def test_unsupported_shape_type_raises(self):
+        """Test that a shape type without a MuJoCo geom mapping raises a named ValueError."""
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_free(b1)
+        builder.add_articulation([j1])
+        builder.add_shape_cone(b1, radius=0.2, half_height=0.3)
+
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model)
+        message = str(ctx.exception)
+        self.assertIn("does not support shape type 'CONE'", message)
+        self.assertIn("convex mesh", message)
+
     def test_global_body_fails(self):
         """Test that a body in global world (-1) raises ValueError."""
         builder = newton.ModelBuilder()
