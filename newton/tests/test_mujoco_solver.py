@@ -13019,11 +13019,23 @@ class TestActuatorTypes(unittest.TestCase):
 
     def test_unsupported_type_warns(self):
         """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
-        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
+        for gaintype in ("pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
                     builder.add_mjcf(self._mjcf(gaintype=gaintype))
+
+    def test_supported_dcmotor_and_so3_types_parse(self):
+        """Parse supported DC-motor and SO3 type names without warnings."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self._mjcf(dyntype="dcmotor", gaintype="dcmotor", biastype="dcmotor"))
+        builder.add_mjcf(self._mjcf(gaintype="so3", biastype="so3"))
+
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_dyntype"].values[0], _ActuatorDynamicsType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_gaintype"].values[0], _ActuatorGainType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_biastype"].values[0], _ActuatorBiasType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_gaintype"].values[1], _ActuatorGainType.SO3)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_biastype"].values[1], _ActuatorBiasType.SO3)
 
 
 if __name__ == "__main__":

@@ -3390,6 +3390,15 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if actuator_type == "dcmotor":
+                # MuJoCo 3.12 stores the input signature separately from the
+                # compiled gain parameters. Keep both the high-level value and
+                # its generic compiled-model representation.
+                input_key = "mujoco:actuator_dcmotor_input"
+                parsed_attrs["mujoco:actuator_ctrlspec"] = parsed_attrs.get(
+                    input_key,
+                    builder.custom_attributes[input_key].default,
+                )
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
