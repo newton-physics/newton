@@ -835,6 +835,38 @@ class Model:
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
+        # tendons (cable-driven mechanisms)
+        self.tendon_count: int = 0
+        """Total number of tendons in the system."""
+        self.tendon_link_count: int = 0
+        """Total number of tendon links (waypoints) across all tendons."""
+        self.tendon_segment_count: int = 0
+        """Total number of tendon segments (= tendon_link_count - tendon_count)."""
+        self.tendon_start: wp.array[wp.int32] | None = None
+        """Start index into link arrays for each tendon, shape [tendon_count + 1], int."""
+        self.tendon_link_body: wp.array[wp.int32] | None = None
+        """Body index for each tendon link, shape [tendon_link_count], int."""
+        self.tendon_link_type: wp.array[wp.int32] | None = None
+        """Link type for each tendon link (TendonLinkType enum), shape [tendon_link_count], int."""
+        self.tendon_link_radius: wp.array[wp.float32] | None = None
+        """Contact radius [m] for each tendon link, shape [tendon_link_count], float."""
+        self.tendon_link_orientation: wp.array[wp.int32] | None = None
+        """Winding direction (+1 or -1) for each tendon link, shape [tendon_link_count], int."""
+        self.tendon_link_mu: wp.array[wp.float32] | None = None
+        """Friction coefficient [dimensionless] at each tendon link, shape [tendon_link_count], float."""
+        self.tendon_link_flags: wp.array[wp.int32] | None = None
+        """Routing flags for each tendon link, shape [tendon_link_count], int."""
+        self.tendon_link_offset: wp.array[wp.vec3] | None = None
+        """Local-frame offset of the cable plane center on each body [m], shape [tendon_link_count], vec3."""
+        self.tendon_link_axis: wp.array[wp.vec3] | None = None
+        """Local-frame normal of the cable plane on each body [dimensionless], shape [tendon_link_count], vec3."""
+        self.tendon_seg_compliance: wp.array[wp.float32] | None = None
+        """Compliance [m/N] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_seg_damping: wp.array[wp.float32] | None = None
+        """Damping [N·s/m] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_seg_rest_length: wp.array[wp.float32] | None = None
+        """Initial rest length [m] for each tendon segment, shape [tendon_segment_count], float."""
+
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
         self.tri_poses: wp.array[wp.mat22] | None = None
