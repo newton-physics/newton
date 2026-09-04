@@ -48,6 +48,7 @@ from ._tile_builtins import (
 __all__ = [
     "llt_blocked_rcm_factorize",
     "llt_blocked_rcm_fused_permute_and_tp",
+    "llt_blocked_rcm_permute_matrix",
     "llt_blocked_rcm_permute_vector",
     "llt_blocked_rcm_solve",
     "llt_blocked_rcm_solve_inplace",
@@ -55,6 +56,7 @@ __all__ = [
     "make_llt_blocked_rcm_factorize_kernel",
     "make_llt_blocked_rcm_fused_permute_and_tp_kernel",
     "make_llt_blocked_rcm_parallel_factorize_kernels",
+    "make_llt_blocked_rcm_permute_matrix_kernel",
     "make_llt_blocked_rcm_permute_vector_kernel",
     "make_llt_blocked_rcm_solve_inplace_kernel",
     "make_llt_blocked_rcm_solve_kernel",
@@ -205,6 +207,44 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
             wp.atomic_max(tile_pattern, tp_off + tr * n_tiles + tc, int(1))
 
     return fused_permute_and_tp_kernel
+
+
+@cache
+def make_llt_blocked_rcm_permute_matrix_kernel(max_dim: int):
+    """Build the lower triangle of ``A_hat = P A P^T`` for a fixed permutation."""
+    del max_dim
+
+    @wp.kernel
+    def permute_matrix_kernel(
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        P: wp.array[wp.int32],
+        A: wp.array[wp.float32],
+        A_hat: wp.array[wp.float32],
+    ):
+        b, triangular_index = wp.tid()
+        n_i = dim[b]
+        triangular_size = n_i * (n_i + 1) // 2
+        if triangular_index >= triangular_size:
+            return
+
+        r = int((wp.sqrt(float(8 * triangular_index + 1)) - float(1)) * float(0.5))
+        row_start = r * (r + 1) // 2
+        if row_start > triangular_index:
+            r -= 1
+            row_start = r * (r + 1) // 2
+        elif (r + 1) * (r + 2) // 2 <= triangular_index:
+            r += 1
+            row_start = r * (r + 1) // 2
+        c = triangular_index - row_start
+        mat_off = mio[b]
+        vec_off = vio[b]
+        p_r = P[vec_off + r]
+        p_c = P[vec_off + c]
+        A_hat[mat_off + r * n_i + c] = A[mat_off + p_r * n_i + p_c]
+
+    return permute_matrix_kernel
 
 
 @cache
@@ -510,7 +550,7 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
 
 
 @cache
-def make_llt_blocked_rcm_solve_kernel(block_size: int):
+def make_llt_blocked_rcm_solve_kernel(block_size: int, compact_traversal: bool = False):
     """RCM solve with tile skipping and fused output un-permutation.
 
     The solve gathers the RHS into permuted coordinates, writes ``x_hat`` in
@@ -528,6 +568,7 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
         P: wp.array[wp.int32],
         L: wp.array[wp.float32],
         tile_pattern: wp.array[wp.int32],
+        tile_traversal: wp.array[wp.int32],
         b: wp.array[wp.float32],
         # Outputs:
         y: wp.array[wp.float32],
@@ -575,13 +616,24 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
                 wp.tile_scatter_masked(rhs_tile, row, 0, value, active)
             L_diag = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, i))
             if i > 0:
-                for j in range(0, i, block_size):
-                    tile_j = j // block_size
-                    if TP_i[tile_i, tile_j] == int(0):
-                        continue
-                    L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
-                    y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
-                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                if wp.static(compact_traversal):
+                    traversal_offset = 2 * tp_i_start + tile_i * n_tiles
+                    for slot in range(n_tiles):
+                        tile_j = tile_traversal[traversal_offset + slot]
+                        if tile_j < 0:
+                            break
+                        j = tile_j * block_size
+                        L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
+                        y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
+                        wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                else:
+                    for j in range(0, i, block_size):
+                        tile_j = j // block_size
+                        if TP_i[tile_i, tile_j] == int(0):
+                            continue
+                        L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
+                        y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
+                        wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
             wp.tile_lower_solve_inplace(L_diag, rhs_tile)
             wp.tile_store(y_i, rhs_tile, offset=(i, 0))
 
@@ -606,21 +658,40 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
                     L_diag[row, col] = value
 
             if i_end < n_i_padded:
-                for j in range(i_end, n_i_padded, block_size):
-                    tile_j = j // block_size
-                    if TP_i[tile_j, tile_i] == int(0):
-                        continue
-                    L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
-                    x_tile = wp.tile_load(x_hat_i, shape=(block_size, 1), offset=(j, 0))
-                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
-                            rhs_tile, L_tile, x_tile, -1.0
-                        )
-                    else:
-                        L_T_tile = wp.tile_transpose(L_tile)
-                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                if wp.static(compact_traversal):
+                    traversal_offset = 2 * tp_i_start + n_tiles * n_tiles + tile_i * n_tiles
+                    for slot in range(n_tiles):
+                        tile_j = tile_traversal[traversal_offset + slot]
+                        if tile_j < 0:
+                            break
+                        j = tile_j * block_size
+                        L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
+                        x_tile = wp.tile_load(x_hat_i, shape=(block_size, 1), offset=(j, 0))
+                        if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                        elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
+                                rhs_tile, L_tile, x_tile, -1.0
+                            )
+                        else:
+                            L_T_tile = wp.tile_transpose(L_tile)
+                            wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                else:
+                    for j in range(i_end, n_i_padded, block_size):
+                        tile_j = j // block_size
+                        if TP_i[tile_j, tile_i] == int(0):
+                            continue
+                        L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
+                        x_tile = wp.tile_load(x_hat_i, shape=(block_size, 1), offset=(j, 0))
+                        if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                        elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
+                                rhs_tile, L_tile, x_tile, -1.0
+                            )
+                        else:
+                            L_T_tile = wp.tile_transpose(L_tile)
+                            wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
 
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
             wp.tile_store(x_hat_i, rhs_tile, offset=(i, 0))
@@ -636,7 +707,7 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
 
 
 @cache
-def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
+def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int, compact_traversal: bool = False):
     """Clone of :func:`llt_blocked.make_llt_blocked_solve_inplace_kernel` with tile skipping.
 
     Takes ``x`` as in/out; forward substitution reads from ``x`` (as b) and
@@ -652,6 +723,7 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
         tpo: wp.array[wp.int32],
         L: wp.array[wp.float32],
         tile_pattern: wp.array[wp.int32],
+        tile_traversal: wp.array[wp.int32],
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
@@ -683,13 +755,24 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
             rhs_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(i, 0))
             L_diag = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, i))
             if i > 0:
-                for j in range(0, i, block_size):
-                    tile_j = j // block_size
-                    if TP_i[tile_i, tile_j] == int(0):
-                        continue
-                    L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
-                    y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
-                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                if wp.static(compact_traversal):
+                    traversal_offset = 2 * tp_i_start + tile_i * n_tiles
+                    for slot in range(n_tiles):
+                        tile_j = tile_traversal[traversal_offset + slot]
+                        if tile_j < 0:
+                            break
+                        j = tile_j * block_size
+                        L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
+                        y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
+                        wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                else:
+                    for j in range(0, i, block_size):
+                        tile_j = j // block_size
+                        if TP_i[tile_i, tile_j] == int(0):
+                            continue
+                        L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
+                        y_block = wp.tile_load(y_i, shape=(block_size, 1), offset=(j, 0))
+                        wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
             wp.tile_lower_solve_inplace(L_diag, rhs_tile)
             wp.tile_store(y_i, rhs_tile, offset=(i, 0))
 
@@ -714,21 +797,40 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
                     L_diag[row, col] = value
 
             if i_end < n_i_padded:
-                for j in range(i_end, n_i_padded, block_size):
-                    tile_j = j // block_size
-                    if TP_i[tile_j, tile_i] == int(0):
-                        continue
-                    L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
-                    x_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(j, 0))
-                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
-                            rhs_tile, L_tile, x_tile, -1.0
-                        )
-                    else:
-                        L_T_tile = wp.tile_transpose(L_tile)
-                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                if wp.static(compact_traversal):
+                    traversal_offset = 2 * tp_i_start + n_tiles * n_tiles + tile_i * n_tiles
+                    for slot in range(n_tiles):
+                        tile_j = tile_traversal[traversal_offset + slot]
+                        if tile_j < 0:
+                            break
+                        j = tile_j * block_size
+                        L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
+                        x_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(j, 0))
+                        if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                        elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
+                                rhs_tile, L_tile, x_tile, -1.0
+                            )
+                        else:
+                            L_T_tile = wp.tile_transpose(L_tile)
+                            wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                else:
+                    for j in range(i_end, n_i_padded, block_size):
+                        tile_j = j // block_size
+                        if TP_i[tile_j, tile_i] == int(0):
+                            continue
+                        L_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(j, i))
+                        x_tile = wp.tile_load(x_i, shape=(block_size, 1), offset=(j, 0))
+                        if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                        elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                            wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
+                                rhs_tile, L_tile, x_tile, -1.0
+                            )
+                        else:
+                            L_T_tile = wp.tile_transpose(L_tile)
+                            wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
 
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
             wp.tile_store(x_i, rhs_tile, offset=(i, 0))
@@ -786,6 +888,27 @@ def llt_blocked_rcm_fused_permute_and_tp(
         kernel=kernel,
         dim=(num_blocks, max_dim * (max_dim + 1) // 2),
         inputs=[dim, mio, vio, tpo, float(tol), P, A, A_hat, inv_P, tile_pattern],
+        device=device,
+    )
+
+
+def llt_blocked_rcm_permute_matrix(
+    kernel,
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    P: wp.array[wp.int32],
+    A: wp.array[wp.float32],
+    A_hat: wp.array[wp.float32],
+    num_blocks: int,
+    max_dim: int,
+    device: wp.DeviceLike = None,
+):
+    """Permute a batched matrix using an already initialized permutation."""
+    wp.launch(
+        kernel=kernel,
+        dim=(num_blocks, max_dim * (max_dim + 1) // 2),
+        inputs=[dim, mio, vio, P, A, A_hat],
         device=device,
     )
 
@@ -873,6 +996,7 @@ def llt_blocked_rcm_solve(
     P: wp.array[wp.int32],
     L: wp.array[wp.float32],
     tile_pattern: wp.array[wp.int32],
+    tile_traversal: wp.array[wp.int32],
     b: wp.array[wp.float32],
     y: wp.array[wp.float32],
     x_hat: wp.array[wp.float32],
@@ -885,7 +1009,7 @@ def llt_blocked_rcm_solve(
     wp.launch_tiled(
         kernel=kernel,
         dim=num_blocks,
-        inputs=[dim, mio, vio, tpo, P, L, tile_pattern, b, y, x_hat, x],
+        inputs=[dim, mio, vio, tpo, P, L, tile_pattern, tile_traversal, b, y, x_hat, x],
         block_dim=block_dim,
         device=device,
     )
@@ -899,6 +1023,7 @@ def llt_blocked_rcm_solve_inplace(
     tpo: wp.array[wp.int32],
     L: wp.array[wp.float32],
     tile_pattern: wp.array[wp.int32],
+    tile_traversal: wp.array[wp.int32],
     y: wp.array[wp.float32],
     x: wp.array[wp.float32],
     num_blocks: int = 1,
@@ -909,7 +1034,7 @@ def llt_blocked_rcm_solve_inplace(
     wp.launch_tiled(
         kernel=kernel,
         dim=num_blocks,
-        inputs=[dim, mio, vio, tpo, L, tile_pattern, y, x],
+        inputs=[dim, mio, vio, tpo, L, tile_pattern, tile_traversal, y, x],
         block_dim=block_dim,
         device=device,
     )

@@ -420,12 +420,16 @@ class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
             self.device = device
 
         # Compute the allocation sizes and offsets for the flat data arrays
-        mat_sizes = [n * n for n in self.dimensions]
-        mat_offsets = [0] + [sum(mat_sizes[:i]) for i in range(1, len(mat_sizes) + 1)]
-        mat_flat_size = sum(mat_sizes)
-        vec_sizes = self.dimensions
-        vec_offsets = [0] + [sum(vec_sizes[:i]) for i in range(1, len(vec_sizes) + 1)]
-        vec_flat_size = sum(vec_sizes)
+        dimensions_np = np.asarray(self.dimensions, dtype=np.int64)
+        mat_sizes = dimensions_np * dimensions_np
+        mat_offsets = np.empty(len(self.dimensions) + 1, dtype=np.int64)
+        mat_offsets[0] = 0
+        np.cumsum(mat_sizes, out=mat_offsets[1:])
+        mat_flat_size = int(mat_offsets[-1])
+        vec_offsets = np.empty(len(self.dimensions) + 1, dtype=np.int64)
+        vec_offsets[0] = 0
+        np.cumsum(dimensions_np, out=vec_offsets[1:])
+        vec_flat_size = int(vec_offsets[-1])
 
         # Update the allocation meta-data the specified system dimensions
         self.num_blocks = len(self.dimensions)
