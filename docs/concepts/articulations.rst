@@ -50,27 +50,57 @@ Rod joints
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
-joints or modeled with another formulation. Cable centerline geometry uses
-``cable`` terminology. Per-segment orientation/twist frames, per-joint
-stiffness, and solver mechanics belong to the rod representation and use
-``rod`` terminology.
+joints or modeled with another formulation. :class:`newton.Rod` stores
+prepared centerline geometry, segment frames, topology, and optional rod
+constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
+simulation representation. Pass prepared data with
+``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
+``add_rod_graph()`` forms are deprecated compatibility APIs in Newton 1.6; use
+``newton.Rod(points, ...)`` or ``newton.Rod(points, edges=...)`` respectively.
+A rod may specify either an isotropic elastic material or a complete set of
+homogeneous stretch, shear, bend, and twist rigidities. These parameterizations
+are mutually exclusive. Direct per-joint stiffness values remain assembly controls on
+:meth:`~newton.ModelBuilder.add_rod` and override the corresponding derived
+modes; damping is configured directly during assembly. Solver mechanics
+likewise use ``rod`` terminology.
+
+For a circular elastic material, transverse shear uses the OpenUSD-compatible
+effective rigidity ``kGA`` with ``k = 0.9``. This is a finite
+shear-deformable rod, not the unshearable constraint of a strict Kirchhoff
+rod. Use section rigidities or direct joint stiffnesses when a different
+constitutive choice is required.
+
+Section rigidity describes the material and cross-section response before
+discretization (``EA``, ``kGA``, ``EI``, or ``GJ``). Each generated joint's
+stiffness is the corresponding rigidity divided by its local dual rest length,
+the mean rest length of the two adjacent segments. Material moduli are resolved
+through the same rigidity path. Automatic conversion supports ordered chains
+and non-branching explicit graphs. Cyclic explicit graphs require
+``wrap_in_articulation=False`` so every adjacency joint is retained. If needed,
+form an articulation from a spanning-tree subset of the returned joints,
+leaving closure joints outside it. Automatic material or section-rigidity
+conversion is not defined for branched graphs. At a branch,
+segment incidence alone does not determine unique parent-child joint pairings,
+and different star or spanning-tree choices can produce different discrete
+energies. Supply explicit per-joint builder stiffnesses instead.
 
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
 VBD constraint/material slots defined by
 :class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
 shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
-twist (``TWIST``, slot 3). These slots store independent per-rod stiffness
+twist (``TWIST``, slot 3). These slots store independent per-joint stiffness
 and damping through
 :attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
 Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
 they are not generalized coordinates or velocities that reconstruct the child
 body pose.
 
-Rod body poses and velocities are maximal-coordinate state stored in
+For a cable modeled as bodies connected by rod joints, body poses and velocities
+are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
 :class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update rod child body transforms from ``joint_q`` / ``joint_qd``.
+update those child-body transforms from ``joint_q`` / ``joint_qd``.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
