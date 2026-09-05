@@ -694,6 +694,7 @@ def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
 def is_mesh_convex(
     vertices: np.ndarray,
     indices: np.ndarray | None = None,
+    *,
     max_face_vertex_pairs: int = 5_000_000,
 ) -> bool:
     """Test whether a triangle mesh is geometrically convex.

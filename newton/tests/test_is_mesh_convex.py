@@ -24,8 +24,18 @@ def box_mesh(cx=0.0, cy=0.0, cz=0.0, hx=1.0, hy=1.0, hz=1.0):
         dtype=np.float32,
     )
     f = [
-        (0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1),
-        (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4), (1, 5, 7), (1, 7, 3),
+        (0, 1, 3),
+        (0, 3, 2),
+        (4, 6, 7),
+        (4, 7, 5),
+        (0, 4, 5),
+        (0, 5, 1),
+        (2, 3, 7),
+        (2, 7, 6),
+        (0, 2, 6),
+        (0, 6, 4),
+        (1, 5, 7),
+        (1, 7, 3),
     ]
     return v, np.array(f, dtype=np.int32)
 
@@ -48,30 +58,34 @@ def u_channel_mesh():
 
 class TestIsMeshConvex(unittest.TestCase):
     def test_box_is_convex(self):
+        """Return True for a closed, convex box mesh."""
         verts, faces = box_mesh()
         self.assertTrue(is_mesh_convex(verts, faces))
 
     def test_box_with_inverted_winding_is_convex(self):
-        # Winding-agnostic: flipping every triangle must not flip the verdict.
+        """Return True for a convex box regardless of triangle winding."""
         verts, faces = box_mesh()
         self.assertTrue(is_mesh_convex(verts, faces[:, ::-1]))
 
     def test_tetrahedron_is_convex(self):
+        """Return True for a minimal closed tetrahedron."""
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
         self.assertTrue(is_mesh_convex(verts, faces))
 
     def test_u_channel_is_not_convex(self):
+        """Return False for a closed mesh with a cavity between its walls."""
         verts, faces = u_channel_mesh()
         self.assertFalse(is_mesh_convex(verts, faces))
 
     def test_scaled_u_channel_is_not_convex(self):
+        """Return False for a non-convex mesh regardless of uniform scale."""
         # Convexity is scale-invariant; the solver relies on this for its cache.
         verts, faces = u_channel_mesh()
         self.assertFalse(is_mesh_convex(verts * 7.5, faces))
 
     def test_flat_open_mesh_is_convex(self):
-        # A planar triangulated grid has no separating face plane.
+        """Return True for an open planar grid with no separating face plane."""
         xs, ys = np.meshgrid(np.linspace(0, 1, 4), np.linspace(0, 1, 4))
         verts = np.stack([xs.ravel(), ys.ravel(), np.zeros(16)], axis=1).astype(np.float32)
         faces = []
@@ -82,21 +96,24 @@ class TestIsMeshConvex(unittest.TestCase):
         self.assertTrue(is_mesh_convex(verts, np.array(faces, dtype=np.int32)))
 
     def test_none_indices_assumed_convex(self):
+        """Return True when triangle indices are missing."""
         verts, _ = u_channel_mesh()
         self.assertTrue(is_mesh_convex(verts, None))
 
     def test_degenerate_inputs_assumed_convex(self):
+        """Return True instead of raising for empty or degenerate inputs."""
         verts, faces = u_channel_mesh()
         self.assertTrue(is_mesh_convex(verts, np.array([], dtype=np.int32).reshape(0, 3)))
         self.assertTrue(is_mesh_convex(np.zeros((3, 3), dtype=np.float32), faces[:3]))
 
     def test_cost_guard_returns_true(self):
+        """Return True instead of failing when the pair bound is exceeded."""
         verts, faces = u_channel_mesh()
         # A bound below faces x vertices skips the exact test instead of failing it.
         self.assertTrue(is_mesh_convex(verts, faces, max_face_vertex_pairs=10))
 
     def test_missing_faces_within_guard(self):
-        # Zero-area triangles are skipped, not treated as separating planes.
+        """Skip zero-area triangles instead of treating them as planes."""
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([[0, 1, 2], [0, 1, 1], [1, 2, 2], [0, 0, 0]], dtype=np.int32)
         self.assertTrue(is_mesh_convex(verts, faces))
