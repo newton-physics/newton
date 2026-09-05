@@ -19,6 +19,7 @@ import warp as wp
 
 from ...core.types import MAXVAL, override, vec5, vec10
 from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry.utils import is_mesh_convex
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -6304,7 +6305,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         actuator_required_shapes.add(site_shape_by_label[label])
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
-        mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
+        mesh_export_cache: dict[
+            tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool, bool | None]
+        ] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -6420,10 +6423,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
                                 vertices, indices, maxhullvert, extent_axis
                             )
-                        mesh_export = (vertices, indices, maxhullvert, is_planar)
+                        mesh_export = (vertices, indices, maxhullvert, is_planar, None)
                         mesh_export_cache[key] = mesh_export
 
-                    vertices, indices, maxhullvert, is_planar = mesh_export
+                    vertices, indices, maxhullvert, is_planar, is_convex = mesh_export
+                    if stype == GeoType.MESH and is_convex is None:
+                        # Compute once per unique mesh; convexity is scale-invariant so
+                        # the cached verdict is valid for every shape sharing this asset.
+                        is_convex = is_mesh_convex(vertices, indices)
+                        mesh_export_cache[key] = (vertices, indices, maxhullvert, is_planar, is_convex)
                     uses_mujoco_contacts = (
                         bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
                         and (
@@ -6439,6 +6447,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"MuJoCo contact generation does not support planar mesh collider "
                             f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
                             "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                        )
+                    if (
+                        stype == GeoType.MESH
+                        and is_convex is False
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and uses_mujoco_contacts
+                    ):
+                        warnings.warn(
+                            f"Mesh collider {model.shape_label[shape]!r} (shape {shape}) is non-convex, but the "
+                            "MuJoCo solver compiles every mesh geom as a convex hull: its cavities are not "
+                            "simulated and bodies may come to rest on the hull surface. Approximate concave "
+                            "meshes with ModelBuilder.approximate_meshes('coacd'), or pass "
+                            "use_mujoco_contacts=False so Newton's collision pipeline handles the exact triangles.",
+                            stacklevel=2,
                         )
                     spec.add_mesh(
                         name=name,

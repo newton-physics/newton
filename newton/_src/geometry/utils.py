@@ -691,6 +691,69 @@ def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
     return order[np.array(chain, dtype=np.int32)]
 
 
+def is_mesh_convex(
+    vertices: np.ndarray,
+    indices: np.ndarray | None = None,
+    max_face_vertex_pairs: int = 5_000_000,
+) -> bool:
+    """Test whether a triangle mesh is geometrically convex.
+
+    A mesh is convex when every vertex lies on the same side of (or on) every
+    face plane. The test is exact, independent of face winding, and runs in
+    O(faces x vertices): a face plane is violating when it separates the vertex
+    set into points strictly on both of its sides.
+
+    Use it to detect geometry whose cavities will disappear when a backend
+    compiles the mesh through a convex-hull path (e.g. the MuJoCo solver, which
+    hulls every mesh geom).
+
+    Args:
+        vertices: A numpy array of shape (N, 3) containing the vertex positions.
+        indices: A numpy array of shape (K, 3) or (3 * K,) containing the triangle
+            indices. When ``None`` the mesh is assumed convex.
+        max_face_vertex_pairs: Upper bound on faces x vertices for the exact
+            test. Larger meshes return ``True`` (assumed convex) instead of
+            paying the cost, so treat ``True`` as "no evidence of
+            non-convexity" rather than a proof.
+
+    Returns:
+        ``False`` if some face plane separates the vertex set, ``True``
+        otherwise.
+    """
+    if indices is None:
+        return True
+    verts = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    num_verts = len(verts)
+    num_faces = len(faces)
+    if num_verts < 4 or num_faces < 4:
+        return True
+    if num_faces * num_verts > max_face_vertex_pairs:
+        return True
+
+    extent = float(np.max(np.max(verts, axis=0) - np.min(verts, axis=0)))
+    eps = 1e-6 * max(extent, 1.0)
+
+    # Process faces in chunks so the (chunk_faces, num_verts) distance matrix
+    # stays bounded; bail out on the first violating face.
+    chunk = max(1, int(max_face_vertex_pairs // num_verts))
+    for start in range(0, num_faces, chunk):
+        tri = faces[start : start + chunk]
+        v0 = verts[tri[:, 0]]
+        normals = np.cross(verts[tri[:, 1]] - v0, verts[tri[:, 2]] - v0)
+        valid = np.linalg.norm(normals, axis=1) > 0.0
+        if not np.any(valid):
+            continue
+        # Signed distances of every vertex to every face plane in the chunk.
+        # Checking both signs makes the test winding-agnostic: a plane of a
+        # convex mesh has all other vertices on exactly one of its sides.
+        dists = (verts @ normals.T - np.einsum("ij,ij->i", v0, normals)[None, :]).T
+        separates = (dists > eps).any(axis=1) & (dists < -eps).any(axis=1) & valid
+        if np.any(separates):
+            return False
+    return True
+
+
 def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 1e-6):
     """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
 
