@@ -519,28 +519,24 @@ def test_clear_active(test, device):
 
 
 def test_clear_active_coalesced(test, device):
-    """Verify the coalesced branch resets directly seeded active entries."""
-    active_count = CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD
+    """Verify active clearing across scheduling and launch-size boundaries."""
+    active_counts = (
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD - 1,
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD,
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD + 1,
+        65537,
+    )
+    max_active_count = max(active_counts)
     reducer = GlobalContactReducer(
-        capacity=4 * active_count,
+        capacity=max_active_count,
         device=device,
         store_hydroelastic_data=True,
         store_moment_data=True,
+        hashtable_size_factor=1.0,
+        enable_contact_reclamation=True,
     )
     ht_capacity = reducer.hashtable.capacity
-    test.assertGreaterEqual(ht_capacity, active_count)
-
-    active_entries = np.arange(active_count, dtype=np.int32)
-    keys = np.full(ht_capacity, np.iinfo(np.uint64).max, dtype=np.uint64)
-    keys[active_entries] = np.arange(1, active_count + 1, dtype=np.uint64)
-    active_slots = np.zeros(ht_capacity + 1, dtype=np.int32)
-    active_slots[:active_count] = active_entries
-    active_slots[ht_capacity] = active_count
-    reducer.hashtable.keys.assign(keys)
-    reducer.hashtable.active_slots.assign(active_slots)
-    reducer.ht_values.fill_(wp.uint64(1))
-    reducer.contact_count.fill_(7)
-    reducer.ht_insert_failures.fill_(3)
+    test.assertGreaterEqual(ht_capacity, max_active_count)
 
     vector_entry_arrays = (
         reducer.agg_force,
@@ -555,25 +551,43 @@ def test_clear_active_coalesced(test, device):
         reducer.agg_moment_reduced,
         reducer.agg_moment2_reduced,
     )
-    for values in vector_entry_arrays:
-        values.fill_(wp.vec3(1.0))
-    for values in scalar_entry_arrays:
-        values.fill_(1.0)
     entry_arrays = vector_entry_arrays + scalar_entry_arrays
 
-    reducer.clear_active()
+    for active_count in active_counts:
+        with test.subTest(active_count=active_count):
+            active_entries = np.arange(active_count, dtype=np.int32)
+            keys = np.full(ht_capacity, np.iinfo(np.uint64).max, dtype=np.uint64)
+            keys[active_entries] = np.arange(1, active_count + 1, dtype=np.uint64)
+            active_slots = np.zeros(ht_capacity + 1, dtype=np.int32)
+            active_slots[:active_count] = active_entries
+            active_slots[ht_capacity] = active_count
+            reducer.hashtable.keys.assign(keys)
+            reducer.hashtable.active_slots.assign(active_slots)
+            reducer.ht_values.fill_(wp.uint64(1))
+            reducer.contact_count.fill_(7)
+            reducer.reclaimed_contact_bits.fill_(wp.uint32(0xFFFFFFFF))
+            reducer.reclaimed_contact_cursor.fill_(5)
+            reducer.ht_insert_failures.fill_(3)
+            for values in vector_entry_arrays:
+                values.fill_(wp.vec3(1.0))
+            for values in scalar_entry_arrays:
+                values.fill_(1.0)
 
-    test.assertEqual(get_contact_count(reducer), 0)
-    test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
-    test.assertEqual(get_active_slot_count(reducer), 0)
-    np.testing.assert_array_equal(
-        reducer.hashtable.keys.numpy()[active_entries],
-        np.full(active_count, np.iinfo(np.uint64).max, dtype=np.uint64),
-    )
-    cleared_values = reducer.ht_values.numpy().reshape(reducer.values_per_key, ht_capacity)[:, active_entries]
-    np.testing.assert_array_equal(cleared_values, 0)
-    for values in entry_arrays:
-        np.testing.assert_array_equal(values.numpy()[active_entries], 0.0)
+            reducer.clear_active()
+
+            test.assertEqual(get_contact_count(reducer), 0)
+            test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+            test.assertEqual(get_active_slot_count(reducer), 0)
+            np.testing.assert_array_equal(reducer.reclaimed_contact_bits.numpy(), 0)
+            test.assertEqual(int(reducer.reclaimed_contact_cursor.numpy()[0]), 0)
+            np.testing.assert_array_equal(
+                reducer.hashtable.keys.numpy()[active_entries],
+                np.full(active_count, np.iinfo(np.uint64).max, dtype=np.uint64),
+            )
+            cleared_values = reducer.ht_values.numpy().reshape(reducer.values_per_key, ht_capacity)[:, active_entries]
+            np.testing.assert_array_equal(cleared_values, 0)
+            for values in entry_arrays:
+                np.testing.assert_array_equal(values.numpy()[active_entries], 0.0)
 
 
 def test_export_reduced_contacts_kernel(test, device):
@@ -959,6 +973,112 @@ def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
         outer_winners = get_winning_contacts(outer_reducer)
         outer_fingerprints = {int(outer_reducer.contact_fingerprints.numpy()[cid]) for cid in outer_winners}
         test.assertIn(2, outer_fingerprints, f"Outer contact should win when no inner contact exists ({mode})")
+
+
+def test_centered_two_spatial_depths_voxel_only_claim(test, device):
+    """A contact without a normal-slot win may claim an unpublished voxel entry; later ties allocate nothing."""
+
+    @wp.kernel
+    def reduce_kernel(
+        reducer_data: GlobalContactReducerData,
+        position_local: wp.vec3,
+        fingerprint: int,
+        result: wp.array[wp.int32],
+    ):
+        # Identical normal-bin scores for every call: only the first caller wins the
+        # normal slots, later callers tie and lose them. ``position_local`` selects
+        # the voxel group (resolution 8 along x: cells 0-6 share group 0, cell 7 is group 1).
+        result[0] = export_and_reduce_contact_centered_two_spatial_depths(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=fingerprint,
+            centered_position=wp.vec3(0.0),
+            inner_spatial_depth=0.0,
+            outer_spatial_depth=0.1,
+            position_local=position_local,
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(8, 1, 1),
+            reducer_data=reducer_data,
+        )
+
+    reducer = GlobalContactReducer(capacity=8, device=device, enable_contact_reclamation=True)
+    result = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def run(position_local, fingerprint):
+        wp.launch(
+            reduce_kernel,
+            dim=1,
+            inputs=[reducer.get_data_struct(), position_local, fingerprint],
+            outputs=[result],
+            device=device,
+        )
+        return int(result.numpy()[0])
+
+    # First contact wins every normal slot and publishes voxel group 0.
+    test.assertEqual(run(wp.vec3(-0.99, 0.0, 0.0), 1), 1)
+    test.assertEqual(get_contact_count(reducer), 1)
+    test.assertEqual(get_active_slot_count(reducer), 2)
+
+    # Same scores, so no normal-slot win, but voxel group 1 is unpublished:
+    # the contact allocates an ID and claims that voxel slot.
+    test.assertEqual(run(wp.vec3(0.99, 0.0, 0.0), 2), 2)
+    test.assertEqual(get_contact_count(reducer), 2)
+    test.assertEqual(get_active_slot_count(reducer), 3)
+    test.assertEqual(get_winning_contacts(reducer), [1, 2])
+
+    # Once the voxel entry exists, a tying contact loses everywhere and must
+    # not allocate an ID.
+    test.assertEqual(run(wp.vec3(0.99, 0.0, 0.0), 3), -1)
+    test.assertEqual(get_contact_count(reducer), 2)
+    test.assertEqual(get_active_slot_count(reducer), 3)
+    test.assertEqual(get_winning_contacts(reducer), [1, 2])
+    test.assertEqual(int(reducer.reclaimed_contact_bits.numpy().sum()), 0)
+
+
+def test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key(test, device):
+    """Avoid publishing a voxel key when contact allocation is exhausted."""
+
+    @wp.kernel
+    def exhaust_then_reduce_kernel(reducer_data: GlobalContactReducerData, result: wp.array[wp.int32]):
+        export_contact_to_buffer(
+            shape_a=10,
+            shape_b=11,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=1,
+            reducer_data=reducer_data,
+        )
+        result[0] = export_and_reduce_contact_centered_two_spatial_depths(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=2,
+            centered_position=wp.vec3(0.0),
+            inner_spatial_depth=0.0,
+            outer_spatial_depth=0.1,
+            position_local=wp.vec3(0.0),
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(1),
+            reducer_data=reducer_data,
+        )
+
+    reducer = GlobalContactReducer(capacity=1, device=device)
+    result = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(exhaust_then_reduce_kernel, dim=1, inputs=[reducer.get_data_struct()], outputs=[result], device=device)
+
+    test.assertEqual(int(result.numpy()[0]), -1)
+    test.assertEqual(get_contact_count(reducer), 1)
+    test.assertEqual(get_active_slot_count(reducer), 1)
+    test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+    test.assertEqual(get_winning_contacts(reducer), [])
 
 
 def test_centered_different_pairs_independent(test, device):
@@ -1629,6 +1749,18 @@ add_function_test(
     TestGlobalContactReducer,
     "test_centered_two_spatial_depths_prefers_inner_then_outer",
     test_centered_two_spatial_depths_prefers_inner_then_outer,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
+    "test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key",
+    test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
+    "test_centered_two_spatial_depths_voxel_only_claim",
+    test_centered_two_spatial_depths_voxel_only_claim,
     devices=devices,
 )
 add_function_test(

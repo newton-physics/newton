@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import json
 import os
-import warnings
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -454,7 +454,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Iterables (like list, tuple, set)
         if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
-            type_name = "set" if isinstance(obj, set) else type(obj).__name__
+            type_name = "set" if isinstance(obj, AbstractSet) else type(obj).__name__
             return {
                 "__type__": type_name,
                 "items": [
@@ -655,13 +655,14 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
 
     for attr_name, source_value in source_dict.items():
-        if attr_name.startswith("_"):
+        if isinstance(target_obj, Model) and attr_name in {
+            "_shape_collision_filter_pairs",
+            "shape_collision_filter_pairs",
+        }:
+            target_obj._set_shape_collision_filter_pairs(source_value)  # pyright: ignore[reportPrivateUsage]
             continue
 
-        if isinstance(target_obj, Model) and attr_name == "shape_collision_filter_pairs":
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                target_obj.shape_collision_filter_pairs = source_value
+        if attr_name.startswith("_"):
             continue
 
         target_value = getattr(target_obj, attr_name, _MISSING)

@@ -49,8 +49,10 @@ _SDF_QUERY_RADIUS_SLACK = 1.01
 # ``mesh_sdf_collision_kernel`` and ``mesh_sdf_collision_global_reduce_kernel``.
 # Both kernels assume ``wp.block_dim() == MESH_SDF_BLOCK_DIM`` so that the
 # tile-stack capacity below correctly sizes the cooperative push overflow
-# margin.
-MESH_SDF_BLOCK_DIM = 256
+# margin. 128 threads (four resident blocks per SM at the 128-register cap)
+# measured about 8% faster than 256 threads with two blocks: the culling loop
+# barriers wait on four warps instead of eight at the same occupancy.
+MESH_SDF_BLOCK_DIM = 128
 
 # Capacity of the cooperative edge-selection tile stack. Sized to
 # ``2 * MESH_SDF_BLOCK_DIM`` so that the inner push loop can never
@@ -1541,7 +1543,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
     # The tiled launch provides exactly ``total_num_blocks`` blocks and the
     # kernel strides those blocks over all active combinations itself.
-    @wp.kernel(enable_backward=False, launch_bounds=(256, 2), grid_stride=False, module=_module)
+    @wp.kernel(enable_backward=False, launch_bounds=(MESH_SDF_BLOCK_DIM, 4), grid_stride=False, module=_module)
     def mesh_sdf_collision_global_reduce_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],

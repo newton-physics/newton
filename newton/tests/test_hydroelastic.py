@@ -26,10 +26,12 @@ from newton._src.geometry.sdf_hydroelastic import (
     vec8f,
 )
 from newton._src.geometry.sdf_mc import get_triangle_fraction
+from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
+    get_test_devices,
 )
 
 # --- Configuration ---
@@ -57,6 +59,7 @@ MAX_ROTATION_DEG = 10.0
 
 # Devices and solvers
 cuda_devices = get_selected_cuda_test_devices()
+scan_devices = get_test_devices()
 
 solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
@@ -219,6 +222,40 @@ def test_mc_corner_pair_selection(test, device):
         device=device,
     )
     np.testing.assert_array_equal(selected.numpy(), np.column_stack((values_np, depths_np)))
+
+
+def test_scan_with_total_boundaries(test, device):
+    """Match hydroelastic count scans at empty, partial, clamped, and multi-chunk sizes."""
+    capacity = 4099
+    counts_np = (np.arange(capacity, dtype=np.int32) % 7) + 1
+
+    for case, active_count in (
+        ("empty", 0),
+        ("partial", 37),
+        ("clamped", capacity + 19),
+        ("multi_chunk", capacity),
+    ):
+        with test.subTest(case=case):
+            counts = wp.array(counts_np, dtype=wp.int32, device=device)
+            num_elements = wp.array([active_count], dtype=wp.int32, device=device)
+            fallback_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+            scratch_prefix = wp.full(capacity, -1, dtype=wp.int32, device=device)
+            fallback_total = wp.full(1, -1, dtype=wp.int32, device=device)
+            scratch_total = wp.full(1, -1, dtype=wp.int32, device=device)
+            scratch = wp.zeros(_scan_scratch_size(capacity, device), dtype=wp.int32, device=device)
+
+            scan_with_total(counts, fallback_prefix, num_elements, fallback_total)
+            scan_with_total(counts, scratch_prefix, num_elements, scratch_total, scratch=scratch)
+
+            count = min(max(active_count, 0), capacity)
+            expected_prefix = np.zeros(count, dtype=np.int32)
+            if count > 1:
+                expected_prefix[1:] = np.cumsum(counts_np[: count - 1], dtype=np.int32)
+            scratch_prefix_np = scratch_prefix.numpy()[:count]
+            np.testing.assert_array_equal(scratch_prefix_np, expected_prefix)
+            np.testing.assert_array_equal(scratch_prefix_np, fallback_prefix.numpy()[:count])
+            test.assertEqual(int(scratch_total.numpy()[0]), int(counts_np[:count].sum()))
+            test.assertEqual(int(scratch_total.numpy()[0]), int(fallback_total.numpy()[0]))
 
 
 # --- Helper functions ---
@@ -2924,6 +2961,13 @@ add_function_test(
     "test_mc_corner_pair_selection",
     test_mc_corner_pair_selection,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_scan_with_total_boundaries",
+    test_scan_with_total_boundaries,
+    devices=scan_devices,
 )
 
 add_function_test(
