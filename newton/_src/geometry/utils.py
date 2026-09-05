@@ -742,13 +742,18 @@ def is_mesh_convex(
         tri = faces[start : start + chunk]
         v0 = verts[tri[:, 0]]
         normals = np.cross(verts[tri[:, 1]] - v0, verts[tri[:, 2]] - v0)
-        valid = np.linalg.norm(normals, axis=1) > 0.0
+        norm = np.linalg.norm(normals, axis=1)
+        valid = norm > 0.0
         if not np.any(valid):
             continue
         # Signed distances of every vertex to every face plane in the chunk.
         # Checking both signs makes the test winding-agnostic: a plane of a
         # convex mesh has all other vertices on exactly one of its sides.
+        # Divide by the plane-normal magnitude so the comparison is in units
+        # of true point-to-plane distance: the raw dot products scale with the
+        # square of mesh size, while ``eps`` scales only with the extent.
         dists = (verts @ normals.T - np.einsum("ij,ij->i", v0, normals)[None, :]).T
+        dists = dists / np.where(norm[:, None] > 0.0, norm[:, None], 1.0)
         separates = (dists > eps).any(axis=1) & (dists < -eps).any(axis=1) & valid
         if np.any(separates):
             return False

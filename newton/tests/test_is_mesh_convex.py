@@ -84,6 +84,19 @@ class TestIsMeshConvex(unittest.TestCase):
         verts, faces = u_channel_mesh()
         self.assertFalse(is_mesh_convex(verts * 7.5, faces))
 
+    def test_downscaled_u_channel_is_not_convex(self):
+        """Return False for a non-convex mesh below the epsilon floor."""
+        # Raw plane distances scale with the square of mesh size while eps
+        # scales with extent; an unnormalized comparison would swallow a tiny
+        # non-convex mesh entirely.
+        verts, faces = u_channel_mesh()
+        self.assertFalse(is_mesh_convex(verts * 1e-3, faces))
+
+    def test_enlarged_box_is_convex(self):
+        """Return True for a convex mesh at large scales."""
+        verts, faces = box_mesh()
+        self.assertTrue(is_mesh_convex(verts * 1e5, faces))
+
     def test_flat_open_mesh_is_convex(self):
         """Return True for an open planar grid with no separating face plane."""
         xs, ys = np.meshgrid(np.linspace(0, 1, 4), np.linspace(0, 1, 4))
