@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION
+from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -136,7 +136,7 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
 
     Counts must be non-negative and sum to exactly ``len(points)``: Python slicing is
     forgiving, so a mismatch would otherwise corrupt every later curve's point offset or
-    reach ``add_rod`` with fewer positions than declared (which raises out of the import).
+    produce fewer positions than declared (which :class:`Rod` rejects).
     Shared by the graph prepass and the per-curve pass so the two cannot diverge. Returns
     ``(points, counts)`` with counts as Python ints, or ``None`` for a prim that must be
     skipped whole (warned unless ``warn=False``; the prepass passes ``False`` because an
@@ -434,13 +434,13 @@ def _apply_local_rod_material_gains(
 
 def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[str], set[str]]:
     """Weld curve deformables joined by curve-to-curve ``PhysicsAttachment`` prims into
-    rod graphs via :meth:`ModelBuilder.add_rod_graph`.
+    explicit-topology :class:`Rod` objects.
 
     A hard (unauthored / infinite stiffness) ``point``->``point`` attachment whose
     ``src0``/``src1`` are both imported curve deformables and whose sites are coincident is
     topology, not a runtime constraint: the two referenced control points are the same junction
     node. Curves transitively joined this way form one graph component, built with a single
-    ``add_rod_graph`` call (one capsule body per segment, junction nodes shared). Compliant or
+    ``ModelBuilder.add_rod(rod=...)`` call (one capsule body per segment, junction nodes shared). Compliant or
     non-coincident curve-to-curve attachments are NOT welded; they warn here and are preserved
     as unsupported in ``path_attachment_attrs`` by the attachment post-pass.
     Returns the curve prim paths and the junction attachment prim paths consumed here so the
@@ -675,7 +675,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         node_radii = [sum(samples) / len(samples) for samples in node_radius_samples]
 
         # A connected component with as many edges as merged nodes contains a cycle (e.g. a
-        # welded periodic curve). add_rod_graph builds a spanning tree and cannot close the
+        # welded periodic curve). Wrapped rod graph assembly builds a spanning tree and cannot close the
         # loop, which would silently change the authored topology; reject the weld instead so
         # the curves import individually (a periodic curve keeps its loop-closing joint) and
         # the junction reaches the attachment pass.
@@ -687,7 +687,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             )
             return False
 
-        # A welded graph would abort inside add_rod_graph on a degenerate (near-zero-length) edge from
+        # A welded graph would abort during assembly on a degenerate (near-zero-length) edge from
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
         # to the per-curve pass (which warns and skips any individually-degenerate curve).
         edge_lengths = [float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges]
@@ -715,7 +715,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             if key in rest_lengths_by_curve:
                 material_edge_lengths[edge_index] = rest_lengths_by_curve[key][segment_index]
 
-        # add_rod_graph auto-orients segments, so authored cross-section frames cannot be honored.
+        # Rod graph construction auto-orients segments, so authored cross-section frames cannot be honored.
         for key in comp_paths:
             kprim = curve_recs[key].prim
             normals_attr = UsdGeom.BasisCurves(kprim).GetNormalsAttr()
@@ -723,8 +723,8 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 normals_attr and normals_attr.Get() is not None
             ):
                 warnings.warn(
-                    f"{key}: per-point normals are dropped for a welded cable graph; its segments use "
-                    f"add_rod_graph's auto-orientation instead of the authored cross-section frame.",
+                    f"{key}: per-point normals are dropped for a welded cable graph; its Rod segments use "
+                    "auto-oriented frames instead of the authored cross-section frame.",
                     stacklevel=2,
                 )
 
@@ -784,10 +784,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
-        body_ids, graph_joint_ids = builder.add_rod_graph(
-            node_positions=node_positions,
-            edges=edges,
-            radius=radius,
+        rod = Rod(node_positions, edges=edges, radius=radius)
+        body_ids, graph_joint_ids = builder.add_rod(
+            rod=rod,
             cfg=cfg,
             label=cid,
             wrap_in_articulation=True,
@@ -850,7 +849,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                         anchors.setdefault(pi, []).append((body, wp.vec3(0.0, 0.0, z)))
             path_cable_point_anchors[key] = anchors
             path_cable_segments[key] = segs
-            # Graph cables are returned pre-wrapped (see add_rod_graph call above), so joints are
+            # Graph cables are returned pre-wrapped (see the add_rod call above), so joints are
             # empty: callers using the "if joints: add_articulation(joints)" pattern skip them.
             path_cable_map[key] = (per_prim_bodies.get(key, []), [])
             path_cable_attrs[key] = {
@@ -1089,8 +1088,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 continue
             positions = _bake_world_points(local_pts, world_mat)
             # For a periodic curve the closing segment (v[-1] -> v[0]) is a real
-            # segment: close the polyline so add_rod builds a body for it (add_rod
-            # makes len(positions) - 1 bodies; closed=True then adds the loop joint).
+            # segment: repeat the first point so Rod includes a body for it;
+            # closed=True then adds the loop joint.
             if closed:
                 positions = [*positions, positions[0]]
             num_seg = len(positions) - 1
@@ -1130,12 +1129,15 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
             # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
             # bodies are loop-closing and stay outside the articulation regardless.
-            bodies, joints = builder.add_rod(
-                positions=positions,
+            rod = Rod(
+                positions,
                 quaternions=quaternions,
                 radius=curve_radii[0],
-                cfg=cable_cfg,
                 closed=closed,
+            )
+            bodies, joints = builder.add_rod(
+                rod=rod,
+                cfg=cable_cfg,
                 label=label,
                 wrap_in_articulation=True,
                 body_frame_origin="com",

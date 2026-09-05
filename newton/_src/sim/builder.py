@@ -16,7 +16,7 @@ import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
@@ -142,6 +142,14 @@ _SCALAR_GRAVITY_DEPRECATION_MSG = (
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
+)
+_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
+    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
+    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
+)
+_ADD_ROD_GRAPH_DEPRECATION_MSG = (
+    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
+    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
 )
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
@@ -8568,7 +8576,7 @@ class ModelBuilder:
                 body_frame_origin=body_frame_origin,
             )
         else:
-            link_bodies, link_joints = self.add_rod_graph(
+            link_bodies, link_joints = self._add_rod_graph(
                 node_positions=rod_positions,
                 edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
                 radius=radius,
@@ -8670,11 +8678,11 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Delegate to add_rod_graph to create bodies and internal joints.
+        # Use the graph core to create bodies and internal joints.
         # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
         # - open chains are wrapped into a single articulation (tree), and
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
-        link_bodies, link_joints = self.add_rod_graph(
+        link_bodies, link_joints = self._add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
             radius=radius,
@@ -8690,6 +8698,7 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            junction_collision_filter=True,
             color=color,
             body_frame_origin=body_frame_origin,
         )
@@ -8754,56 +8763,6 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
-    @overload
-    def add_rod(
-        self,
-        positions: None = None,
-        *,
-        quaternions: None = None,
-        radius: None = None,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        closed: None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
-        rod: Rod,
-        junction_collision_filter: bool = True,
-    ) -> tuple[list[int], list[int]]: ...
-
-    @overload
-    def add_rod(
-        self,
-        positions: list[Vec3],
-        *,
-        quaternions: list[Quat] | None = None,
-        radius: float | None = None,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        closed: bool | None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
-        rod: None = None,
-        junction_collision_filter: bool = True,
-    ) -> tuple[list[int], list[int]]: ...
-
     def add_rod(
         self,
         positions: list[Vec3] | None = None,
@@ -8829,10 +8788,16 @@ class ModelBuilder:
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
+        .. deprecated:: 1.6
+            The ``positions=...`` input form is deprecated. Construct a
+            :class:`newton.Rod` and pass it with ``rod=...`` instead. The
+            ``rod=...`` form remains supported.
+
         Exactly one input form is required:
 
-        - ``positions=...`` constructs an ordered chain. The separate
-          ``quaternions`` and ``closed`` arguments belong only to this form.
+        - Deprecated: ``positions=...`` constructs an ordered chain. The
+          separate ``quaternions`` and ``closed`` arguments belong only to this
+          compatibility form.
         - ``rod=...`` uses the geometry, frames, topology, and optional
           constitutive data stored on a :class:`newton.Rod`, which may represent
           an ordered chain or an explicit graph.
@@ -8842,9 +8807,9 @@ class ModelBuilder:
         separate stretch, shear, bend, and twist slots.
 
         Args:
-            positions: Geometry source for the ordered-chain form: centerline
-                node positions (segment endpoints) in world space [m]. Mutually
-                exclusive with ``rod``.
+            positions: Deprecated geometry source for the ordered-chain form:
+                centerline node positions (segment endpoints) in world space
+                [m]. Mutually exclusive with ``rod``.
             quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
                 must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
                 local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
@@ -8982,6 +8947,11 @@ class ModelBuilder:
             )
 
         assert positions is not None
+        warnings.warn(
+            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
         return self._add_rod_chain(
             positions,
             quaternions=quaternions,
@@ -9025,6 +8995,10 @@ class ModelBuilder:
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
+
+        .. deprecated:: 1.6
+            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
+            :meth:`add_rod` with ``rod=...`` instead.
 
         Representation:
 
@@ -9094,6 +9068,55 @@ class ModelBuilder:
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
+        warnings.warn(
+            _ADD_ROD_GRAPH_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
+        return self._add_rod_graph(
+            node_positions,
+            edges,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            quaternions=quaternions,
+            junction_collision_filter=junction_collision_filter,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
+
+    def _add_rod_graph(
+        self,
+        node_positions: list[Vec3],
+        edges: list[tuple[int, int]],
+        *,
+        radius: float,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        quaternions: list[Quat] | None,
+        junction_collision_filter: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> tuple[list[int], list[int]]:
+        """Internal graph-assembly implementation shared by the rod input forms."""
         if cfg is None:
             cfg = self.default_shape_cfg
 

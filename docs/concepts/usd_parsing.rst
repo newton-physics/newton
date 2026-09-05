@@ -357,8 +357,9 @@ A ``point``->``point`` attachment between two imported cables can be a weld. Wel
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
 does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
 not a runtime constraint: the two points become one node, and every curve connected through such
-junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
-call (one capsule body per segment, junction nodes shared). Welded junction attachments are
+junctions is built as one :class:`~newton.Rod` with explicit edges and assembled
+through :meth:`~newton.ModelBuilder.add_rod` using ``rod=`` (one capsule body per
+segment, junction nodes shared). Welded junction attachments are
 absorbed into the graph, so they appear in neither ``path_attachment_map`` nor
 ``path_attachment_attrs``. A springy or non-coincident cable-to-cable attachment is **not**
 welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the authored

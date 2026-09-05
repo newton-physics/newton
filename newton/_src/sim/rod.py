@@ -130,8 +130,9 @@ class Rod:
             independently to its edge.
         closed: Whether an implicit ordered chain closes its last segment body
             back to its first with a rod joint. Valid only when ``edges`` is
-            omitted. A closed rod requires at least three segments and
-            coincident first and last points.
+            omitted and requires at least two segments with coincident first
+            and last points, so the closing span is represented by a segment
+            body.
         radius: Optional capsule radius [m]. If omitted, assembly uses 0.1 m.
             With elastic material inputs, this also defines the circular
             cross-section used to derive section rigidities and is required.
@@ -193,29 +194,40 @@ class Rod:
         self.points = points
         if edges is None:
             self._edges = self._generate_ordered_chain_edges(len(self.points))
-            self.closed = bool(closed)
+            resolved_closed = bool(closed)
         else:
             if closed:
                 raise ValueError("closed is only valid when edges is omitted")
             self.edges = edges
-            self.closed = False
+            resolved_closed = False
+
+        self.closed = resolved_closed
+        """Whether the implicit ordered chain closes its last segment body back to its first with a rod joint."""
 
         self.radius = None if radius is None else float(radius)
+        """Capsule radius [m], or ``None`` to use the builder default."""
         self.youngs_modulus = None if youngs_modulus is None else float(youngs_modulus)
+        """Uniform Young's modulus ``E`` [Pa], or ``None``."""
         self.poissons_ratio = None if poissons_ratio is None else float(poissons_ratio)
+        """Uniform Poisson's ratio ``nu``, or ``None``."""
         self.shear_modulus = None if shear_modulus is None else float(shear_modulus)
+        """Uniform shear modulus ``G`` [Pa], or ``None``."""
         self.stretch_rigidity = (
             None if stretch_rigidity is None else _validate_nonnegative_float("stretch_rigidity", stretch_rigidity)
         )
+        """Uniform axial rigidity ``EA`` [N], or ``None``."""
         self.shear_rigidity = (
             None if shear_rigidity is None else _validate_nonnegative_float("shear_rigidity", shear_rigidity)
         )
+        """Uniform effective transverse shear rigidity ``kGA`` [N], or ``None``."""
         self.bend_rigidity = (
             None if bend_rigidity is None else _validate_nonnegative_float("bend_rigidity", bend_rigidity)
         )
+        """Uniform bending rigidity ``EI`` [N·m²], or ``None``."""
         self.twist_rigidity = (
             None if twist_rigidity is None else _validate_nonnegative_float("twist_rigidity", twist_rigidity)
         )
+        """Uniform torsional rigidity ``GJ`` [N·m²], or ``None``."""
         self._resolve_elastic_material()
 
         if quaternions is None:
@@ -345,8 +357,8 @@ class Rod:
             raise ValueError("all rod segments must have length > 1e-9 m")
         if self.closed and not self._is_ordered_chain_topology(len(points), edges):
             raise ValueError("closed rods require ordered-chain edges")
-        if self.closed and len(edges) < 3:
-            raise ValueError("closed rods require at least 3 segments")
+        if self.closed and len(edges) < 2:
+            raise ValueError("closed rods require at least 2 segments")
         if self.closed and not np.allclose(points[0], points[-1], rtol=0.0, atol=1.0e-6):
             raise ValueError("closed rods require the first and last points to coincide")
         return points, edges

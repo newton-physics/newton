@@ -324,6 +324,27 @@ def _make_straight_rod_pose(start, direction, length, num_segments, *, twist_tot
     return _rod_pose_lists(rod)
 
 
+def _add_prepared_rod(
+    builder: newton.ModelBuilder,
+    points,
+    *,
+    edges=None,
+    quaternions=None,
+    radius: float | None = None,
+    closed: bool = False,
+    **assembly_kwargs,
+) -> tuple[list[int], list[int]]:
+    """Construct a Rod from prepared geometry and add it to a builder."""
+    rod = newton.Rod(
+        points,
+        edges=edges,
+        quaternions=quaternions,
+        radius=radius,
+        closed=closed,
+    )
+    return builder.add_rod(rod=rod, **assembly_kwargs)
+
+
 def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_height: float):
     """Create points/quats for `ModelBuilder.add_rod()` with a straight cable along +X.
 
@@ -392,8 +413,9 @@ def _build_cable_chain(
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=3.0)
 
     # Create a rod-based cable
-    rod_bodies, _rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=bend_stiffness,
@@ -443,8 +465,9 @@ def _build_cable_loop(device, num_links: int = 6):
 
     edge_q = _make_rod_frames(points)
 
-    _rod_bodies, _rod_joints = builder.add_rod(
-        positions=points,
+    _rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=1.0e1,
@@ -785,8 +808,9 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_
         points, edge_q = _make_straight_cable_along_x(num_links, segment_length, z_height=3.0)
         points = [wp.vec3(p[0], p[1] + y0, p[2]) for p in points]
 
-        rod_bodies, _rod_joints = builder.add_rod(
-            positions=points,
+        rod_bodies, _rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=0.05,
             bend_stiffness=k,
@@ -934,8 +958,9 @@ def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_
     q1 = wp.quat_between_vectors(local_z, dir1)
     quats = [q0, q1]
 
-    rod_bodies, _rod_joints = builder.add_rod(
-        positions=positions,
+    rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        positions,
         quaternions=quats,
         radius=0.05,
         bend_stiffness=5.0e4,
@@ -1145,8 +1170,9 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_
             rot = wp.quat_between_vectors(local_axis, cable_direction)
             edge_q = [rot] * num_elements
 
-            rod_bodies, _rod_joints = builder.add_rod(
-                positions=points,
+            rod_bodies, _rod_joints = _add_prepared_rod(
+                builder,
+                points,
                 quaternions=edge_q,
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
@@ -1290,8 +1316,9 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     offset = anchor_world_attach - p0
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1444,8 +1471,9 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     offset_x = anchor_world_attach_x - p0_x
     points_x = [p + offset_x for p in points_x]
 
-    rod_bodies_x, rod_joints_x = builder.add_rod(
-        positions=points_x,
+    rod_bodies_x, rod_joints_x = _add_prepared_rod(
+        builder,
+        points_x,
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1471,8 +1499,9 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     offset_y = anchor_world_attach_y - p0_y
     points_y = [p + offset_y for p in points_y]
 
-    rod_bodies_y, rod_joints_y = builder.add_rod(
-        positions=points_y,
+    rod_bodies_y, rod_joints_y = _add_prepared_rod(
+        builder,
+        points_y,
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1637,8 +1666,9 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     offset_x = anchor_world_attach_x - p0_x
     points_x = [p + offset_x for p in points_x]
 
-    rod_bodies_x, rod_joints_x = builder.add_rod(
-        positions=points_x,
+    rod_bodies_x, rod_joints_x = _add_prepared_rod(
+        builder,
+        points_x,
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1667,8 +1697,9 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     offset_y = anchor_world_attach_y - p0_y
     points_y = [p + offset_y for p in points_y]
 
-    rod_bodies_y, rod_joints_y = builder.add_rod(
-        positions=points_y,
+    rod_bodies_y, rod_joints_y = _add_prepared_rod(
+        builder,
+        points_y,
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1842,8 +1873,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -1968,8 +2000,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2107,8 +2140,9 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     offset = anchor_world_attach - p0
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2249,8 +2283,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2375,8 +2410,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2520,8 +2556,9 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2673,8 +2710,9 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2805,8 +2843,9 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2966,8 +3005,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -3108,8 +3148,9 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -3437,8 +3478,9 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
     cable_radius = 0.05
     cable_width = 2.0 * cable_radius
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
@@ -3541,8 +3583,9 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     """Verify eval_fk does not reconstruct ROD child poses from unsupported joint coordinates."""
     builder = newton.ModelBuilder()
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=[
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        [
             wp.vec3(0.0, 0.0, 0.0),
             wp.vec3(0.5, 0.0, 0.0),
             wp.vec3(1.0, 0.0, 0.0),
@@ -3613,8 +3656,9 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
 
     cable_radius = 0.05
     cable_width = 2.0 * cable_radius
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points_any,
         quaternions=quats_any,
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
@@ -3691,8 +3735,9 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     # Use wp.vec3 at runtime but avoid list[Vec3] invariance issues in static checking.
     node_positions_any: list[Any] = node_positions
 
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=0.05,
         cfg=builder.default_shape_cfg.copy(),
@@ -3728,8 +3773,9 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
     with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
-        rod_bodies, rod_joints = builder.add_rod(
-            positions=points,
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=0.01,
             bend_stiffness=1.0,
@@ -3771,8 +3817,9 @@ def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=0.01,
         bend_stiffness=1.0,
@@ -3814,7 +3861,7 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     """Cable graph: collision filtering should be applied at junctions.
 
     For a Y-junction (degree-3 node): two pairs are jointed; the remaining sibling pair should also be
-    collision-filtered automatically by `add_rod_graph()`'s junction filtering.
+    collision-filtered automatically by the rod graph assembly's junction filtering.
     """
 
     def assert_body_pair_filtered(builder: newton.ModelBuilder, model: newton.Model, body_a: int, body_b: int):
@@ -3840,8 +3887,9 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     edges = [(0, 1), (0, 2), (0, 3)]
     node_positions_any = node_positions
 
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=0.05,
         cfg=builder.default_shape_cfg.copy(),
@@ -3977,8 +4025,9 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         offset = attach_pos - points[0]
         points = [p + offset for p in points]
 
-        rod_bodies, rod_joints = builder.add_rod(
-            positions=points,
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=rod_radius,
             bend_stiffness=2.0e0,
@@ -4158,8 +4207,9 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
         twist_total=0.0,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -4257,8 +4307,9 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     offset = anchor_world_attach - points[0]
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -5334,7 +5385,7 @@ def _rod_geometry_api_validates_inputs(test, device):
             "2 frames",
         ),
         (lambda: newton.Rod([start, direction], edges=[(0, 1)], closed=True), "closed"),
-        (lambda: newton.Rod([start, direction, start], closed=True), "at least 3 segments"),
+        (lambda: newton.Rod([start, direction], closed=True), "at least 2 segments"),
         (
             lambda: newton.Rod(
                 [start, wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), direction],
@@ -5385,6 +5436,12 @@ def _rod_copy_and_closed_topology_preserve_contract(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
     test.assertEqual((len(bodies), len(joints)), (3, 3))
+
+    two_segment_loop = newton.Rod([wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], closed=True)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with test.assertWarnsRegex(UserWarning, "Parallel joints between the same pair of bodies"):
+        bodies, joints = builder.add_rod(rod=two_segment_loop, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (2, 2))
 
 
 def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
@@ -5696,6 +5753,44 @@ def _cable_positional_argument_migrations(test, device):
             *released_stiffness_args,
             body_frame_origin="com",
         )
+
+
+def _rod_builder_deprecates_raw_geometry_forms(test, device):
+    """Verify raw builder geometry forms warn once and prepared Rod forms do not warn."""
+    del device
+    points = [wp.vec3(0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 2.0)]
+    edges = [(0, 1), (1, 2)]
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        bodies, joints = builder.add_rod(positions=points, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (2, 1))
+    test.assertEqual(len(caught), 1)
+    test.assertIn("add_rod(positions=...)", str(caught[0].message))
+    test.assertIn("add_rod(rod=...)", str(caught[0].message))
+    test.assertEqual(caught[0].filename, __file__)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        bodies, joints = builder.add_rod_graph(points, edges, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (2, 1))
+    test.assertEqual(len(caught), 1)
+    test.assertIn("add_rod_graph()", str(caught[0].message))
+    test.assertIn("add_rod(rod=...)", str(caught[0].message))
+    test.assertEqual(caught[0].filename, __file__)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        bodies, joints = builder.add_rod(rod=newton.Rod(points), body_frame_origin="com")
+        test.assertEqual((len(bodies), len(joints)), (2, 1))
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        bodies, joints = builder.add_rod(rod=newton.Rod(points, edges=edges), body_frame_origin="com")
+        test.assertEqual((len(bodies), len(joints)), (2, 1))
 
 
 def _cable_and_rod_helper_api_deprecates_released_names(test, device):
@@ -7128,6 +7223,12 @@ add_function_test(
     TestCable,
     "test_cable_positional_argument_migrations",
     _cable_positional_argument_migrations,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_builder_deprecates_raw_geometry_forms",
+    _rod_builder_deprecates_raw_geometry_forms,
     devices=None,
 )
 add_function_test(
