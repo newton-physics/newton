@@ -43,6 +43,7 @@ newton.geometry
    compute_offset_mesh
    create_empty_sdf_data
    extract_particle_surface
+   is_mesh_convex
    sdf_box
    sdf_capsule
    sdf_cone

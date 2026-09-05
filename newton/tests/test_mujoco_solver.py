@@ -6699,6 +6699,83 @@ class TestMuJoCoConversion(unittest.TestCase):
             err_msg="Every offset world must keep its free box supported by its local static table.",
         )
 
+    @staticmethod
+    def _u_channel_mesh():
+        # Floor plus two walls as one closed triangle mesh; the cavity between
+        # the walls makes the surface non-convex.
+        parts = [
+            ((0, 0, 0.05), (0.6, 0.6, 0.05)),
+            ((0, 0.40, 0.30), (0.6, 0.2, 0.20)),
+            ((0, -0.40, 0.30), (0.6, 0.2, 0.20)),
+        ]
+        verts, faces, off = [], [], 0
+        for c, h in parts:
+            corners = np.array(
+                [
+                    [sx * h[0] + c[0], sy * h[1] + c[1], sz * h[2] + c[2]]
+                    for sx in (-1, 1)
+                    for sy in (-1, 1)
+                    for sz in (-1, 1)
+                ],
+                dtype=np.float32,
+            )
+            tris = [
+                (0, 1, 3),
+                (0, 3, 2),
+                (4, 6, 7),
+                (4, 7, 5),
+                (0, 4, 5),
+                (0, 5, 1),
+                (2, 3, 7),
+                (2, 7, 6),
+                (0, 2, 6),
+                (0, 6, 4),
+                (1, 5, 7),
+                (1, 7, 3),
+            ]
+            verts.append(corners)
+            faces.append(np.array(tris, dtype=np.int32) + off)
+            off += len(corners)
+        return np.concatenate(verts), np.concatenate(faces)
+
+    def test_nonconvex_mesh_contacts_warning(self):
+        """Test that a non-convex mesh collider warns when MuJoCo generates the contacts."""
+        verts, faces = self._u_channel_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(UserWarning, "convex hull"):
+            SolverMuJoCo(model)
+
+    def test_convex_hull_shape_no_warning(self):
+        """Test that a CONVEX_MESH shape built from the same non-convex source stays silent."""
+        verts, faces = self._u_channel_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_shape_convex_hull(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel_hull")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", category=UserWarning)
+            SolverMuJoCo(model)
+
+    def test_nonconvex_mesh_newton_contacts_no_warning(self):
+        """Test that non-convex meshes stay silent when Newton's collision pipeline handles contacts."""
+        verts, faces = self._u_channel_mesh()
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="u_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", category=UserWarning)
+            SolverMuJoCo(model, use_mujoco_contacts=False)
+
     def test_mesh_geoms_across_worlds(self):
         """Test that mesh geoms work correctly across different worlds in MuJoCo solver."""
         # Create a simple model with 2 worlds, each containing a mesh

@@ -443,9 +443,20 @@ Newton supports the following geometry types via :class:`~GeoType`:
    * - ``ELLIPSOID``
      - Ellipsoid
    * - ``MESH``
-     - Triangle mesh (arbitrary, including non-convex)
+     - Triangle mesh (arbitrary, including non-convex; see note below)
    * - ``CONVEX_MESH``
      - Convex hull mesh
+
+.. note::
+   **Non-convex meshes are solver-dependent.** Newton's Warp-based collision pipeline
+   collides the exact triangles, so non-convex ``MESH`` shapes behave as authored. The
+   MuJoCo solver, however, compiles every mesh geom through a convex-hull path: a bowl,
+   tube or C-channel loses its cavity, and bodies can come to rest on the hull surface.
+   ``SolverMuJoCo`` warns when it exports a non-convex mesh collider while generating
+   MuJoCo contacts. To resolve the warning, approximate the mesh with
+   ``builder.approximate_meshes("coacd")`` (convex decomposition), pass
+   ``use_mujoco_contacts=False`` so Newton's collision pipeline handles the contacts,
+   or build the shape with ``add_shape_convex_hull`` to make the approximation explicit.
 
 .. note::
    **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach
