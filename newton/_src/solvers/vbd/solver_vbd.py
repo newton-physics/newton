@@ -153,6 +153,8 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``True``.
 
     Rigid-rigid contacts consume shape ``mu_torsional`` and ``mu_rolling``.
+    Both coefficients have units of length [m]; multiplying them by the contact
+    normal load gives the corresponding torque limit [N·m].
     Their nonzero defaults enable both channels; setting either coefficient to
     zero on either shape disables that channel for the contact pair.
     VBD clamps sliding force, torsional torque, and rolling torque to separate
