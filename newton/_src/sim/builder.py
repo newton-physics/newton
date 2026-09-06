@@ -68,6 +68,7 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .model import Model, _pack_shape_pair_codes
+from .tendon import TendonLinkFlags, TendonLinkType
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -633,6 +634,20 @@ class ModelBuilder:
         "muscle_activations": Model.AttributeSpec("muscle"),
         "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
         "muscle_points": Model.AttributeSpec("muscle_point"),
+        # Tendon-bearing builders are rejected explicitly by _merge_builder_copies().
+        # Keep their lists in the merge schema so unrelated builders still merge.
+        "tendon_start": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_body": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_type": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_radius": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_orientation": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_mu": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_flags": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_offset": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_link_axis": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_seg_compliance": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_seg_damping": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "tendon_seg_rest_length": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -1687,6 +1702,32 @@ class ModelBuilder:
         """Spring damping values accumulated for :attr:`Model.spring_damping`."""
         self.spring_control: list[float] = []
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
+
+        # tendons (cable-driven mechanisms)
+        self.tendon_start: list[int] = []
+        """Start index into link arrays for each tendon."""
+        self.tendon_link_body: list[int] = []
+        """Body index for each tendon link."""
+        self.tendon_link_type: list[int] = []
+        """Link type (TendonLinkType enum) for each tendon link."""
+        self.tendon_link_radius: list[float] = []
+        """Contact radius [m] for each tendon link."""
+        self.tendon_link_orientation: list[int] = []
+        """Winding direction (+1/-1) for each tendon link."""
+        self.tendon_link_mu: list[float] = []
+        """Friction coefficient at each tendon link."""
+        self.tendon_link_flags: list[int] = []
+        """Routing flags for each tendon link."""
+        self.tendon_link_offset: list[tuple[float, float, float]] = []
+        """Local-frame offset of the cable plane center on each body [m]."""
+        self.tendon_link_axis: list[tuple[float, float, float]] = []
+        """Local-frame normal of the cable plane on each body."""
+        self.tendon_seg_compliance: list[float] = []
+        """Compliance [m/N] for each tendon segment."""
+        self.tendon_seg_damping: list[float] = []
+        """Damping for each tendon segment."""
+        self.tendon_seg_rest_length: list[float] = []
+        """Initial rest length [m] for each tendon segment."""
 
         # triangles
         self.tri_indices: list[tuple[int, int, int]] = []
@@ -3153,6 +3194,8 @@ class ModelBuilder:
     ) -> None:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
+        if builder.tendon_start:
+            raise NotImplementedError("ModelBuilder merging and replication do not yet support tendon data")
 
         world_count = len(worlds)
         if len(xforms) != world_count or len(label_prefixes) != world_count:
@@ -5930,6 +5973,137 @@ class ModelBuilder:
             **kwargs,
         )
 
+    def add_tendon(self) -> int:
+        """Begin a new tendon.
+
+        Links are added with :meth:`add_tendon_link`. Each pair of consecutive
+        links implicitly creates a tendon segment.
+
+        Returns:
+            The tendon index.
+        """
+        tendon_idx = len(self.tendon_start)
+        self.tendon_start.append(len(self.tendon_link_body))
+        return tendon_idx
+
+    def add_tendon_link(
+        self,
+        body: int,
+        *,
+        link_type: int | TendonLinkType = TendonLinkType.ATTACHMENT,
+        radius: float = 0.0,
+        orientation: int = 1,
+        mu: float = 0.0,
+        dynamic: bool = False,
+        offset: Vec3 = (0.0, 0.0, 0.0),
+        axis: Vec3 = (0.0, 0.0, 1.0),
+        compliance: float = 0.0,
+        damping: float = 0.0,
+        rest_length: float = -1.0,
+    ) -> int:
+        """Add a link to the most recently created tendon.
+
+        The material parameters apply to the segment ending at this link and
+        are ignored for the first link of a tendon.
+
+        Args:
+            body: Rigid body index this link is attached to.
+            link_type: Tendon link type.
+            radius: Contact radius [m] for rolling links.
+            orientation: Winding direction, either ``1`` or ``-1``.
+            mu: Coulomb friction coefficient at this contact.
+            dynamic: Whether a rolling link engages and disengages dynamically.
+            offset: Cable-plane center in the body's local frame [m].
+            axis: Cable-plane normal in the body's local frame.
+            compliance: Segment compliance [m/N].
+            damping: Segment damping coefficient [N·s/m].
+            rest_length: Segment rest length [m]. A negative value measures it
+                from the initial body poses during finalization.
+
+        Returns:
+            The link index.
+        """
+        if not self.tendon_start:
+            raise RuntimeError("add_tendon_link() requires add_tendon() to be called first")
+
+        try:
+            link_type = TendonLinkType(link_type)
+        except ValueError as error:
+            raise ValueError(f"Invalid tendon link type: {link_type}") from error
+        if body < 0 or body >= len(self.body_mass):
+            raise ValueError(f"Tendon link body index {body} is out of range")
+        if orientation not in (-1, 1):
+            raise ValueError(f"Tendon link orientation must be -1 or 1, got {orientation}")
+        if not math.isfinite(radius) or radius < 0.0:
+            raise ValueError(f"Tendon link radius must be finite and non-negative, got {radius}")
+        if link_type == TendonLinkType.ROLLING and radius == 0.0:
+            raise ValueError("ROLLING tendon links require a positive radius")
+        if not math.isfinite(mu) or mu < 0.0:
+            raise ValueError(f"Tendon link friction coefficient must be finite and non-negative, got {mu}")
+        if not math.isfinite(compliance) or compliance < 0.0:
+            raise ValueError(f"Tendon segment compliance must be finite and non-negative, got {compliance}")
+        if not math.isfinite(damping) or damping < 0.0:
+            raise ValueError(f"Tendon segment damping must be finite and non-negative, got {damping}")
+        if not math.isfinite(rest_length):
+            raise ValueError(f"Tendon segment rest length must be finite, got {rest_length}")
+        try:
+            offset = tuple(float(value) for value in offset)
+            axis = tuple(float(value) for value in axis)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Tendon link offset and axis must each contain three finite values") from error
+        if len(offset) != 3:
+            raise ValueError(f"Tendon link offset must contain three values, got {len(offset)}")
+        if len(axis) != 3:
+            raise ValueError(f"Tendon link axis must contain three values, got {len(axis)}")
+        if not all(math.isfinite(value) for value in (*offset, *axis)):
+            raise ValueError("Tendon link offset and axis must be finite")
+        axis_length = math.sqrt(sum(value * value for value in axis))
+        if axis_length == 0.0:
+            raise ValueError("Tendon link axis must be non-zero")
+        axis = tuple(value / axis_length for value in axis)
+
+        link_idx = len(self.tendon_link_body)
+        tendon_link_start = self.tendon_start[-1]
+        if link_idx > tendon_link_start:
+            tendon_body = self.tendon_link_body[tendon_link_start]
+            tendon_world = self.body_world[tendon_body]
+            link_world = self.body_world[body]
+            if link_world != tendon_world:
+                raise ValueError(
+                    f"Cannot add tendon link: body {body} belongs to world {link_world}, "
+                    f"but the tendon belongs to world {tendon_world}. "
+                    "All links in a tendon must belong to the same world."
+                )
+        if dynamic and link_type != TendonLinkType.ROLLING:
+            raise ValueError("dynamic routing is only supported for ROLLING tendon links")
+        if dynamic and link_idx == tendon_link_start:
+            raise ValueError("A dynamic ROLLING tendon link must have links on both sides")
+        if (
+            link_idx > tendon_link_start
+            and link_type == TendonLinkType.ROLLING
+            and dynamic
+            and self.tendon_link_type[-1] == int(TendonLinkType.ROLLING)
+            and (self.tendon_link_flags[-1] & int(TendonLinkFlags.DYNAMIC)) != 0
+        ):
+            raise ValueError("Consecutive dynamic ROLLING tendon links are not supported")
+
+        self.tendon_link_body.append(body)
+        self.tendon_link_type.append(int(link_type))
+        self.tendon_link_radius.append(radius)
+        self.tendon_link_orientation.append(orientation)
+        self.tendon_link_mu.append(mu)
+        flags = TendonLinkFlags.DYNAMIC if dynamic else 0
+        self.tendon_link_flags.append(int(flags))
+        self.tendon_link_offset.append(offset)
+        self.tendon_link_axis.append(axis)
+
+        if link_idx > tendon_link_start:
+            self.tendon_seg_compliance.append(compliance)
+            self.tendon_seg_damping.append(damping)
+            self.tendon_seg_rest_length.append(rest_length)
+
+        return link_idx
+
     def _set_joint_rod_material_gains(
         self,
         joint: int,
@@ -6287,17 +6461,17 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Find bodies referenced in equality constraints that shouldn't be merged into world
-        bodies_in_constraints = set()
+        # Preserve body frames needed by equality constraints and tendon links when collapsing into world.
+        bodies_requiring_body_frame = set(self.tendon_link_body)
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
             strict=False,
         ):
             if body1 >= 0:
-                bodies_in_constraints.add(body1)
+                bodies_requiring_body_frame.add(body1)
             if body2 >= 0:
-                bodies_in_constraints.add(body2)
+                bodies_requiring_body_frame.add(body2)
 
         retained_joints = []
         retained_bodies = []
@@ -6340,21 +6514,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Don't merge fixed joints if the child body is referenced in an equality constraint
-            # and would be merged into world (last_dynamic_body == -1)
-            should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Skip merging this fixed joint because the body is referenced in an equality constraint
+                # Keep a body frame required by a constraint or tendon instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     print(
                         f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
+                        f"{child_lbl} is referenced by a constraint or tendon and cannot be merged into world"
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -6787,6 +6960,22 @@ class ModelBuilder:
 
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
+
+        # Keep tendon contact geometry in the same world frame when its body is merged.
+        for link_idx, old_body in enumerate(self.tendon_link_body):
+            if old_body in body_remap:
+                self.tendon_link_body[link_idx] = body_remap[old_body]
+                continue
+
+            merged_parent = body_merged_parent[old_body]
+            merge_xform = body_merged_transform[old_body]
+            self.tendon_link_body[link_idx] = body_remap[merged_parent]
+            self.tendon_link_offset[link_idx] = wp.transform_point(
+                merge_xform, axis_to_vec3(self.tendon_link_offset[link_idx])
+            )
+            self.tendon_link_axis[link_idx] = wp.transform_vector(
+                merge_xform, axis_to_vec3(self.tendon_link_axis[link_idx])
+            )
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
         # Import locally to avoid a cycle while the public simulation package initializes.
@@ -11042,11 +11231,26 @@ class ModelBuilder:
                 else:
                     self.particle_color_groups = []
 
-        # Also color rigid bodies based on joint connectivity
+        tendon_edges = []
+        for tendon_idx, link_start in enumerate(self.tendon_start):
+            link_end = (
+                self.tendon_start[tendon_idx + 1]
+                if tendon_idx + 1 < len(self.tendon_start)
+                else len(self.tendon_link_body)
+            )
+            for link_idx in range(link_start, link_end - 1):
+                tendon_edges.append((self.tendon_link_body[link_idx], self.tendon_link_body[link_idx + 1]))
+            # An inactive dynamic roller replaces its two authored spans with a direct bypass span.
+            for link_idx in range(link_start + 1, link_end - 1):
+                if (self.tendon_link_flags[link_idx] & int(TendonLinkFlags.DYNAMIC)) != 0:
+                    tendon_edges.append((self.tendon_link_body[link_idx - 1], self.tendon_link_body[link_idx + 1]))
+
+        # Also color rigid bodies based on joint and tendon connectivity.
         self.body_color_groups = color_rigid_bodies(
             self.body_count,
             self.joint_parent,
             self.joint_child,
+            additional_edges=tendon_edges,
             algorithm=coloring_algorithm,
             balance_colors=balance_colors,
             target_max_min_color_ratio=target_max_min_color_ratio,
@@ -12861,6 +13065,43 @@ class ModelBuilder:
             m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
             m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # tendons
+
+            tendon_count = len(self.tendon_start)
+            link_count = len(self.tendon_link_body)
+            seg_count = len(self.tendon_seg_rest_length)
+
+            if tendon_count > 0:
+                tendon_end = [*self.tendon_start[1:], link_count]
+                for tendon_idx, (start, end) in enumerate(zip(self.tendon_start, tendon_end, strict=True)):
+                    if end - start < 2:
+                        raise ValueError(f"Tendon {tendon_idx} must contain at least two links")
+                    if (self.tendon_link_flags[end - 1] & int(TendonLinkFlags.DYNAMIC)) != 0:
+                        raise ValueError("A dynamic ROLLING tendon link must have links on both sides")
+
+                tendon_start = [*self.tendon_start, link_count]
+                m.tendon_start = wp.array(tendon_start, dtype=wp.int32)
+                m.tendon_link_body = wp.array(self.tendon_link_body, dtype=wp.int32)
+                m.tendon_link_type = wp.array(self.tendon_link_type, dtype=wp.int32)
+                m.tendon_link_radius = wp.array(self.tendon_link_radius, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_link_orientation = wp.array(self.tendon_link_orientation, dtype=wp.int32)
+                m.tendon_link_mu = wp.array(self.tendon_link_mu, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_link_flags = wp.array(self.tendon_link_flags, dtype=wp.int32)
+                m.tendon_link_offset = wp.array(self.tendon_link_offset, dtype=wp.vec3)
+                m.tendon_link_axis = wp.array(self.tendon_link_axis, dtype=wp.vec3)
+                m.tendon_seg_compliance = wp.array(
+                    self.tendon_seg_compliance, dtype=wp.float32, requires_grad=requires_grad
+                )
+                m.tendon_seg_damping = wp.array(self.tendon_seg_damping, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_seg_rest_length = wp.array(
+                    self.tendon_seg_rest_length, dtype=wp.float32, requires_grad=requires_grad
+                )
+
+            m.tendon_count = tendon_count
+            m.tendon_link_count = link_count
+            m.tendon_segment_count = seg_count
 
             # ---------------------
             # triangles
