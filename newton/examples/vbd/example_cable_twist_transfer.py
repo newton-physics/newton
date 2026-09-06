@@ -73,6 +73,7 @@ class Example:
     TWIST_DAMPING = 2.0e2
 
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 

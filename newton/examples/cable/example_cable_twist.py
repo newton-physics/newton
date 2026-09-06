@@ -113,6 +113,7 @@ class Example:
         return points, edge_q
 
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args

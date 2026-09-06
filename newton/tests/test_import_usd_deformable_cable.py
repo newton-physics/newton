@@ -311,21 +311,35 @@ class TestUSDDeformableCable(unittest.TestCase):
             joint_length = 0.5 * (
                 body_lengths[builder.joint_parent[joint_idx]] + body_lengths[builder.joint_child[joint_idx]]
             )
-            expected_ke = tuple(value / joint_length for value in stiffnesses)
-            expected_kd = tuple(value / joint_length for value in dampings)
+            expected_ke = tuple(
+                value / joint_length
+                for value in (
+                    stiffnesses[1],
+                    stiffnesses[1],
+                    stiffnesses[0],
+                    stiffnesses[2],
+                    stiffnesses[2],
+                    stiffnesses[3],
+                )
+            )
+            expected_kd = tuple(
+                value / joint_length
+                for value in (dampings[1], dampings[1], dampings[0], dampings[2], dampings[2], dampings[3])
+            )
             dof_start = builder.joint_qd_start[joint_idx]
-            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected_ke, rtol=1.0e-3)
-            np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 4], expected_kd, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 6], expected_ke, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 6], expected_kd, rtol=1.0e-3)
             self.assertEqual(
-                builder.joint_target_mode[dof_start : dof_start + 4],
-                [int(newton.JointTargetMode.POSITION)] * 4,
+                builder.joint_target_mode[dof_start : dof_start + 6],
+                [int(newton.JointTargetMode.NONE)] * 6,
             )
 
     def test_cable_material_maps_to_rod_stiffness(self):
-        """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
+        """Verify four cable material moduli map to six per-axis joint stiffness slots.
 
         Authored zero stiffness is preserved, direct values override the volumetric fallback,
-        and all authored material values remain available in ``path_cable_attrs``.
+        material stiffness does not enable generic joint actuation, and all authored material
+        values remain available in ``path_cable_attrs``.
         """
         # Graded segment lengths exercise per-joint dual-length normalization.
         pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
@@ -352,13 +366,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
             self.assertEqual(b1 - b0, 3)
 
-            # Split rod joints store target_ke as stretch, shear, bend, twist.
+            # Rod DOFs use local XYZ order, with +Z as the material tangent.
             ke = builder.joint_target_ke
             for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in (stretch, shear, bend, twist))
-                np.testing.assert_allclose(ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
-                self.assertEqual(builder.joint_target_mode[dof0 : dof0 + 4], [int(newton.JointTargetMode.POSITION)] * 4)
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
+                np.testing.assert_allclose(ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
+                self.assertEqual(
+                    builder.joint_target_mode[dof0 : dof0 + 6],
+                    [int(newton.JointTargetMode.NONE)] * 6,
+                )
 
             # The as-authored material is also preserved in the import metadata.
             attrs = result["path_cable_attrs"]["/World/Cable"]
@@ -399,8 +416,19 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
             for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in structural)
-                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+                stretch_value, shear_value, bend_value, twist_value = structural
+                expected = tuple(
+                    value / joint_length
+                    for value in (
+                        shear_value,
+                        shear_value,
+                        stretch_value,
+                        bend_value,
+                        bend_value,
+                        twist_value,
+                    )
+                )
+                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="effective_defaults"):
             stage = _deformable_stage(up_axis="y")
@@ -424,8 +452,19 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(float(builder.shape_scale[0][0]), radius, places=7)
             for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in structural)
-                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+                stretch_value, shear_value, bend_value, twist_value = structural
+                expected = tuple(
+                    value / joint_length
+                    for value in (
+                        shear_value,
+                        shear_value,
+                        stretch_value,
+                        bend_value,
+                        bend_value,
+                        twist_value,
+                    )
+                )
+                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="legacy_modulus_compatibility"):
             stage = _deformable_stage(up_axis="y")
@@ -449,9 +488,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             bend = bend_modulus * 0.25 * math.pi * radius**4
             for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = (stretch, stretch, bend, bend)
+                expected = (stretch, stretch, stretch, bend, bend, bend)
                 np.testing.assert_allclose(
-                    builder.joint_target_ke[dof0 : dof0 + 4],
+                    builder.joint_target_ke[dof0 : dof0 + 6],
                     tuple(value / joint_length for value in expected),
                     rtol=1.0e-3,
                 )
@@ -473,8 +512,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
             # The stretch-slot target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[j0]
-            self.assertEqual(builder.joint_target_ke[dof0], 0.0)
-            self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
+            self.assertEqual(builder.joint_target_ke[dof0 + 2], 0.0)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
     def test_rod_material_gain_setter_rejects_incompatible_joint(self):
@@ -489,11 +527,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             "twist_stiffness": 1.0,
         }
 
-        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+        with self.assertRaisesRegex(ValueError, "expected the six-DOF ROD layout"):
             builder._set_joint_rod_material_gains(fixed, **stiffnesses)
 
-        builder.joint_dof_dim[rod] = (3, 3)
-        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+        builder.joint_dof_dim[rod] = (2, 2)
+        with self.assertRaisesRegex(ValueError, "expected the six-DOF ROD layout"):
             builder._set_joint_rod_material_gains(rod, **stiffnesses)
 
     def test_curve_damping_import_is_per_mode_and_honors_sentinel(self):
@@ -522,16 +560,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
         for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
             dof0 = builder.joint_qd_start[joint]
-            expected = (6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
-            np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+            expected = (0.0, 0.0, 6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
+            np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 6], expected, rtol=1.0e-3)
             self.assertEqual(
-                builder.joint_target_mode[dof0 : dof0 + 4],
-                [
-                    int(newton.JointTargetMode.VELOCITY),
-                    int(newton.JointTargetMode.NONE),
-                    int(newton.JointTargetMode.NONE),
-                    int(newton.JointTargetMode.VELOCITY),
-                ],
+                builder.joint_target_mode[dof0 : dof0 + 6],
+                [int(newton.JointTargetMode.NONE)] * 6,
             )
 
         material = result["path_cable_attrs"]["/World/Cable"]["material"]
@@ -578,7 +611,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         for joint, joint_length in zip(range(j0, j1), (0.15, 0.25), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
-            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+            self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
         # An invalid rest segment cannot normalize stiffness, so the curve falls back to its
         # current lengths (a uniform 0.2 here) and reports the discard.
@@ -606,7 +639,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 expected = stretch / 0.2
                 for joint in range(j0, j1):
                     dof0 = builder.joint_qd_start[joint]
-                    self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+                    self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
     def test_non_linear_curve_is_skipped(self):
         """A non-linear (cubic) curve-deformable warns and is skipped (cable import is linear-only)."""
@@ -651,8 +684,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
         j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
         dof0 = builder.joint_qd_start[j0]
-        self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
-        self.assertEqual(builder.joint_target_kd[dof0], 0.0)
+        self.assertEqual(builder.joint_target_ke[dof0 + 2], 1.0e5)  # add_rod default stretch stiffness
+        self.assertEqual(builder.joint_target_kd[dof0 + 2], 0.0)
 
     def test_geometry_authored_material_attrs_warn_on_standalone_import(self):
         """Verify that standalone import warns about and ignores geometry-authored material attributes."""
@@ -978,13 +1011,19 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(j1 - j0, 1)
         dof = builder.joint_qd_start[j0]
         shear_modulus = 1.0e6 / (2.0 * (1.0 + 0.3))
+        stretch = 1.0e6 * math.pi * 0.01**2
+        shear = 0.9 * shear_modulus * math.pi * 0.01**2
+        bend = 1.0e6 * math.pi * 0.01**4 / 4.0
+        twist = shear_modulus * math.pi * 0.01**4 / 2.0
         expected = (
-            1.0e6 * math.pi * 0.01**2,
-            0.9 * shear_modulus * math.pi * 0.01**2,
-            1.0e6 * math.pi * 0.01**4 / 4.0,
-            shear_modulus * math.pi * 0.01**4 / 2.0,
+            shear,
+            shear,
+            stretch,
+            bend,
+            bend,
+            twist,
         )
-        np.testing.assert_allclose(builder.joint_target_ke[dof : dof + 4], expected, rtol=1.0e-5)
+        np.testing.assert_allclose(builder.joint_target_ke[dof : dof + 6], expected, rtol=1.0e-5)
 
     def test_cable_material_thickness_is_a_deprecated_fallback(self):
         """Prefer geometry thickness while warning for the removed material attribute."""
@@ -1037,8 +1076,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         dof = builder.joint_qd_start[j0]
         section_stiffnesses = [1.0e6 * math.pi * radius**2 for radius in radii]
         expected_stretch = 1.0 / (0.5 / section_stiffnesses[0] + 0.5 / section_stiffnesses[1])
-        self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
-        self.assertAlmostEqual(builder.joint_target_kd[dof], 10.0)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_stretch, delta=expected_stretch * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_kd[dof + 2], 10.0)
 
         model = builder.finalize(device="cpu")
         model_collision_radii = model.shape_collision_radius.numpy()
@@ -1068,8 +1107,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         dof = builder.joint_qd_start[joint]
         expected_stretch = 1.0e6 * math.pi * 0.02**2
         expected_bend = 1.0e6 * math.pi * 0.03**4 / 4.0
-        self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
-        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_bend, delta=expected_bend * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_stretch, delta=expected_stretch * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 3], expected_bend, delta=expected_bend * 1.0e-5)
 
     def test_cable_mass_element_types_map_to_segments(self):
         """Map constant, curve, segment, and point masses to rigid cable segments."""
@@ -1205,7 +1244,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         def cable_stretch(builder):
             joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
-            return builder.joint_target_ke[builder.joint_qd_start[joint]]
+            return builder.joint_target_ke[builder.joint_qd_start[joint] + 2]
 
         # Default resolvers ignore the vendor value, so the current material derives from E/nu defaults.
         builder_default = newton.ModelBuilder()
@@ -1234,7 +1273,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
             joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
-            return builder.joint_target_ke[builder.joint_qd_start[joint]]
+            return builder.joint_target_ke[builder.joint_qd_start[joint] + 2]
 
         self.assertAlmostEqual(cable_stretch("omniphysics"), 770.0, delta=1.0e-3)
         expected_default = 1.0e6 * math.pi * 0.01**2 / 0.1
@@ -1412,7 +1451,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         rest_len = seg_len * math.sqrt(1.0 + k * k)
         expected_ke = stretch / rest_len
         dof0 = builder.joint_qd_start[j0]
-        self.assertAlmostEqual(builder.joint_target_ke[dof0], expected_ke, delta=expected_ke * 1e-3)
+        self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected_ke, delta=expected_ke * 1e-3)
 
     def test_instanced_cable_imports_proxies_not_prototype(self):
         """Instanced cables import once per instance proxy; the prototype master is skipped."""
@@ -1459,7 +1498,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
-            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+            self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
     def test_welded_graph_degenerate_segment_skips_component(self):
         """A welded curve with a zero-length segment is rejected with a warning instead of aborting

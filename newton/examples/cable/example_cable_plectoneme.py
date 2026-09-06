@@ -102,6 +102,7 @@ class Example:
     SEED_BODY_OFFSET_Y = 1.0e-3
 
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 

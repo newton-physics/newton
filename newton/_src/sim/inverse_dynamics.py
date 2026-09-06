@@ -397,9 +397,8 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
-        :attr:`~newton.JointType.ROD` joints are not supported because they
-        do not define generalized coordinates or a motion subspace for this
-        inverse-dynamics formulation.
+        :attr:`~newton.JointType.ROD` joints are not yet supported by the
+        inverse-dynamics pipeline.
 
     .. experimental::
 

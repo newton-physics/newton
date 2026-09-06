@@ -76,6 +76,7 @@ class Example:
     RUN_TIME = 6.0
 
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 

@@ -210,7 +210,8 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     """
 
     ROD = CABLE
-    """Rod joint: four VBD material slots for stretch, shear, bend, and twist."""
+    """Experimental rod joint: 7-coordinate relative pose and 6-DoF relative
+    twist with stretch, shear, bend, and twist response."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -228,7 +229,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         Notes:
             - For PRISMATIC and REVOLUTE joints, both values are 1 (single axis).
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
-            - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
+            - For FREE, DISTANCE, and ROD joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
         """
         dof_count = num_axes
@@ -236,7 +237,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         if self == JointType.BALL:
             dof_count = 3
             coord_count = 4
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             dof_count = 6
             coord_count = 7
         elif self == JointType.FIXED:
@@ -256,13 +257,13 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE and DISTANCE joints, `cts_count = 0` since it yields no constraints.
+            - For FREE, DISTANCE, and ROD joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6

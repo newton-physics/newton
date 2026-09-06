@@ -717,6 +717,29 @@ class ModelBuilder:
             raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
         return body_frame_origin
 
+    @staticmethod
+    def _normalize_and_align_rod_quaternion(
+        method_name: str,
+        argument_name: str,
+        value: Quat,
+        segment_direction: wp.vec3,
+    ) -> wp.quat:
+        """Normalize a rod frame and align its local +Z exactly with the segment."""
+        components = tuple(float(value[i]) for i in range(4))
+        norm = math.hypot(*components)
+        if not math.isfinite(norm) or norm == 0.0:
+            raise ValueError(f"{method_name}: {argument_name} must be a finite, nonzero quaternion")
+        q = wp.quat(*(component / norm for component in components))
+
+        local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+        alignment = float(wp.dot(segment_direction, local_z_world))
+        if not math.isfinite(alignment) or alignment < 0.999:
+            raise ValueError(f"{method_name}: {argument_name} must align local +Z with the segment direction")
+
+        cross = wp.cross(local_z_world, segment_direction)
+        correction = wp.normalize(wp.quat(cross[0], cross[1], cross[2], 1.0 + alignment))
+        return wp.normalize(correction * q)
+
     @dataclass
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
@@ -3018,7 +3041,7 @@ class ModelBuilder:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float]:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/ROD joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
 
         Under :data:`newton.use_coord_layout_targets` ``False`` the builder
@@ -3031,7 +3054,7 @@ class ModelBuilder:
             q_start = self.joint_q_start[j]
             if jtype == JointType.BALL:
                 result.extend(self.joint_target_q[q_start : q_start + 3])
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
                 result.extend(self.joint_target_q[q_start : q_start + 6])
             elif jtype == JointType.FIXED:
                 pass
@@ -5057,6 +5080,42 @@ class ModelBuilder:
         if angular_axes is None:
             angular_axes = []
 
+        if joint_type == JointType.ROD:
+            # Rod material coordinates use canonical XYZ linear and angular ordering,
+            # so the axis set is fixed rather than free-form.
+            if len(linear_axes) != 3 or len(angular_axes) != 3:
+                raise ValueError(
+                    "JointType.ROD requires exactly three linear and three angular axes; "
+                    "use ModelBuilder.add_joint_rod() to construct the canonical layout."
+                )
+            expected_axes = (
+                axis_to_vec3(Axis.X),
+                axis_to_vec3(Axis.Y),
+                axis_to_vec3(Axis.Z),
+            )
+            for configured, expected in zip(
+                (*linear_axes, *angular_axes), (*expected_axes, *expected_axes), strict=True
+            ):
+                if not all(
+                    math.isfinite(float(configured.axis[k]))
+                    and abs(float(configured.axis[k]) - float(expected[k])) <= 1.0e-6
+                    for k in range(3)
+                ):
+                    raise ValueError(
+                        "JointType.ROD requires canonical XYZ linear and XYZ angular axis ordering; "
+                        "use ModelBuilder.add_joint_rod() to construct the canonical layout."
+                    )
+                if not math.isfinite(float(configured.target_pos)):
+                    raise ValueError("JointType.ROD requires finite target_pos values for structural rest.")
+                if configured.actuator_mode is not None and configured.actuator_mode != JointTargetMode.NONE:
+                    raise ValueError(
+                        f"JointType.ROD requires actuator_mode=JointTargetMode.NONE; got {configured.actuator_mode!r}."
+                    )
+            if any(float(configured.target_pos) != 0.0 for configured in linear_axes):
+                raise ValueError(
+                    "JointType.ROD requires zero linear target_pos values because its structural-rest anchors coincide."
+                )
+
         if collision_filter_parent is None:
             collision_filter_parent = self._default_filter_parent(joint_type, parent)
 
@@ -5145,7 +5204,10 @@ class ModelBuilder:
             self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
-            if dim.actuator_mode is not None:
+            if joint_type == JointType.ROD:
+                # Rod stiffness does not enable joint actuation.
+                mode = int(JointTargetMode.NONE)
+            elif dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
             else:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
@@ -5193,11 +5255,21 @@ class ModelBuilder:
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
-        if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
+        if (
+            joint_type == JointType.FREE
+            or joint_type == JointType.DISTANCE
+            or joint_type == JointType.BALL
+            or joint_type == JointType.ROD
+        ):
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
 
-        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+        if (
+            joint_type == JointType.BALL
+            or joint_type == JointType.FREE
+            or joint_type == JointType.DISTANCE
+            or joint_type == JointType.ROD
+        ):
             if joint_type == JointType.BALL:
                 quat_offset = target_q_offset
             else:
@@ -5245,6 +5317,8 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
         joint_index = self.joint_count - 1
+        if joint_type == JointType.ROD:
+            self._init_joint_q_from_body_poses(joint_index, parent, child)
 
         # Process custom attributes
         if custom_attributes:
@@ -5575,6 +5649,21 @@ class ModelBuilder:
 
         return joint_index
 
+    def _init_joint_q_from_body_poses(self, joint_id: int, parent: int, child: int) -> None:
+        """Initialize q7 from body poses so FK preserves the authored child pose.
+
+        Args:
+            joint_id: Index of the joint whose coordinates are initialized.
+            parent: Parent body index, or ``-1`` for the world frame.
+            child: Child body index.
+        """
+        q_start = self.joint_q_start[joint_id]
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
+
+    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
@@ -5627,12 +5716,7 @@ class ModelBuilder:
             ],
             custom_attributes=custom_attributes,
         )
-        q_start = self.joint_q_start[joint_id]
-        # Initialize the coordinates so FK preserves the authored child pose.
-        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
-        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
-        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
-        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        self._init_joint_q_from_body_poses(joint_id, parent, child)
         return joint_id
 
     def add_joint_distance(
@@ -5771,12 +5855,19 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        rest_rotation: Quat | None = None,
         **kwargs,
     ) -> int:
         """Adds a rod joint to the model.
 
-        Rod joints have split linear stretch/shear material slots plus separate
-        angular bend and twist material slots. When both ``shear_stiffness`` and
+        Its kinematic state uses a 7-coordinate relative pose in ``joint_q`` and
+        a 6-DoF relative twist in ``joint_qd``. At structural rest, the two
+        anchor points coincide. Structural-rest rotation uses a quaternion in
+        ``joint_target_q`` under coordinate layout or extrinsic ZYX angles
+        under legacy layout.
+
+        Rod joints have split linear stretch/shear material response plus
+        separate angular bend and twist response. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
         split layout. When both ``twist_stiffness`` and ``twist_damping`` are
@@ -5785,19 +5876,17 @@ class ModelBuilder:
 
         .. note::
 
-            Rod joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. They are represented in the joint data
-            model as VBD stretch, shear, bend, and twist constraint slots rather
-            than ``joint_q`` coordinates. Rod body transforms are
-            integrated directly by :class:`newton.solvers.SolverVBD`; they are
-            not reconstructed by :func:`newton.eval_fk`.
+            Rod joints are supported by :class:`newton.solvers.SolverVBD`. Their
+            six canonical axes represent four material responses: stretch,
+            shear, bend, and twist. Rod body transforms are integrated directly
+            by :class:`newton.solvers.SolverVBD`, while :func:`newton.eval_fk`
+            can reconstruct them from ``joint_q`` and ``joint_qd``.
 
-            Rod joints use each anchor frame's local ``+Z`` as the material
-            tangent axis for separating axial stretch from shear and twist from
-            bend. For a body-to-body rod span, the parent anchor ``+Z`` should
-            point from the parent attachment toward the child attachment.
-            :meth:`add_rod` and :meth:`add_rod_graph` satisfy the tangent
-            convention automatically.
+            Rod joints use each anchor frame's local ``+Z`` as the corresponding
+            segment's material tangent axis for separating axial stretch from
+            shear and twist from bend. At structural rest, the transformed
+            parent and child anchor points coincide. :meth:`add_rod` and
+            :meth:`add_rod_graph` satisfy both conventions automatically.
 
         Args:
             parent: The index of the parent body.
@@ -5828,29 +5917,45 @@ class ModelBuilder:
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
                 frequency attributes.
+            rest_rotation: Child anchor rotation relative to the parent anchor at structural rest
+                [unitless quaternion]. If None, it uses the initial relative anchor rotation at creation.
 
         Returns:
             The index of the added joint.
 
+        Raises:
+            ValueError: If ``rest_rotation`` contains non-finite values or has zero
+                norm, or if any material stiffness is negative.
+
+        .. experimental::
+
+            ROD state and material conventions may change in a future release.
+
         """
-        # Linear material slots (stretch and shear). Default shear to stretch so omitted
+        rest_rotation_value = None
+        if rest_rotation is not None:
+            components = tuple(float(value) for value in rest_rotation)
+            rotation_norm = math.hypot(*components)
+            if not math.isfinite(rotation_norm):
+                raise ValueError("add_joint_rod: rest_rotation must contain finite values")
+            if rotation_norm == 0.0:
+                raise ValueError("add_joint_rod: rest_rotation must be a nonzero quaternion")
+            rest_rotation_value = wp.quat(*(component / rotation_norm for component in components))
+
+        # Linear DOFs (stretch and shear). Default shear to stretch so omitted
         # shear reproduces the isotropic linear anchor energy in the split layout.
         stretch_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_kd = 0.0 if stretch_damping is None else stretch_damping
-        stretch_axis = ModelBuilder.JointDofConfig(target_ke=stretch_ke, target_kd=stretch_kd)
         if shear_stiffness is None and shear_damping is None:
             shear_ke = stretch_ke
             shear_kd = stretch_kd
         else:
             shear_ke = stretch_ke if shear_stiffness is None else shear_stiffness
             shear_kd = 0.0 if shear_damping is None else shear_damping
-        shear_axis = ModelBuilder.JointDofConfig(target_ke=shear_ke, target_kd=shear_kd)
-
-        # Angular material slots (bend and twist). Default twist to bend so omitted twist
+        # Angular DOFs (bend and twist). Default twist to bend so omitted twist
         # reproduces the isotropic angular energy in the split layout.
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
         bend_kd = 0.0 if bend_damping is None else bend_damping
-        bend_axis = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
         if twist_stiffness is None and twist_damping is None:
             twist_ke = bend_ke
             twist_kd = bend_kd
@@ -5861,22 +5966,48 @@ class ModelBuilder:
             raise ValueError(
                 "add_joint_rod: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
             )
-        twist_axis = ModelBuilder.JointDofConfig(target_ke=twist_ke, target_kd=twist_kd)
+        material_axis = functools.partial(
+            ModelBuilder.JointDofConfig,
+            actuator_mode=JointTargetMode.NONE,
+        )
+        linear_axes = [
+            material_axis(axis=Axis.X, target_ke=shear_ke, target_kd=shear_kd),
+            material_axis(axis=Axis.Y, target_ke=shear_ke, target_kd=shear_kd),
+            material_axis(axis=Axis.Z, target_ke=stretch_ke, target_kd=stretch_kd),
+        ]
+        angular_axes = [
+            material_axis(axis=Axis.X, target_ke=bend_ke, target_kd=bend_kd),
+            material_axis(axis=Axis.Y, target_ke=bend_ke, target_kd=bend_kd),
+            material_axis(axis=Axis.Z, target_ke=twist_ke, target_kd=twist_kd),
+        ]
 
-        return self.add_joint(
+        joint_id = self.add_joint(
             JointType.ROD,
             parent,
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[stretch_axis, shear_axis],
-            angular_axes=[bend_axis, twist_axis],
+            linear_axes=linear_axes,
+            angular_axes=angular_axes,
             label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
             **kwargs,
         )
+        q_start = self.joint_q_start[joint_id]
+        if rest_rotation_value is None:
+            rest_rotation_value = wp.quat(*self.joint_q[q_start + 3 : q_start + 7])
+        import newton  # noqa: PLC0415
+
+        self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
+        if newton.use_coord_layout_targets:
+            self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
+        else:
+            angles = wp.quat_to_euler(rest_rotation_value, 2, 1, 0)
+            self.joint_target_q[q_start + 3 : q_start + 6] = list(angles)
+            self.joint_target_q[q_start + 6] = 1.0
+        return joint_id
 
     @deprecate_nonkeyword_arguments
     def add_joint_cable(
@@ -5898,6 +6029,7 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        rest_rotation: Quat | None = None,
         **kwargs,
     ) -> int:
         """Deprecated alias for :meth:`add_joint_rod`.
@@ -5915,6 +6047,7 @@ class ModelBuilder:
             child=child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            rest_rotation=rest_rotation,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
             shear_stiffness=shear_stiffness,
@@ -5943,7 +6076,7 @@ class ModelBuilder:
         twist_stiffness: float | None = None,
         twist_damping: float | None = None,
     ) -> None:
-        """Overwrite non-None material gains and target modes in :meth:`add_joint_rod` slot order.
+        """Overwrite non-None material gains in :meth:`add_joint_rod` axis order.
 
         Args:
             joint: Rod joint index.
@@ -5958,31 +6091,36 @@ class ModelBuilder:
         """
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
-        if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
+        if joint_type != JointType.ROD or joint_dof_dim != (3, 3):
             raise ValueError(
-                "_set_joint_rod_material_gains() expected the four-slot ROD layout "
-                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
-                f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
+                "_set_joint_rod_material_gains() expected the six-DOF ROD layout "
+                f"(3 linear, 3 angular); got joint type {JointType(joint_type).name} with dimensions "
+                f"{joint_dof_dim}. Update the ROD material-axis mapping when changing its DOF layout."
             )
         dof_start = self.joint_qd_start[joint]
-        stiffnesses = (stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)
-        dampings = (stretch_damping, shear_damping, bend_damping, twist_damping)
-        for offset, (stiffness, damping) in enumerate(zip(stiffnesses, dampings, strict=True)):
+        axis_stiffnesses = (
+            shear_stiffness,
+            shear_stiffness,
+            stretch_stiffness,
+            bend_stiffness,
+            bend_stiffness,
+            twist_stiffness,
+        )
+        axis_dampings = (
+            shear_damping,
+            shear_damping,
+            stretch_damping,
+            bend_damping,
+            bend_damping,
+            twist_damping,
+        )
+        for offset, (stiffness, damping) in enumerate(zip(axis_stiffnesses, axis_dampings, strict=True)):
             if stiffness is not None or damping is not None:
                 dof = dof_start + offset
                 if stiffness is not None:
                     self.joint_target_ke[dof] = stiffness
                 if damping is not None:
                     self.joint_target_kd[dof] = damping
-                resolved_stiffness = self.joint_target_ke[dof]
-                resolved_damping = self.joint_target_kd[dof]
-                self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(
-                        resolved_stiffness,
-                        resolved_damping,
-                        has_drive=resolved_stiffness != 0.0 or resolved_damping != 0.0,
-                    )
-                )
 
     def add_constraint_mimic(
         self,
@@ -6509,6 +6647,7 @@ class ModelBuilder:
             if joint["child"] not in velocity_updated_bodies or joint["type"] not in (
                 JointType.FREE,
                 JointType.DISTANCE,
+                JointType.ROD,
             ):
                 continue
 
@@ -8409,23 +8548,28 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        rest_positions: list[Vec3] | None = None,
+        rest_quaternions: list[Quat] | None = None,
+        rest_straight: bool = False,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by rod joints providing separate slots for linear stretch/shear and angular
-        bend/twist.
+        are connected by rod joints with a relative pose and twist plus split linear
+        stretch/shear and angular bend/twist material response.
+
+        Supplied initial and rest material frames must align local ``+Z`` with
+        the corresponding segment tangent (dot product at least ``0.999``).
+        Accepted frames are normalized and minimally rotated to align local
+        ``+Z`` exactly with the tangent while preserving roll.
 
         Args:
-            positions: Centerline node positions (segment endpoints) in world space. These are the
-                cylindrical centerline endpoints of the capsules, with one extra point so that for
-                ``N`` segments there are ``N+1`` positions.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-            radius: Capsule radius.
+            positions: Initial centerline node positions in world space [m], with one extra point so
+                that for ``N`` segments there are ``N+1`` positions.
+            quaternions: Optional per-segment initial material-frame orientations in world space
+                [unitless quaternion]. If None, orientations are inferred from ``positions``.
+            radius: Capsule radius [m].
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
@@ -8443,21 +8587,33 @@ class ModelBuilder:
                 ``bend_stiffness``.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: If True, connects the last segment back to the first to form a closed loop. If False,
-                creates an open chain. Note: rods require at least 2 segments.
+            closed: If True, connects the last segment to the first; otherwise leaves the chain open.
+                The structural-rest centerline must have coincident first and last points. Rods require
+                at least 2 segments.
             label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
                 retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the segment start position
-                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
-                segment length. ``"com"`` places the body origin at the segment midpoint so the
+            body_frame_origin: Body-frame convention for each generated capsule. ``"start"`` places
+                the body origin at the local start endpoint of the rest-sized capsule, with the COM/shape
+                offset by half its length; this equals ``positions[i]`` when the initial and rest segment
+                lengths match. ``"com"`` places the body origin at the initial segment midpoint so the
                 body origin and COM coincide. If None, preserves ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
+            rest_positions: Optional structural-rest centerline in world space [m]. Rest edge
+                lengths define capsule geometry, mass properties, and rod-joint anchors. If None,
+                ``positions`` is also used as the structural-rest centerline.
+            rest_quaternions: Optional per-segment structural-rest material-frame orientations
+                in world space [unitless quaternion]. If None, initial material roll is transported
+                to the rest tangents.
+            rest_straight: If True, gives every rod joint identity structural-rest rotation,
+                producing zero intrinsic bend and twist. Initial poses, joint anchors, segment
+                lengths, and zero translational rest targets remain unchanged. Nonzero bend or
+                twist stiffness is required for a straightening or untwisting response. Cannot be
+                combined with explicit ``rest_positions`` or ``rest_quaternions``.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -8471,9 +8627,15 @@ class ModelBuilder:
             before calling :meth:`finalize <ModelBuilder.finalize>`.
 
         Raises:
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            ValueError: If the position or quaternion array lengths are incompatible.
             ValueError: If the rod has fewer than 2 segments.
+            ValueError: If an initial or rest segment has a non-finite or too-small length.
+            ValueError: If ``closed`` is True and the structural-rest centerline does not close.
+            ValueError: If a supplied material-frame quaternion is non-finite, has zero norm, or
+                does not satisfy the required tangent alignment.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``rest_straight=True`` is combined with explicit ``rest_positions`` or
+                ``rest_quaternions``.
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
@@ -8483,13 +8645,20 @@ class ModelBuilder:
               the cylindrical centerline, excluding the hemispherical caps.
             - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
               the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
-              is at local ``(0, 0, 2 * half_height)``.
+              is at local ``(0, 0, 2 * half_height)``. The world-space origin equals the initial first
+              endpoint only when the initial and rest segment lengths match.
             - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
+            - With ``rest_positions``, rest segment lengths set capsule sizes and anchor offsets,
+              while ``positions`` and ``quaternions`` set initial body poses.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
+        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
+            raise ValueError(
+                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
+            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -8515,11 +8684,24 @@ class ModelBuilder:
         # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
         # always operate on Warp vector types even if the caller passed tuples/lists.
         positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
+        rest_positions_wp = (
+            positions_wp if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
+        )
+        if len(rest_positions_wp) != len(positions_wp):
+            raise ValueError(
+                f"add_rod: rest_positions must have {len(positions_wp)} elements to match positions, "
+                f"got {len(rest_positions_wp)}"
+            )
 
         if quaternions is not None and len(quaternions) != num_segments:
             raise ValueError(
                 f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
                 f"got {len(quaternions)} quaternions"
+            )
+        if rest_quaternions is not None and len(rest_quaternions) != num_segments:
+            raise ValueError(
+                f"add_rod: rest_quaternions must have {num_segments} elements for {num_segments} segments, "
+                f"got {len(rest_quaternions)} quaternions"
             )
 
         if num_segments < 2:
@@ -8529,6 +8711,19 @@ class ModelBuilder:
                 f"add_rod: requires at least 2 segments (got {num_segments}); "
                 "for a single capsule, create a body and add a capsule shape instead."
             )
+        if closed:
+            closure_gap = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[0]))
+            first_length = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
+            last_length = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
+            if not all(math.isfinite(value) for value in (closure_gap, first_length, last_length)):
+                raise ValueError("add_rod: closed structural-rest centerline must have finite endpoint segments")
+            closure_tolerance = max(1.0e-9, 1.0e-3 * min(first_length, last_length))
+            if closure_gap > closure_tolerance:
+                raise ValueError(
+                    "add_rod: closed structural-rest centerline must have coincident first and last points "
+                    f"(gap={closure_gap:.3e}, tolerance={closure_tolerance:.3e})"
+                )
+            rest_positions_wp[-1] = rest_positions_wp[0]
 
         # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
         # Note: positions has N+1 elements for N segments.
@@ -8541,6 +8736,7 @@ class ModelBuilder:
         link_bodies, link_joints = self.add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
+            rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
@@ -8554,6 +8750,7 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            rest_quaternions=rest_quaternions,
             color=color,
             body_frame_origin=body_frame_origin,
         )
@@ -8580,12 +8777,12 @@ class ModelBuilder:
                 last_body = link_bodies[-1]
 
                 # Connect the end of the last segment to the start of the first segment.
-                L_last = float(wp.length(positions_wp[-1] - positions_wp[-2]))
+                L_last = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
                 min_segment_length = 1.0e-9
                 if L_last <= min_segment_length:
                     L_last = min_segment_length
 
-                L_first = float(wp.length(positions_wp[1] - positions_wp[0]))
+                L_first = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
@@ -8596,12 +8793,53 @@ class ModelBuilder:
                     parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
                     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
+                def _closed_rest_quaternion(segment: int) -> wp.quat:
+                    rest_vec = rest_positions_wp[segment + 1] - rest_positions_wp[segment]
+                    rest_dir = wp.normalize(rest_vec)
+                    if rest_quaternions is not None:
+                        return self._normalize_and_align_rod_quaternion(
+                            "add_rod",
+                            f"rest_quaternions[{segment}]",
+                            rest_quaternions[segment],
+                            rest_dir,
+                        )
+
+                    initial_vec = positions_wp[segment + 1] - positions_wp[segment]
+                    initial_dir = wp.normalize(initial_vec)
+                    if quaternions is not None:
+                        initial_q = self._normalize_and_align_rod_quaternion(
+                            "add_rod",
+                            f"quaternions[{segment}]",
+                            quaternions[segment],
+                            initial_dir,
+                        )
+                    else:
+                        initial_q = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), initial_dir)
+                        initial_q = self._normalize_and_align_rod_quaternion(
+                            "add_rod",
+                            f"derived quaternion at segment {segment}",
+                            initial_q,
+                            initial_dir,
+                        )
+                    q_rest = quat_between_vectors_robust(initial_dir, rest_dir) * initial_q
+                    return self._normalize_and_align_rod_quaternion(
+                        "add_rod",
+                        f"derived rest quaternion at segment {segment}",
+                        q_rest,
+                        rest_dir,
+                    )
+
+                q_wp_rest = _closed_rest_quaternion(num_segments - 1) * wp.transform_get_rotation(parent_xform)
+                q_wc_rest = _closed_rest_quaternion(0) * wp.transform_get_rotation(child_xform)
+                loop_rest_rotation = wp.quat_inverse(q_wp_rest) * q_wc_rest
+
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_rod(
                     parent=last_body,
                     child=first_body,
                     parent_xform=parent_xform,
                     child_xform=child_xform,
+                    rest_rotation=loop_rest_rotation,
                     bend_stiffness=bend_stiffness,
                     bend_damping=bend_damping,
                     twist_stiffness=twist_stiffness,
@@ -8615,6 +8853,12 @@ class ModelBuilder:
                     enabled=True,
                 )
                 link_joints.append(j_loop)
+
+        if rest_straight:
+            # Builder targets are coordinate-sized; identity survives legacy projection unchanged.
+            for joint in link_joints:
+                q_start = self.joint_q_start[joint]
+                self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
 
         return link_bodies, link_joints
 
@@ -8639,6 +8883,8 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        rest_node_positions: list[Vec3] | None = None,
+        rest_quaternions: list[Quat] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
 
@@ -8646,8 +8892,8 @@ class ModelBuilder:
 
         Representation:
 
-        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``).
+        - Each *edge* becomes a capsule rigid body oriented from ``node_positions[u]`` toward
+          ``node_positions[v]``. Its length comes from ``rest_node_positions`` when provided.
         - Rod joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
@@ -8662,12 +8908,16 @@ class ModelBuilder:
         - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
           all incident edges. This can preserve rings/loops, but does not produce an articulation
           tree (edges may effectively have multiple "parents" in the joint graph).
+        - Supplied initial and rest material frames must align local ``+Z`` with
+          the corresponding edge tangent (dot product at least ``0.999``).
+          Accepted frames are normalized and minimally rotated to align local
+          ``+Z`` exactly with the tangent while preserving roll.
 
         Args:
-            node_positions: Junction node positions in world space.
+            node_positions: Initial junction node positions in world space [m].
             edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
+            radius: Capsule radius [m].
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
@@ -8687,29 +8937,38 @@ class ModelBuilder:
                 joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
-            quaternions: Optional per-edge orientations in world space. If provided, must have
-                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
-                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
-                None, orientations are computed automatically to align +Z with each edge direction.
+            quaternions: Optional per-edge initial material-frame orientations in world space
+                [unitless quaternion], with one entry per edge. If None, orientations are inferred
+                from the edge directions.
             junction_collision_filter: If True, adds collision filters between *non-jointed* segment
                 bodies that are incident to a junction node (degree >= 3). This prevents immediate
                 self-collision impulses at welded junctions, even though the joint set is a spanning
                 tree (so not all incident body pairs are directly jointed).
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the graph uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the edge start node
-                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
-                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
-                pass ``"start"`` or ``"com"`` explicitly.
+            body_frame_origin: Body-frame convention for each generated capsule. ``"start"`` places
+                the body origin at the local start endpoint of the rest-sized capsule, with the COM/shape
+                offset by half its length; this equals ``node_positions[u]`` when the initial and rest
+                edge lengths match. ``"com"`` places the body origin at the initial edge midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``; pass
+                ``"start"`` or ``"com"`` explicitly.
+            rest_node_positions: Optional structural-rest node positions in world space [m].
+                Rest edge lengths define capsule geometry, mass properties, and joint anchors. If
+                None, ``node_positions`` is also used as the structural-rest node positions.
+            rest_quaternions: Optional per-edge structural-rest material-frame orientations
+                in world space [unitless quaternion], with one entry per edge. If None, initial
+                material roll is transported to the rest tangents.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
             edges in the same order as ``edges``.
 
         Raises:
+            ValueError: If node-position or material-frame array lengths are incompatible.
+            ValueError: If an initial or rest edge has a non-finite or too-small length.
+            ValueError: If a supplied material-frame quaternion is non-finite, has zero norm, or
+                does not satisfy the required tangent alignment.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
         if cfg is None:
@@ -8742,6 +9001,11 @@ class ModelBuilder:
                 f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(quaternions)} quaternions"
             )
+        if rest_quaternions is not None and len(rest_quaternions) != num_edges:
+            raise ValueError(
+                f"add_rod_graph: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"got {len(rest_quaternions)} quaternions"
+            )
 
         # Guard against near-zero lengths: edge length is used for capsule geometry and joint anchors.
         min_segment_length = 1.0e-9
@@ -8749,6 +9013,17 @@ class ModelBuilder:
         # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
         # always operate on Warp vector types even if the caller passed tuples/lists.
         node_positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in node_positions]
+        has_separate_rest_positions = rest_node_positions is not None
+        rest_node_positions_wp = (
+            node_positions_wp
+            if rest_node_positions is None
+            else [axis_to_vec3(position) for position in rest_node_positions]
+        )
+        if len(rest_node_positions_wp) != num_nodes:
+            raise ValueError(
+                f"add_rod_graph: rest_node_positions must have {num_nodes} elements to match node_positions, "
+                f"got {len(rest_node_positions_wp)}"
+            )
 
         # Build per-node incidence for spanning-tree traversal.
         node_incidence: list[list[int]] = [[] for _ in range(num_nodes)]
@@ -8757,6 +9032,7 @@ class ModelBuilder:
         edge_u: list[int] = []
         edge_v: list[int] = []
         edge_len: list[float] = []
+        edge_rest_q: list[wp.quat] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
         use_com_origin = body_frame_origin == "com"
@@ -8774,40 +9050,73 @@ class ModelBuilder:
             p1 = node_positions_wp[v]
             seg_vec = p1 - p0
             seg_length = float(wp.length(seg_vec))
-            if seg_length <= min_segment_length:
+            if not math.isfinite(seg_length) or seg_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has a too-small length (length={seg_length:.3e}); "
-                    f"segment length must be > {min_segment_length:.1e}"
+                    f"add_rod_graph: edge {e_idx} has a too-small or non-finite length "
+                    f"(length={seg_length:.3e}); segment length must be finite and > {min_segment_length:.1e}"
                 )
 
             if quaternions is None:
                 seg_dir = wp.normalize(seg_vec)
                 q = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), seg_dir)
+                q = self._normalize_and_align_rod_quaternion(
+                    "add_rod_graph",
+                    f"derived quaternion at edge {e_idx}",
+                    q,
+                    seg_dir,
+                )
             else:
-                q = quaternions[e_idx]
-
-                # Local +Z must align with the segment direction.
                 seg_dir = wp.normalize(seg_vec)
-                local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-                alignment = wp.dot(seg_dir, local_z_world)
-                if alignment < 0.999:
+                q = self._normalize_and_align_rod_quaternion(
+                    "add_rod_graph",
+                    f"quaternions[{e_idx}]",
+                    quaternions[e_idx],
+                    seg_dir,
+                )
+
+            if has_separate_rest_positions:
+                rest_seg_vec = rest_node_positions_wp[v] - rest_node_positions_wp[u]
+                rest_seg_length = float(wp.length(rest_seg_vec))
+                if not math.isfinite(rest_seg_length) or rest_seg_length <= min_segment_length:
                     raise ValueError(
-                        "add_rod_graph: quaternion at edge index "
-                        f"{e_idx} does not align capsule +Z with edge direction (node_positions[v] - node_positions[u]); "
-                        "quaternions must be world-space and constructed so that local +Z maps to the "
-                        "edge direction node_positions[v] - node_positions[u]."
+                        f"add_rod_graph: rest edge {e_idx} has a too-small or non-finite length "
+                        f"(length={rest_seg_length:.3e}); rest segment length must be finite and "
+                        f"> {min_segment_length:.1e}"
                     )
-            half_height = 0.5 * seg_length
+            else:
+                rest_seg_vec = seg_vec
+                rest_seg_length = seg_length
+
+            rest_seg_dir = wp.normalize(rest_seg_vec)
+            if rest_quaternions is not None:
+                q_rest = self._normalize_and_align_rod_quaternion(
+                    "add_rod_graph",
+                    f"rest_quaternions[{e_idx}]",
+                    rest_quaternions[e_idx],
+                    rest_seg_dir,
+                )
+            elif has_separate_rest_positions:
+                q_rest = quat_between_vectors_robust(seg_dir, rest_seg_dir) * q
+                q_rest = self._normalize_and_align_rod_quaternion(
+                    "add_rod_graph",
+                    f"derived rest quaternion at edge {e_idx}",
+                    q_rest,
+                    rest_seg_dir,
+                )
+            else:
+                q_rest = q
+            edge_rest_q.append(q_rest)
+
+            half_height = 0.5 * rest_seg_length
+            initial_center = p0 + seg_vec * 0.5
 
             if use_com_origin:
                 # Opt-in convention: place body origin at the segment center so origin and COM coincide.
-                center = p0 + seg_vec * 0.5
-                body_q = wp.transform(center, q)
+                body_q = wp.transform(initial_center, q)
                 com_offset = wp.vec3(0.0)
                 capsule_xform = wp.transform()
             else:
-                # Legacy convention: body origin is at node u, with COM and shape offset to the segment center.
-                body_q = wp.transform(p0, q)
+                body_q = wp.transform(initial_center - seg_dir * half_height, q)
                 com_offset = wp.vec3(0.0, 0.0, half_height)
                 capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
@@ -8828,7 +9137,7 @@ class ModelBuilder:
 
             edge_u.append(u)
             edge_v.append(v)
-            edge_len.append(seg_length)
+            edge_len.append(rest_seg_length)
             edge_bodies.append(body_id)
 
             node_incidence[u].append(e_idx)
@@ -8842,6 +9151,16 @@ class ModelBuilder:
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
+
+        def _edge_rest_rotation(
+            parent_edge: int,
+            child_edge: int,
+            parent_xform: wp.transform,
+            child_xform: wp.transform,
+        ) -> wp.quat:
+            q_wp_rest = edge_rest_q[parent_edge] * wp.transform_get_rotation(parent_xform)
+            q_wc_rest = edge_rest_q[child_edge] * wp.transform_get_rotation(child_xform)
+            return wp.quat_inverse(q_wp_rest) * q_wc_rest
 
         joint_counter = 0
         jointed_body_pairs: set[tuple[int, int]] = set()
@@ -8888,6 +9207,7 @@ class ModelBuilder:
                         child=child_body,
                         parent_xform=parent_xform,
                         child_xform=child_xform,
+                        rest_rotation=_edge_rest_rotation(parent_edge, child_edge, parent_xform, child_xform),
                         bend_stiffness=bend_stiffness,
                         bend_damping=bend_damping,
                         twist_stiffness=twist_stiffness,
@@ -8947,6 +9267,7 @@ class ModelBuilder:
                                 child=child_body,
                                 parent_xform=parent_xform,
                                 child_xform=child_xform,
+                                rest_rotation=_edge_rest_rotation(parent_edge, child_edge, parent_xform, child_xform),
                                 bend_stiffness=bend_stiffness,
                                 bend_damping=bend_damping,
                                 twist_stiffness=twist_stiffness,
@@ -13071,7 +13392,7 @@ class ModelBuilder:
                 if self.joint_coord_count != self.joint_dof_count:
                     warnings.warn(
                         "The legacy DOF-shaped joint_target_q layout is deprecated for models "
-                        "whose joint coordinate and DOF counts differ (free/ball/distance "
+                        "whose joint coordinate and DOF counts differ (free/ball/distance/rod "
                         "joints). In a future release joint_target_q will always use the "
                         "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
                         "will be removed. Set newton.use_coord_layout_targets = True before "
