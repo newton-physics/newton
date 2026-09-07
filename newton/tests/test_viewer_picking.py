@@ -262,11 +262,8 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     state.body_f.zero_()
     picking._apply_picking_force(state)
 
-    # With the target still on the pick point the command is zero, so the whole wrench is
-    # the weight compensation: a free body hangs weightless from the cursor.
-    weight = -model.gravity.numpy()[0] * model.body_mass.numpy()[0]
-    assert_np_equal(state.body_f.numpy()[0][:3], weight, tol=1.0e-4)
-    assert_np_equal(state.body_f.numpy()[0][3:], np.zeros(3), tol=1.0e-6)
+    # A zero spring command does not cancel gravity on the picked body.
+    assert_np_equal(state.body_f.numpy()[0], np.zeros(6), tol=1.0e-6)
 
     picking.release()
     test.assertFalse(picking.is_picking())
@@ -276,15 +273,13 @@ def test_picking_setup_device(test: TestPickingSetup, device):
 def _apply_picking_target(
     picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
 ) -> np.ndarray:
-    """Apply one picking step and return the wrench with the weight compensation removed."""
+    """Apply one picking step and return the controller wrench."""
     pick_state = picking.pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
     picking.pick_state.assign(pick_state)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    wrench = state.body_f.numpy()[body].copy()
-    wrench[:3] += picking.model.gravity.numpy()[0] * picking.model.body_mass.numpy()[body]
-    return wrench
+    return state.body_f.numpy()[body].copy()
 
 
 def test_picking_torque_limit(test: TestPickingSetup, device):
@@ -460,6 +455,30 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     test.assertLess(peak_angular_speed, 3.0)
 
 
+def test_picking_closed_cable_uses_bounded_mass(test: TestPickingSetup, device):
+    """Use the conservative inertia bound without evaluating a closed cable Jacobian."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    points = [
+        wp.vec3(-0.1, -0.1, 0.3),
+        wp.vec3(0.1, -0.1, 0.3),
+        wp.vec3(0.1, 0.1, 0.3),
+        wp.vec3(-0.1, 0.1, 0.3),
+        wp.vec3(-0.1, -0.1, 0.3),
+    ]
+    bodies, _ = builder.add_rod(positions=points, radius=0.01, closed=True, body_frame_origin="com")
+    model = builder.finalize(device=device)
+    state = model.state()
+    picking = Picking(model)
+
+    body = bodies[0]
+    point_world = wp.vec3(*state.body_q.numpy()[body, :3])
+    picking._update_os_inertia(state, body, point_world)
+    body_mass = model.body_mass.numpy()
+    bounded_mass = max(body_mass[body], picking.pick_min_inertia_fraction * np.sum(body_mass[bodies]))
+    expected = np.eye(3, dtype=np.float32) * bounded_mass
+    assert_np_equal(picking._pick_os_inertia.numpy()[0], expected, tol=1.0e-5)
+
+
 # Device-parameterized tests
 add_function_test(
     TestPickingSetup,
@@ -495,6 +514,12 @@ add_function_test(
     TestPickingSetup,
     "test_picking_torque_limit_cable",
     test_picking_torque_limit_cable,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_closed_cable_uses_bounded_mass",
+    test_picking_closed_cable_uses_bounded_mass,
     devices=get_test_devices(),
 )
 

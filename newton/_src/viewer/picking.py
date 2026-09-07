@@ -126,8 +126,6 @@ class Picking:
                 self.model.body_inv_inertia,
                 self._pick_effective_mass,
                 self._pick_os_inertia,
-                self.model.gravity,
-                self.model.body_world,
             ],
             device=self.model.device,
         )
@@ -157,16 +155,27 @@ class Picking:
         mass = float(model.body_mass.numpy()[body])
         upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
         lower = min(max(mass, self.pick_min_inertia_fraction * upper), upper)
-        lam = np.eye(3) * upper
+        # Use the conservative bound when no compatible Jacobian is available.
+        lam = np.eye(3) * lower
 
         joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
         if len(joints) and mass > 0.0:
             joint = int(joints[0])
             art = int(model.joint_articulation.numpy()[joint])
+            if art < 0:
+                self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+                return
             first = int(model.articulation_start.numpy()[art])
+            end = int(model.articulation_end.numpy()[art])
+
+            # Cable joints do not expose a compatible generalized-coordinate Jacobian.
+            if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.CABLE)):
+                self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+                return
+
             qd_start = model.joint_qd_start.numpy()
             row = 6 * (joint - first)
-            ndof = int(qd_start[int(model.articulation_end.numpy()[art])]) - int(qd_start[first])
+            ndof = int(qd_start[end]) - int(qd_start[first])
 
             mask = wp.array(np.arange(model.articulation_count) == art, dtype=bool, device=model.device)
             jacobian = newton.eval_jacobian(model, state, mask=mask)
@@ -206,15 +215,20 @@ class Picking:
         effective = body_mass_np.copy()
 
         if model.joint_count > 0:
+            joint_parent_np = model.joint_parent.numpy()
             joint_child_np = model.joint_child.numpy()
             joint_art_np = model.joint_articulation.numpy()
 
             # Map each body to its articulation index (-1 if free)
             body_art = np.full(model.body_count, -1, dtype=np.int32)
             for j in range(model.joint_count):
+                art = joint_art_np[j]
+                parent = joint_parent_np[j]
                 child = joint_child_np[j]
-                if child >= 0:
-                    body_art[child] = joint_art_np[j]
+                if art >= 0 and parent >= 0:
+                    body_art[parent] = art
+                if art >= 0 and child >= 0:
+                    body_art[child] = art
 
             # Sum mass per articulation
             art_mass = {}
