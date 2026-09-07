@@ -2562,9 +2562,8 @@ class TestModelJoints(unittest.TestCase):
         joint even though the anchor makes the chain a loop."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2580,9 +2579,8 @@ class TestModelJoints(unittest.TestCase):
         sites) both survive collapse."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2637,9 +2635,8 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_free(b0)
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         # Record the group the way the USD importer does, so the range remap is exercised.
         builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
