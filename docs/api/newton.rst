@@ -43,6 +43,7 @@ newton
    ModelBuilder
    ModelFlags
    ParticleFlags
+   Rod
    SDF
    ShapeFlags
    State
