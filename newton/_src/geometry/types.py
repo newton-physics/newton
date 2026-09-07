@@ -182,6 +182,7 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
+        roughness_texture: str | np.ndarray | None = None,
         texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
         opacity: float | None = None,
@@ -204,7 +205,8 @@ class Mesh:
             color: Optional per-mesh base color (values in [0, 1]).
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
-            texture: Optional texture path/URL or image data (H, W, C).
+            texture: Optional base-color texture path/URL or image data (H, W, C).
+            roughness_texture: Optional linear roughness texture path/URL or image data (H, W, C).
             texture_transform: Affine texture-coordinate transform as two rows
                 ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
                 authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
@@ -224,6 +226,7 @@ class Mesh:
         self.opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self._roughness_texture = _normalize_texture_input(roughness_texture)
         self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
@@ -240,6 +243,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self._roughness_texture_hash = None
         self._edges = None
         self._collision_edges: np.ndarray | None = None
         self._is_watertight: bool | None = None
@@ -810,6 +814,9 @@ class Mesh:
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
+            roughness_texture=self._roughness_texture
+            if isinstance(self._roughness_texture, str)
+            else (self._roughness_texture.copy() if self._roughness_texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
             texture_transform=self._texture_transform,
@@ -1556,6 +1563,24 @@ class Mesh:
         return self._compute_texture_hash()
 
     @property
+    def roughness_texture(self) -> str | np.ndarray | None:
+        """Optional linear roughness texture as a file path or image array."""
+        return self._roughness_texture
+
+    @roughness_texture.setter
+    def roughness_texture(self, value: str | np.ndarray | None):
+        self._roughness_texture = _normalize_texture_input(value)
+        self._roughness_texture_hash = None
+        self._cached_hash = None
+
+    @property
+    def roughness_texture_hash(self) -> int:
+        """Content-based hash of the assigned roughness texture."""
+        if self._roughness_texture_hash is None:
+            self._roughness_texture_hash = compute_texture_hash(self._roughness_texture)
+        return self._roughness_texture_hash
+
+    @property
     def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         """Affine transform applied to the authored UV coordinates."""
         return self._texture_transform
@@ -1695,7 +1720,8 @@ class Mesh:
                     digest.update(int(dimension).to_bytes(8, "big"))
                 digest.update(values.tobytes())
             digest.update(bytes([bool(self.is_solid)]))
-            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
+            texture_hashes = (self._compute_texture_hash(), self.roughness_texture_hash)
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(texture_hashes)
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
