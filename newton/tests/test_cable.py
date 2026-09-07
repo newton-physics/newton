@@ -5472,6 +5472,26 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
         (graph, {"quaternions": graph.quaternions, "body_frame_origin": "com"}, "add_rod: quaternions"),
         (graph, {"closed": True, "body_frame_origin": "com"}, "add_rod: closed"),
         (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "com"}, "add_rod: stretch_stiffness"),
+        (
+            graph,
+            {"stretch_stiffness": np.nan, "body_frame_origin": "com"},
+            "add_rod: stretch_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"shear_stiffness": np.inf, "body_frame_origin": "com"},
+            "add_rod: shear_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"bend_stiffness": np.nan, "body_frame_origin": "com"},
+            "add_rod: bend_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"twist_stiffness": np.inf, "body_frame_origin": "com"},
+            "add_rod: twist_stiffness must be finite and >= 0",
+        ),
         (graph, {"body_frame_origin": "invalid"}, "add_rod: body_frame_origin"),
         (graph, {"radius": 0.2, "body_frame_origin": "com"}, "add_rod: radius must be None"),
     )

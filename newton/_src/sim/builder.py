@@ -6010,8 +6010,8 @@ class ModelBuilder:
             ("twist_stiffness", twist_stiffness),
         )
         for name, stiffness in stiffnesses:
-            if stiffness is not None and stiffness < 0.0:
-                raise ValueError(f"{method_name}: {name} must be >= 0")
+            if stiffness is not None and (not math.isfinite(stiffness) or stiffness < 0.0):
+                raise ValueError(f"{method_name}: {name} must be finite and >= 0")
 
     @staticmethod
     def _validate_rod_rigidity_topology(
@@ -8788,15 +8788,15 @@ class ModelBuilder:
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        .. deprecated:: 1.6
-            The ``positions=...`` input form is deprecated. Construct a
-            :class:`newton.Rod` and pass it with ``rod=...`` instead. The
-            ``rod=...`` form remains supported.
+        .. note::
+            The ``positions=...`` compatibility form is deprecated in Newton
+            1.6. Construct a :class:`newton.Rod` and pass it with ``rod=...``
+            instead. The ``rod=...`` form is the preferred API.
 
         Exactly one input form is required:
 
-        - Deprecated: ``positions=...`` constructs an ordered chain. The
-          separate ``quaternions`` and ``closed`` arguments belong only to this
+        - ``positions=...`` constructs an ordered chain. The separate
+          ``quaternions`` and ``closed`` arguments belong only to this
           compatibility form.
         - ``rod=...`` uses the geometry, frames, topology, and optional
           constitutive data stored on a :class:`newton.Rod`, which may represent
