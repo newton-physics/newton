@@ -14611,18 +14611,29 @@ def _describe_array_backed_list(element: Any) -> _ArrayBackedListDescriptor:
 
 
 def _materialize_array_backed_list(value: np.ndarray, descriptor: _ArrayBackedListDescriptor) -> list[Any]:
-    """Convert an array-backed builder attribute to its original list representation."""
-    kind, detail = descriptor
-    if kind == "ctypes":
-        element_type = detail
-        return [element_type(*np.asarray(row).reshape(-1).tolist()) for row in value]
-    if kind == "tuple":
-        return [tuple(np.asarray(row).reshape(-1).tolist()) for row in value]
-    if kind == "list":
-        return [np.asarray(row).reshape(detail).tolist() for row in value]
-    if kind == "ndarray":
-        return [np.array(row, copy=True) for row in value]
-    return value.tolist()
+    """Convert an array-backed builder attribute to its original list representation.
+
+    Cyclic GC is disabled during materialization and its previous state is restored afterward.
+    """
+    gc_was_enabled = gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    try:
+        kind, detail = descriptor
+        if kind == "ctypes":
+            element_type = detail
+            compatible = np.asarray(value, dtype=np.asarray(element_type()).dtype)
+            return [element_type.from_buffer_copy(row) for row in compatible]
+        if kind == "tuple":
+            return list(map(tuple, value.tolist()))
+        if kind == "list":
+            return value.tolist()
+        if kind == "ndarray":
+            return [np.array(row, copy=True) for row in value]
+        return value.tolist()
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 class _ArrayBackedAttributeAccess:

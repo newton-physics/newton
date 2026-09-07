@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
-from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES
+from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
@@ -587,6 +587,67 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         with self.assertRaisesRegex(AttributeError, "_missing_internal_attribute"):
             _ = DerivedBuilder().my_property
+
+    def test_ctypes_materialization_converts_wider_array_dtype(self):
+        """Convert wider backing values before reconstructing Warp ctypes elements."""
+        source = ModelBuilder()
+        source.add_particle(wp.vec3(1.0, 2.0, 3.0), wp.vec3(), 1.0)
+
+        scene = ModelBuilder()
+        scene.add_particle([4.0, 5.0, 6.0], wp.vec3(), 1.0)
+        scene.replicate(source, 1)
+
+        self.assertEqual(scene._array_backed_attributes["particle_q"][0].dtype, np.dtype(np.float64))
+        self.assertTrue(all(isinstance(position, wp.vec3) for position in scene.particle_q))
+        np.testing.assert_array_equal(scene.particle_q, [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]])
+
+    def test_tuple_materialization_restores_elements(self):
+        """Reconstruct tuple elements with one bulk list conversion."""
+        values = np.arange(8, dtype=np.int32).reshape((2, 4))
+
+        materialized = _materialize_array_backed_list(values, ("tuple", None))
+
+        self.assertEqual(materialized, [tuple(range(4)), tuple(range(4, 8))])
+        self.assertEqual(_materialize_array_backed_list(np.empty((2, 0)), ("tuple", None)), [(), ()])
+        self.assertEqual(_materialize_array_backed_list(np.empty((0, 3)), ("tuple", None)), [])
+
+    def test_list_materialization_restores_element_shape(self):
+        """Reconstruct nested list elements with one bulk list conversion."""
+        values = np.arange(24, dtype=np.int32).reshape((2, 3, 4))
+
+        materialized = _materialize_array_backed_list(values, ("list", (3, 4)))
+
+        self.assertEqual(materialized, values.tolist())
+        self.assertEqual(_materialize_array_backed_list(np.empty((2, 0)), ("list", (0,))), [[], []])
+        self.assertEqual(_materialize_array_backed_list(np.empty((0, 3)), ("list", (3,))), [])
+
+    def test_materialization_restores_gc_after_failure(self):
+        """Disable cyclic GC during materialization and restore its prior state after failure."""
+        original_gc_enabled = gc.isenabled()
+
+        class FailingElement:
+            @classmethod
+            def from_buffer_copy(cls, row):
+                self.assertFalse(gc.isenabled())
+                raise RuntimeError("expected failure")
+
+        try:
+            for initially_enabled in (False, True):
+                with self.subTest(initially_enabled=initially_enabled):
+                    if initially_enabled:
+                        gc.enable()
+                    else:
+                        gc.disable()
+
+                    with self.assertRaisesRegex(RuntimeError, "expected failure"):
+                        _materialize_array_backed_list(np.ones((1, 1), dtype=np.float32), ("ctypes", FailingElement))
+
+                    self.assertEqual(gc.isenabled(), initially_enabled)
+        finally:
+            if original_gc_enabled:
+                gc.enable()
+            else:
+                gc.disable()
 
     def test_replicate_and_finalize_restore_gc_after_failure(self):
         """Disable cyclic GC during each operation and restore its prior state after failure."""
