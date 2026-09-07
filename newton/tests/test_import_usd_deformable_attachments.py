@@ -377,6 +377,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder.color()
         model = builder.finalize()
+        state = model.state()
+        initial_body_q = state.body_q.numpy().copy()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        np.testing.assert_allclose(state.body_q.numpy(), initial_body_q, atol=1.0e-6)
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_joins_earlier_articulation_from_last_endpoint(self):

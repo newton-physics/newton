@@ -86,14 +86,25 @@ def _add_cable_articulation_root_joint(
     child: int,
     child_xform: wp.transform,
 ) -> int:
+    parent_anchor_xform = wp.transform(articulation_root.parent_anchor, wp.quat_identity())
     joint = builder.add_joint_ball(
         parent=articulation_root.parent_body,
         child=child,
-        parent_xform=wp.transform(articulation_root.parent_anchor, wp.quat_identity()),
+        parent_xform=parent_anchor_xform,
         child_xform=child_xform,
         label=f"{articulation_root.attachment_path}_site0",
         enabled=True,
     )
+    parent_body_xform = (
+        wp.transform_identity()
+        if articulation_root.parent_body == -1
+        else builder.body_q[articulation_root.parent_body]
+    )
+    parent_anchor_world = parent_body_xform * parent_anchor_xform
+    child_anchor_world = builder.body_q[child] * child_xform
+    initial_rotation = wp.transform_get_rotation(wp.transform_inverse(parent_anchor_world) * child_anchor_world)
+    q_start = builder.joint_q_start[joint]
+    builder.joint_q[q_start : q_start + 4] = list(initial_rotation)
     joint_indices.append(joint)
     return joint
 
