@@ -13,6 +13,7 @@ import types
 import unittest
 import warnings
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
@@ -4086,6 +4087,254 @@ class TestDelayGraphCapture(unittest.TestCase):
                 rtol=1e-4,
                 err_msg=f"Cycle {ci}: graph should match eager with device-side write_idx",
             )
+
+
+class TestActuatorStateAssign(unittest.TestCase):
+    """Cover the :meth:`Actuator.State.assign` copy contract."""
+
+    def test_assign_copies_built_in_state(self):
+        """Copy every array in the built-in delay and PID drive state."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        actuator = builder.finalize(device=device).actuators[0]
+        current, advanced = actuator.state(), actuator.state()
+
+        delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
+        for value, name in enumerate(delay_fields, start=1):
+            getattr(advanced.delay_state, name).fill_(value)
+        advanced.drive_state.integral.fill_(6.0)
+
+        current.assign(advanced)
+
+        for value, name in enumerate(delay_fields, start=1):
+            with self.subTest(name=name):
+                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+        np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
+
+    def test_assign_delegates_to_custom_drive_state(self):
+        """Delegate nested and slotted storage to the custom drive state."""
+
+        class _CustomState(DriveBase.State):
+            __slots__ = ("nested",)
+
+            def __init__(self, num_actuators: int, device: wp.Device):
+                self.nested = types.SimpleNamespace(value=wp.zeros(num_actuators, dtype=wp.float32, device=device))
+
+            def assign(self, other: DriveBase.State) -> None:
+                self.nested.value.assign(other.nested.value)
+
+        device = wp.get_device()
+        current, advanced = _CustomState(1, device), _CustomState(1, device)
+        advanced.nested.value.fill_(1.0)
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertEqual(current.nested.value.numpy()[0], 1.0)
+        self.assertIsNot(current.nested, advanced.nested)
+
+    def test_assign_copies_slotted_dataclass_state(self):
+        """Copy a custom slotted dataclass through the default implementation."""
+
+        @dataclass(slots=True)
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        destination = current.value
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIs(current.value, destination)
+        self.assertEqual(current.value.numpy()[0], 1.0)
+
+    def test_assign_copies_neural_warp_state_in_place(self):
+        """Copy neural Warp arrays while preserving destination storage."""
+        device = wp.get_device()
+        cases = (
+            (
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                ),
+                ("pos_error_history", "vel_history"),
+            ),
+            (
+                DriveNeuralLSTM.State(
+                    hidden=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralLSTM.State(
+                    hidden=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                ("hidden", "cell"),
+            ),
+        )
+
+        for current, advanced, fields in cases:
+            destinations = {name: getattr(current, name) for name in fields}
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+            for name in fields:
+                destination = destinations[name]
+                self.assertIs(getattr(current, name), destination)
+                np.testing.assert_array_equal(destination.numpy(), 1.0)
+
+    def test_assign_rejects_undecorated_custom_drive_state(self):
+        """Reject an undeclared custom state rather than silently skipping it."""
+
+        class _CustomState(DriveBase.State):
+            def __init__(self, device: wp.Device):
+                self.value = wp.zeros(1, dtype=wp.float32, device=device)
+
+        current = _CustomState(wp.get_device())
+        advanced = _CustomState(wp.get_device())
+        with self.assertRaisesRegex(NotImplementedError, "decorated with @dataclass or implement assign"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    def test_assign_rejects_undeclared_attribute(self):
+        """Reject an attribute present on only one otherwise compatible state."""
+
+        @dataclass
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        current.extra = None
+
+        with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    def test_assign_copies_torch_state_without_aliasing(self):
+        """Copy Torch-backed drive state without aliasing the source tensors."""
+        with _torch.inference_mode():
+            current = DriveNeuralLSTM.State(hidden=_torch.zeros((1, 1, 1)), cell=_torch.zeros((1, 1, 1)))
+            advanced = DriveNeuralLSTM.State(hidden=_torch.ones((1, 1, 1)), cell=_torch.ones((1, 1, 1)))
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIsNot(current.hidden, advanced.hidden)
+        self.assertIsNot(current.cell, advanced.cell)
+        with _torch.inference_mode():
+            advanced.hidden.zero_()
+            advanced.cell.zero_()
+        self.assertEqual(current.hidden.item(), 1.0)
+        self.assertEqual(current.cell.item(), 1.0)
+
+    def test_assign_rejects_mismatched_components(self):
+        """Raise rather than silently skip when only one state holds a component."""
+        state = DrivePID.State(integral=wp.zeros(1, dtype=wp.float32, device=wp.get_device()))
+        with self.assertRaisesRegex(ValueError, "drive_state"):
+            Actuator.State(drive_state=state).assign(Actuator.State())
+
+
+@unittest.skipUnless(
+    wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
+    "CUDA graph capture requires CUDA device with memory pools",
+)
+class TestDriveStateGraphCapture(unittest.TestCase):
+    """Drive state must advance per replay, not only for an even captured step count.
+
+    A PID with only ``ki`` set, held at a constant position error by a model no
+    solver moves, accumulates exactly ``ki * error * dt`` per actuator step
+    however the loop is chunked.  A graph cannot re-point its state buffers
+    between replays, so an odd-length captured region needs either a boundary
+    :meth:`Actuator.State.assign` or a second graph of the opposite parity.
+    """
+
+    DT = 0.01
+    KI = 1.0
+    TARGET = 1.0
+    STEPS = 12
+
+    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None, parity_graphs: bool) -> float:
+        """Run :attr:`STEPS` actuator steps and return the resulting PID integral.
+
+        Args:
+            implicit: Solve the control law implicitly instead of explicitly.
+                Both effort modes advance the integral through the same state.
+            steps_per_graph: Steps per captured region, or ``None`` to run eagerly.
+            parity_graphs: Capture one graph per state-buffer orientation and
+                alternate them, instead of assigning at the region boundary.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        # Mass and inertia only matter to the implicit response oracle.
+        body = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=self.KI, kd=0.0)
+        model = builder.finalize(device=device)
+
+        actuator = model.actuators[0]
+        oracle = ResponseOracle(model) if implicit else None
+        if oracle is not None:
+            actuator.set_effort_mode_implicit(response=oracle)
+        state, control = model.state(), model.control()
+        control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
+        s0, s1 = actuator.state(), actuator.state()
+
+        def run(s0, s1, steps, boundary_assign=False):
+            """Step the actuator, swapping state as the documented loop does."""
+            for i in range(steps):
+                control.joint_f.zero_()
+                if oracle is not None:
+                    oracle.refresh(state)
+                actuator.step(state, control, s0, s1, dt=self.DT)
+                if boundary_assign and steps % 2 == 1 and i == steps - 1:
+                    s0.assign(s1)  # keeps a single odd-length graph correct
+                else:
+                    s0, s1 = s1, s0
+            return s0, s1
+
+        if steps_per_graph is None:
+            s0, s1 = run(s0, s1, self.STEPS)
+        else:
+            # Module loading and lazy allocation have to happen before a capture.
+            s0, s1 = run(s0, s1, 1)
+            s0.drive_state.integral.zero_()
+            s1.drive_state.integral.zero_()
+            graphs = {}
+            for _ in range(self.STEPS // steps_per_graph):
+                # Keying on the current buffer builds one graph per orientation.
+                key = id(s0) if parity_graphs else None
+                if key not in graphs:
+                    with wp.ScopedCapture(device) as capture:
+                        after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
+                    graphs[key] = (capture.graph, after)
+                graph, (s0, s1) = graphs[key]
+                wp.capture_launch(graph)
+            self.assertLessEqual(len(graphs), 2, msg="alternating parity needs at most two graphs")
+        return float(s0.drive_state.integral.numpy()[0])
+
+    def test_pid_integral_advances_per_replay_boundary_assign(self):
+        """Assign at an odd-length region's boundary and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for implicit in (False, True):
+            for steps_per_graph in (None, 1, 2, 3):
+                with self.subTest(implicit=implicit, steps_per_graph=steps_per_graph):
+                    got = self._integral_after_all_steps(implicit, steps_per_graph, parity_graphs=False)
+                    self.assertAlmostEqual(got, expected, places=6)
+
+    def test_pid_integral_advances_per_replay_parity_graphs(self):
+        """Alternate one graph per buffer orientation and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for steps_per_graph in (1, 2, 3):
+            with self.subTest(steps_per_graph=steps_per_graph):
+                got = self._integral_after_all_steps(False, steps_per_graph, parity_graphs=True)
+                self.assertAlmostEqual(got, expected, places=6)
 
 
 # ---------------------------------------------------------------------------

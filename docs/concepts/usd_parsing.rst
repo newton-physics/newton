@@ -357,20 +357,24 @@ A ``point``->``point`` attachment between two imported cables can be a weld. Wel
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
 does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
 not a runtime constraint: the two points become one node, and every curve connected through such
-junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
-call (one capsule body per segment, junction nodes shared). Welded junction attachments are
+junctions is built as one :class:`~newton.Rod` with explicit edges and assembled
+through :meth:`~newton.ModelBuilder.add_rod` using ``rod=`` (one capsule body per
+segment, junction nodes shared). Welded junction attachments are
 absorbed into the graph, so they appear in neither ``path_attachment_map`` nor
 ``path_attachment_attrs``. A springy or non-coincident cable-to-cable attachment is **not**
 welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the authored
 geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
 the same curves still import as described above.
 
-Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
-(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
-The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
-A welded rod graph gets one articulation per connected component; each of its curves keeps its
-own body range but shares that articulation. Attachment joints that tie a cable to other bodies
-close a loop, so they stay outside the articulation.
+Each imported cable belongs to an articulation labelled ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``). A free cable gets a free
+root joint to the world. When an open cable has exactly one supported hard attachment at an
+endpoint, that ball joint becomes the cable's root instead. An attachment to a rigid body joins
+the cable to that body's articulation, whether the articulation has a fixed or floating base.
+Attachments at interior points and additional attachments remain separate constraints outside
+the articulation. A welded rod graph gets one free-rooted articulation per connected component;
+each of its curves keeps its own body range but shares that articulation. The imported model is
+ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
 .. code-block:: python
 

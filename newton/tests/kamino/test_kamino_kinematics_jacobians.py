@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import make_unilateral_constraints_info
@@ -19,15 +20,11 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
     SparseSystemJacobians,
 )
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders.basics import (
-    build_boxes_fourbar,
-    make_basics_heterogeneous_builder,
-)
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 from newton.tests.kamino.utils.make import make_test_problem_fourbar, make_test_problem_heterogeneous
+from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 ###
 # Module configs
@@ -62,11 +59,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             msg.reset_log_level()
 
     def test_01_allocate_single_dense_system_jacobians_only_joints(self):
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -94,11 +91,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         self.assertEqual(jacobians.data.J_cts_data.shape, (model_num_cts * model.size.sum_of_num_body_dofs,))
 
     def test_02_allocate_single_dense_system_jacobians_with_limits(self):
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -139,11 +136,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -152,7 +149,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -190,11 +187,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_boxes_fourbar()
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -209,7 +206,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -249,11 +246,12 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         num_worlds = 3
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar)
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(), world_count=num_worlds)
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -268,7 +266,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 
@@ -326,12 +324,12 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Problem constants
         max_world_contacts = 12
 
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = make_basics_heterogeneous_builder()
-        num_worlds = builder.num_worlds
+        num_worlds = builder.world_count
 
         # Create the model from the builder
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         if self.verbose:
             print("")  # Add a newline for better readability
             print(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
@@ -346,7 +344,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
-        required_world_max_contacts = [max_world_contacts] * builder.num_worlds
+        required_world_max_contacts = [max_world_contacts] * builder.world_count
         if self.verbose:
             print("required_world_max_contacts: ", required_world_max_contacts)
 

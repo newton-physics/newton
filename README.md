@@ -280,6 +280,11 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_controller_operational_space_hybrid_force_motion.jpg" alt="Operational Space Hybrid Force/Motion">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/controllers/example_controller_differential_ik.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_controller_differential_ik.jpg" alt="Differential IK">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -287,6 +292,9 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples controller_operational_space_hybrid_force_motion</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples controller_differential_ik</code>
     </td>
   </tr>
   <tr>

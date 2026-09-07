@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import warp as wp
 
-from .....core.types import override
 from .....sim import BodyFlags
-from .types import Descriptor
 
 ###
 # Module interface
@@ -20,7 +18,6 @@ from .types import Descriptor
 __all__ = [
     "RigidBodiesData",
     "RigidBodiesModel",
-    "RigidBodyDescriptor",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
@@ -42,75 +39,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Rigid-Body Containers
 ###
-
-
-@dataclass
-class RigidBodyDescriptor(Descriptor):
-    """
-    A container to describe a single rigid body in the model builder.
-
-    Attributes:
-        name: The name of the body.
-        uid: The unique identifier of the body.
-        m_i: Mass of the body [kg].
-        i_r_com_i: Translational offset of the body center of mass [m].
-        i_I_i: Moment of inertia matrix in local coordinates [kg·m²].
-        q_i_0: Initial absolute pose of the body in world coordinates.
-        u_i_0: Initial absolute twist of the body in world coordinates.
-        wid: Index of the world to which the body belongs.
-        bid: Index of the body w.r.t. its world.
-    """
-
-    ###
-    # Attributes
-    ###
-
-    m_i: float = 0.0
-    """Mass of the body."""
-
-    i_r_com_i: wp.vec3f = field(default_factory=wp.vec3f)
-    """Translational offset of the body center of mass w.r.t the reference frame expressed in local coordinates."""
-
-    i_I_i: wp.mat33f = field(default_factory=wp.mat33f)
-    """Moment of inertia matrix of the body expressed in local coordinates."""
-
-    q_i_0: wp.transformf = field(default_factory=wp.transformf)
-    """Initial absolute pose of the body expressed in world coordinates."""
-
-    u_i_0: wp.spatial_vectorf = field(default_factory=wp.spatial_vectorf)
-    """Initial absolute twist of the body expressed in world coordinates."""
-
-    ###
-    # Metadata - to be set by the WorldDescriptor when added
-    ###
-
-    wid: int = -1
-    """
-    Index of the world to which the body belongs.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    bid: int = -1
-    """
-    Index of the body w.r.t. its world.
-    Defaults to `-1`, indicating that the body has not yet been added to a world.
-    """
-
-    @override
-    def __repr__(self) -> str:
-        """Returns a human-readable string representation of the RigidBodyDescriptor."""
-        return (
-            f"RigidBodyDescriptor(\n"
-            f"name: {self.name},\n"
-            f"uid: {self.uid},\n"
-            f"m_i: {self.m_i},\n"
-            f"i_I_i:\n{self.i_I_i},\n"
-            f"q_i_0: {self.q_i_0},\n"
-            f"u_i_0: {self.u_i_0}\n"
-            f"wid: {self.wid},\n"
-            f"bid: {self.bid},\n"
-            f")"
-        )
 
 
 @dataclass
