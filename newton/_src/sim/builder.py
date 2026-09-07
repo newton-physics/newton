@@ -8788,11 +8788,6 @@ class ModelBuilder:
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        .. note::
-            The ``positions=...`` compatibility form is deprecated in Newton
-            1.6. Construct a :class:`newton.Rod` and pass it with ``rod=...``
-            instead. The ``rod=...`` form is the preferred API.
-
         Exactly one input form is required:
 
         - ``positions=...`` constructs an ordered chain. The separate
@@ -8807,9 +8802,13 @@ class ModelBuilder:
         separate stretch, shear, bend, and twist slots.
 
         Args:
-            positions: Deprecated geometry source for the ordered-chain form:
-                centerline node positions (segment endpoints) in world space
-                [m]. Mutually exclusive with ``rod``.
+            positions: Geometry source for the ordered-chain form: centerline
+                node positions (segment endpoints) in world space [m].
+                Mutually exclusive with ``rod``.
+
+                .. deprecated:: 1.6
+                    Construct a :class:`newton.Rod` and pass it with
+                    ``rod=...`` instead.
             quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
                 must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
                 local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
