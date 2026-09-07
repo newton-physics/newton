@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -25,9 +25,7 @@ BELT_TOP_Z = 0.5
 BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
-
-_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device .*\n?"
-_MUJOCO_LS_ITERATIONS_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations to \d+\n?"
+SPAWN_GAP = 0.004  # matches the spawn clearance used by the conveyor example [m]
 
 
 def _make_solver(solver_name, model):
@@ -80,7 +78,7 @@ def run_conveyor(
     )
 
     box_body = builder.add_link(
-        xform=wp.transform(p=wp.vec3(box_xy[0], box_xy[1], BELT_TOP_Z + BOX_HALF + 0.01), q=wp.quat_identity()),
+        xform=wp.transform(p=wp.vec3(box_xy[0], box_xy[1], BELT_TOP_Z + BOX_HALF + SPAWN_GAP), q=wp.quat_identity()),
         label="box",
     )
     builder.add_shape_box(
@@ -202,7 +200,7 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         belt_shapes.append(s)
 
     box_body = builder.add_link(
-        xform=wp.transform(p=wp.vec3(box_xy[0], box_xy[1], BELT_TOP_Z + box_half[2] + 0.01), q=wp.quat_identity()),
+        xform=wp.transform(p=wp.vec3(box_xy[0], box_xy[1], BELT_TOP_Z + box_half[2] + SPAWN_GAP), q=wp.quat_identity()),
         mass=1.0,
         label="box",
     )
@@ -448,13 +446,8 @@ def test_backend_parity(test, device, _solver_name):
     test.assertLess(spread, 0.6, f"backends disagree on transport distance: {ys}")
 
 
-class TestConveyorForces(NewtonTestCase):
+class TestConveyorForces(unittest.TestCase):
     """Scenario matrix for the force-based conveyor model."""
-
-    def setUp(self):
-        super().setUp()
-        self.allowOutputRegex(_MODULE_LOAD_OUTPUT_RE, stream="stdout")
-        self.allowOutputRegex(_MUJOCO_LS_ITERATIONS_OUTPUT_RE, stream="stdout")
 
 
 _devices = get_test_devices()
