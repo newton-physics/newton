@@ -491,9 +491,11 @@ class Rod:
 
         Args:
             start: First centerline point in world space [m].
-            direction: World-space direction, which need not be normalized.
-            length: Total centerline length [m].
-            segment_count: Number of rod segments.
+            direction: World-space direction. It is normalized before use, so
+                its magnitude is ignored.
+            length: Total centerline length [m], divided evenly among the segments.
+            segment_count: Number of equal-length rod segments. The rod contains
+                ``segment_count + 1`` points.
             twist_total: Twist of the final segment frame relative to untwisted
                 parallel transport [rad]. The value is distributed in
                 ``segment_count`` equal increments, including the first frame,
