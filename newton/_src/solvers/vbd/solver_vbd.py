@@ -605,6 +605,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "particle_self_contact_margin is smaller than particle_self_contact_radius, this will result in missing contacts and cause instability.\n"
                     "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
                 )
+            if _sc_margin < 0.0:
+                raise ValueError(f"particle_self_contact_margin must be >= 0, got {_sc_margin}")
             warnings.warn(
                 "particle_self_contact_radius is deprecated; use particle_self_contact_margin "
                 "(interaction distance) and particle_self_contact_gap (extra detection reach, "
