@@ -1699,9 +1699,6 @@ class Mesh:
                     digest.update(int(dimension).to_bytes(8, "big"))
                 digest.update(values.tobytes())
             digest.update(bytes([bool(self.is_solid)]))
-            subdivision_scheme = (self._subdivision_scheme or "").encode("utf-8")
-            digest.update(len(subdivision_scheme).to_bytes(1, "big"))
-            digest.update(subdivision_scheme)
             self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
