@@ -312,7 +312,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`8`
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
@@ -344,6 +344,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+| :sup:`8` VBD applies regularized Coulomb friction independently to each free axis of REVOLUTE, PRISMATIC, and D6 joints.
 
 **Actuation and control**
 

@@ -198,7 +198,11 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
-        - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+        - :attr:`~newton.Model.joint_friction` is supported for REVOLUTE, PRISMATIC, and D6
+          joints as a per-DOF Coulomb dry-friction force or torque [N or N·m]. The friction
+          law is regularized near zero velocity and applies independently to both joints in
+          a mimic relationship.
+        - Not supported: :attr:`~newton.Model.joint_armature`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
@@ -3591,6 +3595,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_compliant_alm,
                     model.joint_dof_dim,
                     self.joint_rest_angle,
+                    model.joint_friction,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
