@@ -1,0 +1,1 @@
+Deprecate legacy collision-range names and scheduling controls in favor of `soft_contact_gap`, `soft_contact_pair_count`, `particle_self_contact_margin` plus `particle_self_contact_gap`, and solver collision schedules.

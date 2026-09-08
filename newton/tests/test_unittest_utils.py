@@ -5,8 +5,10 @@ import io
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
+from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult
 
 NewtonTestCase = unittest_utils.NewtonTestCase
 
@@ -306,6 +308,67 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
+
+
+class TestSkippedTestCleanup(unittest.TestCase):
+    def _gc_calls(self, resultclass, test_case, *, cuda_devices=()):
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(test_case)
+        with (
+            mock.patch("gc.collect") as collect,
+            mock.patch.object(unittest_utils.wp, "get_cuda_devices", return_value=list(cuda_devices)),
+            mock.patch.object(unittest_utils.wp, "is_mempool_enabled", return_value=False),
+        ):
+            result = unittest.TextTestRunner(
+                stream=io.StringIO(),
+                resultclass=resultclass,
+            ).run(suite)
+        self.assertTrue(result.wasSuccessful())
+        return collect.call_count
+
+    def test_static_skips_avoid_cleanup(self):
+        class MethodSkip(unittest.TestCase):
+            @unittest.skip("static method skip")
+            def test_skip(self):
+                pass
+
+        @unittest.skip("static class skip")
+        class ClassSkip(unittest.TestCase):
+            def test_skip(self):
+                pass
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, skip="method"):
+                self.assertEqual(self._gc_calls(resultclass, MethodSkip), 0)
+            with self.subTest(resultclass=resultclass.__name__, skip="class"):
+                self.assertEqual(self._gc_calls(resultclass, ClassSkip), 0)
+
+    def test_runtime_skip_and_executed_test_keep_cleanup(self):
+        class RuntimeSkip(unittest.TestCase):
+            def test_skip(self):
+                self.skipTest("runtime skip")
+
+        class Executed(unittest.TestCase):
+            def test_pass(self):
+                pass
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, outcome="runtime skip"):
+                self.assertEqual(self._gc_calls(resultclass, RuntimeSkip), 1)
+            with self.subTest(resultclass=resultclass.__name__, outcome="executed"):
+                self.assertEqual(self._gc_calls(resultclass, Executed), 1)
+
+    def test_cpu_batches_cleanup_but_cuda_cleans_each_test(self):
+        methods = {f"test_{i}": lambda self: None for i in range(17)}
+        ManyExecuted = type("ManyExecuted", (unittest.TestCase,), methods)
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, device="cpu"):
+                self.assertEqual(self._gc_calls(resultclass, ManyExecuted), 3)
+            with self.subTest(resultclass=resultclass.__name__, device="cuda"):
+                self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 17)
 
 
 if __name__ == "__main__":

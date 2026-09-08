@@ -27,7 +27,7 @@ class _RecordingViewer(ViewerNull):
         self.instance_xforms: list[tuple[str, object]] = []
         self.mesh_calls: list[tuple[str, bool]] = []
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))
@@ -45,6 +45,8 @@ class _RecordingViewer(ViewerNull):
         color=None,
         roughness=None,
         metallic=None,
+        dynamic=False,
+        opacity=None,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -303,22 +305,38 @@ class TestViewerLayers(unittest.TestCase):
         viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
         viewer._pending_mesh_points = {}
         viewer._pending_mesh_normals = {}
+        viewer._pending_mesh_topology = {}
         viewer._pending_mesh_visibility = {}
 
         points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
         indices = wp.array([0, 1, 2], dtype=wp.int32)
 
-        viewer.log_mesh("/mesh", points, indices, hidden=True)
+        viewer.log_mesh("/mesh", points, indices, hidden=True, dynamic=True)
 
         self.assertFalse(getattr(viewer, "_pending_mesh_visibility", {}).get("/mesh", True))
         self.assertNotIn("/mesh", viewer._pending_mesh_points)
         self.assertNotIn("/mesh", viewer._pending_mesh_normals)
+        self.assertNotIn("/mesh", viewer._pending_mesh_topology)
 
         moved = wp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]], dtype=wp.vec3)
-        viewer.log_mesh("/mesh", moved, indices, hidden=False)
+        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
+        reversed_indices = wp.array([0, 2, 1], dtype=wp.int32)
+        viewer.log_mesh("/mesh", moved, reversed_indices, normals=normals, hidden=False, dynamic=True)
 
         self.assertTrue(viewer._pending_mesh_visibility["/mesh"])
         np.testing.assert_array_equal(viewer._pending_mesh_points["/mesh"], moved.numpy())
+        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], normals.numpy())
+        counts, pending_indices = viewer._pending_mesh_topology["/mesh"]
+        np.testing.assert_array_equal(counts, [3])
+        np.testing.assert_array_equal(pending_indices, reversed_indices.numpy())
+
+        viewer.log_mesh("/mesh", moved, indices, normals=None, hidden=False, dynamic=True)
+        self.assertIsNone(viewer._pending_mesh_normals["/mesh"])
+
+        empty_points = wp.empty(0, dtype=wp.vec3)
+        empty_indices = wp.empty(0, dtype=wp.int32)
+        viewer.log_mesh("/mesh", empty_points, empty_indices, hidden=False, dynamic=True)
+        self.assertFalse(viewer._pending_mesh_visibility["/mesh"])
 
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
@@ -478,6 +496,40 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_warns_when_appearance_argument_is_unsupported(self):
+        """Drop unsupported appearance arguments with an explicit warning."""
+
+        def add_batched_meshes_trimesh(name):
+            return name
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            result = ViewerViser._call_scene_method(
+                add_batched_meshes_trimesh,
+                name="instances",
+                batched_opacities=[0.5],
+            )
+
+        self.assertEqual(result, "instances")
+
+    def test_viser_does_not_retry_failed_scene_calls(self):
+        """Propagate scene failures without retrying with unsupported arguments."""
+        call_count = 0
+
+        def add_batched_meshes_trimesh(name):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError(f"failed to add {name}")
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            with self.assertRaisesRegex(RuntimeError, "failed to add instances"):
+                ViewerViser._call_scene_method(
+                    add_batched_meshes_trimesh,
+                    name="instances",
+                    batched_opacities=[0.5],
+                )
+
+        self.assertEqual(call_count, 1)
 
 
 if __name__ == "__main__":

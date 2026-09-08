@@ -290,8 +290,7 @@ class Example:
         structural_stiffness = (5.0e3, 5.0e3, 2.5, 2.5)
         nominal_segment_length = length / num_elements
         rod_bodies, rod_joints = builder.add_rod(
-            positions=[wp.vec3(*p) for p in nodes],
-            radius=radius,
+            rod=newton.Rod(nodes, radius=radius),
             stretch_stiffness=structural_stiffness[0] / nominal_segment_length,
             shear_stiffness=structural_stiffness[1] / nominal_segment_length,
             bend_stiffness=structural_stiffness[2] / nominal_segment_length,

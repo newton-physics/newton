@@ -116,6 +116,15 @@ def compute_box_complementarity_residual(
 
     Positive velocity complements the lower face and negative velocity
     complements the upper face.
+
+    Args:
+        lambda_value: Current multiplier value.
+        velocity: Constraint velocity.
+        lower: Lower multiplier bound.
+        upper: Upper multiplier bound.
+
+    Returns:
+        Directional complementarity residual.
     """
     return (lambda_value - lower) * wp.max(velocity, 0.0) + (upper - lambda_value) * wp.max(-velocity, 0.0)
 

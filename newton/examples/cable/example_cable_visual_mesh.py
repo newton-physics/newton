@@ -47,8 +47,7 @@ class Example:
         ).astype(np.float32)
 
         rod_bodies, _ = builder.add_rod(
-            positions=[wp.vec3(*p) for p in nodes],
-            radius=radius,
+            rod=newton.Rod(nodes, radius=radius),
             stretch_stiffness=1.0e5,
             bend_stiffness=5.0e1,
             bend_damping=1.0e0,

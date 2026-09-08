@@ -30,12 +30,7 @@ from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
 
 class _MeshProbe(ViewerNull):
-    """Captures every ``log_mesh`` call keyed by object name.
-
-    Deliberately overrides ``log_mesh`` with the legacy signature (no new
-    keywords) to pin that visual-mesh drawing works with pre-existing viewer
-    subclasses.
-    """
+    """Captures every ``log_mesh`` call keyed by object name."""
 
     def __init__(self):
         super().__init__(num_frames=1)
@@ -54,6 +49,8 @@ class _MeshProbe(ViewerNull):
         color=None,
         roughness=None,
         metallic=None,
+        dynamic=False,
+        opacity=None,
     ):
         self.calls[name] = {
             "points": None if points is None else points.numpy(),
@@ -61,6 +58,7 @@ class _MeshProbe(ViewerNull):
             "uvs": None if uvs is None else uvs.numpy(),
             "texture": texture,
             "hidden": hidden,
+            "opacity": opacity,
         }
 
     def _frame(self, state, t=0.0):

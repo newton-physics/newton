@@ -33,7 +33,7 @@ def _require_onnx():
         import onnx  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - exercised only on missing dep
         raise ImportError(
-            "Loading neural-controller ONNX checkpoints requires the optional `onnx` package. "
+            "Loading neural-drive ONNX checkpoints requires the optional `onnx` package. "
             "Install it with `pip install newton[onnx]`."
         ) from exc
     return onnx
@@ -45,7 +45,7 @@ def _require_warp_nn_runtime():
         from warp_nn.runtime import OnnxRuntime  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - exercised only on missing dep
         raise ImportError(
-            "Loading neural-controller ONNX checkpoints requires Warp-NN's ONNX runtime. "
+            "Loading neural-drive ONNX checkpoints requires Warp-NN's ONNX runtime. "
             "Install it with `pip install newton[onnx]`."
         ) from exc
     return OnnxRuntime
@@ -80,6 +80,7 @@ def load_checkpoint(
     device: str | wp.Device | None = None,
     batch_size: int = 1,
     input_batch_axes: int | dict[str, int] | None = None,
+    requires_grad: bool = False,
 ):
     """Load a neural-network checkpoint as ``(model, metadata)``.
 
@@ -95,6 +96,10 @@ def load_checkpoint(
             buffers.
         input_batch_axes: Optional ONNX graph-input batch-axis override passed
             to :class:`warp_nn.runtime.OnnxRuntime`.
+        requires_grad: Whether the runtime allocates gradient storage for its
+            own tensors. Required to differentiate the network, since the
+            runtime owns intermediate buffers that cannot be given gradients
+            after construction. Ignored for Torch checkpoints.
 
     Returns:
         ``(model, metadata)`` where *model* is a Warp-NN runtime for ONNX
@@ -105,7 +110,13 @@ def load_checkpoint(
 
     metadata = load_metadata(path)
     OnnxRuntime = _require_warp_nn_runtime()
-    runtime = OnnxRuntime(path, device=device, batch_size=batch_size, input_batch_axes=input_batch_axes)
+    runtime = OnnxRuntime(
+        path,
+        device=device,
+        batch_size=batch_size,
+        input_batch_axes=input_batch_axes,
+        requires_grad=requires_grad,
+    )
     return runtime, metadata
 
 
@@ -178,7 +189,7 @@ def _require_torch():
         import torch
     except ImportError as exc:
         raise ImportError(
-            "Loading .pt/.pth neural-controller checkpoints requires PyTorch. "
+            "Loading .pt/.pth neural-drive checkpoints requires PyTorch. "
             "Install it with `pip install newton[torch-cu12]` or `pip install newton[torch-cu13]`."
         ) from exc
     return torch
@@ -206,7 +217,7 @@ def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
     with the train/eval mode that was captured at export time.
 
     ``warn`` controls the deprecation warnings for the legacy formats; its
-    ``stacklevel`` assumes the call chain controller ``__init__`` →
+    ``stacklevel`` assumes the call chain drive ``__init__`` →
     :func:`load_checkpoint` → here, so the warning points at the user's code.
     """
     torch = _require_torch()

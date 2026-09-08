@@ -182,9 +182,6 @@ def test_shapes_on_plane(test, device, solver_fn):
     substeps = 30  # Increased from 10 for better contact stability
     sim_dt = 1.0 / 60.0
     if use_cuda_graph:
-        # ensure data is allocated and modules are loaded before graph capture
-        # in case of an earlier CUDA version
-        simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, sim_dt, substeps)
         with wp.ScopedCapture(device) as capture:
             simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, sim_dt, substeps)
         graph = capture.graph

@@ -7,7 +7,8 @@ import os
 
 import numpy as np
 
-from ...core.builder import ModelBuilderKamino
+import newton
+
 from .. import logger as msg
 from ..control import JointSpacePIDController
 from .simulator import Simulator
@@ -50,17 +51,14 @@ class SimulationLogger:
         self,
         max_frames: int,
         sim: Simulator,
-        builder: ModelBuilderKamino,
         controller: JointSpacePIDController | None = None,
     ):
         """
         TODO
         """
-        # Check if the simulation builder, and controller instances are valid
+        # Check if the simulation and controller instances are valid
         if not isinstance(sim, Simulator):
             raise TypeError("'simulator' must be an instance of `Simulator`.")
-        if not isinstance(builder, ModelBuilderKamino):
-            raise TypeError("'builder' must be an instance of `ModelBuilderKamino`.")
         if controller is not None:
             if not isinstance(controller, JointSpacePIDController):
                 raise TypeError("'controller' must be an instance of `JointSpacePIDController` or `None`.")
@@ -76,7 +74,6 @@ class SimulationLogger:
         self._frames: int = 0
         self._max_frames: int = max_frames
         self._sim: Simulator = sim
-        self._builder: ModelBuilderKamino = builder
         self._ctrl: JointSpacePIDController | None = controller
 
         # Allocate logging arrays for solver convergence info
@@ -99,12 +96,10 @@ class SimulationLogger:
                 f"number of actuated joints ({self._nja}), skipping joint logging."
             )
         else:
-            dof_offset = 0
-            for joint in self._builder.all_joints:
-                if joint.is_actuated:
-                    for dof in range(joint.num_dofs):
-                        self._actuated_dofs.append(dof_offset + dof)
-                dof_offset += joint.num_dofs
+            joint_target_mode_np = sim.model_newton.joint_target_mode.numpy()
+            self._actuated_dofs = [
+                i for i, mode in enumerate(joint_target_mode_np) if mode != newton.JointTargetMode.NONE
+            ]
 
         # Allocate actuated joint logging arrays if applicable
         if self._njaq > 0 and self._nja > 0:
