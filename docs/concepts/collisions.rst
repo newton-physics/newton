@@ -1880,8 +1880,38 @@ needed.
 **Hydroelastic stiffness (kh):**
 
 The ``kh`` parameter on each shape controls area-dependent contact stiffness.
-For a pair, the material slope is the series combination
-``k_eff = k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+For the default linear pressure law, penetrating contacts use the pressure
+gradients projected onto the contact-face normal ``n`` (from shape A to B):
+``g_a = kh_a * dot(grad(sdf_a), n)`` and
+``g_b = -kh_b * dot(grad(sdf_b), n)``. Newton differentiates the trilinear
+corner fields used by marching cubes, including their physical voxel spacing.
+The gradient magnitude is retained rather than normalized.
+
+When both projections are positive and finite, their series combination
+``g = g_a * g_b / (g_a + g_b)`` gives the local pressure response to normal
+approach. An unreduced face of area ``A`` and pressure ``p`` has the tangent
+spring ``k = A * g`` and effective separation ``phi = -p / g``, subject to
+the numerical safeguards for very small separations. Together these preserve
+the exported spring's current normal force ``k * (-phi) = A * p``. Opposing unit SDF gradients
+recover the material-only series slope; oblique gradients change the tangent.
+
+The effective spring separation is distinct from the geometric pair separation
+``d`` used for contact detection, reduction, and surface visualization. Contact
+reduction retains its existing normal-force allocation and rescales each
+selected spring using that face's pressure and gradient. A synthetic anchor
+uses the deepest representative's pressure and gradient. This remains a
+representative-contact approximation, including when normal matching rotates
+the selected normal; it does not preserve the full unreduced stiffness tensor.
+The exported effective separation also changes the witness-point separation,
+so friction lever arms and simulated trajectories can differ from those of the
+previous geometric-separation springs. In particular, preserving the spring
+force does not preserve the correction of a solver that uses separation without
+the exported stiffness, such as XPBD's positional contact solve.
+
+Custom pressure callbacks and faces with nonpositive, nonfinite, or numerically
+unusable gradients retain the pressure-over-geometric-depth spring. Speculative
+contacts retain the material-only activation stiffness described above. Tune
+``kh`` for the desired penetration response.
 
 **Custom pressure laws:**
 
@@ -1932,7 +1962,9 @@ additional gain unless you intentionally want a redundant parameterization: only
 their product affects the resulting pressure.
 When contact reduction is enabled, Newton reduces contacts after evaluating the
 same pressure law on the hydroelastic faces; no separate linear stiffness law is
-applied to reduced penetrating contacts. The evaluated pressure is stored once
+inferred for custom callbacks. Custom callbacks retain the geometric-depth
+spring even if they implement a linear law; the projected-gradient tangent is
+selected only when ``pressure_func=None``. The evaluated pressure is stored once
 per buffered face because the pair separation does not contain either shape's
 individual SDF depth. Speculative contacts do not use this stored pressure;
 their activation stiffness uses the declared ``kh`` values and the deprecated
