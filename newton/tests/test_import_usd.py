@@ -7579,6 +7579,58 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_mesh_preserves_subdivision_scheme(self):
+        """Preserve subdivision intent on imported visual meshes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.bilinear)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        self.assertEqual(builder.shape_source[shape]._subdivision_scheme, "bilinear")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_polygon_mesh_preserves_authored_normals(self):
+        """Preserve authored normals on imported polygonal visual meshes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateNormalsAttr().Set([(0.0, 1.0, 0.0)] * 3)
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        visual_mesh = builder.shape_source[shape]
+        self.assertEqual(visual_mesh._subdivision_scheme, "none")
+        np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_mesh_material_subset_with_loaded_texture_array(self):
         """Import a material-subset mesh whose subset texture decodes to an image array.
 
@@ -14256,6 +14308,17 @@ def Mesh "cube"
 """
 
     @staticmethod
+    def _define_two_triangle_mesh():
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        return stage, mesh
+
+    @staticmethod
     def _create_stage_with_texture(texture_asset: str, source_color_space: str | None = None):
         from pxr import Sdf, Usd, UsdGeom, UsdShade
 
@@ -14326,6 +14389,54 @@ def Mesh "cube"
 
         mesh_without = usd.get_mesh(prim, load_normals=False)
         self.assertIsNone(mesh_without.normals, "Normals should be None when load_normals=False")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_broadcasts_constant_normals(self):
+        """Broadcast constant normals to every mesh vertex."""
+        from pxr import UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        mesh_prim.CreateNormalsAttr().Set([(0.0, 0.0, 1.0)])
+        mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.constant)
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        np.testing.assert_allclose(mesh.normals, np.tile((0.0, 0.0, 1.0), (4, 1)), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_expands_uniform_normals(self):
+        """Split vertices where uniform face normals disagree."""
+        from pxr import UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        mesh_prim.CreateNormalsAttr().Set([(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)])
+        mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.uniform)
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        corner_normals = np.asarray(mesh.normals)[np.asarray(mesh.indices)]
+        expected = np.array([(0.0, 0.0, 1.0)] * 3 + [(0.0, 1.0, 0.0)] * 3)
+        np.testing.assert_allclose(corner_normals, expected, atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_expands_indexed_vertex_normals(self):
+        """Expand indexed vertex normals before constructing the mesh."""
+        from pxr import Sdf, UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        normals = UsdGeom.PrimvarsAPI(mesh_prim).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+        )
+        normals.Set([(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)])
+        normals.SetIndices([0, 0, 1, 1])
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        expected = np.array([(0.0, 0.0, 1.0)] * 2 + [(0.0, 1.0, 0.0)] * 2)
+        np.testing.assert_allclose(mesh.normals, expected, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_facevarying_normals_produce_correct_directions(self):

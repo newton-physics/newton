@@ -52,6 +52,11 @@ _SIDEBAR_WIDTH_PX: float = 300.0
 _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
+def _use_flat_shading(normals: wp.array[wp.vec3] | None, subdivision_scheme: str | None) -> bool:
+    """Return whether source metadata requests generated face normals."""
+    return normals is None and subdivision_scheme in ("none", "bilinear")
+
+
 @wp.kernel
 def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
     # Duplicate N values into 2N values (two caps per capsule).
@@ -1072,6 +1077,7 @@ class ViewerGL(ViewerBase):
             self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        self.objects[name].flat_shading = _use_flat_shading(normals, self._active_mesh_subdivision_scheme)
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))

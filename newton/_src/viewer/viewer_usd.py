@@ -348,6 +348,8 @@ class ViewerUSD(ViewerBase):
         if dynamic:
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts, self._frame_index)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np, self._frame_index)
+        if self._active_mesh_subdivision_scheme is not None:
+            mesh_prim.GetSubdivisionSchemeAttr().Set(self._active_mesh_subdivision_scheme)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
         valid_texture = texture is not None and uvs is not None

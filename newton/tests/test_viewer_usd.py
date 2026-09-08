@@ -68,6 +68,22 @@ class TestViewerUSD(unittest.TestCase):
         self.assertTrue(shader)
         return shader
 
+    def test_log_mesh_authors_subdivision_scheme(self):
+        """Author the requested subdivision scheme on mesh prototypes."""
+        viewer = self._make_viewer()
+        mesh = newton.Mesh(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [0, 1, 2],
+            compute_inertia=False,
+        )
+        mesh._subdivision_scheme = "bilinear"
+
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/mesh", newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh)
+
+        mesh_prim = UsdGeom.Mesh.Get(viewer.stage, "/root/mesh")
+        self.assertEqual(mesh_prim.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.bilinear)
+
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
 

@@ -135,6 +135,20 @@ class TestUsdMeshHelpers(unittest.TestCase):
         self.assertIsInstance(mesh, newton.Mesh)
         assert_np_equal(mesh.indices, np.array([0, 1, 2], dtype=np.int32))
 
+    def test_get_mesh_preserves_subdivision_scheme(self):
+        """Preserve imported subdivision intent through mesh copies."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh_prim = _define_triangle_mesh(stage)
+        mesh_prim.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.bilinear)
+
+        mesh = newton.usd.get_mesh(mesh_prim.GetPrim(), compute_inertia=False)
+        mesh_copy = mesh.copy()
+
+        self.assertEqual(mesh._subdivision_scheme, "bilinear")
+        self.assertEqual(mesh_copy._subdivision_scheme, "bilinear")
+
     def test_mesh_create_from_usd_accepts_legacy_prim_keyword(self):
         """Keep ``Mesh.create_from_usd(prim=...)`` working."""
         from pxr import Usd

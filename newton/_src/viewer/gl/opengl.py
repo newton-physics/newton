@@ -204,6 +204,7 @@ class MeshGL:
         self.hidden = hidden
         self.backface_culling = backface_culling
         self.dynamic = dynamic
+        self.flat_shading = False
 
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
         self.indices = None
@@ -255,6 +256,7 @@ class MeshGL:
         gl.glDisableVertexAttribArray(7)
         gl.glDisableVertexAttribArray(8)
         gl.glDisableVertexAttribArray(9)
+        gl.glDisableVertexAttribArray(10)
 
         #   column 0  (1,0,0,0)
         gl.glVertexAttrib4f(3, 1.0, 0.0, 0.0, 0.0)
@@ -439,6 +441,7 @@ class MeshGL:
 
             gl.glBindVertexArray(self.vao)
             gl.glVertexAttrib1f(9, self.opacity)
+            gl.glVertexAttrib1f(10, float(self.flat_shading))
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
 
@@ -853,6 +856,8 @@ class MeshInstancerGL:
         # if a later update actually contains transparent instances.
         gl.glDisableVertexAttribArray(9)
         gl.glVertexAttrib1f(9, 1.0)
+        # Flat shading is a per-prototype constant shared by every instance.
+        gl.glDisableVertexAttribArray(10)
 
         gl.glBindVertexArray(0)
 
@@ -1091,6 +1096,7 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
+        gl.glVertexAttrib1f(10, float(self.mesh.flat_shading))
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )

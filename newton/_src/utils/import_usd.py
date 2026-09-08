@@ -1077,9 +1077,15 @@ def parse_usd(
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
         physics_mesh = _get_mesh_cached(prim)
-        if texture is not None:
-            render_mesh = _get_mesh_cached(prim, load_uvs=True)
-            # Texture UV expansion is render-only. Preserve the collision mesh's
+        normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+        has_normals = bool(normals_primvar and normals_primvar.HasValue())
+        if not has_normals:
+            normals_attr = UsdGeom.Mesh(prim).GetNormalsAttr()
+            has_normals = bool(normals_attr and normals_attr.HasValue())
+
+        if texture is not None or has_normals:
+            render_mesh = _get_mesh_cached(prim, load_uvs=texture is not None, load_normals=True)
+            # Normal/UV expansion is render-only. Preserve the collision mesh's
             # mass/inertia so visibility changes do not perturb simulation.
             mesh = Mesh(
                 render_mesh.vertices,
@@ -1095,6 +1101,7 @@ def parse_usd(
             mesh.com = physics_mesh.com
             mesh.inertia = physics_mesh.inertia
             mesh.has_inertia = physics_mesh.has_inertia
+            mesh._subdivision_scheme = render_mesh._subdivision_scheme
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
         _apply_visual_material(mesh, material_props)
@@ -1194,6 +1201,7 @@ def parse_usd(
             is_solid=mesh.is_solid,
             maxhullvert=mesh.maxhullvert,
         )
+        submesh._subdivision_scheme = mesh._subdivision_scheme
 
         _apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
