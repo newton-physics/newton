@@ -48,6 +48,7 @@ from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.geometry import BroadPhaseAllPairs, NarrowPhase
 from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
     add_function_test,
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
@@ -351,6 +352,151 @@ class TestCollisionPipeline(unittest.TestCase):
 
         self.assertEqual(disabled_contacts.soft_contact_max, 0)
         self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_reads_all_attributes(self):
+        """Read authored collision-pipeline USD attributes."""
+        from pxr import Usd, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_sphere(body, radius=1.0)
+        model = builder.finalize(device="cpu")
+
+        # Constructed with no USD involvement, so its attributes are the plain
+        # CollisionPipeline.__init__ defaults -- used below to confirm the USD
+        # attributes actually override something rather than coincidentally match.
+        default_pipeline = CollisionPipeline(model)
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+
+        # With the API applied but nothing authored, create_from_usd should fall
+        # back to the same defaults as the plain constructor.
+        unauthored_pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+
+        self.assertEqual(unauthored_pipeline.rigid_contact_max, default_pipeline.rigid_contact_max)
+        self.assertEqual(unauthored_pipeline.broad_phase_mode, default_pipeline.broad_phase_mode)
+        self.assertEqual(
+            unauthored_pipeline.narrow_phase.max_triangle_pairs, default_pipeline.narrow_phase.max_triangle_pairs
+        )
+        self.assertEqual(unauthored_pipeline.reduce_contacts, default_pipeline.reduce_contacts)
+        self.assertEqual(unauthored_pipeline.soft_contact_max, default_pipeline.soft_contact_max)
+        self.assertEqual(unauthored_pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
+        self.assertEqual(
+            unauthored_pipeline.enable_rigid_soft_full_surface_contact,
+            default_pipeline.enable_rigid_soft_full_surface_contact,
+        )
+        self.assertEqual(unauthored_pipeline.requires_grad, default_pipeline.requires_grad)
+        self.assertEqual(unauthored_pipeline.deterministic, default_pipeline.deterministic)
+        self.assertEqual(
+            unauthored_pipeline.include_static_kinematic_pairs, default_pipeline.include_static_kinematic_pairs
+        )
+        self.assertEqual(unauthored_pipeline.contact_matching, default_pipeline.contact_matching)
+        self.assertEqual(unauthored_pipeline.contact_report, default_pipeline.contact_report)
+        self.assertEqual(unauthored_pipeline.narrow_phase.verify_buffers, default_pipeline.narrow_phase.verify_buffers)
+        self.assertEqual(unauthored_pipeline.speculative_config, default_pipeline.speculative_config)
+        self.assertIsNone(unauthored_pipeline._contact_matcher)
+        self.assertIsNone(default_pipeline._contact_matcher)
+
+        # With the API applied and everything authored, create_from_usd should use the
+        # authored values.
+
+        scene_prim.GetAttribute("newton:collisionPipeline:rigidContactMax").Set(19)
+        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("sap")
+        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(500000)
+        scene_prim.GetAttribute("newton:collisionPipeline:reduceContacts").Set(False)
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactMax").Set(128)
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(0.02)
+        scene_prim.GetAttribute("newton:collisionPipeline:enableRigidSoftFullSurfaceContact").Set(True)
+        scene_prim.GetAttribute("newton:collisionPipeline:requiresGrad").Set("true")
+        scene_prim.GetAttribute("newton:collisionPipeline:deterministic").Set(True)
+        scene_prim.GetAttribute("newton:collisionPipeline:includeStaticKinematicPairs").Set(False)
+        scene_prim.GetAttribute("newton:collisionPipeline:shapePairsMax").Set(2048)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactMatching").Set("sticky")
+        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingPosThreshold").Set(0.01)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Set(0.9)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
+        scene_prim.GetAttribute("newton:collisionPipeline:verifyBuffers").Set(False)
+        scene_prim.GetAttribute("newton:collisionPipeline:speculativeMaxExtension").Set(0.15)
+
+        pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+
+        self.assertNotEqual(pipeline.rigid_contact_max, default_pipeline.rigid_contact_max)
+        self.assertNotEqual(pipeline.broad_phase_mode, default_pipeline.broad_phase_mode)
+        self.assertNotEqual(pipeline.narrow_phase.max_triangle_pairs, default_pipeline.narrow_phase.max_triangle_pairs)
+        self.assertNotEqual(pipeline.reduce_contacts, default_pipeline.reduce_contacts)
+        self.assertNotEqual(pipeline.soft_contact_max, default_pipeline.soft_contact_max)
+        self.assertNotEqual(pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
+        self.assertNotEqual(
+            pipeline.enable_rigid_soft_full_surface_contact, default_pipeline.enable_rigid_soft_full_surface_contact
+        )
+        self.assertNotEqual(pipeline.requires_grad, default_pipeline.requires_grad)
+        self.assertNotEqual(pipeline.deterministic, default_pipeline.deterministic)
+        self.assertNotEqual(pipeline.include_static_kinematic_pairs, default_pipeline.include_static_kinematic_pairs)
+        self.assertNotEqual(pipeline.shape_pairs_max, default_pipeline.shape_pairs_max)
+        self.assertNotEqual(pipeline.contact_matching, default_pipeline.contact_matching)
+        self.assertNotEqual(pipeline.contact_report, default_pipeline.contact_report)
+        self.assertNotEqual(pipeline.narrow_phase.verify_buffers, default_pipeline.narrow_phase.verify_buffers)
+        self.assertNotEqual(pipeline.speculative_config, default_pipeline.speculative_config)
+
+        self.assertEqual(pipeline.rigid_contact_max, 19)
+        self.assertEqual(pipeline.broad_phase_mode, "sap")
+        self.assertEqual(pipeline.narrow_phase.max_triangle_pairs, 500000)
+        self.assertFalse(pipeline.reduce_contacts)
+        self.assertEqual(pipeline.soft_contact_max, 128)
+        self.assertAlmostEqual(pipeline.soft_contact_gap, 0.02)
+        self.assertTrue(pipeline.enable_rigid_soft_full_surface_contact)
+        self.assertTrue(pipeline.requires_grad)
+        self.assertTrue(pipeline.deterministic)
+        self.assertFalse(pipeline.include_static_kinematic_pairs)
+        self.assertEqual(pipeline.shape_pairs_max, 2048)
+        self.assertEqual(pipeline.contact_matching, "sticky")
+        self.assertTrue(pipeline.contact_report)
+        self.assertFalse(pipeline.narrow_phase.verify_buffers)
+        self.assertIsNotNone(pipeline.speculative_config)
+        self.assertAlmostEqual(pipeline.speculative_config.max_speculative_extension, 0.15)
+        self.assertIsNotNone(pipeline._contact_matcher)
+        self.assertAlmostEqual(pipeline._contact_matcher._pos_threshold_sq, 0.01**2)
+        self.assertAlmostEqual(pipeline._contact_matcher._normal_dot_threshold, 0.9)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_reads_contact_reduction_hashtable_size_factor(self):
+        """Verified separately: only observable when reduce_contacts is on and the
+        model has meshes/heightfields, which conflicts with the other attribute
+        overrides exercised together in test_create_from_usd_reads_all_attributes."""
+        from pxr import Usd, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        mesh = newton.Mesh(
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(-1, mesh=mesh)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_mesh(body, mesh=mesh)
+        model = builder.finalize(device="cpu")
+
+        default_pipeline = CollisionPipeline(model, broad_phase="nxn")
+        self.assertIsNotNone(default_pipeline.narrow_phase.global_contact_reducer)
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("nxn")
+        scene_prim.GetAttribute("newton:collisionPipeline:contactReductionHashtableSizeFactor").Set(0.5)
+
+        pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+
+        self.assertIsNotNone(pipeline.narrow_phase.global_contact_reducer)
+        self.assertNotEqual(
+            pipeline.narrow_phase.global_contact_reducer.hashtable_size_factor,
+            default_pipeline.narrow_phase.global_contact_reducer.hashtable_size_factor,
+        )
+        self.assertAlmostEqual(pipeline.narrow_phase.global_contact_reducer.hashtable_size_factor, 0.5)
 
 
 def test_collision_pipeline_first_call_capture(test, device):
