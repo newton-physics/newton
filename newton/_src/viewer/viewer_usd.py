@@ -302,6 +302,7 @@ class ViewerUSD(ViewerBase):
         opacity: float | None = None,
         *,
         roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -324,6 +325,9 @@ class ViewerUSD(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
             roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture_influence: Blend weight between ``roughness`` and
+                ``roughness_texture`` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
         """
 
         name = self._qualify(name)
@@ -358,6 +362,7 @@ class ViewerUSD(ViewerBase):
         self._mesh_appearance[name] = {
             "texture": texture if valid_texture else None,
             "roughness_texture": roughness_texture if valid_roughness_texture else None,
+            "roughness_texture_influence": roughness_texture_influence,
             "color": color,
             "roughness": roughness,
             "metallic": metallic,
@@ -385,6 +390,7 @@ class ViewerUSD(ViewerBase):
                 name,
                 texture=texture if valid_texture else None,
                 roughness_texture=roughness_texture if valid_roughness_texture else None,
+                roughness_texture_influence=roughness_texture_influence,
                 opacity=opacity,
                 roughness=roughness,
                 metallic=metallic,
@@ -479,6 +485,7 @@ class ViewerUSD(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """Return a cached UsdPreviewSurface material for the requested appearance."""
         from pxr import Sdf as _Sdf
@@ -494,6 +501,7 @@ class ViewerUSD(ViewerBase):
         requested_opacity_value = self._material_float(opacity, 1.0)
         opacity_value = self._preview_surface_opacity_value(requested_opacity_value)
         roughness_value = self._material_float(roughness, 0.5)
+        roughness_influence_value = self._material_float(roughness_texture_influence, 1.0)
         metallic_value = self._material_float(metallic, 0.0)
         ior_value = self._preview_surface_ior_value(requested_opacity_value)
 
@@ -504,6 +512,7 @@ class ViewerUSD(ViewerBase):
             tuple(self._material_key_value(v) for v in color_value),
             self._material_key_value(opacity_value),
             self._material_key_value(roughness_value),
+            self._material_key_value(roughness_influence_value),
             self._material_key_value(metallic_value),
             self._material_key_value(ior_value) if ior_value is not None else None,
         )
@@ -557,6 +566,9 @@ class ViewerUSD(ViewerBase):
             roughness_reader.CreateInput("sourceColorSpace", _Sdf.ValueTypeNames.Token).Set("raw")
             roughness_reader.CreateInput("wrapS", _Sdf.ValueTypeNames.Token).Set("repeat")
             roughness_reader.CreateInput("wrapT", _Sdf.ValueTypeNames.Token).Set("repeat")
+            roughness_reader.CreateInput("scale", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_influence_value))
+            roughness_bias = (1.0 - roughness_influence_value) * roughness_value
+            roughness_reader.CreateInput("bias", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_bias))
             roughness_reader.CreateOutput("r", _Sdf.ValueTypeNames.Float)
             roughness_reader.CreateInput("st", _Sdf.ValueTypeNames.Float2).ConnectToSource(
                 st_reader.ConnectableAPI(), "result"
@@ -663,6 +675,7 @@ class ViewerUSD(ViewerBase):
         mesh_appearance = self._mesh_appearance.get(mesh, {})
         mesh_texture = mesh_appearance.get("texture")
         mesh_roughness_texture = mesh_appearance.get("roughness_texture")
+        mesh_roughness_texture_influence = mesh_appearance.get("roughness_texture_influence", 1.0)
         mesh_opacity = mesh_appearance.get("opacity")
 
         for i in range(len(xforms)):
@@ -724,6 +737,7 @@ class ViewerUSD(ViewerBase):
                     mesh,
                     texture=mesh_texture if use_texture else None,
                     roughness_texture=mesh_roughness_texture if textures_enabled else None,
+                    roughness_texture_influence=mesh_roughness_texture_influence,
                     color=None if use_texture else material_color,
                     opacity=float(material_opacity) if material_opacity is not None else None,
                     roughness=roughness,

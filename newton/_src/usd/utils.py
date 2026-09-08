@@ -1207,6 +1207,7 @@ def _get_mesh_from_source(
         color=material_source.color if material_source is not None else None,
         texture=material_source.texture if material_source is not None else None,
         roughness_texture=material_source.roughness_texture if material_source is not None else None,
+        roughness_texture_influence=material_source.roughness_texture_influence if material_source is not None else 1.0,
         metallic=material_source.metallic if material_source is not None else None,
         roughness=material_source.roughness if material_source is not None else None,
         texture_transform=material_source.texture_transform
@@ -1784,6 +1785,9 @@ def get_mesh(
         opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
         roughness_texture=material_props.get("roughness_texture"),
+        roughness_texture_influence=material_props["roughness_texture_influence"]
+        if material_props.get("roughness_texture_influence") is not None
+        else 1.0,
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
         texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
@@ -2934,6 +2938,7 @@ def _empty_material_properties() -> dict[str, Any]:
         "roughness": None,
         "texture": None,
         "roughness_texture": None,
+        "roughness_texture_influence": None,
         "texture_transform": None,
     }
 
@@ -3162,6 +3167,8 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if has_roughness_source:
             roughness_texture, roughness_transform = _roughness_texture_from_input(roughness_input, prim)
             properties["roughness_texture"] = roughness_texture
+            if roughness_texture is not None:
+                properties["roughness_texture_influence"] = 1.0
             if properties["texture_transform"] is None and roughness_transform is not None:
                 properties["texture_transform"] = roughness_transform
 
@@ -3220,6 +3227,12 @@ def _is_roughness_texture_input_name(base_name: str) -> bool:
     """Return whether an input can provide the primary surface roughness map."""
     normalized = base_name.lower().replace("_", "")
     return normalized in _ROUGHNESS_TEXTURE_INPUT_NAMES
+
+
+def _default_roughness_texture_influence(input_name: str) -> float:
+    """Return the shader convention's default roughness-map influence."""
+    normalized = input_name.lower().replace("_", "")
+    return 0.0 if normalized == "reflectionroughnesstexture" else 1.0
 
 
 def _roughness_texture_from_input(
@@ -3362,6 +3375,17 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
             if roughness_texture is None:
                 continue
             properties["roughness_texture"] = roughness_texture
+            influence = _coerce_float(
+                _get_input_value(
+                    shader,
+                    ("reflection_roughness_texture_influence", "roughness_texture_influence"),
+                )
+            )
+            if influence is None:
+                # OmniPBR disables an authored roughness map by default; generic
+                # roughness-map inputs conventionally use the map directly.
+                influence = _default_roughness_texture_influence(inp.GetBaseName())
+            properties["roughness_texture_influence"] = influence
             if properties["texture_transform"] is None and roughness_transform is not None:
                 properties["texture_transform"] = roughness_transform
             break
@@ -3386,6 +3410,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     if material is None:
         return properties
 
+    roughness_texture_input_name = None
     for inp in material.GetInputs():
         name = inp.GetBaseName()
         name_lower = name.lower()
@@ -3402,6 +3427,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             roughness_texture, _ = _roughness_texture_from_input(inp, prim)
             if roughness_texture is not None:
                 properties["roughness_texture"] = roughness_texture
+                roughness_texture_input_name = name
                 continue
 
         is_generic_color_texture = name_lower in ("texture", "file")
@@ -3451,6 +3477,17 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             roughness = _coerce_float(value)
             if roughness is not None:
                 properties["roughness"] = roughness
+
+        if properties["roughness_texture_influence"] is None and name_lower in (
+            "roughness_texture_influence",
+            "reflection_roughness_texture_influence",
+        ):
+            properties["roughness_texture_influence"] = _coerce_float(value)
+
+    if properties["roughness_texture"] is not None and properties["roughness_texture_influence"] is None:
+        properties["roughness_texture_influence"] = _default_roughness_texture_influence(
+            roughness_texture_input_name or ""
+        )
 
     return properties
 
@@ -3511,7 +3548,15 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "roughness_texture", "color", "opacity", "metallic", "roughness"):
+    for key in (
+        "texture",
+        "roughness_texture",
+        "roughness_texture_influence",
+        "color",
+        "opacity",
+        "metallic",
+        "roughness",
+    ):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     display_props = _extract_display_primvar_properties(target_prim)

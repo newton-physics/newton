@@ -7840,6 +7840,7 @@ def Xform "Articulation" (
         self.assertIsNone(src.texture)
         self.assertIsInstance(src.roughness_texture, str)
         self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 1.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_preview_surface_imports_roughness_texture(self):
@@ -7857,6 +7858,7 @@ def Xform "Articulation" (
         self.assertIsNone(src.texture)
         self.assertIsInstance(src.roughness_texture, str)
         self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 1.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_fallback_texture_prefers_color_output(self):
@@ -7914,7 +7916,7 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
 
-    def _build_mdl_shader_mesh_stage(self, texture_inputs: dict):
+    def _build_mdl_shader_mesh_stage(self, texture_inputs: dict, float_inputs: dict | None = None):
         """Build a stage whose mesh binds an MDL-style shader with direct asset parameters.
 
         MDL materials wire textures as direct asset inputs (e.g. ``diffuse_texture``)
@@ -7944,6 +7946,8 @@ def Xform "Articulation" (
         shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
         for name, asset in texture_inputs.items():
             shader.CreateInput(name, Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(asset))
+        for name, value in (float_inputs or {}).items():
+            shader.CreateInput(name, Sdf.ValueTypeNames.Float).Set(value)
         material.CreateOutput("mdl:surface", Sdf.ValueTypeNames.Token).ConnectToSource(shader.ConnectableAPI(), "out")
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage
@@ -7967,6 +7971,24 @@ def Xform "Articulation" (
         self.assertTrue(src.texture.endswith("albedo.png"), src.texture)
         self.assertIsInstance(src.roughness_texture, str)
         self.assertTrue(src.roughness_texture.endswith("r.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mdl_roughness_texture_preserves_influence(self):
+        """Preserve OmniPBR's blend between scalar and texture roughness."""
+        stage = self._build_mdl_shader_mesh_stage(
+            {"reflectionroughness_texture": "r.png"},
+            {
+                "reflection_roughness_constant": 0.8,
+                "reflection_roughness_texture_influence": 0.25,
+            },
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+
+        self.assertAlmostEqual(src.roughness, 0.8)
+        self.assertAlmostEqual(src.roughness_texture_influence, 0.25)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mdl_direct_asset_ignores_non_color_maps(self):

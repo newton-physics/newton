@@ -1070,7 +1070,7 @@ def parse_usd(
         elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
 
-        for key in ("opacity", "roughness", "metallic", "texture_transform"):
+        for key in ("opacity", "roughness", "roughness_texture_influence", "metallic", "texture_transform"):
             value = material_props.get(key)
             if value is not None:
                 setattr(mesh, key, value)

@@ -183,6 +183,7 @@ class Mesh:
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
         roughness_texture: str | np.ndarray | None = None,
+        roughness_texture_influence: float = 1.0,
         texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
         opacity: float | None = None,
@@ -207,9 +208,13 @@ class Mesh:
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional base-color texture path/URL or image data (H, W, C).
             roughness_texture: Optional linear roughness texture path/URL or image data (H, W, C).
+            roughness_texture_influence: Blend weight between :attr:`roughness` and
+                :attr:`roughness_texture` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
             texture_transform: Affine texture-coordinate transform as two rows
                 ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
-                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t`` and is
+                shared by the base-color and roughness textures.
             sdf: Optional prebuilt SDF object owned by this mesh.
             opacity: Optional per-mesh opacity in [0, 1].
         """
@@ -227,6 +232,7 @@ class Mesh:
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
         self._roughness_texture = _normalize_texture_input(roughness_texture)
+        self._roughness_texture_influence = roughness_texture_influence
         self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
@@ -817,6 +823,7 @@ class Mesh:
             roughness_texture=self._roughness_texture
             if isinstance(self._roughness_texture, str)
             else (self._roughness_texture.copy() if self._roughness_texture is not None else None),
+            roughness_texture_influence=self._roughness_texture_influence,
             roughness=self._roughness,
             metallic=self._metallic,
             texture_transform=self._texture_transform,
@@ -1581,6 +1588,16 @@ class Mesh:
         return self._roughness_texture_hash
 
     @property
+    def roughness_texture_influence(self) -> float:
+        """Blend weight between scalar and texture roughness in [0, 1]."""
+        return self._roughness_texture_influence
+
+    @roughness_texture_influence.setter
+    def roughness_texture_influence(self, value: float):
+        self._roughness_texture_influence = value
+        self._cached_hash = None
+
+    @property
     def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         """Affine transform applied to the authored UV coordinates."""
         return self._texture_transform
@@ -1720,7 +1737,11 @@ class Mesh:
                     digest.update(int(dimension).to_bytes(8, "big"))
                 digest.update(values.tobytes())
             digest.update(bytes([bool(self.is_solid)]))
-            texture_hashes = (self._compute_texture_hash(), self.roughness_texture_hash)
+            texture_hashes = (
+                self._compute_texture_hash(),
+                self.roughness_texture_hash,
+                self._roughness_texture_influence if self._roughness_texture is not None else None,
+            )
             self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(texture_hashes)
         return self._cached_hash
 

@@ -1711,6 +1711,7 @@ class ViewerBase(ABC):
             material_kwargs = {}
             if geo_src.roughness_texture is not None:
                 material_kwargs["roughness_texture"] = geo_src.roughness_texture
+                material_kwargs["roughness_texture_influence"] = geo_src.roughness_texture_influence
             self.log_mesh(
                 name,
                 points,
@@ -1820,6 +1821,7 @@ class ViewerBase(ABC):
         opacity: float | None = None,
         *,
         roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1847,6 +1849,9 @@ class ViewerBase(ABC):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
             roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture_influence: Blend weight between ``roughness`` and
+                ``roughness_texture`` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
         """
         pass
 
@@ -2406,6 +2411,7 @@ class ViewerBase(ABC):
         material_kwargs = {}
         if src.roughness_texture is not None:
             material_kwargs["roughness_texture"] = src.roughness_texture
+            material_kwargs["roughness_texture_influence"] = src.roughness_texture_influence
         self.log_mesh(
             name,
             points_wp,

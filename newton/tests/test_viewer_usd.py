@@ -190,8 +190,9 @@ class TestViewerUSD(unittest.TestCase):
             indices,
             uvs=uvs,
             texture=color_texture,
-            roughness=0.5,
+            roughness=0.8,
             roughness_texture=roughness_texture,
+            roughness_texture_influence=0.25,
         )
 
         prim = viewer.stage.GetPrimAtPath("/root/pbr_mesh")
@@ -205,6 +206,8 @@ class TestViewerUSD(unittest.TestCase):
         roughness_shader = UsdShade.Shader(source[0].GetPrim())
         self.assertEqual(roughness_shader.GetIdAttr().Get(), "UsdUVTexture")
         self.assertEqual(roughness_shader.GetInput("sourceColorSpace").Get(), "raw")
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), np.full(4, 0.25))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), np.full(4, 0.6))
         diffuse_path = self._logged_texture_path(viewer, "/pbr_mesh")
         roughness_asset = roughness_shader.GetInput("file").Get()
         roughness_path = roughness_asset.path if hasattr(roughness_asset, "path") else str(roughness_asset)
@@ -219,8 +222,9 @@ class TestViewerUSD(unittest.TestCase):
             uvs=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             compute_inertia=False,
             color=(0.7, 0.7, 0.7),
-            roughness=0.5,
+            roughness=0.8,
             roughness_texture=np.array([[13, 255], [255, 13]], dtype=np.uint8),
+            roughness_texture_influence=0.25,
         )
         builder = newton.ModelBuilder()
         cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0.0)
@@ -240,7 +244,10 @@ class TestViewerUSD(unittest.TestCase):
         source = surface.GetInput("roughness").GetConnectedSource()
         self.assertIsNotNone(source)
         self.assertEqual(str(source[1]), "r")
-        self.assertEqual(UsdShade.Shader(source[0].GetPrim()).GetIdAttr().Get(), "UsdUVTexture")
+        roughness_shader = UsdShade.Shader(source[0].GetPrim())
+        self.assertEqual(roughness_shader.GetIdAttr().Get(), "UsdUVTexture")
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), np.full(4, 0.25))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), np.full(4, 0.6))
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
@@ -501,12 +508,14 @@ class TestViewerUSD(unittest.TestCase):
         self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.2, places=6)
         self.assertAlmostEqual(shader.GetInput("metallic").Get(), 0.4, places=6)
 
-    def test_viewer_rtx_accepts_opacity_arguments(self):
-        """Keep ViewerRTX opacity parameters aligned with the common API."""
+    def test_viewer_rtx_accepts_material_arguments(self):
+        """Keep ViewerRTX material parameters aligned with the common API."""
         log_mesh_params = inspect.signature(ViewerRTX.log_mesh).parameters
         log_instances_params = inspect.signature(ViewerRTX.log_instances).parameters
 
         self.assertIn("opacity", log_mesh_params)
+        self.assertIn("roughness_texture", log_mesh_params)
+        self.assertIn("roughness_texture_influence", log_mesh_params)
         self.assertIn("opacities", log_instances_params)
 
     def test_viewer_rtx_compensates_preview_surface_opacity(self):
