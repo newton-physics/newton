@@ -9,7 +9,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-
 _DT = 1.0 / 240.0
 
 
@@ -41,16 +40,16 @@ def _build_single_dof_model(device, joint_type, friction):
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
-    kwargs = dict(
-        parent=-1,
-        child=body,
-        axis=newton.Axis.Z,
-        target_ke=0.0,
-        target_kd=0.0,
-        limit_ke=0.0,
-        limit_kd=0.0,
-        friction=friction,
-    )
+    kwargs = {
+        "parent": -1,
+        "child": body,
+        "axis": newton.Axis.Z,
+        "target_ke": 0.0,
+        "target_kd": 0.0,
+        "limit_ke": 0.0,
+        "limit_kd": 0.0,
+        "friction": friction,
+    }
     if joint_type == newton.JointType.REVOLUTE:
         joint = builder.add_joint_revolute(**kwargs)
     else:
@@ -74,14 +73,14 @@ def _build_actuated_mimic_model(device, follower_friction):
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
-    common = dict(
-        parent=-1,
-        axis=newton.Axis.Z,
-        target_ke=0.0,
-        target_kd=0.0,
-        limit_ke=0.0,
-        limit_kd=0.0,
-    )
+    common = {
+        "parent": -1,
+        "axis": newton.Axis.Z,
+        "target_ke": 0.0,
+        "target_kd": 0.0,
+        "limit_ke": 0.0,
+        "limit_kd": 0.0,
+    }
     leader = builder.add_joint_revolute(child=leader_body, friction=0.4, **common)
     follower = builder.add_joint_revolute(child=follower_body, friction=follower_friction, **common)
     builder.joint_qd[:] = [0.5, 0.5]

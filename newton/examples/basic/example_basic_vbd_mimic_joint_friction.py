@@ -4,9 +4,11 @@
 ###########################################################################
 # Example Basic VBD Mimic Joint Friction
 #
-# A driven prismatic joint closes one gripper jaw. The opposite jaw mimics it
-# with a negative ratio. Both slider joints use Coulomb friction, and each jaw
-# carries a passive frictional hinge downstream.
+# Two identically driven parallel grippers show how friction on a mimic
+# follower contributes to the coupled mechanism. The upper gripper has 4 N of
+# friction on both sliders. The lower gripper has 4 N on its leader and 16 N
+# on its follower, so it sticks longer and lags farther behind the same target.
+# Each jaw also carries a passive frictional hinge downstream.
 #
 # Command: python -m newton.examples basic_vbd_mimic_joint_friction
 #
@@ -20,6 +22,106 @@ import newton
 import newton.examples
 
 
+def _add_gripper(builder, *, center_z, follower_friction, label, colors, dynamic_cfg, visual_cfg):
+    """Add one frictional mimic gripper and return its leader and follower joints."""
+    jaw_x = 0.65
+    jaw_bodies = []
+    for side, color in zip((-1.0, 1.0), colors, strict=True):
+        body = builder.add_link(
+            xform=wp.transform(p=(side * jaw_x, 0.0, center_z), q=wp.quat_identity()),
+            label=f"{label}_{'leader' if side < 0.0 else 'follower'}_jaw",
+        )
+        builder.add_shape_box(
+            body,
+            hx=0.13,
+            hy=0.3,
+            hz=0.15,
+            cfg=dynamic_cfg,
+            color=color,
+        )
+        jaw_bodies.append(body)
+
+    leader_joint = builder.add_joint_prismatic(
+        parent=-1,
+        child=jaw_bodies[0],
+        parent_xform=wp.transform(p=(-jaw_x, 0.0, center_z), q=wp.quat_identity()),
+        axis=newton.Axis.X,
+        target_ke=120.0,
+        target_kd=12.0,
+        limit_lower=-0.02,
+        limit_upper=0.38,
+        limit_ke=2.0e4,
+        limit_kd=200.0,
+        friction=4.0,
+        label=f"{label}_actuated_slider",
+    )
+    follower_joint = builder.add_joint_prismatic(
+        parent=-1,
+        child=jaw_bodies[1],
+        parent_xform=wp.transform(p=(jaw_x, 0.0, center_z), q=wp.quat_identity()),
+        axis=newton.Axis.X,
+        limit_lower=-0.38,
+        limit_upper=0.02,
+        limit_ke=2.0e4,
+        limit_kd=200.0,
+        friction=follower_friction,
+        label=f"{label}_mimic_slider",
+    )
+
+    passive_joints = []
+    finger_length = 0.32
+    for side, jaw_body, color in zip((-1.0, 1.0), jaw_bodies, colors, strict=True):
+        finger_body = builder.add_link(
+            xform=wp.transform(
+                p=(side * jaw_x, 0.0, center_z - 0.15 - finger_length),
+                q=wp.quat_identity(),
+            ),
+            label=f"{label}_passive_finger",
+        )
+        builder.add_shape_box(
+            finger_body,
+            hx=0.07,
+            hy=0.22,
+            hz=finger_length,
+            cfg=dynamic_cfg,
+            color=color,
+        )
+        passive_joint = builder.add_joint_revolute(
+            parent=jaw_body,
+            child=finger_body,
+            parent_xform=wp.transform(p=(0.0, 0.0, -0.15), q=wp.quat_identity()),
+            child_xform=wp.transform(p=(0.0, 0.0, finger_length), q=wp.quat_identity()),
+            axis=newton.Axis.Y,
+            limit_lower=-0.9,
+            limit_upper=0.9,
+            limit_ke=5.0e3,
+            limit_kd=50.0,
+            friction=0.25,
+            label=f"{label}_passive_hinge",
+        )
+        passive_joints.append(passive_joint)
+
+    builder.add_articulation(
+        [leader_joint, follower_joint, *passive_joints],
+        label=label,
+    )
+    builder.set_joint_mimic(follower_joint, leader_joint, coeffs=(0.0, -1.0))
+    builder.joint_q[builder.joint_q_start[passive_joints[0]]] = -0.45
+    builder.joint_q[builder.joint_q_start[passive_joints[1]]] = 0.45
+
+    builder.add_shape_box(
+        body=-1,
+        xform=wp.transform(p=(0.0, 0.0, center_z + 0.27), q=wp.quat_identity()),
+        hx=0.95,
+        hy=0.34,
+        hz=0.045,
+        cfg=visual_cfg,
+        color=(0.2, 0.22, 0.26),
+        label=f"{label}_rail",
+    )
+    return leader_joint, follower_joint
+
+
 class Example:
     FPS = 60
     SIM_SUBSTEPS = 2
@@ -27,7 +129,7 @@ class Example:
     MAX_TRAVEL = 0.34
 
     def __init__(self, viewer, args):
-        """Build a VBD parallel gripper with frictional mimic and passive joints."""
+        """Build matched- and different-friction VBD mimic grippers."""
         newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.frame_dt = 1.0 / self.FPS
@@ -35,10 +137,11 @@ class Example:
         self.sim_time = 0.0
         self.max_observed_travel = 0.0
         self.max_mimic_error = 0.0
+        self.max_response_separation = 0.0
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         dynamic_cfg = newton.ModelBuilder.ShapeConfig(
-            density=350.0,
+            density=50.0,
             collision_group=0,
             has_shape_collision=False,
             has_particle_collision=False,
@@ -50,116 +153,26 @@ class Example:
             has_particle_collision=False,
         )
 
-        jaw_x = 0.65
-        jaw_z = 1.45
-        jaw_bodies = []
-        for side, color in ((-1.0, (0.95, 0.48, 0.18)), (1.0, (0.22, 0.58, 0.95))):
-            body = builder.add_link(
-                xform=wp.transform(p=(side * jaw_x, 0.0, jaw_z), q=wp.quat_identity()),
-                label="leader_jaw" if side < 0.0 else "mimic_jaw",
-            )
-            builder.add_shape_box(
-                body,
-                hx=0.13,
-                hy=0.32,
-                hz=0.16,
-                cfg=dynamic_cfg,
-                color=color,
-            )
-            jaw_bodies.append(body)
-
-        self.leader_joint = builder.add_joint_prismatic(
-            parent=-1,
-            child=jaw_bodies[0],
-            parent_xform=wp.transform(p=(-jaw_x, 0.0, jaw_z), q=wp.quat_identity()),
-            axis=newton.Axis.X,
-            target_ke=4.0e3,
-            target_kd=120.0,
-            limit_lower=-0.02,
-            limit_upper=0.38,
-            limit_ke=2.0e4,
-            limit_kd=200.0,
-            friction=8.0,
-            label="actuated_slider",
+        matched = _add_gripper(
+            builder,
+            center_z=2.15,
+            follower_friction=4.0,
+            label="matched_friction_4N_4N",
+            colors=((0.42, 0.78, 0.46), (0.42, 0.78, 0.46)),
+            dynamic_cfg=dynamic_cfg,
+            visual_cfg=visual_cfg,
         )
-        self.follower_joint = builder.add_joint_prismatic(
-            parent=-1,
-            child=jaw_bodies[1],
-            parent_xform=wp.transform(p=(jaw_x, 0.0, jaw_z), q=wp.quat_identity()),
-            axis=newton.Axis.X,
-            limit_lower=-0.38,
-            limit_upper=0.02,
-            limit_ke=2.0e4,
-            limit_kd=200.0,
-            friction=12.0,
-            label="mimic_slider",
+        different = _add_gripper(
+            builder,
+            center_z=0.85,
+            follower_friction=16.0,
+            label="different_friction_4N_16N",
+            colors=((0.95, 0.48, 0.18), (0.22, 0.58, 0.95)),
+            dynamic_cfg=dynamic_cfg,
+            visual_cfg=visual_cfg,
         )
-
-        passive_joints = []
-        finger_length = 0.42
-        for side, jaw_body, color in (
-            (-1.0, jaw_bodies[0], (0.98, 0.72, 0.28)),
-            (1.0, jaw_bodies[1], (0.36, 0.78, 1.0)),
-        ):
-            finger_body = builder.add_link(
-                xform=wp.transform(
-                    p=(side * jaw_x, 0.0, jaw_z - 0.16 - finger_length),
-                    q=wp.quat_identity(),
-                ),
-                label="passive_finger",
-            )
-            builder.add_shape_box(
-                finger_body,
-                hx=0.075,
-                hy=0.24,
-                hz=finger_length,
-                cfg=dynamic_cfg,
-                color=color,
-            )
-            passive_joint = builder.add_joint_revolute(
-                parent=jaw_body,
-                child=finger_body,
-                parent_xform=wp.transform(p=(0.0, 0.0, -0.16), q=wp.quat_identity()),
-                child_xform=wp.transform(p=(0.0, 0.0, finger_length), q=wp.quat_identity()),
-                axis=newton.Axis.Y,
-                limit_lower=-0.9,
-                limit_upper=0.9,
-                limit_ke=5.0e3,
-                limit_kd=50.0,
-                friction=0.8,
-                label="passive_finger_hinge",
-            )
-            passive_joints.append(passive_joint)
-
-        builder.add_articulation(
-            [self.leader_joint, self.follower_joint, *passive_joints],
-            label="frictional_parallel_gripper",
-        )
-        builder.set_joint_mimic(self.follower_joint, self.leader_joint, coeffs=(0.0, -1.0))
-
-        builder.joint_q[builder.joint_q_start[passive_joints[0]]] = -0.55
-        builder.joint_q[builder.joint_q_start[passive_joints[1]]] = 0.55
-
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(p=(0.0, 0.0, 1.72), q=wp.quat_identity()),
-            hx=0.95,
-            hy=0.38,
-            hz=0.06,
-            cfg=visual_cfg,
-            color=(0.2, 0.22, 0.26),
-            label="gripper_rail",
-        )
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(p=(0.0, 0.0, 0.42), q=wp.quat_identity()),
-            hx=0.06,
-            hy=0.38,
-            hz=0.65,
-            cfg=visual_cfg,
-            color=(0.2, 0.22, 0.26),
-            label="gripper_mount",
-        )
+        self.leader_joints = (matched[0], different[0])
+        self.follower_joints = (matched[1], different[1])
 
         builder.color()
         self.model = builder.finalize()
@@ -177,26 +190,26 @@ class Example:
 
         joint_q_start = self.model.joint_q_start.numpy()
         joint_target_q_start = self.model.joint_target_q_start.numpy()
-        self.leader_q_index = int(joint_q_start[self.leader_joint])
-        self.follower_q_index = int(joint_q_start[self.follower_joint])
-        self.leader_target_index = int(joint_target_q_start[self.leader_joint])
+        self.leader_q_indices = tuple(int(joint_q_start[joint]) for joint in self.leader_joints)
+        self.follower_q_indices = tuple(int(joint_q_start[joint]) for joint in self.follower_joints)
+        self.leader_target_indices = tuple(int(joint_target_q_start[joint]) for joint in self.leader_joints)
         self.joint_q = wp.empty_like(self.model.joint_q)
         self.joint_qd = wp.empty_like(self.model.joint_qd)
         self.target_travel = 0.0
-        self.leader_travel = 0.0
-        self.follower_travel = 0.0
+        self.matched_travel = 0.0
+        self.different_travel = 0.0
+        self.different_follower_travel = 0.0
 
         self.viewer.set_model(self.model)
-        self.viewer.set_camera(pos=wp.vec3(3.2, -4.2, 2.5), pitch=-9.0, yaw=128.0)
+        self.viewer.set_camera(pos=wp.vec3(3.5, -5.0, 2.3), pitch=-5.0, yaw=126.0)
 
     def step(self):
-        """Drive the leader while VBD enforces the frictional mimic pair."""
+        """Drive both leaders toward the same target and compare their response."""
         next_time = self.sim_time + self.frame_dt
         phase = 2.0 * math.pi * next_time / self.CYCLE_TIME
         self.target_travel = 0.5 * self.MAX_TRAVEL * (1.0 - math.cos(phase))
-        self.control.joint_target_q[self.leader_target_index : self.leader_target_index + 1].fill_(
-            self.target_travel
-        )
+        for target_index in self.leader_target_indices:
+            self.control.joint_target_q[target_index : target_index + 1].fill_(self.target_travel)
 
         for _ in range(self.SIM_SUBSTEPS):
             self.state_0.clear_forces()
@@ -207,27 +220,47 @@ class Example:
         self.sim_time = next_time
         newton.eval_ik(self.model, self.state_0, self.joint_q, self.joint_qd)
         joint_q = self.joint_q.numpy()
-        self.leader_travel = float(joint_q[self.leader_q_index])
-        self.follower_travel = float(joint_q[self.follower_q_index])
-        mimic_error = self.follower_travel + self.leader_travel
-        self.max_observed_travel = max(self.max_observed_travel, abs(self.leader_travel))
-        self.max_mimic_error = max(self.max_mimic_error, abs(mimic_error))
+        leader_travel = tuple(float(joint_q[index]) for index in self.leader_q_indices)
+        follower_travel = tuple(float(joint_q[index]) for index in self.follower_q_indices)
+        self.matched_travel, self.different_travel = leader_travel
+        self.different_follower_travel = -follower_travel[1]
+        mimic_errors = tuple(follower + leader for follower, leader in zip(follower_travel, leader_travel, strict=True))
+        response_separation = self.matched_travel - self.different_travel
+
+        self.max_observed_travel = max(self.max_observed_travel, abs(self.matched_travel))
+        self.max_mimic_error = max(self.max_mimic_error, *(abs(error) for error in mimic_errors))
+        self.max_response_separation = max(self.max_response_separation, abs(response_separation))
 
         self.viewer.log_scalar("Target travel [m]", self.target_travel)
-        self.viewer.log_scalar("Leader travel [m]", self.leader_travel)
-        self.viewer.log_scalar("Follower travel [m]", self.follower_travel)
-        self.viewer.log_scalar("Mimic error [mm]", 1000.0 * mimic_error)
+        self.viewer.log_scalar("Matched friction 4N + 4N [m]", self.matched_travel)
+        self.viewer.log_scalar("Different friction 4N + 16N [m]", self.different_travel)
+        self.viewer.log_scalar("Mirrored 16N follower travel [m]", self.different_follower_travel)
+        self.viewer.log_scalar("Friction response separation [mm]", 1000.0 * response_separation)
+        self.viewer.log_scalar("Maximum mimic error [mm]", 1000.0 * max(abs(error) for error in mimic_errors))
 
     def render(self):
-        """Render the gripper."""
+        """Render both grippers without an object between their fingers."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def gui(self, ui):
+        """Explain the visual comparison and report the current responses."""
+        ui.text("Upper green gripper: matched friction (4 N + 4 N)")
+        ui.text("Lower orange/blue gripper: higher follower friction (4 N + 16 N)")
+        ui.text("Both leaders receive the same position target.")
+        ui.separator()
+        ui.text(f"Target: {self.target_travel:.3f} m")
+        ui.text(f"Matched response: {self.matched_travel:.3f} m")
+        ui.text(f"Higher-follower-friction response: {self.different_travel:.3f} m")
+        ui.text("Each follower mirrors its leader; friction changes the pair response, not the mimic ratio.")
+
     def test_final(self):
-        """Verify the driven joint moves and its frictional follower tracks it."""
+        """Verify follower friction changes response without breaking mimic tracking."""
         if self.max_observed_travel < 0.1:
-            raise ValueError("The actuated gripper jaw did not move")
+            raise ValueError("The actuated grippers did not move")
+        if self.max_response_separation < 0.03:
+            raise ValueError("Higher mimic-follower friction did not visibly change the driven response")
         if self.max_mimic_error > 0.01:
             raise ValueError(f"Mimic error exceeded 10 mm: {1000.0 * self.max_mimic_error:.3f} mm")
 
