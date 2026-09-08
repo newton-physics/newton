@@ -10,6 +10,7 @@ import types
 import unittest
 import warnings
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
@@ -829,44 +830,32 @@ class TestModelMesh(unittest.TestCase):
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
-    def test_mesh_adjacency_public_deprecated(self):
+    def test_mesh_adjacency_public(self):
+        """Assert public construction is warning-free and eagerly builds the vectorized edge tables."""
         tris = [[0, 1, 2], [0, 2, 3]]
-        # Construction from triangle indices is supported (no warning) and eager.
-        adj = newton.utils.MeshAdjacency(tris)
+        # The supported ctor path must not warn (the deprecated aliases that warned here are gone).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adj = newton.utils.MeshAdjacency(tris)
         self.assertEqual(adj.edge_indices.shape, (5, 4))
         self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
         self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
-        # The legacy .edges dict stays available but is deprecated.
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual(len(edges), 5)
-        shared = edges[(0, 2)]
-        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+        # The shared edge (0, 2) maps to both triangles in edge_tri_indices.
+        (shared,) = np.flatnonzero(
+            (np.minimum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 0)
+            & (np.maximum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 2)
+        )
+        self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
-    def test_mesh_adjacency_indices_deprecated_alias(self):
-        tris = [[0, 1, 2], [0, 2, 3]]
-        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
-        with self.assertWarns(DeprecationWarning):
-            adj = newton.utils.MeshAdjacency(indices=tris)
-        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
-        # Passing both names with conflicting values is rejected.
-        with self.assertRaises(ValueError):
-            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
-
-    def test_mesh_adjacency_add_edge_deprecated(self):
-        adj = newton.utils.MeshAdjacency()
-        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(0, 1, 2, 0)
-        self.assertEqual(adj.edge_indices.shape, (1, 4))
-        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
-        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
-        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+    def test_mesh_adjacency_legacy_api_removed(self):
+        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
+        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        self.assertFalse(hasattr(adj, "edges"))
+        self.assertFalse(hasattr(adj, "add_edge"))
+        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
+        with self.assertRaises(TypeError):
+            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
@@ -1625,8 +1614,8 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
-    def test_large_replicated_collision_filter_pairs_deprecate_mutation_and_preserve_contacts(self):
-        """Large replicated filters should stay compact while finalized-model mutation warns."""
+    def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
+        """Keep large replicated filters compact and read-only while preserving contacts."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -1645,33 +1634,30 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
-        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
-        self.assertFalse(internal_filters.is_materialized)
-        self.assertTrue(internal_filters.contains_pair(1, 2))
-        self.assertFalse(internal_filters.is_materialized)
-
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, set)
-        self.assertTrue(internal_filters.is_materialized)
+        self.assertIsInstance(filters, AbstractSet)
+        self.assertNotIsInstance(filters, set)
         self.assertIn((1, 2), filters)
         self.assertIn((3, 4), filters)
         self.assertIn((5, 6), filters)
         expected_filters = {(1, 2), (3, 4), (5, 6)}
         self.assertEqual(filters, expected_filters)
         self.assertEqual(filters | {(ground, 1)}, expected_filters | {(ground, 1)})
-        with self.assertWarns(DeprecationWarning):
+        with self.assertRaises(AttributeError):
             filters.add((ground, 1))
-        self.assertIn((ground, 1), model.shape_collision_filter_pairs)
-        with self.assertWarns(DeprecationWarning):
+        self.assertNotIn((ground, 1), model.shape_collision_filter_pairs)
+        with self.assertRaises(AttributeError):
             model.shape_collision_filter_pairs = set()
-        self.assertEqual(model.shape_collision_filter_pairs, set())
+        self.assertEqual(model.shape_collision_filter_pairs, expected_filters)
 
         shape_contact_pairs = model.shape_contact_pairs
         assert shape_contact_pairs is not None
         contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
 
-    def test_collision_filter_in_place_mutation_warns_at_call_site(self):
+    def test_collision_filter_in_place_mutation_is_rejected(self):
+        """Reject augmented assignment on finalized-model collision filters."""
+
         def union(model: newton.Model) -> None:
             model.shape_collision_filter_pairs |= {(0, 1)}
 
@@ -1688,13 +1674,9 @@ class TestModelMesh(unittest.TestCase):
             with self.subTest(mutation=mutation.__name__):
                 model = ModelBuilder().finalize(device="cpu")
                 filters = model.shape_collision_filter_pairs
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
+                with self.assertRaises(AttributeError):
                     mutation(model)
 
-                self.assertEqual(len(caught), 1)
-                self.assertEqual(caught[0].filename, __file__)
-                self.assertEqual(caught[0].lineno, mutation.__code__.co_firstlineno + 1)
                 self.assertIs(model.shape_collision_filter_pairs, filters)
 
     def test_builder_collision_filter_pairs_preserve_list_api(self):
@@ -1786,7 +1768,8 @@ class TestModelMesh(unittest.TestCase):
         build_filters.assert_called_once()
 
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, set)
+        self.assertIsInstance(filters, AbstractSet)
+        self.assertNotIsInstance(filters, set)
         self.assertIn((1, 2), filters)
         self.assertIn((ground, 1), filters)
 
@@ -1799,7 +1782,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertNotIn((ground, 2), filters)
 
     def test_compact_replicated_collision_filters_roundtrip_viewer_file(self):
-        """ViewerFile should restore compact filters through a native public set."""
+        """Restore compact filters through the read-only public set view."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -1815,17 +1798,15 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize(device="cpu")
         expected_filters = {(1, 2), (3, 4), (ground, 1)}
-        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
-        self.assertFalse(internal_filters.is_materialized)
 
         serialized = cast(Mapping[str, Any], pointer_as_key({"model": model}, format_type="json"))
-        self.assertTrue(internal_filters.is_materialized)
         deserialized = depointer_as_key(serialized, format_type="json")
         deserialized_model = cast(Mapping[str, Any], cast(Mapping[str, Any], deserialized)["model"])
         restored_model = newton.Model(device="cpu")
         transfer_to_model(deserialized_model, restored_model)
 
-        self.assertIsInstance(restored_model.shape_collision_filter_pairs, set)
+        self.assertIsInstance(restored_model.shape_collision_filter_pairs, AbstractSet)
+        self.assertNotIsInstance(restored_model.shape_collision_filter_pairs, set)
         self.assertEqual(restored_model.shape_collision_filter_pairs, expected_filters)
 
     def test_collision_filter_array_queries_match_set(self):
@@ -1850,10 +1831,6 @@ class TestModelMesh(unittest.TestCase):
         pair_list = [tuple(pair) for pair in broad_phase_pairs.tolist()]
         self.assertEqual(pair_list, sorted(pair_list))
 
-        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
-        assert internal_filters is not None
-        self.assertFalse(internal_filters.is_materialized)
-
         self.assertTrue(model.shape_collision_filter_contains(1, 2))
         self.assertTrue(model.shape_collision_filter_contains(2, 1))
         self.assertTrue(model.shape_collision_filter_contains(ground, 1))
@@ -1866,7 +1843,6 @@ class TestModelMesh(unittest.TestCase):
             model.shape_collision_filter_contains("1", 2)  # pyright: ignore[reportArgumentType]
         with self.assertRaises(TypeError):
             model.shape_collision_filter_contains(1.0, 2)  # pyright: ignore[reportArgumentType]
-        self.assertFalse(internal_filters.is_materialized)
 
         # The canonical array aliases internal state and must be read-only.
         with self.assertRaises(ValueError):
@@ -1883,33 +1859,6 @@ class TestModelMesh(unittest.TestCase):
             model.shape_collision_filter_mask(candidates.astype(str))
 
         self.assertEqual(set(pair_list), set(model.shape_collision_filter_pairs))
-
-        # Rebuilding through the public method must use the model as the filter
-        # source even if this builder has changed since finalization.
-        builder.add_shape_collision_filter_pair(ground, 2)
-        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
-            builder.find_shape_contact_pairs(model)
-        shape_contact_pairs = model.shape_contact_pairs
-        assert shape_contact_pairs is not None
-        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
-        self.assertIn((ground, 2), contact_pairs)
-
-        # After deprecated mutation, queries fall back to native set semantics.
-        with self.assertWarns(DeprecationWarning):
-            model.shape_collision_filter_pairs.add((ground, 2))
-        self.assertTrue(model.shape_collision_filter_contains(ground, 2))
-        mask = model.shape_collision_filter_mask(candidates)
-        self.assertEqual(mask.tolist(), [True, True, True, True, True])
-        self.assertEqual(len(model.shape_collision_filter_pairs_array()), 6)
-
-        # Rebuilding contact pairs after a (deprecated) mutation must honor
-        # the mutated model store rather than replaying stale builder filters.
-        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
-            builder.find_shape_contact_pairs(model)
-        shape_contact_pairs = model.shape_contact_pairs
-        assert shape_contact_pairs is not None
-        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
-        self.assertNotIn((ground, 2), contact_pairs)
 
     def test_mixed_replicated_and_global_builder_filters_preserve_contacts(self):
         """Blocks without a world (global add_builder) must not disable the fast path."""
@@ -1978,7 +1927,8 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertIsInstance(model.shape_collision_filter_pairs, set)
+        self.assertIsInstance(model.shape_collision_filter_pairs, AbstractSet)
+        self.assertNotIsInstance(model.shape_collision_filter_pairs, set)
 
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertIn((1, 2), contact_pairs)
@@ -2446,6 +2396,65 @@ class TestModelJoints(unittest.TestCase):
         finally:
             newton.use_coord_layout_targets = previous_flag
 
+    def test_legacy_target_layout_shapes_and_values(self):
+        """Verify legacy DOF target layout behavior."""
+        lin_targets = (1.5, -2.5, 3.5)
+        ang_targets = (0.1, 0.2, -0.3)
+
+        def _axes(targets):
+            return [
+                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
+                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
+            ]
+
+        previous_flag = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            builder = ModelBuilder()
+            b_free = builder.add_link(mass=1.0)
+            j_free = builder.add_joint(
+                newton.JointType.FREE,
+                parent=-1,
+                child=b_free,
+                linear_axes=_axes(lin_targets),
+                angular_axes=_axes(ang_targets),
+            )
+            b_ball = builder.add_link(mass=1.0)
+            j_ball = builder.add_joint(
+                newton.JointType.BALL,
+                parent=b_free,
+                child=b_ball,
+                angular_axes=_axes(ang_targets),
+            )
+            b_rev = builder.add_link(mass=1.0)
+            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
+            builder.add_articulation([j_free, j_ball, j_rev])
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                model = builder.finalize()
+        finally:
+            newton.use_coord_layout_targets = previous_flag
+
+        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
+        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
+        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+        control = model.control()
+        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
+
+        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
+        target_q = model.joint_target_q.numpy()
+        qd_starts = model.joint_qd_start.numpy()
+        f = int(qd_starts[j_free])
+        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+        b = int(qd_starts[j_ball])
+        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
+        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
+
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
@@ -2515,9 +2524,8 @@ class TestModelJoints(unittest.TestCase):
         joint even though the anchor makes the chain a loop."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
         labels_before = sorted(builder.joint_label)
         builder.collapse_fixed_joints()
@@ -2533,9 +2541,8 @@ class TestModelJoints(unittest.TestCase):
         sites) both survive collapse."""
         builder = newton.ModelBuilder()
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, _joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, _joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
         with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
@@ -2590,9 +2597,8 @@ class TestModelJoints(unittest.TestCase):
         builder.add_joint_free(b0)
         builder.add_joint_fixed(b0, b1)
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
-        bodies, joints = builder.add_rod(
-            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
-        )
+        rod = newton.Rod(pts, radius=0.02)
+        bodies, joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
         # Record the group the way the USD importer does, so the range remap is exercised.
         builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")

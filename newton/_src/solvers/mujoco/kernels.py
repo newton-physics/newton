@@ -13,9 +13,6 @@ from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
-    DEFAULT_LIMIT_GAIN_RTOL,
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
     MJ_MINMU,
@@ -391,6 +388,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Model:
     geom_bodyid: wp.array[int],
     body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
@@ -503,14 +501,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
         mj_body_a = geom_bodyid[geom_a]
         mj_body_b = geom_bodyid[geom_b]
 
-        # A body is "immovable" in three cases:
-        #  1. body < 0 → static shape (no body)
-        #  2. BodyFlags.KINEMATIC → kinematic body (e.g. armature=1e10)
-        #  3. body_weldid == 0 → fixed root body (worldbody)
-        # Pairs where both sides are immovable produce degenerate efc_D values
-        # in MuJoCo's solver, so we skip them.
-        a_immovable = body_a < 0 or (body_flags[body_a] & BodyFlags.KINEMATIC) != 0 or body_weldid[mj_body_a] == 0
-        b_immovable = body_b < 0 or (body_flags[body_b] & BodyFlags.KINEMATIC) != 0 or body_weldid[mj_body_b] == 0
+        # Skip pairs where both sides are immovable; MuJoCo produces degenerate efc_D for them.
+        # Immovable means the weld group has no dofs (welded to the worldbody, or mocap, which is
+        # how Newton represents fixed roots) or BodyFlags.KINEMATIC. `body < 0` guards body_flags.
+        a_dofless = body_dofnum[body_weldid[mj_body_a]] == 0
+        b_dofless = body_dofnum[body_weldid[mj_body_b]] == 0
+        a_immovable = body_a < 0 or (body_flags[body_a] & BodyFlags.KINEMATIC) != 0 or a_dofless
+        b_immovable = body_b < 0 or (body_flags[body_b] & BodyFlags.KINEMATIC) != 0 or b_dofless
 
         if a_immovable and b_immovable:
             tid_to_cid[tid] = -1
@@ -1084,7 +1081,7 @@ def build_ref_q_kernel(
     """Build reference joint coordinates from joint types and ``dof_ref``.
 
     Iterates over joints ``[j]``. Produces joint coordinates in Newton
-    convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
+    convention (xyzw quaternions) suitable for ``eval_fk``.
     Per joint type:
 
     - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
@@ -2708,20 +2705,12 @@ def update_jnt_solref_from_invweight0_kernel(
                 jnt_solref[world, mjc_jnt] = raw_solref
                 return
 
-    ke = joint_limit_ke[newton_dof]
-    kd = joint_limit_kd[newton_dof]
-    if (
-        solref_mode == SOLREF_MODE_MJCF_DEFAULT
-        and wp.abs(ke - DEFAULT_LIMIT_KE) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KE
-        and wp.abs(kd - DEFAULT_LIMIT_KD) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KD
-    ):
-        # MJCF import converts MuJoCo's implicit default solreflimit to
-        # Newton's default ke/kd. Preserve the native MuJoCo default until the
-        # user edits those Newton gains, then fall through to force-space
-        # scaling below.
+    if solref_mode == SOLREF_MODE_MJCF_DEFAULT:
         jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
+    ke = joint_limit_ke[newton_dof]
+    kd = joint_limit_kd[newton_dof]
     if ke <= 0.0 or kd <= 0.0:
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
         # updates behave the same as a fresh model built without a custom limit

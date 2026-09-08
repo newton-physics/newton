@@ -22,6 +22,8 @@ def Xform "World"
             uniform token type = "linear"
             int[] curveVertexCounts = [4]
             point3f[] points = [(0.0, 0.0, 0.5), (0.1, 0.0, 0.5), (0.2, 0.0, 0.5), (0.3, 0.0, 0.5)]
+            float[] physics:thicknesses = [0.02]
+            uniform token physics:thicknesses:elementType = "constant"
             rel material:binding:physics = </World/Materials/CableMat>
         }
     }
@@ -37,6 +39,8 @@ def Xform "World"
             uniform token type = "linear"
             int[] curveVertexCounts = [4]
             point3f[] points = [(0.0, 0.4, 0.5), (0.1, 0.4, 0.5), (0.2, 0.4, 0.5), (0.3, 0.4, 0.5)]
+            float[] physics:thicknesses = [0.02]
+            uniform token physics:thicknesses:elementType = "constant"
             rel material:binding:physics = </World/Materials/CableMat>
         }
     }
@@ -52,6 +56,8 @@ def Xform "World"
             point3f[] points = [(0.0, 1.0, 0.5), (0.2, 1.0, 0.5), (0.2, 1.2, 0.5), (0.0, 1.2, 0.5)]
             int[] faceVertexCounts = [3, 3]
             int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+            float[] physics:thicknesses = [0.001]
+            uniform token physics:thicknesses:elementType = "constant"
             rel material:binding:physics = </World/Materials/ClothMat>
         }
     }
@@ -90,7 +96,6 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsCurvesDeformableMaterialAPI"]
         )
         {
-            float physics:curvesThickness = 0.02
             float physics:curvesStretchStiffness = 628.31853
             float physics:curvesShearStiffness = 628.31853
             float physics:curvesBendStiffness = 0.0023561945
@@ -102,9 +107,8 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsSurfaceDeformableMaterialAPI"]
         )
         {
-            float physics:thickness = 0.001
-            float physics:stretchStiffness = 100000
-            float physics:bendStiffness = 10
+            float physics:surfaceStretchStiffness = 100
+            float physics:surfaceBendStiffness = 0.00000001
             float physics:density = 400
         }
 

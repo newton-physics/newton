@@ -16,6 +16,8 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
     _add_physics_attachment,
+    _author_deformable_element_array,
+    _bind_deformable_material,
     _deformable_stage,
     group_labels,
     group_range,
@@ -53,10 +55,15 @@ class TestUSDDeformableGroups(unittest.TestCase):
             group_range(builder, "cable", "/World/DoesNotExist", "body")
 
     def test_replicated_groups_offset_ranges_per_world(self):
-        """replicate() repeats each group per world with offset ranges and world tags, so
-        a duplicated label resolves only with an explicit world."""
+        """Verify that replicate() offsets every deformable group per world.
+
+        Preserve world tags while repeating groups and require an explicit world to
+        resolve labels duplicated by replication.
+        """
         stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/Cloth")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
         sub = newton.ModelBuilder()
         sub.add_usd(stage)
         scene = newton.ModelBuilder()
@@ -73,9 +80,11 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.finalize()  # replicated groups do not break finalization
 
     def test_heterogeneous_worlds_keep_world_tags(self):
-        """Worlds holding different deformables each keep their own group and world tag."""
+        """Verify that heterogeneous worlds preserve their group labels and world tags."""
         cloth_stage = _deformable_stage()
-        _add_cloth_mesh(cloth_stage, "/World/Cloth")
+        cloth = _add_cloth_mesh(cloth_stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        _bind_deformable_material(cloth_stage, cloth.GetPrim(), "/World/ClothMat")
         cable_stage = _deformable_stage()
         _add_cable_curve(cable_stage, "/World/Cable", _CABLE_PTS)
 

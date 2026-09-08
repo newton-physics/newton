@@ -24,7 +24,6 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -563,7 +562,6 @@ class ArticulationView:
         verbose: If True, prints selection summary.
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
@@ -1933,8 +1931,8 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.DriveBase`,
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
@@ -1979,8 +1977,8 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.DriveBase`,
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).

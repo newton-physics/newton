@@ -1,0 +1,1 @@
+Add broadcast or per-triangle display color and opacity to cloth and soft-body surfaces, display opacity to rigid shapes and viewer mesh instances, and preserve appearance through asset import. Use triangle coloring to add deformation and rotation cues to the cloth stretch and roller examples and distinguish individual poker cards.

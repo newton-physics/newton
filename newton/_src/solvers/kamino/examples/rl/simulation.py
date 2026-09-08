@@ -361,11 +361,6 @@ class RigidBodySim:
         self._reset_graph = None
         self._step_graph = None
 
-        # ----- Warm-up (compiles Warp kernels) -----
-        msg.notif("Warming up simulator ...")
-        self.step()
-        self.reset()
-
         # ----- Capture CUDA graphs -----
         self._capture_graphs()
 
