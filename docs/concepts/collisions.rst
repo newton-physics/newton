@@ -1895,6 +1895,14 @@ the numerical safeguards for very small separations. Together these preserve
 the exported spring's current normal force ``k * (-phi) = A * p``. Opposing unit SDF gradients
 recover the material-only series slope; oblique gradients change the tangent.
 
+This distinction matters when a force-based solver, such as
+:class:`~solvers.SolverSemiImplicit`, reuses contacts across multiple substeps
+(see :ref:`collision-frequency-in-the-simulation-loop`). Matching the current
+force alone does not match its response to subsequent motion. The preloaded-pad
+regression in :github:`newton/tests/test_hydroelastic_contact_dynamics.py`
+exercises this response against an independently derived pressure-continuity
+reference, with every-step refresh and head-on fields as controls.
+
 The effective spring separation is distinct from the geometric pair separation
 ``d`` used for contact detection, reduction, and surface visualization. Contact
 reduction retains its existing normal-force allocation and rescales each
