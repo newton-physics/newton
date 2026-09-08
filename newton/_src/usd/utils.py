@@ -781,6 +781,26 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
+def _fan_triangulation_corner_indices(counts: Sequence[int]) -> np.ndarray:
+    """Return polygon-corner indices for fan-triangulated faces."""
+    counts = np.asarray(counts, dtype=np.int32)
+    triangle_counts = counts - 2
+    num_tris = int(np.sum(triangle_counts))
+    if num_tris <= 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), triangle_counts)
+    tri_group_starts = np.cumsum(triangle_counts, dtype=np.int32) - triangle_counts
+    tri_local_ids = np.arange(num_tris, dtype=np.int32) - np.repeat(tri_group_starts, triangle_counts)
+    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
+
+    corners = np.empty((num_tris, 3), dtype=np.int32)
+    corners[:, 0] = face_bases[tri_face_ids]
+    corners[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
+    corners[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+    return corners
+
+
 def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Perform fan triangulation on polygonal faces.
@@ -792,33 +812,8 @@ def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray
     Returns:
         Array of shape (num_triangles, 3) containing triangle indices (dtype=np.int32)
     """
-    counts = np.asarray(counts, dtype=np.int32)
     indices = np.asarray(indices, dtype=np.int32)
-
-    num_tris = int(np.sum(counts - 2))
-
-    if num_tris == 0:
-        return np.zeros((0, 3), dtype=np.int32)
-
-    # Vectorized approach: build all triangle indices at once
-    # For each face with n vertices, we create (n-2) triangles
-    # Each triangle uses: [base, base+i+1, base+i+2] for i in range(n-2)
-
-    # Array to track which face each triangle belongs to
-    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), counts - 2)
-
-    # Array for triangle index within each face (0 to n-3)
-    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts])
-
-    # Base index for each face
-    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
-
-    out = np.empty((num_tris, 3), dtype=np.int32)
-    out[:, 0] = indices[face_bases[tri_face_ids]]  # First vertex (anchor)
-    out[:, 1] = indices[face_bases[tri_face_ids] + tri_local_ids + 1]  # Second vertex
-    out[:, 2] = indices[face_bases[tri_face_ids] + tri_local_ids + 2]  # Third vertex
-
-    return out
+    return indices[_fan_triangulation_corner_indices(counts)]
 
 
 def _expand_indexed_primvar(
@@ -1003,19 +998,7 @@ def _split_corners_into_vertices(
 
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
     """Return flattened corner indices for fan-triangulated face-varying data."""
-    counts_i32 = np.asarray(counts, dtype=np.int32)
-    num_tris = int(np.sum(counts_i32 - 2))
-    if num_tris <= 0:
-        return np.zeros((0,), dtype=np.int32)
-
-    tri_face_ids = np.repeat(np.arange(len(counts_i32), dtype=np.int32), counts_i32 - 2)
-    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts_i32])
-    face_bases = np.concatenate([[0], np.cumsum(counts_i32[:-1], dtype=np.int32)])
-
-    corner_faces = np.empty((num_tris, 3), dtype=np.int32)
-    corner_faces[:, 0] = face_bases[tri_face_ids]
-    corner_faces[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
-    corner_faces[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+    corner_faces = _fan_triangulation_corner_indices(counts)
     if flip_winding:
         corner_faces = corner_faces[:, ::-1]
     return corner_faces.reshape(-1)
@@ -1575,6 +1558,8 @@ def get_mesh(
     points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
+    source_points = points
+    source_indices = indices
 
     uvs = None
     uvs_interpolation = None
@@ -1737,16 +1722,14 @@ def get_mesh(
             else:
                 raise ValueError(f"Invalid face_varying_normal_conversion: {normal_conversion}")
 
-    faces = fan_triangulate_faces(counts, indices)
-
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
     if orientation_attr:
         handedness = orientation_attr.Get()
         if handedness and handedness.lower() == "lefthanded":
             flip_winding = True
-    if flip_winding:
-        faces = faces[:, ::-1]
+    corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
+    faces = indices[corner_flat].reshape(-1, 3)
 
     uv_indices = None
     if uvs is not None:
@@ -1763,7 +1746,6 @@ def get_mesh(
                 )
                 uvs = None
             else:
-                corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
                 if not preserve_facevarying_uvs:
                     points_original = points
                     points = points_original[indices[corner_flat]]
@@ -1795,13 +1777,14 @@ def get_mesh(
 
     material_props = resolve_material_properties_for_prim(prim) if load_visual_materials else {}
 
+    visual_topology = points is not source_points
     mesh_out = Mesh(
         points,
         faces.flatten(),
         normals=normals,
         uvs=uvs,
         maxhullvert=maxhullvert,
-        compute_inertia=compute_inertia,
+        compute_inertia=compute_inertia and not visual_topology,
         color=material_props.get("color"),
         opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
@@ -1811,6 +1794,16 @@ def get_mesh(
         if material_props.get("texture_transform") is None
         else material_props["texture_transform"],
     )
+    if compute_inertia and visual_topology:
+        from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
+
+        mesh_out.mass, mesh_out.com, mesh_out.inertia, _ = compute_inertia_mesh(
+            1.0,
+            np.asarray(source_points, dtype=np.float32),
+            source_indices[corner_flat],
+            is_solid=mesh_out.is_solid,
+        )
+        mesh_out.has_inertia = True
     subdivision_scheme = mesh.GetSubdivisionSchemeAttr().Get()
     mesh_out._subdivision_scheme = str(subdivision_scheme) if subdivision_scheme else None
     if return_uv_indices:

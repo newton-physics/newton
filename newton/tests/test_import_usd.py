@@ -7623,10 +7623,12 @@ def Xform "Articulation" (
         mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with mock.patch.object(usd_utils, "get_mesh", wraps=usd_utils.get_mesh) as get_mesh:
+            result = builder.add_usd(stage)
 
         shape = result["path_shape_map"]["/Body/VisualMesh"]
         visual_mesh = builder.shape_source[shape]
+        self.assertEqual(get_mesh.call_count, 1)
         self.assertEqual(visual_mesh._subdivision_scheme, "none")
         np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
 
@@ -12760,6 +12762,10 @@ def Xform "Body" (
         physics_mesh = newton.Mesh(base_vertices, indices)
         render_mesh = newton.Mesh(base_vertices * 4.0, indices)
         render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
+        render_mesh.mass = physics_mesh.mass
+        render_mesh.com = physics_mesh.com
+        render_mesh.inertia = physics_mesh.inertia
+        render_mesh.has_inertia = physics_mesh.has_inertia
 
         def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False, load_visual_materials=True):
             del load_normals, load_visual_materials
@@ -12778,7 +12784,7 @@ def Xform "Body" (
             mock.patch(
                 "newton._src.utils.import_usd.usd.get_mesh",
                 side_effect=_mock_get_mesh,
-            ),
+            ) as get_mesh,
         ):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, hide_collision_shapes=True)
@@ -12787,8 +12793,8 @@ def Xform "Body" (
         collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
         expected_density = builder.default_shape_cfg.density
 
+        self.assertEqual(get_mesh.call_count, 1)
         self.assertAlmostEqual(builder.body_mass[body_idx], physics_mesh.mass * expected_density, places=6)
-        self.assertNotAlmostEqual(builder.body_mass[body_idx], render_mesh.mass * expected_density, places=3)
 
         mesh = builder.shape_source[collision_shape]
         self.assertIsNotNone(mesh)
@@ -14410,15 +14416,19 @@ def Mesh "cube"
         from pxr import UsdGeom
 
         _stage, mesh_prim = self._define_two_triangle_mesh()
+        physics_mesh = usd.get_mesh(mesh_prim.GetPrim())
         mesh_prim.CreateNormalsAttr().Set([(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)])
         mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.uniform)
 
-        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True)
 
         self.assertEqual(len(mesh.normals), len(mesh.vertices))
         corner_normals = np.asarray(mesh.normals)[np.asarray(mesh.indices)]
         expected = np.array([(0.0, 0.0, 1.0)] * 3 + [(0.0, 1.0, 0.0)] * 3)
         np.testing.assert_allclose(corner_normals, expected, atol=1e-6, rtol=1e-6)
+        self.assertEqual(mesh.mass, physics_mesh.mass)
+        np.testing.assert_array_equal(np.asarray(mesh.com), np.asarray(physics_mesh.com))
+        np.testing.assert_array_equal(np.asarray(mesh.inertia), np.asarray(physics_mesh.inertia))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_expands_indexed_vertex_normals(self):
@@ -14467,6 +14477,7 @@ def Mesh "cube"
         stage.GetRootLayer().ImportFromString(self.CUBE_WITH_FACEVARYING_NORMALS)
         prim = stage.GetPrimAtPath("/cube")
 
+        physics_mesh = usd.get_mesh(prim)
         mesh = usd.get_mesh(prim, load_normals=True)
         # The default 25-degree threshold should split all cube edges (90 degrees).
         # Each of the 6 faces has 4 corners, triangulated to 6 indices.
@@ -14476,6 +14487,9 @@ def Mesh "cube"
         normals = np.asarray(mesh.normals)
         lengths = np.linalg.norm(normals, axis=1)
         np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
+        self.assertEqual(mesh.mass, physics_mesh.mass)
+        np.testing.assert_array_equal(np.asarray(mesh.com), np.asarray(physics_mesh.com))
+        np.testing.assert_array_equal(np.asarray(mesh.inertia), np.asarray(physics_mesh.inertia))
 
     @staticmethod
     def _define_facevarying_quad(uv_values):
