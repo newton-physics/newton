@@ -4452,29 +4452,24 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
         self.assertEqual(injected_contact_count, generated_contact_count)
 
-    def test_newton_contact_defaults_bound_explicit_capacities(self):
-        """Preserve Newton-derived lower bounds for explicit MuJoCo capacities."""
+    def test_newton_contact_explicit_capacities_are_preserved(self):
+        """Preserve explicit MuJoCo capacities for Newton-generated contacts."""
         model = self._build_grounded_spheres(60)
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
-        collision_pipeline.collide(state, contacts)
-        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        nconmax = 200
+        njmax = 300
 
         try:
-            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=16, njmax=16)
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                nconmax=nconmax,
+                njmax=njmax,
+            )
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
-        self.assertGreater(generated_contact_count, 48)
-        self.assertGreater(model.rigid_contact_max, 16)
-        self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
-        self.assertGreaterEqual(solver.mjw_data.njmax, model.rigid_contact_max * 4)
-
-        solver._convert_contacts_to_mjwarp(model, state, contacts)
-        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
-        self.assertEqual(injected_contact_count, generated_contact_count)
+        self.assertEqual(solver.mjw_data.naconmax, nconmax)
+        self.assertEqual(solver.mjw_data.njmax, njmax)
 
     def test_newton_contact_capacity_preserves_delayed_joint_limits(self):
         """Preserve default capacity for non-contact constraints activated after initialization."""
