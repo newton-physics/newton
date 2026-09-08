@@ -555,6 +555,14 @@ class TestCollisionPipeline(unittest.TestCase):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
 
+        # 0 is illegal for shapePairsMax: only -1 (sentinel) or positive values are valid.
+        scene_prim.GetAttribute("newton:collisionPipeline:shapePairsMax").Set(0)
+        with self.assertRaisesRegex(
+            ValueError, r"newton:collisionPipeline:shapePairsMax must be a positive integer or -1, got 0"
+        ):
+            CollisionPipeline.create_from_usd(scene_prim, model)
+        scene_prim.GetAttribute("newton:collisionPipeline:shapePairsMax").Clear()
+
         # Float outside the valid [-1, 1] range.
         scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Set(1.5)
         with self.assertRaisesRegex(

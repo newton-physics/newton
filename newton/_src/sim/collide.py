@@ -1917,7 +1917,7 @@ class CollisionPipeline:
                 raise ValueError(f"{path}: authored attribute {name!r} has no value.")
             return value
 
-        def integer(name: str, value: Any, *, allow_minus_one: bool = False) -> int:
+        def integer(name: str, value: Any, *, allow_minus_one: bool = False, disallow_zero: bool = False) -> int:
             if isinstance(value, (bool, np.bool_)):
                 raise ValueError(f"{path}: {name} must be an integer, got {value!r}.")
             try:
@@ -1927,6 +1927,8 @@ class CollisionPipeline:
             if result < 0 and not (allow_minus_one and result == -1):
                 suffix = " or -1" if allow_minus_one else ""
                 raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
+            if result == 0 and disallow_zero:
+                raise ValueError(f"{path}: {name} must be a positive integer or -1, got {result}.")
             return result
 
         def token(name: str, value: Any, allowed: set[str]) -> str:
@@ -2014,7 +2016,7 @@ class CollisionPipeline:
 
         value = authored("newton:collisionPipeline:shapePairsMax")
         if value is not None:
-            result = integer("newton:collisionPipeline:shapePairsMax", value, allow_minus_one=True)
+            result = integer("newton:collisionPipeline:shapePairsMax", value, allow_minus_one=True, disallow_zero=True)
             if result != -1:
                 kwargs["shape_pairs_max"] = result
 
