@@ -1905,7 +1905,11 @@ class CollisionPipeline:
 
         from ..usd import utils as usd  # noqa: PLC0415
 
-        prim = scene_prim.GetPrim() if hasattr(scene_prim, "GetPrim") else scene_prim
+        get_prim = getattr(scene_prim, "GetPrim", None)
+        prim = get_prim() if callable(get_prim) else scene_prim
+        prim_type = type(prim)
+        if not callable(getattr(prim_type, "IsValid", None)) or not callable(getattr(prim_type, "IsA", None)):
+            raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
         if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.Scene):
             raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
         path = str(prim.GetPath())

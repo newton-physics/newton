@@ -590,6 +590,10 @@ class TestCollisionPipeline(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "scene_prim must be a valid UsdPhysics.Scene prim"):
             CollisionPipeline.create_from_usd(invalid_prim, model)
 
+        # Arbitrary inputs should fail with the documented TypeError.
+        with self.assertRaisesRegex(TypeError, "scene_prim must be a valid UsdPhysics.Scene prim"):
+            CollisionPipeline.create_from_usd(object(), model)
+
         # NewtonCollisionPipelineAPI is not applied to an otherwise valid scene prim.
         scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
         with self.assertRaisesRegex(ValueError, r"physicsScene: NewtonCollisionPipelineAPI is not applied"):
