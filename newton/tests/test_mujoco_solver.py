@@ -37,6 +37,29 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
+def _add_deprecated_mimic_constraint(
+    builder: newton.ModelBuilder,
+    *,
+    joint0: int,
+    joint1: int,
+    coef0: float = 0.0,
+    coef1: float = 1.0,
+    enabled: bool = True,
+    label: str | None = None,
+) -> int:
+    """Add a sparse mimic constraint while acknowledging its deprecation."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return builder.add_constraint_mimic(
+            joint0=joint0,
+            joint1=joint1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+            label=label,
+        )
+
+
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
     direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
     direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
@@ -8401,7 +8424,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = main.add_joint_revolute(-1, b0)
         j1 = main.add_joint_revolute(b0, b1)
         main.add_articulation([j0, j1])
-        main.add_constraint_mimic(joint0=j1, joint1=j0)
+        _add_deprecated_mimic_constraint(main, joint0=j1, joint1=j0)
 
         source = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(source)
@@ -8410,7 +8433,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj0 = source.add_joint_revolute(-1, s0)
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
-        sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
+        sm = _add_deprecated_mimic_constraint(source, joint0=sj1, joint1=sj0)
         _add_equality_constraint(
             source,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -9415,7 +9438,14 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        _add_deprecated_mimic_constraint(
+            builder,
+            joint0=j2,
+            joint1=j1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+        )
         return builder.finalize()
 
     def test_mimic_constraint_conversion(self):
@@ -9565,7 +9595,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
             builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j1, j2])
-            mimic = builder.add_constraint_mimic(
+            mimic = _add_deprecated_mimic_constraint(
+                builder,
                 joint0=j2,
                 joint1=j1,
                 coef0=10.0 + world,
@@ -9624,7 +9655,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        mimic = builder.add_constraint_mimic(
+        mimic = _add_deprecated_mimic_constraint(
+            builder,
             joint0=j2,
             joint1=j1,
             coef0=10.0,
@@ -9702,7 +9734,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
         # Add a mimic constraint
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9761,7 +9793,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1, j2])
-        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(template_builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         world_count = 3
         builder = newton.ModelBuilder()

@@ -3574,14 +3574,15 @@ class TestModelJoints(unittest.TestCase):
                 coef1=1.5,
                 label="mimic1",
             )
-        _c2 = builder.add_constraint_mimic(
-            joint0=j3,
-            joint1=j1,
-            coef0=0.0,
-            coef1=-1.0,
-            enabled=False,
-            label="mimic2",
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            _c2 = builder.add_constraint_mimic(
+                joint0=j3,
+                joint1=j1,
+                coef0=0.0,
+                coef1=-1.0,
+                enabled=False,
+                label="mimic2",
+            )
 
         model = builder.finalize()
 
