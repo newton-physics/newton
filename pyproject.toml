@@ -170,7 +170,7 @@ torch = [
 ]
 # TODO(gyeoman): drop once NewtonCollisionPipelineAPI merges upstream and a
 # release of newton-usd-schemas ships it.
-newton-usd-schemas = { path = "../../newton-usd-schemas", editable = true }
+newton-usd-schemas = { git = "https://github.com/gyeomannvidia/newton-usd-schemas", branch = "dev/gyeoman/collision-pipeline-api" }
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]
