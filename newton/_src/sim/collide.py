@@ -1878,7 +1878,11 @@ class CollisionPipeline:
         Only authored USD values override the :meth:`__init__`
         defaults, so unauthored attributes fall back to the same defaults as
         constructing :class:`CollisionPipeline` directly. ``overrides`` take
-        precedence over both USD-authored and default values.
+        precedence over both USD-authored and default values. Length values
+        (``softContactGap``, ``contactMatchingPosThreshold``,
+        ``speculativeMaxExtension``) are authored in stage units and converted
+        to meters. Following :meth:`ModelBuilder.add_usd`, unauthored stage
+        unit metadata is interpreted as one meter per stage unit.
 
         Args:
             scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonCollisionPipelineAPI``
@@ -1895,7 +1899,7 @@ class CollisionPipeline:
             ValueError: If the API is absent or an authored value is invalid.
         """
         try:
-            from pxr import UsdPhysics
+            from pxr import UsdGeom, UsdPhysics
         except ImportError as error:
             raise ImportError("Creating a CollisionPipeline from USD requires usd-core.") from error
 
@@ -1907,6 +1911,13 @@ class CollisionPipeline:
         path = str(prim.GetPath())
         if not usd.has_applied_api_schema(prim, "NewtonCollisionPipelineAPI"):
             raise ValueError(f"{path}: NewtonCollisionPipelineAPI is not applied.")
+
+        stage = prim.GetStage()
+        linear_unit = (
+            float(UsdGeom.GetStageMetersPerUnit(stage)) if UsdGeom.StageHasAuthoredMetersPerUnit(stage) else 1.0
+        )
+        if not math.isfinite(linear_unit) or linear_unit <= 0.0:
+            raise ValueError(f"{path}: metersPerUnit must be finite and positive, got {linear_unit!r}.")
 
         def authored(name: str) -> Any:
             attr = prim.GetAttribute(name)
@@ -2005,7 +2016,7 @@ class CollisionPipeline:
         if value is not None:
             gap = optional_finite_float("newton:collisionPipeline:softContactGap", value, minimum=0.0)
             if gap is not None:
-                kwargs["soft_contact_gap"] = gap
+                kwargs["soft_contact_gap"] = gap * linear_unit
 
         value = authored("newton:collisionPipeline:enableRigidSoftFullSurfaceContact")
         if value is not None:
@@ -2039,8 +2050,8 @@ class CollisionPipeline:
 
         value = authored("newton:collisionPipeline:contactMatchingPosThreshold")
         if value is not None:
-            kwargs["contact_matching_pos_threshold"] = finite_float(
-                "newton:collisionPipeline:contactMatchingPosThreshold", value, minimum=0.0
+            kwargs["contact_matching_pos_threshold"] = (
+                finite_float("newton:collisionPipeline:contactMatchingPosThreshold", value, minimum=0.0) * linear_unit
             )
 
         value = authored("newton:collisionPipeline:contactMatchingNormalDotThreshold")
@@ -2071,7 +2082,9 @@ class CollisionPipeline:
         if value is not None:
             extension = optional_finite_float("newton:collisionPipeline:speculativeMaxExtension", value, minimum=0.0)
             if extension is not None:
-                kwargs["speculative_config"] = cls.SpeculativeContactConfig(max_speculative_extension=extension)
+                kwargs["speculative_config"] = cls.SpeculativeContactConfig(
+                    max_speculative_extension=extension * linear_unit
+                )
 
         kwargs.update(overrides)
         return cls(model, **kwargs)

@@ -541,6 +541,34 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(pipeline.speculative_config, default_pipeline.speculative_config)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_converts_length_attributes_to_meters(self):
+        """softContactGap, contactMatchingPosThreshold, and speculativeMaxExtension
+        are authored in stage units and must be converted to meters, matching the
+        geometry ModelBuilder.add_usd() would import from the same stage."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_sphere(body, radius=1.0)
+        model = builder.finalize(device="cpu")
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)  # centimeters
+        scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingPosThreshold").Set(1.0)
+        scene_prim.GetAttribute("newton:collisionPipeline:speculativeMaxExtension").Set(15.0)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactMatching").Set("latest")
+
+        pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+
+        self.assertAlmostEqual(pipeline.soft_contact_gap, 0.02)
+        self.assertAlmostEqual(pipeline._contact_matcher._pos_threshold_sq, 0.01**2)
+        self.assertAlmostEqual(pipeline.speculative_config.max_speculative_extension, 0.15)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
         """create_from_usd should raise with a descriptive message for invalid input."""
         from pxr import Usd, UsdGeom, UsdPhysics
