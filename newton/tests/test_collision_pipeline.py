@@ -5,6 +5,7 @@ import unittest
 import warnings
 from collections import Counter
 from enum import IntFlag, auto
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -1962,7 +1963,45 @@ class TestParticleShapeContacts(unittest.TestCase):
             )
 
 
-class TestContactEstimator(unittest.TestCase):
+class TestContactCountEstimator(unittest.TestCase):
+    @staticmethod
+    def _make_single_box_model():
+        """Build a minimal model that exercises automatic contact sizing."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(body=-1)
+        return builder.finalize(device="cpu")
+
+    def test_large_automatic_estimate_warns(self):
+        """Warn when automatic contact sizing exceeds the memory threshold."""
+        model = self._make_single_box_model()
+
+        with mock.patch("newton._src.sim.collide._RIGID_CONTACT_LARGE_BUFFER_BYTES", 1):
+            with self.assertWarnsRegex(
+                RuntimeWarning,
+                r"1,000 rigid contact slots.*0\.1 MiB.*world count: 1.*colliding shapes: 1 primitives"
+                r".*precomputed contact pairs: 0.*selected estimate: minimum.*rigid_contact_max",
+            ):
+                CollisionPipeline(model)
+
+    def test_explicit_contact_capacity_does_not_warn(self):
+        """Keep explicitly selected contact capacities silent."""
+        for source in ("argument", "model"):
+            with self.subTest(source=source):
+                model = self._make_single_box_model()
+                kwargs = {}
+                if source == "argument":
+                    kwargs["rigid_contact_max"] = 1000
+                else:
+                    model.rigid_contact_max = 1000
+
+                with mock.patch("newton._src.sim.collide._RIGID_CONTACT_LARGE_BUFFER_BYTES", 1):
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        CollisionPipeline(model, **kwargs)
+
+                large_buffer_warnings = [warning for warning in caught if "rigid contact slots" in str(warning.message)]
+                self.assertEqual(large_buffer_warnings, [])
+
     def test_visual_only_meshes_do_not_inflate_estimate(self):
         """Visual meshes should not affect rigid contact capacity estimates."""
         model = newton.Model()

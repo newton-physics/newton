@@ -6,7 +6,7 @@ newton.actuators
 
 GPU-accelerated actuator models for physics simulations.
 
-This module provides a modular library of actuator components — controllers,
+This module provides a modular library of actuator components — drives,
 clamping, and delay — that compute joint effort from simulation state and
 control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
@@ -28,17 +28,17 @@ construction.
 
    Actuator
    ActuatorParsed
-   Clamping
+   ClampingBase
    ClampingDCMotor
    ClampingMaxEffort
    ClampingPositionBased
    ComponentKind
-   Controller
-   ControllerNeuralLSTM
-   ControllerNeuralMLP
-   ControllerPD
-   ControllerPID
    Delay
+   DriveBase
+   DriveNeuralLSTM
+   DriveNeuralMLP
+   DrivePD
+   DrivePID
    ResponseOracle
    SchemaNames
 
@@ -50,3 +50,23 @@ construction.
 
    parse_actuator_prim
    register_actuator_component
+
+.. rubric:: Deprecated
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Guidance
+   * - ``Clamping``
+     - Deprecated in 1.6; use ClampingBase instead.
+   * - ``Controller``
+     - Deprecated in 1.6; use DriveBase instead.
+   * - ``ControllerNeuralLSTM``
+     - Deprecated in 1.6; use DriveNeuralLSTM instead.
+   * - ``ControllerNeuralMLP``
+     - Deprecated in 1.6; use DriveNeuralMLP instead.
+   * - ``ControllerPD``
+     - Deprecated in 1.6; use DrivePD instead.
+   * - ``ControllerPID``
+     - Deprecated in 1.6; use DrivePID instead.

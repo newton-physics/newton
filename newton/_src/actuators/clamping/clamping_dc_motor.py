@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from .base import Clamping
+from .base import ClampingBase
 
 
 @wp.kernel(enable_backward=False)
@@ -94,10 +94,10 @@ def _clamp_dc_motor_kernel(
     dst[i] = wp.clamp(src[i], effort_min, effort_max)
 
 
-class ClampingDCMotor(Clamping):
+class ClampingDCMotor(ClampingBase):
     r"""DC motor four-quadrant effort-speed saturation.
 
-    Clips controller output using the linear effort-speed characteristic::
+    Clips drive output using the linear effort-speed characteristic::
 
         effort_max(vel) = min(saturation_effort * (1 - vel / velocity_limit),  max_motor_effort)
         effort_min(vel) = max(saturation_effort * (-1 - vel / velocity_limit), -max_motor_effort)

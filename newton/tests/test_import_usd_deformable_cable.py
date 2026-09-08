@@ -1669,7 +1669,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder.finalize()
 
     def test_welded_periodic_curve_rejects_cycle_and_falls_back(self):
-        """Welding a branch onto a periodic curve creates a cycle that add_rod_graph cannot
+        """Welding a branch onto a periodic curve creates a cycle that wrapped graph assembly cannot
         close; importing it as a graph would silently open the authored loop. The component
         is rejected with a warning, both curves import individually (the loop keeps its
         closing joint), and the junction is preserved as unsupported."""

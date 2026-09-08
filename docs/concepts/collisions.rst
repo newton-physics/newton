@@ -708,14 +708,10 @@ Filter pairs are automatically populated in several cases:
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
 
-The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
-``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
-
-.. deprecated:: 1.4
-   Mutating this finalized-model set is deprecated; update
-   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
-   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
-   post-finalize filter edits.
+The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a read-only
+set of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``). Update
+:attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+model to change collision filters.
 
 **USD Import Example**
 
@@ -1014,6 +1010,13 @@ separated-shapes distance query.
 For convex primitive pairs, multiple contact points are generated for stable stacking and
 resting contacts. The collision pipeline estimates buffer sizes based on the model; you
 can override this value with ``rigid_contact_max`` when instantiating the pipeline.
+The automatic capacity is a conservative heuristic based on colliding shape types,
+contact-pair metadata, and world layout. It generally grows linearly with replicated
+worlds, but it is not a guaranteed worst-case bound. When the estimate implies at least
+256 MiB for the base rigid-contact buffers, the pipeline warns with the resolved capacity
+and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to select the
+memory budget and silence the warning. Optional collision features and solvers may
+allocate additional per-contact memory.
 
 .. _Mesh Collisions:
 

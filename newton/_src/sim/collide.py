@@ -557,11 +557,27 @@ _RIGID_CONTACTS_PER_PRIMITIVE_PAIR = 5
 _RIGID_CONTACTS_PER_MESH_PAIR = 40
 _RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE = 20
 _RIGID_CONTACT_MIN_CAPACITY = 1000
+# Base Contacts storage: four int32, six vec3, and two float32 values per slot.
+_RIGID_CONTACT_BASE_BYTES_PER_SLOT = 96
+_RIGID_CONTACT_LARGE_BUFFER_BYTES = 256 * 1024 * 1024
 
 
-def _estimate_rigid_contact_max(model: Model) -> int:
-    """
-    Estimate the maximum number of rigid contacts for the collision pipeline.
+@dataclasses.dataclass(frozen=True)
+class _RigidContactCountEstimate:
+    """Diagnostic details for an automatically selected rigid-contact capacity."""
+
+    capacity: int
+    world_count: int
+    primitive_count: int
+    mesh_count: int
+    plane_count: int
+    pair_count: int
+    pair_estimate_contacts_per_pair: int
+    source: Literal["fallback", "minimum", "neighbor heuristic", "precomputed pairs"]
+
+
+def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
+    """Estimate rigid-contact capacity and retain its diagnostic inputs.
 
     Uses a linear neighbor-budget estimate assuming each non-plane shape contacts
     at most ``MAX_NEIGHBORS_PER_SHAPE`` others (spatial locality).  The non-plane
@@ -577,10 +593,21 @@ def _estimate_rigid_contact_max(model: Model) -> int:
         model: The simulation model.
 
     Returns:
-        Estimated maximum number of rigid contacts.
+        The estimated capacity and its diagnostic inputs.
     """
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    pair_count = int(getattr(model, "shape_contact_pair_count", 0) or 0)
     if not hasattr(model, "shape_type") or model.shape_type is None:
-        return 1000  # Fallback
+        return _RigidContactCountEstimate(
+            capacity=_RIGID_CONTACT_MIN_CAPACITY,
+            world_count=world_count,
+            primitive_count=0,
+            mesh_count=0,
+            plane_count=0,
+            pair_count=pair_count,
+            pair_estimate_contacts_per_pair=0,
+            source="fallback",
+        )
 
     shape_types = model.shape_type.numpy()
     colliding_mask = _shape_collide_mask(model, len(shape_types))
@@ -625,7 +652,7 @@ def _estimate_rigid_contact_max(model: Model) -> int:
         if shape_world is not None and len(shape_world) == len(shape_types):
             global_mask = shape_world == -1
             local_mask = ~global_mask
-            n_worlds = model.world_count
+            n_worlds = world_count
 
             global_planes = int(np.count_nonzero(global_mask & plane_mask))
             global_non_planes = int(np.count_nonzero(global_mask & non_plane_mask))
@@ -649,16 +676,61 @@ def _estimate_rigid_contact_max(model: Model) -> int:
                 num_primitives * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR + num_meshes * _RIGID_CONTACTS_PER_MESH_PAIR
             )
 
-    total_contacts = non_plane_contacts + plane_contacts
+    heuristic_contacts = non_plane_contacts + plane_contacts
+    total_contacts = heuristic_contacts
+    source = "neighbor heuristic"
 
     # When precomputed contact pairs are available, use as a tighter bound.
-    if hasattr(model, "shape_contact_pair_count") and model.shape_contact_pair_count > 0:
+    if pair_count > 0:
         weighted_cpp = max(avg_cpp, _RIGID_CONTACTS_PER_PRIMITIVE_PAIR)
-        pair_contacts = int(model.shape_contact_pair_count) * weighted_cpp
+        pair_contacts = pair_count * weighted_cpp
         total_contacts = min(total_contacts, pair_contacts)
+        if pair_contacts < heuristic_contacts:
+            source = "precomputed pairs"
 
     # Ensure minimum allocation
-    return max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts)
+    capacity = max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts)
+    if capacity == _RIGID_CONTACT_MIN_CAPACITY and total_contacts < capacity:
+        source = "minimum"
+    return _RigidContactCountEstimate(
+        capacity=capacity,
+        world_count=world_count,
+        primitive_count=num_primitives,
+        mesh_count=num_meshes,
+        plane_count=num_planes,
+        pair_count=pair_count,
+        pair_estimate_contacts_per_pair=max(avg_cpp, _RIGID_CONTACTS_PER_PRIMITIVE_PAIR),
+        source=source,
+    )
+
+
+def _estimate_rigid_contact_max(model: Model) -> int:
+    """Estimate the rigid-contact capacity for the collision pipeline."""
+    return _estimate_rigid_contact_details(model).capacity
+
+
+def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> None:
+    """Warn when an automatic estimate implies a large base contact allocation."""
+    allocation_bytes = estimate.capacity * _RIGID_CONTACT_BASE_BYTES_PER_SLOT
+    if allocation_bytes < _RIGID_CONTACT_LARGE_BUFFER_BYTES:
+        return
+
+    allocation_mib = allocation_bytes / (1024 * 1024)
+    warnings.warn(
+        f"CollisionPipeline automatically selected {estimate.capacity:,} rigid contact slots, "
+        f"requiring approximately {allocation_mib:,.1f} MiB for the base rigid-contact buffers "
+        f"({_RIGID_CONTACT_BASE_BYTES_PER_SLOT} bytes per slot). Estimate inputs -- "
+        f"world count: {estimate.world_count:,}; colliding shapes: "
+        f"{estimate.primitive_count:,} primitives, {estimate.mesh_count:,} meshes/heightfields, "
+        f"and {estimate.plane_count:,} planes; precomputed contact pairs: {estimate.pair_count:,}; "
+        f"contact weighting: {_RIGID_CONTACTS_PER_PRIMITIVE_PAIR} per primitive pair and "
+        f"{_RIGID_CONTACTS_PER_MESH_PAIR} per mesh-involved pair; pair-estimate average: "
+        f"{estimate.pair_estimate_contacts_per_pair}; selected estimate: {estimate.source}. "
+        "Optional pipeline and solver features may allocate additional memory. Pass rigid_contact_max "
+        "explicitly to CollisionPipeline to choose the capacity and silence this warning.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 def _estimate_rigid_contact_max_per_world(model: Model, rigid_contact_max: int) -> int:
@@ -1194,6 +1266,11 @@ class CollisionPipeline:
                 - If provided, use this value.
                 - Else if ``model.rigid_contact_max > 0``, use the model value.
                 - Else estimate automatically from model shape and pair metadata.
+                The automatic estimate is a conservative heuristic that generally
+                grows linearly with replicated worlds, but it is not a guaranteed
+                worst-case bound. A warning reports automatic estimates whose base
+                rigid-contact buffers require at least 256 MiB. Pass an explicit
+                value to select the memory budget and silence the warning.
             max_triangle_pairs:
                 Maximum number of triangle pairs allocated by narrow phase
                 for mesh and heightfield collisions.  Increase this when
@@ -1347,7 +1424,9 @@ class CollisionPipeline:
             if model_rigid_contact_max > 0:
                 rigid_contact_max = model_rigid_contact_max
             else:
-                rigid_contact_max = _estimate_rigid_contact_max(model)
+                rigid_contact_estimate = _estimate_rigid_contact_details(model)
+                rigid_contact_max = rigid_contact_estimate.capacity
+                _warn_large_rigid_contact_estimate(rigid_contact_estimate)
         self._rigid_contact_max = rigid_contact_max
         if soft_contact_margin is not None:
             if soft_contact_gap is not None:

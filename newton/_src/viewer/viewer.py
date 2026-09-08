@@ -619,8 +619,8 @@ class ViewerBase(ABC):
         layer.contact_mode_eps_velocity = 1e-3
 
         # Scaling parameters for the contact visualization
-        # Note: these are auto-set in :meth:`set_model`, below are fallback defaults.
-        layer.contact_viz_scale = 1.0  # Length of contact normal arrows (contact disks/forces scale relatively)
+        # Note: contact_viz_scale is relative to the smaller shape in each contact pair.
+        layer.contact_viz_scale = 1.0
         layer.contact_force_scale = 0.5  # Length of contact force arrows, w.r.t. contact normal arrows
         layer._contact_viz_scale_default = layer.contact_viz_scale
         layer._contact_force_scale_default = layer.contact_force_scale
@@ -954,9 +954,13 @@ class ViewerBase(ABC):
         bounds_min_np = world_bounds_min.numpy()
         bounds_max_np = world_bounds_max.numpy()
 
-        # Find maximum extents across all worlds
-        # Mask out invalid bounds (inf values)
-        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+        # Find maximum extents across all worlds. Empty worlds retain the
+        # finite MAXVAL/-MAXVAL sentinels used to initialize the buffers.
+        valid_mask = (
+            np.all(np.isfinite(bounds_min_np), axis=1)
+            & np.all(np.isfinite(bounds_max_np), axis=1)
+            & np.all(bounds_min_np <= bounds_max_np, axis=1)
+        )
 
         if not valid_mask.any():
             # No valid worlds found
@@ -989,8 +993,8 @@ class ViewerBase(ABC):
     def _auto_compute_contact_scales(self):
         """Adapt contact-visualization scales to the current model.
 
-        Sets ``contact_viz_scale`` and ``contact_force_scale``, based on
-        aggregate model dimensions.
+        Sets the relative ``contact_viz_scale`` default and adapts
+        ``contact_force_scale`` to the aggregate model weight.
 
         Falls back to the literal defaults if the relevant model data is
         unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
@@ -999,14 +1003,6 @@ class ViewerBase(ABC):
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
-
-        # Characteristic length L_char: 10% of the maximal extent.
-        L_char = 0.0
-        max_extents = self._get_world_extents()
-        if max_extents is not None:
-            L_char = float(0.1 * np.linalg.norm(max_extents))
-        if not np.isfinite(L_char) or L_char <= 0.0:
-            L_char = 1.0
 
         # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
         F_char = 0.0
@@ -1032,8 +1028,9 @@ class ViewerBase(ABC):
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
-        # Set contact scales based on L_char and F_char
-        self._contact_viz_scale_default = 1.0 * L_char
+        # Normal arrows use half the smaller shape's collision radius when
+        # contact_viz_scale is at its default value of 1.0.
+        self._contact_viz_scale_default = 1.0
         self._contact_force_scale_default = 5.0 / F_char if F_char > 0.0 else 0.5
 
         # Reset live attributes to new defaults, if values were still default
@@ -1284,6 +1281,10 @@ class ViewerBase(ABC):
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
 
+        # Base glyph size as a multiplier of the smaller shape's collision
+        # radius. Disks and force arrows preserve their existing proportions.
+        contact_scale = 0.5 * float(self.contact_viz_scale)
+
         # ---- Contact-normal arrows -------------------------------
         if self.show_contact_normals:
             if self._contact_points0 is None or len(self._contact_points0) < max_contacts:
@@ -1299,6 +1300,7 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self.layer.xform,
                     self._visible_worlds_mask,
@@ -1308,7 +1310,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    float(self.contact_viz_scale),
+                    contact_scale,
                 ],
                 outputs=[
                     self._contact_points0,  # line start points
@@ -1354,6 +1356,7 @@ class ViewerBase(ABC):
                     self.model.body_com,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
@@ -1364,8 +1367,8 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
                     contacts.force,  # may be None — kernel falls back to default color
-                    float(self.contact_viz_scale * 0.2),
-                    float(self.contact_viz_scale * 0.004),  # cylinder half-height
+                    contact_scale * 0.2,
+                    contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
                     float(self.contact_mode_eps_velocity),
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
@@ -1405,6 +1408,7 @@ class ViewerBase(ABC):
                     state.body_q,
                     self.model.shape_body,
                     self.model.shape_world,
+                    self.model.shape_collision_radius,
                     self.world_offsets,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
@@ -1413,7 +1417,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.force,
-                    float(self.contact_viz_scale * self.contact_force_scale),
+                    contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
                 device=self.device,

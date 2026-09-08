@@ -5222,12 +5222,12 @@ def parse_usd(
                 clamping_specs.append((comp_class, comp_kwargs))
 
         builder.add_actuator(
-            parsed.controller_class,
+            parsed.drive_class,
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
             delay_steps=delay_val,
             pos_index=pos_index,
-            **parsed.controller_kwargs,
+            **parsed.drive_kwargs,
         )
         actuator_count += 1
     if verbose and actuator_count > 0:

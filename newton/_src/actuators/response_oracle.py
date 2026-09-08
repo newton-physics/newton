@@ -22,6 +22,8 @@ import numpy as np
 import warp as wp
 
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim.model import Model
+from ..sim.state import State
 
 __all__ = ["ResponseOracle"]
 
@@ -147,7 +149,7 @@ class ResponseOracle:
     kernels.
     """
 
-    def __init__(self, model):
+    def __init__(self, model: Model) -> None:
         """Initialize the oracle and its scratch buffers for a model.
 
         Args:
@@ -229,7 +231,7 @@ class ResponseOracle:
         """
         return self._inv_block
 
-    def refresh(self, state) -> None:
+    def refresh(self, state: State) -> None:
         """Recompute :attr:`inverse_blocks` for *state*.
 
         Reads *state* without modifying it. Includes ``joint_armature``. Joint

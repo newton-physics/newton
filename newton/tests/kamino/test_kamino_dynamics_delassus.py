@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
@@ -16,12 +17,6 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
-from newton._src.solvers.kamino._src.models.builders.basics import (
-    build_boxes_fourbar,
-    build_boxes_nunchaku,
-    make_basics_heterogeneous_builder,
-)
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -38,6 +33,7 @@ from newton.tests.kamino.utils.make import (
 )
 from newton.tests.kamino.utils.print import print_error_stats
 from newton.tests.kamino.utils.rand import random_rhs_for_matrix
+from newton.tests.utils.basics import build_boxes_fourbar, build_boxes_nunchaku, make_basics_heterogeneous_builder
 
 ###
 # Helper functions
@@ -118,8 +114,9 @@ class TestDelassusOperator(unittest.TestCase):
         builder = build_boxes_nunchaku()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -148,11 +145,13 @@ class TestDelassusOperator(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -183,8 +182,9 @@ class TestDelassusOperator(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -216,10 +216,10 @@ class TestDelassusOperator(unittest.TestCase):
         builder = build_boxes_fourbar(z_offset=0.0, ground=False, dynamic_joints=True, implicit_pd=True)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder,
+            model=model,
             max_world_contacts=max_world_contacts,
-            device=self.default_device,
             sparse=True,
         )
 
@@ -282,11 +282,13 @@ class TestDelassusOperator(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -364,8 +366,9 @@ class TestDelassusOperator(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -432,8 +435,9 @@ class TestDelassusOperator(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -502,8 +506,9 @@ class TestDelassusOperator(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers
@@ -598,18 +603,19 @@ class TestDelassusOperator(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct the model description using model builders for different systems
-        # builder = build_boxes_hinged(z_offset=0.0, ground=False)
         builder = build_boxes_fourbar(z_offset=0.0, ground=False)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians_dense = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=False
+            model=model, max_world_contacts=max_world_contacts, sparse=False
         )
         jacobians_sparse = SparseSystemJacobians(model=model, limits=limits, contacts=detector.contacts)
 
-        # Update the containers
-        update_containers(model, data, state, limits, detector, jacobians_dense)
-        update_containers(model, data, state, limits, detector, jacobians_sparse)
+        # Update the containers once, then build both Jacobians from the same collision-detection pass.
+        update_containers(model, data, state, limits, detector)
+        jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
+        jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
 
         # Create the Delassus operator
         delassus_dense = DelassusOperator(
@@ -655,17 +661,20 @@ class TestDelassusOperator(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians_dense = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=False
+            model=model, max_world_contacts=max_world_contacts, sparse=False
         )
         jacobians_sparse = SparseSystemJacobians(model=model, limits=limits, contacts=detector.contacts)
 
-        # Update the containers
-        update_containers(model, data, state, limits, detector, jacobians_dense)
-        update_containers(model, data, state, limits, detector, jacobians_sparse)
+        # Update the containers once, then build both Jacobians from the same collision-detection pass.
+        update_containers(model, data, state, limits, detector)
+        jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
+        jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
 
         # Create the Delassus operator
         delassus_dense = DelassusOperator(
@@ -712,14 +721,16 @@ class TestDelassusOperator(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians_dense = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=False
+            model=model, max_world_contacts=max_world_contacts, sparse=False
         )
         jacobians_sparse = SparseSystemJacobians(model=model, limits=limits, contacts=detector.contacts)
 
-        # Update the containers
-        update_containers(model, data, state, limits, detector, jacobians_dense)
-        update_containers(model, data, state, limits, detector, jacobians_sparse)
+        # Update the containers once, then build both Jacobians from the same collision-detection pass.
+        update_containers(model, data, state, limits, detector)
+        jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
+        jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=detector.contacts.data)
 
         # Create the Delassus operator
         delassus_dense = DelassusOperator(
@@ -1141,8 +1152,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         builder = build_boxes_nunchaku()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1166,11 +1178,13 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1196,8 +1210,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1225,8 +1240,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1250,11 +1266,13 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1280,8 +1298,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1309,8 +1328,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1334,11 +1354,13 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1364,8 +1386,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1393,8 +1416,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         )
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1418,11 +1442,13 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         max_world_contacts = 12
 
         # Construct a homogeneous model description using model builders
-        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_nunchaku)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_nunchaku(), world_count=num_worlds)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers
@@ -1448,8 +1474,9 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device, sparse=True
+            model=model, max_world_contacts=max_world_contacts, sparse=True
         )
 
         # Update the containers

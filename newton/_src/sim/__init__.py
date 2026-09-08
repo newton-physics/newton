@@ -17,6 +17,7 @@ from .enums import (
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
 from .model import Model
+from .rod import Rod
 from .state import State
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "Model",
     "ModelBuilder",
     "ModelFlags",
+    "Rod",
     "State",
     "StateFlags",
     "eval_fk",
