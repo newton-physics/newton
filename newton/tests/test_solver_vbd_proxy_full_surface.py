@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.vbd.rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY
 from newton._src.solvers.vbd.vbd_coupling_kernels import (
     _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
 )
@@ -59,9 +60,12 @@ def _run_proxy_harvest(device, corners, bary):
     _set(contacts.soft_contact_normal, list(_NORMAL))
 
     out_body_f = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    # The harvest walks a per-body adjacency list, so seed body 0 with the one contact.
+    contact_counts = wp.array([1], dtype=wp.int32, device=device)
+    contact_indices = wp.zeros(smax, dtype=wp.int32, device=device)
     wp.launch(
         _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
-        dim=smax,
+        dim=_NUM_CONTACT_THREADS_PER_BODY,
         inputs=[
             0.01,  # dt
             wp.array([0], dtype=int, device=device),  # body 0 -> proxy global 0
@@ -85,6 +89,9 @@ def _run_proxy_harvest(device, corners, bary):
             contacts.soft_contact_normal,
             model.shape_margin,
             model.shape_body,
+            smax,
+            contact_counts,
+            contact_indices,
         ],
         outputs=[out_body_f],
         device=device,

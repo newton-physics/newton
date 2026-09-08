@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton._src.core.types import Axis
+from newton._src.viewer import viewer_viser
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_viser import ViewerViser
 from newton.examples.vbd._viewer import set_viewer_camera
@@ -720,11 +721,11 @@ class TestViewerViserInteraction(unittest.TestCase):
         handle = self.viewer._scene_handles["instances"]
 
         handle.property_updates.clear()
-        with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
+        with patch.object(viewer_viser, "to_numpy", wraps=viewer_viser.to_numpy) as to_numpy_mock:
             self.viewer.log_instances("instances", "mesh", xforms, scales, None, None)
 
         self.assertEqual(handle.property_updates, {})
-        self.assertEqual(to_numpy.call_count, 1)
+        self.assertEqual(to_numpy_mock.call_count, 1)
 
     def test_mesh_updates_vertices_without_recreating_handle(self):
         """Keep deforming meshes persistent when their topology is unchanged."""
@@ -743,6 +744,45 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.assertEqual(handle.property_updates.get("vertices"), 1)
         self.assertNotIn("faces", handle.property_updates)
         np.testing.assert_allclose(handle.vertices, moved_points.numpy())
+
+    def test_mesh_opacity_is_forwarded_and_cached(self):
+        """Forward mesh opacity and recreate only when its value changes."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3)
+        indices = wp.array((0, 1, 2), dtype=wp.int32)
+
+        self.viewer.log_mesh("mesh", points, indices, opacity=0.25)
+        first_handle = self.viewer._scene_handles["mesh"]
+        self.assertAlmostEqual(first_handle.opacity, 0.25)
+        self.assertAlmostEqual(self.viewer._meshes["mesh"]["opacity"], 0.25)
+
+        self.viewer.log_mesh("mesh", points, indices, opacity=0.25)
+        self.assertIs(self.viewer._scene_handles["mesh"], first_handle)
+
+        self.viewer.log_mesh("mesh", points, indices, opacity=0.75)
+        self.assertTrue(first_handle.removed)
+        self.assertAlmostEqual(self.viewer._scene_handles["mesh"].opacity, 0.75)
+
+    def test_instance_opacities_skip_unchanged_updates(self):
+        """Forward instance opacities without resending unchanged values."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3)
+        indices = wp.array((0, 1, 2), dtype=wp.int32)
+        xforms = wp.array((wp.transform_identity(),), dtype=wp.transform)
+        scales = wp.array(((1.0, 1.0, 1.0),), dtype=wp.vec3)
+        opacities = wp.array((0.25,), dtype=wp.float32)
+        self.viewer.log_mesh("mesh", points, indices)
+
+        self.viewer.log_instances("instances", "mesh", xforms, scales, None, None, opacities=opacities)
+        handle = self.viewer._scene_handles["instances"]
+        np.testing.assert_allclose(handle.batched_opacities, (0.25,))
+
+        handle.property_updates.clear()
+        self.viewer.log_instances("instances", "mesh", xforms, scales, None, None, opacities=opacities)
+        self.assertNotIn("batched_opacities", handle.property_updates)
+
+        updated_opacities = wp.array((0.75,), dtype=wp.float32)
+        self.viewer.log_instances("instances", "mesh", xforms, scales, None, None, opacities=updated_opacities)
+        self.assertEqual(handle.property_updates.get("batched_opacities"), 1)
+        np.testing.assert_allclose(handle.batched_opacities, (0.75,))
 
     def test_hidden_mesh_reuses_existing_handle(self):
         """Hide and restore a mesh without resending its topology."""
@@ -790,10 +830,10 @@ class TestViewerViserInteraction(unittest.TestCase):
         static_handle = self.viewer._scene_handles[static_batch.name]
         np.testing.assert_allclose(self.viewer._instances[static_batch.name]["positions"][0], (7.0, 0.0, 0.0))
 
-        with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
+        with patch.object(viewer_viser, "to_numpy", wraps=viewer_viser.to_numpy) as to_numpy_mock:
             self.viewer.log_state(state)
 
-        warp_transfers = [call.args[0] for call in to_numpy.call_args_list if isinstance(call.args[0], wp.array)]
+        warp_transfers = [call.args[0] for call in to_numpy_mock.call_args_list if isinstance(call.args[0], wp.array)]
         self.assertEqual(len(self.viewer._packed_shape_groups), 2)
         self.assertEqual(len(warp_transfers), 1)
 
@@ -805,9 +845,9 @@ class TestViewerViserInteraction(unittest.TestCase):
         np.testing.assert_allclose(self.viewer._instances[static_batch.name]["positions"][0], (13.0, 0.0, 0.0))
 
         model.shape_color[dynamic_shape : dynamic_shape + 1].fill_(wp.vec3(0.8, 0.2, 0.1))
-        with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
+        with patch.object(viewer_viser, "to_numpy", wraps=viewer_viser.to_numpy) as to_numpy_mock:
             self.viewer.log_state(state)
-        warp_transfers = [call.args[0] for call in to_numpy.call_args_list if isinstance(call.args[0], wp.array)]
+        warp_transfers = [call.args[0] for call in to_numpy_mock.call_args_list if isinstance(call.args[0], wp.array)]
         self.assertEqual(len(warp_transfers), 2)
 
     def test_gizmo_disappears_when_not_logged(self):

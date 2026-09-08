@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -535,6 +536,23 @@ def test_deterministic_implied(test, device):
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
         test.assertTrue(pipeline.deterministic)
         test.assertEqual(pipeline.contact_matching, "latest")
+        test.assertEqual(pipeline._contact_sort_sub_key_bits, CONTACT_SORT_CONVEX_SUB_KEY_BITS)
+
+
+def test_matching_sort_width_follows_contact_family(test, device):
+    """Use compact persistent keys only for bounded manifold sub-keys."""
+    with wp.ScopedDevice(device):
+        model, _state = _build_simple_scene(device)
+        primitive_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        test.assertEqual(primitive_pipeline._contact_sort_sub_key_bits, CONTACT_SORT_CONVEX_SUB_KEY_BITS)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.5, compute_inertia=False))
+        mesh_model = builder.finalize(device=device)
+        mesh_pipeline = newton.CollisionPipeline(mesh_model, broad_phase="nxn", contact_matching="latest")
+        test.assertEqual(mesh_pipeline._contact_sort_sub_key_bits, CONTACT_SORT_SUB_KEY_BITS)
 
 
 def test_contacts_exposes_matching_mode(test, device):

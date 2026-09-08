@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -53,10 +54,13 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver
         max_worlds = args.max_worlds
         verbose = True
 
         world = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(world)
         world.default_joint_cfg.armature = 0.1
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
@@ -70,7 +74,15 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         self.viewer = viewer
 
@@ -99,8 +111,11 @@ class Example:
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
+        self._body_q_after_view_fk = None
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
+            if args.test:
+                self._body_q_after_view_fk = wp.clone(self.state_0.body_q)
 
         self.viewer.set_model(self.model)
         if max_worlds is not None:
@@ -114,14 +129,7 @@ class Example:
             yaw=0.0,
         )
 
-        # Ensure FK evaluation (for non-MuJoCo solvers):
-        newton.eval_fk(
-            self.model,
-            self.model.joint_q,
-            self.model.joint_qd,
-            self.state_0,
-        )
-
+        self._body_q_before_capture = wp.clone(self.state_0.body_q) if self._body_q_after_view_fk is not None else None
         self.capture()
 
     def capture(self):
@@ -175,48 +183,66 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Validate the initialized state and constrained cartpole motion."""
+        if self._body_q_after_view_fk is not None:
+            np.testing.assert_array_equal(
+                self._body_q_after_view_fk.numpy(),
+                self._body_q_before_capture.numpy(),
+            )
+
+        constrained_atol = 1.0e-5 if self.solver_type == "kamino" else 1.0e-6
         num_bodies_per_world = self.model.body_count // self.world_count
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "cart is at ground level and has correct orientation",
-            lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
+            "rail remains fixed",
+            lambda q, qd: wp.length_sq(qd) < constrained_atol * constrained_atol,
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cart is at ground level and has correct orientation",
+            lambda q, qd: (
+                abs(q[2]) < constrained_atol
+                and newton.math.vec_allclose(q.q, wp.quat_identity(), atol=constrained_atol)
+            ),
+            indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart only moves along y direction",
-            lambda q, qd: qd[0] == 0.0
+            lambda q, qd: abs(qd[0]) < constrained_atol
             and abs(qd[1]) > 0.05
-            and qd[2] == 0.0
-            and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
-            indices=[i * num_bodies_per_world for i in range(self.world_count)],
-        )
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "pole1 only has y-axis linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0
-            and abs(qd[1]) > 0.05
-            and qd[2] == 0.0
-            and abs(qd[3]) > 0.3
-            and qd[4] == 0.0
-            and qd[5] == 0.0,
+            and abs(qd[2]) < constrained_atol
+            and wp.length_sq(wp.spatial_bottom(qd)) < constrained_atol * constrained_atol,
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
+            "pole1 only has yz-plane linear velocity and x-axis angular velocity",
+            lambda q, qd: abs(qd[0]) < constrained_atol
+            and abs(qd[1]) > 0.05
+            and abs(qd[2]) > 0.05
+            and abs(qd[3]) > 0.3
+            and abs(qd[4]) < constrained_atol
+            and abs(qd[5]) < constrained_atol,
+            indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
             "pole2 only has yz-plane linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0
+            lambda q, qd: abs(qd[0]) < constrained_atol
             and abs(qd[1]) > 0.05
             and abs(qd[2]) > 0.05
             and abs(qd[3]) > 0.2
-            and qd[4] == 0.0
-            and qd[5] == 0.0,
-            indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
+            and abs(qd[4]) < constrained_atol
+            and abs(qd[5]) < constrained_atol,
+            indices=[i * num_bodies_per_world + 3 for i in range(self.world_count)],
         )
         # fmt: on
 
@@ -225,6 +251,7 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_max_worlds_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
 

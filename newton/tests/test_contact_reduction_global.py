@@ -8,7 +8,12 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.contact_data import ContactData, make_contact_sort_key
+from newton._src.geometry.contact_data import (
+    ContactData,
+    contact_sort_shape_index_bits,
+    make_contact_sort_key,
+    make_contact_sort_key_with_bits,
+)
 from newton._src.geometry.contact_reduction import float_flip
 from newton._src.geometry.contact_reduction_global import (
     CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD,
@@ -514,28 +519,24 @@ def test_clear_active(test, device):
 
 
 def test_clear_active_coalesced(test, device):
-    """Verify the coalesced branch resets directly seeded active entries."""
-    active_count = CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD
+    """Verify active clearing across scheduling and launch-size boundaries."""
+    active_counts = (
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD - 1,
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD,
+        CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD + 1,
+        65537,
+    )
+    max_active_count = max(active_counts)
     reducer = GlobalContactReducer(
-        capacity=4 * active_count,
+        capacity=max_active_count,
         device=device,
         store_hydroelastic_data=True,
         store_moment_data=True,
+        hashtable_size_factor=1.0,
+        enable_contact_reclamation=True,
     )
     ht_capacity = reducer.hashtable.capacity
-    test.assertGreaterEqual(ht_capacity, active_count)
-
-    active_entries = np.arange(active_count, dtype=np.int32)
-    keys = np.full(ht_capacity, np.iinfo(np.uint64).max, dtype=np.uint64)
-    keys[active_entries] = np.arange(1, active_count + 1, dtype=np.uint64)
-    active_slots = np.zeros(ht_capacity + 1, dtype=np.int32)
-    active_slots[:active_count] = active_entries
-    active_slots[ht_capacity] = active_count
-    reducer.hashtable.keys.assign(keys)
-    reducer.hashtable.active_slots.assign(active_slots)
-    reducer.ht_values.fill_(wp.uint64(1))
-    reducer.contact_count.fill_(7)
-    reducer.ht_insert_failures.fill_(3)
+    test.assertGreaterEqual(ht_capacity, max_active_count)
 
     vector_entry_arrays = (
         reducer.agg_force,
@@ -550,25 +551,43 @@ def test_clear_active_coalesced(test, device):
         reducer.agg_moment_reduced,
         reducer.agg_moment2_reduced,
     )
-    for values in vector_entry_arrays:
-        values.fill_(wp.vec3(1.0))
-    for values in scalar_entry_arrays:
-        values.fill_(1.0)
     entry_arrays = vector_entry_arrays + scalar_entry_arrays
 
-    reducer.clear_active()
+    for active_count in active_counts:
+        with test.subTest(active_count=active_count):
+            active_entries = np.arange(active_count, dtype=np.int32)
+            keys = np.full(ht_capacity, np.iinfo(np.uint64).max, dtype=np.uint64)
+            keys[active_entries] = np.arange(1, active_count + 1, dtype=np.uint64)
+            active_slots = np.zeros(ht_capacity + 1, dtype=np.int32)
+            active_slots[:active_count] = active_entries
+            active_slots[ht_capacity] = active_count
+            reducer.hashtable.keys.assign(keys)
+            reducer.hashtable.active_slots.assign(active_slots)
+            reducer.ht_values.fill_(wp.uint64(1))
+            reducer.contact_count.fill_(7)
+            reducer.reclaimed_contact_bits.fill_(wp.uint32(0xFFFFFFFF))
+            reducer.reclaimed_contact_cursor.fill_(5)
+            reducer.ht_insert_failures.fill_(3)
+            for values in vector_entry_arrays:
+                values.fill_(wp.vec3(1.0))
+            for values in scalar_entry_arrays:
+                values.fill_(1.0)
 
-    test.assertEqual(get_contact_count(reducer), 0)
-    test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
-    test.assertEqual(get_active_slot_count(reducer), 0)
-    np.testing.assert_array_equal(
-        reducer.hashtable.keys.numpy()[active_entries],
-        np.full(active_count, np.iinfo(np.uint64).max, dtype=np.uint64),
-    )
-    cleared_values = reducer.ht_values.numpy().reshape(reducer.values_per_key, ht_capacity)[:, active_entries]
-    np.testing.assert_array_equal(cleared_values, 0)
-    for values in entry_arrays:
-        np.testing.assert_array_equal(values.numpy()[active_entries], 0.0)
+            reducer.clear_active()
+
+            test.assertEqual(get_contact_count(reducer), 0)
+            test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+            test.assertEqual(get_active_slot_count(reducer), 0)
+            np.testing.assert_array_equal(reducer.reclaimed_contact_bits.numpy(), 0)
+            test.assertEqual(int(reducer.reclaimed_contact_cursor.numpy()[0]), 0)
+            np.testing.assert_array_equal(
+                reducer.hashtable.keys.numpy()[active_entries],
+                np.full(active_count, np.iinfo(np.uint64).max, dtype=np.uint64),
+            )
+            cleared_values = reducer.ht_values.numpy().reshape(reducer.values_per_key, ht_capacity)[:, active_entries]
+            np.testing.assert_array_equal(cleared_values, 0)
+            for values in entry_arrays:
+                np.testing.assert_array_equal(values.numpy()[active_entries], 0.0)
 
 
 def test_export_reduced_contacts_kernel(test, device):
@@ -956,6 +975,112 @@ def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
         test.assertIn(2, outer_fingerprints, f"Outer contact should win when no inner contact exists ({mode})")
 
 
+def test_centered_two_spatial_depths_voxel_only_claim(test, device):
+    """A contact without a normal-slot win may claim an unpublished voxel entry; later ties allocate nothing."""
+
+    @wp.kernel
+    def reduce_kernel(
+        reducer_data: GlobalContactReducerData,
+        position_local: wp.vec3,
+        fingerprint: int,
+        result: wp.array[wp.int32],
+    ):
+        # Identical normal-bin scores for every call: only the first caller wins the
+        # normal slots, later callers tie and lose them. ``position_local`` selects
+        # the voxel group (resolution 8 along x: cells 0-6 share group 0, cell 7 is group 1).
+        result[0] = export_and_reduce_contact_centered_two_spatial_depths(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=fingerprint,
+            centered_position=wp.vec3(0.0),
+            inner_spatial_depth=0.0,
+            outer_spatial_depth=0.1,
+            position_local=position_local,
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(8, 1, 1),
+            reducer_data=reducer_data,
+        )
+
+    reducer = GlobalContactReducer(capacity=8, device=device, enable_contact_reclamation=True)
+    result = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def run(position_local, fingerprint):
+        wp.launch(
+            reduce_kernel,
+            dim=1,
+            inputs=[reducer.get_data_struct(), position_local, fingerprint],
+            outputs=[result],
+            device=device,
+        )
+        return int(result.numpy()[0])
+
+    # First contact wins every normal slot and publishes voxel group 0.
+    test.assertEqual(run(wp.vec3(-0.99, 0.0, 0.0), 1), 1)
+    test.assertEqual(get_contact_count(reducer), 1)
+    test.assertEqual(get_active_slot_count(reducer), 2)
+
+    # Same scores, so no normal-slot win, but voxel group 1 is unpublished:
+    # the contact allocates an ID and claims that voxel slot.
+    test.assertEqual(run(wp.vec3(0.99, 0.0, 0.0), 2), 2)
+    test.assertEqual(get_contact_count(reducer), 2)
+    test.assertEqual(get_active_slot_count(reducer), 3)
+    test.assertEqual(get_winning_contacts(reducer), [1, 2])
+
+    # Once the voxel entry exists, a tying contact loses everywhere and must
+    # not allocate an ID.
+    test.assertEqual(run(wp.vec3(0.99, 0.0, 0.0), 3), -1)
+    test.assertEqual(get_contact_count(reducer), 2)
+    test.assertEqual(get_active_slot_count(reducer), 3)
+    test.assertEqual(get_winning_contacts(reducer), [1, 2])
+    test.assertEqual(int(reducer.reclaimed_contact_bits.numpy().sum()), 0)
+
+
+def test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key(test, device):
+    """Avoid publishing a voxel key when contact allocation is exhausted."""
+
+    @wp.kernel
+    def exhaust_then_reduce_kernel(reducer_data: GlobalContactReducerData, result: wp.array[wp.int32]):
+        export_contact_to_buffer(
+            shape_a=10,
+            shape_b=11,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=1,
+            reducer_data=reducer_data,
+        )
+        result[0] = export_and_reduce_contact_centered_two_spatial_depths(
+            shape_a=0,
+            shape_b=1,
+            position=wp.vec3(0.0),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=2,
+            centered_position=wp.vec3(0.0),
+            inner_spatial_depth=0.0,
+            outer_spatial_depth=0.1,
+            position_local=wp.vec3(0.0),
+            aabb_lower_voxel=wp.vec3(-1.0),
+            aabb_upper_voxel=wp.vec3(1.0),
+            voxel_res=wp.vec3i(1),
+            reducer_data=reducer_data,
+        )
+
+    reducer = GlobalContactReducer(capacity=1, device=device)
+    result = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(exhaust_then_reduce_kernel, dim=1, inputs=[reducer.get_data_struct()], outputs=[result], device=device)
+
+    test.assertEqual(int(result.numpy()[0]), -1)
+    test.assertEqual(get_contact_count(reducer), 1)
+    test.assertEqual(get_active_slot_count(reducer), 1)
+    test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+    test.assertEqual(get_winning_contacts(reducer), [])
+
+
 def test_centered_different_pairs_independent(test, device):
     """Test that different shape pairs are tracked independently in centered reduction."""
     reducer = GlobalContactReducer(capacity=200, device=device)
@@ -1301,15 +1426,38 @@ class TestMakeContactSortKey(unittest.TestCase):
     pass
 
 
+def test_sort_key_shape_index_bits(test, device):
+    """Use only the shape-index bits required by the model."""
+    del device
+    for shape_count, expected in ((0, 1), (2, 1), (3, 2), (256, 8), (32768, 15), (1 << 20, 20), (1 << 21, 20)):
+        test.assertEqual(contact_sort_shape_index_bits(shape_count), expected)
+
+
 @wp.kernel(enable_backward=False)
 def _sort_key_kernel(
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     sub_key: wp.array[int],
     keys_out: wp.array[wp.int64],
+    shape_index_bits: int,
 ):
     tid = wp.tid()
-    keys_out[tid] = make_contact_sort_key(shape_a[tid], shape_b[tid], sub_key[tid])
+    keys_out[tid] = make_contact_sort_key(shape_a[tid], shape_b[tid], sub_key[tid], shape_index_bits)
+
+
+@wp.kernel(enable_backward=False)
+def _compact_sort_key_kernel(
+    shape_a: wp.array[int],
+    shape_b: wp.array[int],
+    sub_key: wp.array[int],
+    keys_out: wp.array[wp.int64],
+    shape_index_bits: int,
+    sub_key_bits: int,
+):
+    tid = wp.tid()
+    keys_out[tid] = make_contact_sort_key_with_bits(
+        shape_a[tid], shape_b[tid], sub_key[tid], shape_index_bits, sub_key_bits
+    )
 
 
 def test_sort_key_bit_layout(test, device):
@@ -1320,15 +1468,16 @@ def test_sort_key_bit_layout(test, device):
     sb = wp.array([0, 0, 1, 0, 0], dtype=int, device=device)
     sk = wp.array([0, 1, 0, 0, 1], dtype=int, device=device)
     keys = wp.zeros(5, dtype=wp.int64, device=device)
-    wp.launch(_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys], device=device)
+    for shape_index_bits in (1, 4, 15, 20):
+        wp.launch(_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys, shape_index_bits], device=device)
 
-    keys_np = keys.numpy()
-    for i in range(len(keys_np) - 1):
-        test.assertLess(
-            keys_np[i],
-            keys_np[i + 1],
-            f"Key[{i}]={keys_np[i]} should be < Key[{i + 1}]={keys_np[i + 1]}",
-        )
+        keys_np = keys.numpy()
+        for i in range(len(keys_np) - 1):
+            test.assertLess(
+                keys_np[i],
+                keys_np[i + 1],
+                f"Key[{i}]={keys_np[i]} should be < Key[{i + 1}]={keys_np[i + 1]}",
+            )
 
 
 def test_sort_key_overflow_masking(test, device):
@@ -1339,11 +1488,23 @@ def test_sort_key_overflow_masking(test, device):
     sb = wp.array([0, 0], dtype=int, device=device)
     sk = wp.array([0, 0], dtype=int, device=device)
     keys = wp.zeros(2, dtype=wp.int64, device=device)
-    wp.launch(_sort_key_kernel, dim=2, inputs=[sa, sb, sk, keys], device=device)
+    wp.launch(_sort_key_kernel, dim=2, inputs=[sa, sb, sk, keys, 20], device=device)
 
     keys_np = keys.numpy()
     # After masking to 20 bits, large_a & 0xFFFFF == 5, so both keys should be equal
     test.assertEqual(keys_np[0], keys_np[1], "Overflow bits should be masked away")
+
+
+def test_compact_sort_key_bit_layout(test, device):
+    """Verify that the 3-bit convex layout preserves lexicographic ordering."""
+    sa = wp.array([0, 0, 0, 1, 1], dtype=int, device=device)
+    sb = wp.array([0, 0, 1, 0, 0], dtype=int, device=device)
+    sk = wp.array([0, 4, 0, 0, 4], dtype=int, device=device)
+    keys = wp.zeros(5, dtype=wp.int64, device=device)
+    wp.launch(_compact_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys, 4, 3], device=device)
+
+    keys_np = keys.numpy()
+    test.assertTrue(np.all(keys_np[:-1] < keys_np[1:]))
 
 
 # =============================================================================
@@ -1592,6 +1753,18 @@ add_function_test(
 )
 add_function_test(
     TestGlobalContactReducer,
+    "test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key",
+    test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
+    "test_centered_two_spatial_depths_voxel_only_claim",
+    test_centered_two_spatial_depths_voxel_only_claim,
+    devices=devices,
+)
+add_function_test(
+    TestGlobalContactReducer,
     "test_centered_different_pairs_independent",
     test_centered_different_pairs_independent,
     devices=devices,
@@ -1629,7 +1802,19 @@ add_function_test(
 )
 
 # make_contact_sort_key tests
+add_function_test(
+    TestMakeContactSortKey,
+    "test_sort_key_shape_index_bits",
+    test_sort_key_shape_index_bits,
+    devices=devices,
+)
 add_function_test(TestMakeContactSortKey, "test_sort_key_bit_layout", test_sort_key_bit_layout, devices=devices)
+add_function_test(
+    TestMakeContactSortKey,
+    "test_compact_sort_key_bit_layout",
+    test_compact_sort_key_bit_layout,
+    devices=devices,
+)
 add_function_test(
     TestMakeContactSortKey, "test_sort_key_overflow_masking", test_sort_key_overflow_masking, devices=devices
 )

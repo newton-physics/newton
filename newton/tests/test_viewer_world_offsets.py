@@ -12,8 +12,8 @@ from newton.viewer import ViewerNull
 
 
 class TestViewerWorldOffsets(unittest.TestCase):
-    def test_contact_scale_uses_shape_size_not_scene_span(self):
-        """Keep contact helpers proportional to bodies in long, sparse scenes."""
+    def test_scene_scale_uses_shape_size_not_scene_span(self):
+        """Keep scene scale proportional to bodies in long, sparse scenes."""
         builder = newton.ModelBuilder()
         for x in (0.0, 100.0):
             body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()))
@@ -24,9 +24,9 @@ class TestViewerWorldOffsets(unittest.TestCase):
         viewer.set_model(model)
 
         self.assertAlmostEqual(viewer.scene_scale, 0.01, places=6)
-        self.assertAlmostEqual(viewer.contact_viz_scale, 0.005, places=6)
+        self.assertAlmostEqual(viewer.contact_viz_scale, 1.0, places=6)
 
-    def test_single_world_global_shapes_scale_viewer_helpers(self):
+    def test_single_world_global_shapes_scale_scene(self):
         """Use body shape size when global single-world shapes have no world index."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
@@ -42,7 +42,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
         assert_np_equal(np.asarray(viewer._get_world_extents()), np.full(3, 0.02), tol=1e-6)
         self.assertAlmostEqual(viewer.scene_scale, 0.01, places=6)
-        self.assertAlmostEqual(viewer.contact_viz_scale, 0.005, places=6)
+        self.assertAlmostEqual(viewer.contact_viz_scale, 1.0, places=6)
 
     def test_compute_world_offsets_function(self):
         """Test that the shared compute_world_offsets function works correctly."""
