@@ -58,10 +58,20 @@ _KNOWN_WARNING_DEBT = (
         "module": (
             rf"{_TEST_MODULE_PREFIX}"
             r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
-            r"test_controllers_joint_selection|test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
+            r"test_controllers_joint_selection|test_controllers_operational_space|test_convex_support|"
+            r"test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
             r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
             r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
         ),
+    },
+    {
+        "message": (
+            r"Adding a (?:FIXED|REVOLUTE) joint between parent \d+ and child \d+ \(label: 'body_\d+'\), but another "
+            r"joint already connects these bodies\. Parallel joints between the same pair of bodies have undefined "
+            r"semantics and may not behave as expected\."
+        ),
+        "category": UserWarning,
+        "module": rf"{_TEST_MODULE_PREFIX}test_eval_fk$",
     },
     {
         "message": r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\..*",
