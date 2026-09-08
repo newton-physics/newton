@@ -3739,11 +3739,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default
                 value is estimated automatically. An explicit value is preserved
-                unless it cannot hold the initial MuJoCo constraints.
+                unless it cannot hold the initial MuJoCo constraints; in that case,
+                it is increased with a warning.
             njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
             nconmax: Number of contact points per world. If None, a default value
                 is estimated automatically. An explicit value is preserved unless
-                it cannot hold the initial MuJoCo contacts.
+                it cannot hold the initial MuJoCo contacts; in that case, it is
+                increased with a warning.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
