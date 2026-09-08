@@ -334,7 +334,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |yes|
      - |no|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_velocity_limit`
      - |no|
      - |no|

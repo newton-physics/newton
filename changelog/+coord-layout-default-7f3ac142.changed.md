@@ -1,0 +1,1 @@
+Default `newton.use_coord_layout_targets` to `True`: `Model.joint_target_q` and `Control.joint_target_q` are now shaped `(joint_coord_count,)`, matching `joint_q`. Index them via `Model.joint_target_q_start`. Set the flag to `False` before building models to restore the deprecated DOF-shaped layout.

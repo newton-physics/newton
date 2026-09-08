@@ -1552,6 +1552,7 @@ class HydroelasticContactReduction:
         writer_func: Any = None,
         config: HydroelasticReductionConfig | None = None,
         deterministic: bool = False,
+        enable_reduction: bool = True,
     ):
         """Initialize the hydroelastic contact reduction system.
 
@@ -1564,6 +1565,8 @@ class HydroelasticContactReduction:
             deterministic: Whether to use fingerprint-based winner selection and
                 int64 fixed-point aggregate accumulation, making results
                 independent of GPU thread scheduling.
+            enable_reduction: Allocate and initialize reduction-only storage.
+                Disable when contacts are decoded directly from the buffer.
         """
         if config is None:
             config = HydroelasticReductionConfig()
@@ -1573,6 +1576,7 @@ class HydroelasticContactReduction:
         self.config = config
         self.device = device
         self.deterministic = deterministic
+        self.enable_reduction = enable_reduction
         # Create the underlying reducer with hydroelastic data storage enabled
         self.reducer = GlobalContactReducer(
             capacity=capacity,
@@ -1581,6 +1585,7 @@ class HydroelasticContactReduction:
             store_moment_data=config.moment_matching,
             deterministic=deterministic,
             hashtable_size_factor=config.hashtable_size_factor,
+            enable_reduction=enable_reduction,
         )
 
         # Fixed-point accumulators, used only in deterministic mode.  Unreduced
@@ -1675,7 +1680,11 @@ class HydroelasticContactReduction:
         This efficiently clears only the active hashtable entries and resets
         the contact counter. Call this at the start of each simulation step.
         """
-        self.reducer.clear_active()
+        if self.enable_reduction:
+            self.reducer.clear_active()
+        else:
+            self.reducer.contact_count.zero_()
+            self.reducer.ht_insert_failures.zero_()
         if self.deterministic:
             self._fixed_accum.zero_()
             self._fixed_scale.fill_(FIXED_EXP_NONE)

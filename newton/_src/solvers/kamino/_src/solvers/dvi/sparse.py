@@ -229,7 +229,7 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
             delassus.constraint_jacobian.nzb_values,
             bsm.row_start,
             bsm.col_start,
-            jacobians.friction_constraint_nzb_offsets,
+            jacobians.bounded_constraint_nzb_offsets,
             jacobians.limit_constraint_nzb_offsets,
             jacobians.contact_constraint_nzb_offsets,
             state.limit_indices,

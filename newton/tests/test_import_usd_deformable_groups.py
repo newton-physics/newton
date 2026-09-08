@@ -19,6 +19,8 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
     _add_physics_attachment,
+    _author_deformable_element_array,
+    _bind_deformable_material,
     _deformable_stage,
     group_range,
 )
@@ -60,7 +62,9 @@ class TestUSDDeformableGroups(unittest.TestCase):
         """replicate() duplicates labels across worlds: one group per world, ranges
         offset per world, and raw ranges come back in world order."""
         stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/Cloth")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
         sub = newton.ModelBuilder()
         sub.add_usd(stage)
         scene = newton.ModelBuilder()
@@ -77,7 +81,9 @@ class TestUSDDeformableGroups(unittest.TestCase):
     def test_heterogeneous_worlds_resolve_with_world_tags(self):
         """Worlds holding different deformables each resolve with the right world tag."""
         cloth_stage = _deformable_stage()
-        _add_cloth_mesh(cloth_stage, "/World/Cloth")
+        cloth = _add_cloth_mesh(cloth_stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        _bind_deformable_material(cloth_stage, cloth.GetPrim(), "/World/ClothMat")
         cable_stage = _deformable_stage()
         _add_cable_curve(cable_stage, "/World/Cable", _CABLE_PTS)
 

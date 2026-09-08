@@ -1498,6 +1498,9 @@ class TestSelectionFixedTendons(unittest.TestCase):
         tendon_range = view.get_attribute("mujoco.tendon_range", model)
         self.assertEqual(tendon_range.shape, (1, 1, T))  # vec2 trailing dim
 
+        tendon_coef = view.get_attribute("mujoco.tendon_coef", model)
+        self.assertEqual(tendon_coef.shape, (1, 1, 2))
+
     def test_tendon_generic_api(self):
         """Test that tendon attributes are accessible via generic get/set_attribute."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1633,7 +1636,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # This tests line 969: no tendons found in the selected articulations
         with self.assertRaises(AttributeError) as ctx:
             view.get_attribute("mujoco.tendon_stiffness", model)
-        self.assertIn("no tendons were found", str(ctx.exception))
+        self.assertIn("no rows were found", str(ctx.exception))
 
     def test_multiple_articulations_per_world(self):
         """Test tendon selection with multiple articulations in a single world."""
@@ -1670,6 +1673,58 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # All stiffness values should be 2.0 (from TENDON_MJCF)
         expected = np.full((W, A, 1), 2.0)
         assert_np_equal(stiffness.numpy(), expected)
+
+
+class TestSelectionMuJoCoActuators(unittest.TestCase):
+    """Tests for MuJoCo actuator custom frequencies in ArticulationView."""
+
+    ACTUATOR_MJCF = """
+<mujoco model="actuated">
+  <worldbody>
+    <body name="link">
+      <joint name="hinge" type="hinge"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="drive" joint="hinge"/>
+  </actuator>
+</mujoco>
+"""
+
+    def test_actuator_frequency_uses_declared_articulation_owner(self):
+        """Expose MuJoCo actuator controls through their declared owner metadata."""
+        robot = newton.ModelBuilder()
+        robot.add_mjcf(self.ACTUATOR_MJCF)
+        scene = newton.ModelBuilder()
+        scene.replicate(robot, world_count=2)
+        model = scene.finalize()
+        control = model.control()
+
+        view = ArticulationView(model, "actuated")
+        self.assertEqual(view.custom_frequency_counts["mujoco:actuator"], 1)
+        self.assertEqual(view.custom_frequency_labels["mujoco:actuator"], ["drive"])
+        assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0, 1])
+
+        values = np.array([[[1.0]], [[2.0]]], dtype=np.float32)
+        view.set_attribute("mujoco.ctrl", control, values)
+        assert_np_equal(view.get_attribute("mujoco.ctrl", control).numpy(), values)
+
+    def test_actuator_owners_survive_merge_followed_by_import(self):
+        """Preserve remapped actuator owners when later imports append rows."""
+        robot = newton.ModelBuilder()
+        robot.add_mjcf(self.ACTUATOR_MJCF)
+
+        world = newton.ModelBuilder()
+        world.add_builder(robot, label_prefix="a")
+        world.add_builder(robot, label_prefix="b")
+        world.add_mjcf(self.ACTUATOR_MJCF)
+
+        scene = newton.ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize()
+
+        assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
 
 
 if __name__ == "__main__":

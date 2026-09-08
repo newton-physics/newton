@@ -117,8 +117,8 @@ attributes, and usage examples.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
-Camera Rays from USD Data
--------------------------
+Camera Rays from USD and Calibration Data
+-----------------------------------------
 
 ``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
 attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
@@ -143,6 +143,10 @@ attributes, read the attributes you use in your pipeline and pass the numeric va
        camera_rays,
        color_image=color,
    )
+
+For OpenCV-calibrated pinhole cameras, call
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_pinhole_opencv` with the calibrated intrinsics and
+radial, tangential, and optional thin-prism coefficients.
 
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
 :meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,

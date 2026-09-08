@@ -62,8 +62,8 @@ class Example:
         prototype = newton.ModelBuilder()
 
         # The labels are the public identities used after finalization.
-        curve_bodies, _curve_joints = prototype.add_rod_graph(
-            node_positions=[
+        curve = newton.Rod(
+            [
                 (-0.8, -0.3, 1.8),
                 (-0.8, -0.1, 1.55),
                 (-0.8, 0.1, 1.3),
@@ -71,6 +71,9 @@ class Example:
             ],
             edges=[(0, 1), (1, 2), (2, 3)],
             radius=0.025,
+        )
+        curve_bodies, _curve_joints = prototype.add_rod(
+            rod=curve,
             stretch_stiffness=1.0e5,
             bend_stiffness=1.0e2,
             label="hanging_cable",

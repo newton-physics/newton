@@ -10,6 +10,15 @@ allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *)
 
 Generates a markdown audit of a Newton release for keep/defer decisions (or, in retrospective mode, for skill calibration). Three modes, auto-detected in Phase 1:
 
+Read `CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst` from the
+repository root before auditing. They define the canonical coding, API, and
+review policies. This skill performs the final cross-release reconciliation;
+it does not replace pull-request review, and a prior review pass does not make
+any audit phase optional. In retrospective mode, using the current guides is
+intentional: calibrate the current audit policy against evidence pinned to the
+target tag. Do not claim historical noncompliance unless the requirement also
+existed at that tag.
+
 - **Pre-release**: spot-check while work is still landing on main. No release branch cut. Version string is `X.Y.Z.devN`.
 - **Release-candidate**: readiness review after the release branch is cut. Version string is `X.Y.ZrcN` or head is `release-X.Y`.
 - **Retrospective**: audit an already-shipped release (e.g., `v1.1.0`) against its predecessor, with a Calibration Notes section (Phase 7) that checks Claude's flags against what subsequent patch/minor releases actually did. Triggered by passing a bare released-version argument that matches an existing git tag.
@@ -244,7 +253,25 @@ Classification:
 
 **If an entry mentions multiple symbols where some are new and some pre-existed** (e.g., "Add `newton.geometry.compute_offset_mesh()` and a viewer toggle"), split: the genuinely new symbols each get a New API entry; the extensions to existing symbols each get a Changes entry.
 
-**Public-API exposure check.** For every symbol that passes the "genuinely new" test, also verify at HEAD that it is reachable via one of the public re-export modules listed above. If the symbol only exists under `newton._src.*` and is not re-exported through a public module, flag it in the report (Section "CHANGELOG Review Notes" → 🕵️ Private-only) — AGENTS.md requires user-facing symbols to be re-exported and forbids examples/docs from importing `newton._src`. Do not treat this as a hard block on the entry; surface it so the release manager can confirm the symbol was intended to be public.
+**Public-API declaration and exposure check.** At HEAD, inspect every public
+module discovered by `api_modules()` and `solver_submodule_pages()`. Each module
+must define `__all__` as a list or tuple containing only strings; a missing or
+invalid declaration is a policy finding in "CHANGELOG Review Notes". For every
+symbol that passes the "genuinely new" test, collect its memberships across
+those declarations:
+
+- No memberships: report 🕵️ Private-only. The symbol exists only under
+  `newton._src.*` and was not re-exported through a public module.
+- One membership: the symbol has a canonical public import path.
+- More than one membership: report a duplicate-public-export policy finding
+  and list every public module that exports it.
+
+`CODING_GUIDELINES.rst` requires each public symbol to appear in exactly one
+public module's `__all__` and forbids examples/docs from importing
+`newton._src`. Do not treat the private-only finding as a hard block on the
+entry; surface it so the release manager can confirm the symbol was intended
+to be public. Treat missing or invalid declarations and duplicate exports as
+policy findings that require an explicit release decision.
 
 ### 4b — Resolve New API signatures + docstrings
 
@@ -273,7 +300,7 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 - For semantic-only changes (no signature shift) where the prose describes a rename / reorder / behavioral flip: skip the diff block; include the backing commit's URL and the full CHANGELOG text.
 - For Removed entries: show the old signature on a `-` line; omit `+`.
 
-**Deprecation-window lookup for Removed entries.** Newton's policy (per AGENTS.md) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
+**Deprecation-window lookup for Removed entries.** Newton's policy (per `CODING_GUIDELINES.rst`) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
 
 1. Extract distinctive tokens from the Removed entry: the named symbol(s) in backticks and, if the entry carries a GH ref, that ref number.
 2. Scan the appropriate released-version sections of CHANGELOG.md for a `### Deprecated` bullet that names the same symbol(s) OR the same GH ref. The search scope depends on mode:
@@ -367,8 +394,8 @@ Read `references/language-review-examples.md`. For EACH CHANGELOG entry, apply L
 - **🗣️ Internal language**: internal module paths (`newton._src.*`), private identifiers with a leading underscore, Warp-internal types (`wp.types.*` that are not documented user types), implementation-detail verbs ("refactor", "reorganize", "rewrite") without a user-visible outcome.
 - **📝 Too terse**: under ~10 words with no context, or missing migration guidance in a Deprecated / Changed entry that names a rename or removal.
 - **🕵️ Private-only symbol**: the CHANGELOG `### Added` entry names a symbol that exists only in `newton._src.*` at HEAD and is not re-exported through a public module. See Phase 4a.
-- **📐 Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per AGENTS.md ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
-- **🏷️ Naming-convention drift** (Newton-specific): new public symbols in `### Added` whose names violate Newton's prefix-first convention (e.g., `PDActuator` should be `ActuatorPD`; `add_sphere_shape()` should be `add_shape_sphere()`). See AGENTS.md.
+- **⬆️ Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per `changelog/README.md` ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
+- **🏷️ Naming-convention drift** (Newton-specific): new public symbols in `### Added` whose names violate Newton's prefix-first convention (e.g., `PDActuator` should be `ActuatorPD`; `add_sphere_shape()` should be `add_shape_sphere()`). See `CODING_GUIDELINES.rst`.
 
 Record flagged entries. Keep the FULL entry text in the audit table — do not truncate.
 
@@ -434,7 +461,7 @@ The calibration section groups results by flag class and, within each, by outcom
 - Invalidated if: the symbol stays reachable only via `_src` in every post-target release AND no issues reference it — it was probably intentional internal-only despite its position in the Added section. Note this as "intended internal; CHANGELOG language could have been clearer".
 - Unresolved if: the symbol was removed / renamed before re-export resolution.
 
-**📐 Missing-migration-guidance:**
+**⬆️ Missing-migration-guidance:**
 - Validated if: a later release's CHANGELOG bullet (in `### Changed` or `### Fixed`) retroactively points to the replacement, OR a subsequent issue references users stuck on the migration. The second signal is only available if `gh issue list` returns matches for the symbol name; probe with `gh issue list --search "<symbol>" --state all --json number,title`.
 - Invalidated if: the migration was handled by a runtime `DeprecationWarning` with a clear message (grep the code at `v<target>` for the warning text).
 - Unresolved: default.
@@ -596,7 +623,7 @@ Never pass `--public`. Never file a destination the user did not choose.
 - Towncrier insertion marker: `<!-- towncrier release notes start -->`.
 - CHANGELOG subsection headers: `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`.
 - Symbol extraction from entry text: backtick-quoted `newton.X`, `newton.X.Y`, `ClassName.method`, bare `ClassName` (capitalized identifier), bare `snake_case_name()`. The FIRST backtick-quoted symbol in the bullet is usually the primary subject.
-- Migration-guidance regex (Phase 5a 📐): case-insensitive search for `use\s+\x60`, `in favor of`, `renamed? to`, `replaced? by`, `switch to`, `migrate to`, `prefer\s+\x60` (where `\x60` matches a backtick).
+- Migration-guidance regex (Phase 5a ⬆️): case-insensitive search for `use\s+\x60[^\x60]+\x60`, `in favor of\s+\x60[^\x60]+\x60`, `rename(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+to\s+\x60[^\x60]+\x60`, `replace(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+by\s+\x60[^\x60]+\x60`, `switch to\s+\x60[^\x60]+\x60`, `migrate to\s+\x60[^\x60]+\x60`, `prefer\s+\x60[^\x60]+\x60` (where `\x60` matches a backtick).
 
 ## Failure modes
 

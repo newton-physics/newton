@@ -31,7 +31,6 @@ import warp as wp
 import yaml
 
 import newton
-from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.viewer import MeshColors, ViewerConfig
 from newton._src.solvers.kamino.examples import run_headless
@@ -123,7 +122,7 @@ class Example:
         num_worlds = 1
 
         # USD model path
-        asset_path = newton.utils.download_asset("disneyresearch")
+        asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
         usd_model_path = str(asset_path / config["usd_model"])
 
         # Create generic articulated body simulator
@@ -147,12 +146,12 @@ class Example:
             self._apply_body_group_colors()
 
         # Override implicit PD gains to match training config exactly
-        act_type = wp.to_torch(self.sim_wrapper.sim.model.joints.act_type)
         k_p = wp.to_torch(self.sim_wrapper.sim.model.joints.k_p_j)
         k_d = wp.to_torch(self.sim_wrapper.sim.model.joints.k_d_j)
         a_j = wp.to_torch(self.sim_wrapper.sim.model.joints.a_j)
         b_j = wp.to_torch(self.sim_wrapper.sim.model.joints.b_j)
-        actuated_mask = act_type != JointActuationType.PASSIVE
+        actuated_mask = torch.zeros_like(k_p, dtype=torch.bool)
+        actuated_mask[self.sim_wrapper.actuated_dof_indices_tensor] = True
         k_p[actuated_mask] = config["pd_kp"]
         k_d[actuated_mask] = config["pd_kd"]
         a_j[actuated_mask] = config["pd_armature"]
@@ -270,7 +269,7 @@ class Example:
     def _apply_actions(self):
         """Convert policy actions to implicit PD joint position references."""
         self.sim_wrapper.q_j_ref.zero_()
-        self.sim_wrapper.q_j_ref[:, self.sim_wrapper.actuated_dof_indices_tensor] = (
+        self.sim_wrapper.q_j_ref[:, self.sim_wrapper.actuated_coord_indices_tensor] = (
             self.cfg["action_scale"] * self.actions
         )
         self.sim_wrapper.dq_j_ref.zero_()
@@ -511,7 +510,7 @@ if __name__ == "__main__":
     torch_device = "cuda" if device.is_cuda else "cpu"
 
     # Load config from YAML (with hardcoded fallback defaults)
-    asset_path = newton.utils.download_asset("disneyresearch")
+    asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
     config = _load_drlegs_config(asset_path)
 
     # CLI overrides

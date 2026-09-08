@@ -1,0 +1,1 @@
+Detect immovable bodies in the Newton-to-MuJoCo contact converter from the degrees of freedom of a body's weld group instead of testing `body_weldid == 0`. MuJoCo 3.12 gives mocap bodies their own weld id, so contacts between two immovable bodies were no longer filtered when either side was an articulated fixed root, which Newton maps to a MuJoCo mocap body.

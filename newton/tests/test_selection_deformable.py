@@ -52,8 +52,7 @@ def _add_test_articulation(builder):
 
 def _add_test_cable(builder, label="cable"):
     builder.add_rod(
-        positions=_CABLE_PTS,
-        radius=0.02,
+        rod=newton.Rod(_CABLE_PTS, radius=0.02),
         label=label,
         body_frame_origin="com",
     )
@@ -777,8 +776,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         builder.add_joint_fixed(parent=-1, child=collapsed_body, label="collapse_me")
         _add_test_articulation(builder)
         cable_bodies, _cable_joints = builder.add_rod(
-            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable",
             body_frame_origin="com",
         )
@@ -903,8 +901,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         _add_test_articulation(world_2)
         _add_test_cloth(world_2)
         world_2.add_rod(
-            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable",
             body_frame_origin="com",
         )
@@ -929,8 +926,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         builder = newton.ModelBuilder()
         _add_test_articulation(builder)
         bodies, _joints = builder.add_rod(
-            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
             body_frame_origin="com",
         )
@@ -978,21 +974,18 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
                 self.assertEqual((view.labels, view.worlds), ([label], [-1]))
 
     def test_unlabeled_curve_builders_get_default_group_labels(self):
-        """Both public curve constructors record a group without an explicit label."""
+        """Both Rod topology forms record a group without an explicit label."""
         rod_builder = newton.ModelBuilder()
         rod_builder.add_rod(
-            positions=_CABLE_PTS,
-            radius=0.02,
+            rod=newton.Rod(_CABLE_PTS, radius=0.02),
             body_frame_origin="com",
         )
         rod = DeformableView(rod_builder.finalize(), "curve_0", family="curve")
         self.assertEqual((rod.labels, rod.bodies_per_group), (["curve_0"], 3))
 
         graph_builder = newton.ModelBuilder()
-        graph_builder.add_rod_graph(
-            node_positions=_CABLE_PTS,
-            edges=[(0, 1), (1, 2), (2, 3)],
-            radius=0.02,
+        graph_builder.add_rod(
+            rod=newton.Rod(_CABLE_PTS, edges=[(0, 1), (1, 2), (2, 3)], radius=0.02),
             body_frame_origin="com",
         )
         graph = DeformableView(graph_builder.finalize(), "curve_0", family="curve")
@@ -1076,9 +1069,11 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         """Public rod builders hide their nested construction from group selection."""
         closed_builder = newton.ModelBuilder()
         closed_builder.add_rod(
-            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.0, 0.0, 1.0)],
-            radius=0.02,
-            closed=True,
+            rod=newton.Rod(
+                [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.0, 0.0, 1.0)],
+                radius=0.02,
+                closed=True,
+            ),
             label="closed",
             body_frame_origin="com",
         )
@@ -1087,10 +1082,12 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         self.assertEqual(closed.elements_per_group("joint"), 3)
 
         graph_builder = newton.ModelBuilder()
-        graph_builder.add_rod_graph(
-            node_positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
-            edges=[(0, 1), (1, 2), (1, 3)],
-            radius=0.02,
+        graph_builder.add_rod(
+            rod=newton.Rod(
+                [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
+                edges=[(0, 1), (1, 2), (1, 3)],
+                radius=0.02,
+            ),
             label="graph",
             body_frame_origin="com",
         )
@@ -1098,15 +1095,42 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
         self.assertEqual(graph.elements_per_group("joint"), 2)
 
+    def test_deprecated_curve_inputs_still_record_groups(self):
+        """Deprecated rod inputs keep their group-selection behavior."""
+        chain_builder = newton.ModelBuilder()
+        with self.assertWarns(DeprecationWarning):
+            chain_builder.add_rod(
+                positions=_CABLE_PTS,
+                radius=0.02,
+                label="legacy_chain",
+                body_frame_origin="com",
+            )
+        chain = DeformableView(chain_builder.finalize(), "legacy_chain", family="curve")
+        self.assertEqual((chain.count, chain.bodies_per_group), (1, 3))
+
+        graph_builder = newton.ModelBuilder()
+        with self.assertWarns(DeprecationWarning):
+            graph_builder.add_rod_graph(
+                node_positions=_CABLE_PTS,
+                edges=[(0, 1), (1, 2), (2, 3)],
+                radius=0.02,
+                label="legacy_graph",
+                body_frame_origin="com",
+            )
+        graph = DeformableView(graph_builder.finalize(), "legacy_graph", family="curve")
+        self.assertEqual((graph.count, graph.bodies_per_group), (1, 3))
+
     def test_mixed_native_deformables_replicate_with_offset_ranges(self):
         """Curve, surface, and volume groups retain disjoint ranges after replication."""
         prototype = newton.ModelBuilder()
 
         # Curve first: three segment bodies connected by two graph joints.
-        prototype.add_rod_graph(
-            node_positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
-            edges=[(0, 1), (1, 2), (1, 3)],
-            radius=0.02,
+        prototype.add_rod(
+            rod=newton.Rod(
+                [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
+                edges=[(0, 1), (1, 2), (1, 3)],
+                radius=0.02,
+            ),
             label="curve",
             body_frame_origin="com",
         )
@@ -1178,8 +1202,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             label="soft_proto",
         )
         proto.add_rod(
-            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
             label="cable_proto",
             wrap_in_articulation=True,
             body_frame_origin="com",
@@ -1229,8 +1252,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         """A label does not prevent collapse; an incomplete curve is not selectable."""
         builder = newton.ModelBuilder()
         bodies, _joints = builder.add_rod(
-            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
             body_frame_origin="com",
         )
@@ -1251,8 +1273,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         def anchored_rod(label):
             builder = newton.ModelBuilder()
             bodies, _joints = builder.add_rod(
-                positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
-                radius=0.02,
+                rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
                 label=label,
                 body_frame_origin="com",
             )
@@ -1260,7 +1281,8 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             return builder
 
         unlabeled = anchored_rod(None)
-        unlabeled.collapse_fixed_joints()
+        with self.assertWarnsRegex(UserWarning, "curve_0.*joints_to_keep"):
+            unlabeled.collapse_fixed_joints()
         labeled = anchored_rod("anchored_curve")
         with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
             labeled.collapse_fixed_joints()
@@ -1272,8 +1294,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         """joints_to_keep retains a complete curve group when requested."""
         builder = newton.ModelBuilder()
         bodies, _joints = builder.add_rod(
-            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
-            radius=0.02,
+            rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
             body_frame_origin="com",
         )

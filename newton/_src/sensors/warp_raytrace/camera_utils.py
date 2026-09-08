@@ -440,6 +440,232 @@ def compute_camera_rays_pinhole_from_aperture_kernel(
     out_rays[output_camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
 
+_PINHOLE_OPENCV_INVERSION_ITERATIONS = 10
+_PINHOLE_OPENCV_LINE_SEARCH_ITERATIONS = 6
+# Residuals are in normalized image coordinates; convergence ~1e-6, acceptance ~2e-5 RMS.
+_PINHOLE_OPENCV_CONVERGENCE_TOLERANCE_SQUARED = 1.0e-12
+_PINHOLE_OPENCV_ACCEPTANCE_TOLERANCE_SQUARED = 4.0e-10
+_PINHOLE_OPENCV_SOLVER_EPSILON = 1.0e-8
+
+
+@wp.func
+def _distort_pinhole_opencv(
+    x: wp.float32,
+    y: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    k5: wp.float32,
+    k6: wp.float32,
+    p1: wp.float32,
+    p2: wp.float32,
+    s1: wp.float32,
+    s2: wp.float32,
+    s3: wp.float32,
+    s4: wp.float32,
+) -> wp.vec2f:
+    radius_squared = x * x + y * y
+    radius_fourth = radius_squared * radius_squared
+    radius_sixth = radius_fourth * radius_squared
+    radial = (1.0 + k1 * radius_squared + k2 * radius_fourth + k3 * radius_sixth) / (
+        1.0 + k4 * radius_squared + k5 * radius_fourth + k6 * radius_sixth
+    )
+    tangential_prism_x = (
+        2.0 * p1 * x * y + p2 * (radius_squared + 2.0 * x * x) + s1 * radius_squared + s2 * radius_fourth
+    )
+    tangential_prism_y = (
+        p1 * (radius_squared + 2.0 * y * y) + 2.0 * p2 * x * y + s3 * radius_squared + s4 * radius_fourth
+    )
+    return wp.vec2f(x * radial + tangential_prism_x, y * radial + tangential_prism_y)
+
+
+@wp.func
+def _invert_pinhole_opencv(
+    x_distorted: wp.float32,
+    y_distorted: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    k5: wp.float32,
+    k6: wp.float32,
+    p1: wp.float32,
+    p2: wp.float32,
+    s1: wp.float32,
+    s2: wp.float32,
+    s3: wp.float32,
+    s4: wp.float32,
+) -> wp.vec3f:
+    # Damped Newton inversion; unverifiable pixels return the zero sentinel.
+    x = x_distorted
+    y = y_distorted
+    valid = True
+    done = False
+    for _ in range(_PINHOLE_OPENCV_INVERSION_ITERATIONS):
+        if valid and not done:
+            distorted = _distort_pinhole_opencv(x, y, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4)
+            residual_x = distorted[0] - x_distorted
+            residual_y = distorted[1] - y_distorted
+            residual_squared = residual_x * residual_x + residual_y * residual_y
+
+            if not wp.isfinite(residual_squared):
+                valid = False
+            elif residual_squared <= _PINHOLE_OPENCV_CONVERGENCE_TOLERANCE_SQUARED:
+                done = True
+            else:
+                radius_squared = x * x + y * y
+                radius_fourth = radius_squared * radius_squared
+                radius_sixth = radius_fourth * radius_squared
+                numerator = 1.0 + k1 * radius_squared + k2 * radius_fourth + k3 * radius_sixth
+                denominator = 1.0 + k4 * radius_squared + k5 * radius_fourth + k6 * radius_sixth
+
+                if wp.abs(denominator) <= _PINHOLE_OPENCV_SOLVER_EPSILON:
+                    valid = False
+                else:
+                    radial = numerator / denominator
+                    numerator_derivative = k1 + 2.0 * k2 * radius_squared + 3.0 * k3 * radius_fourth
+                    denominator_derivative = k4 + 2.0 * k5 * radius_squared + 3.0 * k6 * radius_fourth
+                    radial_derivative = (numerator_derivative * denominator - numerator * denominator_derivative) / (
+                        denominator * denominator
+                    )
+                    radial_derivative_x = 2.0 * x * radial_derivative
+                    radial_derivative_y = 2.0 * y * radial_derivative
+
+                    jacobian_00 = (
+                        radial
+                        + x * radial_derivative_x
+                        + 2.0 * p1 * y
+                        + 6.0 * p2 * x
+                        + 2.0 * s1 * x
+                        + 4.0 * s2 * radius_squared * x
+                    )
+                    jacobian_01 = (
+                        x * radial_derivative_y
+                        + 2.0 * p1 * x
+                        + 2.0 * p2 * y
+                        + 2.0 * s1 * y
+                        + 4.0 * s2 * radius_squared * y
+                    )
+                    jacobian_10 = (
+                        y * radial_derivative_x
+                        + 2.0 * p1 * x
+                        + 2.0 * p2 * y
+                        + 2.0 * s3 * x
+                        + 4.0 * s4 * radius_squared * x
+                    )
+                    jacobian_11 = (
+                        radial
+                        + y * radial_derivative_y
+                        + 6.0 * p1 * y
+                        + 2.0 * p2 * x
+                        + 2.0 * s3 * y
+                        + 4.0 * s4 * radius_squared * y
+                    )
+                    determinant = jacobian_00 * jacobian_11 - jacobian_01 * jacobian_10
+
+                    if not wp.isfinite(determinant) or wp.abs(determinant) <= _PINHOLE_OPENCV_SOLVER_EPSILON:
+                        valid = False
+                    else:
+                        delta_x = (jacobian_11 * residual_x - jacobian_01 * residual_y) / determinant
+                        delta_y = (jacobian_00 * residual_y - jacobian_10 * residual_x) / determinant
+                        if not wp.isfinite(delta_x) or not wp.isfinite(delta_y):
+                            valid = False
+                        else:
+                            base_x = x
+                            base_y = y
+                            step = 1.0
+                            accepted = False
+                            for _line_search_iteration in range(_PINHOLE_OPENCV_LINE_SEARCH_ITERATIONS):
+                                candidate_x = base_x - step * delta_x
+                                candidate_y = base_y - step * delta_y
+                                candidate_distorted = _distort_pinhole_opencv(
+                                    candidate_x,
+                                    candidate_y,
+                                    k1,
+                                    k2,
+                                    k3,
+                                    k4,
+                                    k5,
+                                    k6,
+                                    p1,
+                                    p2,
+                                    s1,
+                                    s2,
+                                    s3,
+                                    s4,
+                                )
+                                candidate_residual_x = candidate_distorted[0] - x_distorted
+                                candidate_residual_y = candidate_distorted[1] - y_distorted
+                                candidate_residual_squared = (
+                                    candidate_residual_x * candidate_residual_x
+                                    + candidate_residual_y * candidate_residual_y
+                                )
+                                if (
+                                    not accepted
+                                    and wp.isfinite(candidate_residual_squared)
+                                    and candidate_residual_squared < residual_squared
+                                ):
+                                    x = candidate_x
+                                    y = candidate_y
+                                    accepted = True
+                                step *= 0.5
+                            # Stalled: no step reduced the residual; stop iterating.
+                            if not accepted:
+                                done = True
+
+    # Accept only if the forward model reproduces the target within tolerance.
+    if valid:
+        distorted = _distort_pinhole_opencv(x, y, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4)
+        residual_x = distorted[0] - x_distorted
+        residual_y = distorted[1] - y_distorted
+        residual_squared = residual_x * residual_x + residual_y * residual_y
+        valid = wp.isfinite(residual_squared) and residual_squared <= _PINHOLE_OPENCV_ACCEPTANCE_TOLERANCE_SQUARED
+
+    if valid:
+        return wp.normalize(wp.vec3f(x, -y, -1.0))
+    return wp.vec3f(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def compute_camera_rays_pinhole_opencv_kernel(
+    width: int,
+    height: int,
+    image_width: wp.float32,
+    image_height: wp.float32,
+    fx: wp.float32,
+    fy: wp.float32,
+    cx: wp.float32,
+    cy: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    k5: wp.float32,
+    k6: wp.float32,
+    p1: wp.float32,
+    p2: wp.float32,
+    s1: wp.float32,
+    s2: wp.float32,
+    s3: wp.float32,
+    s4: wp.float32,
+    camera_index: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    py, px = wp.tid()
+    u = ((float(px) + 0.5) / float(width)) * image_width
+    v = ((float(py) + 0.5) / float(height)) * image_height
+    x_distorted = (u - cx) / fx
+    y_distorted = (v - cy) / fy
+
+    ray_direction_camera_space = _invert_pinhole_opencv(
+        x_distorted, y_distorted, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4
+    )
+
+    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[camera_index, py, px, 1] = ray_direction_camera_space
+
+
 @wp.kernel(enable_backward=False)
 def compute_camera_rays_fisheye_opencv_kernel(
     width: int,

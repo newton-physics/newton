@@ -300,7 +300,7 @@ def _solve_dvi_sparse_inequalities_pgs(
     jacobian_nzb_values: wp.array[vec6f],
     bsm_row_start: wp.array[int32],
     bsm_col_start: wp.array[int32],
-    friction_nzb_offsets: wp.array[wp.vec2i],
+    bounded_nzb_offsets: wp.array[wp.vec2i],
     limit_nzb_offsets: wp.array[int32],
     contact_nzb_offsets: wp.array[int32],
     limit_indices: wp.array[int32],
@@ -379,13 +379,13 @@ def _solve_dvi_sparse_inequalities_pgs(
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
                     if uid < nbc:
-                        # Friction-row topology is static, so unlike limits/contacts it
+                        # Bounded-row topology is static, so unlike limits/contacts it
                         # always has valid Jacobian offsets and needs no active-set lookup.
                         if phase == int32(0):
                             bid = bcio + uid
                             row = bcgo + uid
                             vec_idx = vio + row
-                            offsets = friction_nzb_offsets[bid]
+                            offsets = bounded_nzb_offsets[bid]
                             bound_value = eta[row_start + row] * solution_lambdas[vec_idx]
                             nzb_idx_f = offsets[0]
                             if nzb_idx_f >= int32(0) and nzb_idx_f < matrix_end and bsm_nzb_coords[nzb_idx_f, 0] == row:

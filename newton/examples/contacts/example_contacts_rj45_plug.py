@@ -22,7 +22,6 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 import newton.usd
-import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
@@ -46,6 +45,7 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
+SOCKET_OPACITY = 0.35
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_MU = 2.0
@@ -252,6 +252,7 @@ class Example:
             mesh=socket_mesh,
             xform=wp.transform(sc, wp.quat_identity()),
             cfg=SHAPE_CFG,
+            opacity=SOCKET_OPACITY,
             label="socket",
         )
 
@@ -315,13 +316,12 @@ class Example:
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
-        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
+        rod = newton.Rod(cable_points, radius=CABLE_RADIUS)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in rod.quaternions]
         bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
-            positions=cable_points,
-            quaternions=cable_quats,
-            radius=CABLE_RADIUS,
+            rod=rod,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
                 ke=CONTACT_KE,

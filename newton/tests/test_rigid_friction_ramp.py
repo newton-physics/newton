@@ -471,6 +471,29 @@ _SOLVERS = {
 
 
 class TestRigidFrictionRamp(unittest.TestCase):
+    def test_simulation_groups_use_separate_suites(self):
+        """Keep the two long-running simulation groups independently schedulable."""
+        ramp_tests = {name for name in dir(TestRigidFrictionRamp) if name.startswith("test_friction_ramp_")}
+        stopping_tests = {
+            name
+            for name in dir(TestRigidFrictionStoppingDistance)
+            if name.startswith("test_friction_stopping_distance_")
+        }
+        self.assertTrue(ramp_tests)
+        self.assertTrue(stopping_tests)
+        self.assertFalse(
+            any(name.startswith("test_friction_stopping_distance_") for name in dir(TestRigidFrictionRamp))
+        )
+
+        self.assertIsNot(_RAMP_SUITES["kamino"], _RAMP_SUITES["vbd"])
+        self.assertIsNot(_STOPPING_SUITES["kamino"], _STOPPING_SUITES["vbd"])
+
+    def test_kamino_ramp_uses_full_grid(self):
+        """Keep the full Kamino coefficient and angle sweep."""
+        cfg = _SOLVERS["kamino"]
+        self.assertEqual(cfg["mus"], _DEFAULT_MUS)
+        self.assertEqual(cfg["angles_deg"], _DEFAULT_ANGLES_DEG)
+
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_friction_grid_xpbd(self):
         self._run_viewer("xpbd")
@@ -601,6 +624,35 @@ class TestRigidFrictionRamp(unittest.TestCase):
             print("\nStopped by user.")
 
 
+class TestRigidFrictionStoppingDistance(unittest.TestCase):
+    """Stopping-distance simulations scheduled independently from ramp simulations."""
+
+
+class TestRigidFrictionRampKamino(unittest.TestCase):
+    """Kamino ramp simulation scheduled independently."""
+
+
+class TestRigidFrictionRampVBD(unittest.TestCase):
+    """VBD ramp simulation scheduled independently."""
+
+
+class TestRigidFrictionStoppingDistanceKamino(unittest.TestCase):
+    """Kamino stopping-distance simulation scheduled independently."""
+
+
+class TestRigidFrictionStoppingDistanceVBD(unittest.TestCase):
+    """VBD stopping-distance simulation scheduled independently."""
+
+
+_RAMP_SUITES = {
+    "kamino": TestRigidFrictionRampKamino,
+    "vbd": TestRigidFrictionRampVBD,
+}
+_STOPPING_SUITES = {
+    "kamino": TestRigidFrictionStoppingDistanceKamino,
+    "vbd": TestRigidFrictionStoppingDistanceVBD,
+}
+
 for device in devices:
     for solver_name, cfg in _SOLVERS.items():
         if device.is_cpu and solver_name.startswith("mujoco_warp"):
@@ -608,7 +660,7 @@ for device in devices:
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         add_function_test(
-            TestRigidFrictionRamp,
+            _RAMP_SUITES.get(solver_name, TestRigidFrictionRamp),
             f"test_friction_ramp_{solver_name}",
             test_friction_ramp,
             devices=[device],
@@ -623,7 +675,7 @@ for device in devices:
         if not cfg.get("run_stopping_distance", True):
             continue
         add_function_test(
-            TestRigidFrictionRamp,
+            _STOPPING_SUITES.get(solver_name, TestRigidFrictionStoppingDistance),
             f"test_friction_stopping_distance_{solver_name}",
             test_friction_stopping_distance,
             devices=[device],
