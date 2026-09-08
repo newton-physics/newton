@@ -4471,6 +4471,45 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(solver.mjw_data.naconmax, nconmax)
         self.assertEqual(solver.mjw_data.njmax, njmax)
 
+    def test_explicit_nconmax_below_initial_contacts_is_increased(self):
+        """Increase an explicit contact capacity below initial MuJoCo contacts."""
+        model = self._build_grounded_spheres(60)
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for nconmax is changed from 16 to 60"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=16)
+
+        self.assertEqual(solver.mjw_data.naconmax, 60)
+
+    def test_explicit_njmax_below_initial_constraints_is_increased(self):
+        """Increase an explicit constraint capacity below initial MuJoCo constraints."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.1)
+        for _ in range(5):
+            body = builder.add_link(mass=1.0, com=wp.vec3(), inertia=inertia)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=body,
+                limit_lower=1.0,
+                limit_upper=2.0,
+            )
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for njmax is changed from 1 to 5"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1, njmax=1)
+
+        self.assertEqual(solver.mjw_data.njmax, 5)
+
     def test_newton_contact_capacity_preserves_delayed_joint_limits(self):
         """Preserve default capacity for non-contact constraints activated after initialization."""
         joint_count = 10
