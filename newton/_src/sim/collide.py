@@ -1954,15 +1954,26 @@ class CollisionPipeline:
                 raise ValueError(f"{path}: {name} must be a finite number{bounds}, got {value!r}.")
             return result
 
-        def optional_finite_float(name: str, value: Any, *, minimum: float | None = None) -> float | None:
-            """Parse a float attribute using the ``-inf`` sentinel convention for "unset"."""
+        def optional_finite_float(name: str, value: Any, *, minimum: float) -> float | None:
+            """Parse a float attribute using the ``-inf`` sentinel convention for "unset".
+
+            A value below ``minimum`` warns and falls back to "unset" instead of
+            raising, mirroring the soft-limit convention used for
+            ``newton:hydroelasticStiffness``.
+            """
             try:
                 numeric = float(value)
             except (TypeError, ValueError) as error:
                 raise ValueError(f"{path}: {name} must be a number, got {value!r}.") from error
             if numeric == float("-inf"):
                 return None
-            return finite_float(name, numeric, minimum=minimum)
+            if not math.isfinite(numeric) or numeric < minimum:
+                warnings.warn(
+                    f"{path}: {name}={numeric!r} is invalid (must be >= {minimum}); falling back to default.",
+                    stacklevel=2,
+                )
+                return None
+            return numeric
 
         kwargs: dict[str, Any] = {}
 

@@ -511,6 +511,36 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertFalse(override_pipeline.reduce_contacts)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_create_from_usd_soft_limits_warn_and_fall_back_to_default(self):
+        """softContactGap and speculativeMaxExtension below their minimum are a soft
+        limit: create_from_usd warns and falls back to the __init__ default instead
+        of raising, mirroring the newton:hydroelasticStiffness convention."""
+        from pxr import Usd, UsdPhysics
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_sphere(body, radius=1.0)
+        model = builder.finalize(device="cpu")
+
+        default_pipeline = CollisionPipeline(model)
+
+        stage = Usd.Stage.CreateInMemory()
+        scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
+        scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
+
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(-0.1)
+        with self.assertWarnsRegex(UserWarning, r"newton:collisionPipeline:softContactGap=-0\.\d+ is invalid"):
+            pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+        self.assertAlmostEqual(pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
+        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Clear()
+
+        scene_prim.GetAttribute("newton:collisionPipeline:speculativeMaxExtension").Set(-0.1)
+        with self.assertWarnsRegex(UserWarning, r"newton:collisionPipeline:speculativeMaxExtension=-0\.\d+ is invalid"):
+            pipeline = CollisionPipeline.create_from_usd(scene_prim, model)
+        self.assertEqual(pipeline.speculative_config, default_pipeline.speculative_config)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
         """create_from_usd should raise with a descriptive message for invalid input."""
         from pxr import Usd, UsdGeom, UsdPhysics
