@@ -1939,7 +1939,8 @@ class CollisionPipeline:
                 suffix = " or -1" if allow_minus_one else ""
                 raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
             if result == 0 and disallow_zero:
-                raise ValueError(f"{path}: {name} must be a positive integer or -1, got {result}.")
+                suffix = " or -1" if allow_minus_one else ""
+                raise ValueError(f"{path}: {name} must be a positive integer{suffix}, got {result}.")
             return result
 
         def token(name: str, value: Any, allowed: set[str]) -> str:
@@ -1994,7 +1995,9 @@ class CollisionPipeline:
 
         value = authored("newton:collisionPipeline:maxTrianglePairs")
         if value is not None:
-            kwargs["max_triangle_pairs"] = integer("newton:collisionPipeline:maxTrianglePairs", value)
+            kwargs["max_triangle_pairs"] = integer(
+                "newton:collisionPipeline:maxTrianglePairs", value, disallow_zero=True
+            )
 
         value = authored("newton:collisionPipeline:rigidContactMax")
         if value is not None:
@@ -2063,6 +2066,11 @@ class CollisionPipeline:
         value = authored("newton:collisionPipeline:contactReport")
         if value is not None:
             kwargs["contact_report"] = bool(value)
+            if kwargs["contact_report"] and kwargs.get("contact_matching", "disabled") == "disabled":
+                raise ValueError(
+                    f"{path}: newton:collisionPipeline:contactReport=True requires "
+                    "newton:collisionPipeline:contactMatching != 'disabled'."
+                )
 
         value = authored("newton:collisionPipeline:verifyBuffers")
         if value is not None:

@@ -613,6 +613,24 @@ class TestCollisionPipeline(unittest.TestCase):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
 
+        # 0 is illegal for maxTrianglePairs.
+        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(0)
+        with self.assertRaisesRegex(
+            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer, got 0"
+        ):
+            CollisionPipeline.create_from_usd(scene_prim, model)
+        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
+
+        # contactReport=True requires contactMatching != "disabled" (the default).
+        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"physicsScene: newton:collisionPipeline:contactReport=True requires "
+            r"newton:collisionPipeline:contactMatching != 'disabled'",
+        ):
+            CollisionPipeline.create_from_usd(scene_prim, model)
+        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Clear()
+
         # 0 is illegal for shapePairsMax: only -1 (sentinel) or positive values are valid.
         scene_prim.GetAttribute("newton:collisionPipeline:shapePairsMax").Set(0)
         with self.assertRaisesRegex(
