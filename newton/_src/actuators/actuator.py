@@ -343,7 +343,8 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
-        self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
+        self._explicit_effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
+        self._implicit_effort_mode: _EffortModeImplicit | None = None
 
     @property
     def controller(self) -> DriveBase:
@@ -364,22 +365,21 @@ class Actuator:
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
     ImplicitOptions = ImplicitOptions
 
-    def set_effort_mode_implicit(
-        self,
-        response: JointSpaceResponse,
-        options: Actuator.ImplicitOptions | None = None,
-    ) -> None:
-        """Switch effort computation to implicit mode.
+    def prepare_implicit_mode(self, model: Model, options: Actuator.ImplicitOptions | None = None) -> None:
+        """Build this actuator's implicit effort mode against *model*.
 
-        The control law is solved against the predicted end-of-step state
-        before the solver runs. See :ref:`effort-modes` for details on the
-        computation of effort in the implicit mode, its caveats, and its expected use.
+        Call once, before the simulation loop and before any CUDA graph
+        capture: it reads to host, allocates the solve buffers and generates
+        the in-kernel force law, none of which is capture-safe. Afterwards,
+        pass a refreshed :class:`~newton.actuators.JointSpaceResponse` to
+        :meth:`step` for the calls that should be solved implicitly. See
+        :ref:`effort-modes` for the computation, its caveats and its expected
+        use.
 
         Args:
-            response: :class:`~newton.actuators.JointSpaceResponse` supplying the
-                coupled effective inverse mass [1/kg or 1/(kg·m²)]. Refresh it
-                once per step before :meth:`step`.
-            options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
+            model: Finalized :class:`~newton.Model` whose articulation topology
+                fixes how the actuator's DOFs are grouped for the coupled solve.
+            options: Solve settings; defaults to :class:`Actuator.ImplicitOptions`.
 
         Raises:
             NotImplementedError: The actuator was built with ``requires_grad=True``.
@@ -391,19 +391,15 @@ class Actuator:
                 "and the neural drives open their own wp.Tape, which cannot nest inside "
                 "an outer tape. Build the Actuator with requires_grad=False."
             )
-        self._effort_mode = _EffortModeImplicit(
+        self._implicit_effort_mode = _EffortModeImplicit(
             self.drive,
             self.clamping,
-            response,
+            model,
             options,
             self.num_actuators,
             self.device,
             self.indices,
         )
-
-    def set_effort_mode_explicit(self) -> None:
-        """Switch effort computation back to the default explicit mode."""
-        self._effort_mode = _EffortModeExplicit(self.drive, self.clamping, self.device)
 
     def is_stateful(self) -> bool:
         """Return True if the delay or drive maintains internal state."""
@@ -411,7 +407,7 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self._effort_mode.is_graphable()
+        return self._explicit_effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -429,6 +425,8 @@ class Actuator:
         current_act_state: Actuator.State | None = None,
         next_act_state: Actuator.State | None = None,
         dt: float | None = None,
+        *,
+        response: JointSpaceResponse | None = None,
     ) -> None:
         """Execute one control step.
 
@@ -452,6 +450,11 @@ class Actuator:
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
+            response: Refreshed
+                :class:`~newton.actuators.JointSpaceResponse`. When provided,
+                this call solves the control law against the predicted
+                end-of-step state; when omitted, the law is evaluated at the
+                current state. Requires :meth:`prepare_implicit_mode` to have been called.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(
@@ -488,7 +491,18 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        output_forces = self._effort_mode.compute_force(
+        if response is None:
+            effort_mode = self._explicit_effort_mode
+            extra = {}
+        else:
+            if self._implicit_effort_mode is None:
+                raise ValueError(
+                    "Passing a response to Actuator.step() requires Actuator.prepare_implicit_mode(model) first."
+                )
+            effort_mode = self._implicit_effort_mode
+            extra = {"response": response}
+
+        output_forces = effort_mode.compute_force(
             sim_state,
             positions,
             velocities,
@@ -503,6 +517,7 @@ class Actuator:
             self._applied_forces,
             drive_state,
             dt,
+            **extra,
         )
 
         # --- 4. Scatter-add to output ---

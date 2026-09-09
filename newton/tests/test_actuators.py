@@ -390,7 +390,7 @@ def _make_implicit_actuator(
     clamping = None
     if max_effort is not None:
         clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
-    response = kwargs.setdefault("response", JointSpaceResponse(model))
+    response = JointSpaceResponse(model)
     actuator = Actuator(
         indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
         drive=DrivePD(kp=kp, kd=kd),
@@ -398,7 +398,7 @@ def _make_implicit_actuator(
         control_target_pos_attr="joint_target_q",
         control_target_vel_attr="joint_target_qd",
     )
-    actuator.set_effort_mode_implicit(**kwargs)
+    actuator.prepare_implicit_mode(model, kwargs.pop("options", None))
     return actuator, response
 
 
@@ -411,7 +411,7 @@ def _refresh_and_step(
 ) -> None:
     """Refresh the response at *state*, then step the actuator — the simulation order."""
     response.refresh(state)
-    actuator.step(state, control, dt=dt)
+    actuator.step(state, control, dt=dt, response=response)
 
 
 def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
@@ -779,13 +779,13 @@ class TestDriveNeuralMLP(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
         self.assertTrue(actuator.is_graphable())
 
         response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
-        actuator.step(state, control, state_a, state_b, dt=h)
+        actuator.step(state, control, state_a, state_b, dt=h, response=response)
 
         alpha = _response_at_state(model, state)[0, 0]
         e_q = target - q0
@@ -802,11 +802,11 @@ class TestDriveNeuralMLP(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            captured.set_effort_mode_implicit(response=response)
+            captured.prepare_implicit_mode(model)
             cap_a, cap_b = captured.state(), captured.state()
             control.joint_f.zero_()
             with wp.ScopedCapture() as capture:
-                captured.step(state, control, cap_a, cap_b, dt=h)
+                captured.step(state, control, cap_a, cap_b, dt=h, response=response)
             wp.capture_launch(capture.graph)
             self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
@@ -847,12 +847,12 @@ class TestDriveNeuralMLP(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
 
         response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
-        actuator.step(state, control, state_a, state_b, dt=h)
+        actuator.step(state, control, state_a, state_b, dt=h, response=response)
 
         response_matrix = _response_at_state(model, state)
         alpha = np.diag(response_matrix)
@@ -929,11 +929,11 @@ class TestDriveNeuralMLP(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
         response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
-        actuator.step(state, control, sa, sb, dt=h)
+        actuator.step(state, control, sa, sb, dt=h, response=response)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
@@ -1040,11 +1040,11 @@ class TestDriveNeuralLSTM(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
 
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
         response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
-        actuator.step(state, control, sa, sb, dt=h)
+        actuator.step(state, control, sa, sb, dt=h, response=response)
 
         pack = drive._lin_params.numpy()
         self.assertEqual(pack.shape[1], 5)  # [tau0, a, b, q0, qd0]
@@ -1064,7 +1064,6 @@ class TestDriveNeuralLSTM(unittest.TestCase):
         # Finite differences of the drive's own output pin the sign and the
         # scaling of the slopes. They are compared against the raw slopes, not
         # the packed ones, which may be scaled down to bound the Jacobian.
-        actuator.set_effort_mode_explicit()
 
         def explicit_tau(q_val: float, qd_val: float) -> float:
             state.joint_q.assign(np.array([q_val], dtype=np.float32))
@@ -1665,7 +1664,7 @@ class TestDriveNeuralLSTMLegacyTorchScript(unittest.TestCase):
         )
         self.assertIsNone(drive.bind_params())
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
+            actuator.prepare_implicit_mode(model)
 
 
 # ---------------------------------------------------------------------------
@@ -1849,12 +1848,12 @@ class TestClampingDCMotor(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            if implicit:
-                actuator.set_effort_mode_implicit(response=response)
+            actuator.prepare_implicit_mode(model)
             # Retune through the (possibly view-backed) parameter array.
             clamp.max_motor_effort.assign(np.array([max_e], dtype=np.float32))
             control.joint_f.zero_()
-            _refresh_and_step(actuator, response, state, control, h)
+            response.refresh(state)
+            actuator.step(state, control, dt=h, response=response if implicit else None)
             return float(control.joint_f.numpy()[0]), float(response.inverse_blocks.numpy()[0, 0, 0])
 
         # Explicit mode clamps at the measured velocity, so the envelope is exact:
@@ -2132,7 +2131,7 @@ class TestActuatorStep(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         if implicit:
-            actuator.set_effort_mode_implicit(response=response)
+            actuator.prepare_implicit_mode(model)
         self.assertTrue(actuator.is_graphable())
 
         def reference(
@@ -2197,7 +2196,7 @@ class TestActuatorStep(unittest.TestCase):
             # Module loading and lazy allocation have to happen before a capture.
             control.joint_f.zero_()
             response.refresh(state_in)
-            actuator.step(state_in, control, act_a, act_b, dt=dt)
+            actuator.step(state_in, control, act_a, act_b, dt=dt, response=response if implicit else None)
             if stateful:
                 act_a.drive_state.integral.zero_()
                 act_b.drive_state.integral.zero_()
@@ -2212,14 +2211,14 @@ class TestActuatorStep(unittest.TestCase):
             if not use_graph:
                 control.joint_f.zero_()
                 response.refresh(state_in)
-                actuator.step(state_in, control, act_a, act_b, dt=dt)
+                actuator.step(state_in, control, act_a, act_b, dt=dt, response=response if implicit else None)
                 return
             key = (id(state_in), id(act_a))
             if key not in graphs:
                 with wp.ScopedCapture(device) as capture:
                     control.joint_f.zero_()
                     response.refresh(state_in)
-                    actuator.step(state_in, control, act_a, act_b, dt=dt)
+                    actuator.step(state_in, control, act_a, act_b, dt=dt, response=response if implicit else None)
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
 
@@ -2397,14 +2396,14 @@ class TestActuatorStep(unittest.TestCase):
                 )
                 response = JointSpaceResponse(model)
                 if implicit:
-                    actuator.set_effort_mode_implicit(response=response)
+                    actuator.prepare_implicit_mode(model)
                 actuators.append(actuator)
                 responses.append(response)
             control.joint_f.zero_()
             for response in responses:
                 response.refresh(state)
             for actuator in actuators:
-                actuator.step(state, control, dt=h)
+                actuator.step(state, control, dt=h, response=response if implicit else None)
             return control.joint_f.numpy().copy()
 
         together, apart = efforts([[0, 1]], False), efforts([[0], [1]], False)
@@ -2596,14 +2595,14 @@ class TestActuatorStep(unittest.TestCase):
         _refresh_and_step(actuator, response, state, control, h)
         implicit_tau = float(control.joint_f.numpy()[0])
 
-        actuator.set_effort_mode_explicit()
         control.joint_f.zero_()
-        _refresh_and_step(actuator, response, state, control, h)
+        response.refresh(state)
+        actuator.step(state, control, dt=h)
         explicit_tau = float(control.joint_f.numpy()[0])
         self.assertAlmostEqual(explicit_tau, kp_val * (target - q0), delta=1e-3)
         self.assertLess(implicit_tau, explicit_tau)
 
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
         control.joint_f.zero_()
         _refresh_and_step(actuator, response, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
@@ -2642,7 +2641,7 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
+            actuator.prepare_implicit_mode(model)
 
     def test_validation_errors(self):
         """A non-JointSpaceResponse inverse mass and a missing dt raise clearly."""
@@ -2658,12 +2657,12 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        with self.assertRaisesRegex(ValueError, "JointSpaceResponse"):
-            actuator.set_effort_mode_implicit(response=None)
+        with self.assertRaisesRegex(ValueError, "prepare_implicit_mode"):
+            actuator.step(model.state(), model.control(), dt=0.01, response=JointSpaceResponse(model))
 
-        actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
+        actuator, response = _make_implicit_actuator(model, device, kp=kp, kd=kd)
         with self.assertRaisesRegex(ValueError, "requires dt"):
-            actuator.step(model.state(), model.control())
+            actuator.step(model.state(), model.control(), response=response)
 
     def test_validation_rejects_bad_options(self):
         """dt, warm_start and fd_epsilon are validated rather than silently misbehaving."""
@@ -2672,19 +2671,16 @@ class TestActuatorImplicit(unittest.TestCase):
         kp = wp.array([100.0], dtype=float, device=device)
         kd = wp.array([1.0], dtype=float, device=device)
 
-        with self.assertRaisesRegex(ValueError, "warm_start"):
-            _make_implicit_actuator(
-                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(warm_start="Zero")
-            )
+        for bad, message in (
+            (newton.actuators.Actuator.ImplicitOptions(warm_start="Zero"), "warm_start"),
+            (newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0), "fd_epsilon"),
+        ):
+            with self.assertRaisesRegex(ValueError, message):
+                _make_implicit_actuator(model, device, kp=kp, kd=kd, options=bad)
 
-        with self.assertRaisesRegex(ValueError, "fd_epsilon"):
-            _make_implicit_actuator(
-                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0)
-            )
-
-        actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
+        actuator, response = _make_implicit_actuator(model, device, kp=kp, kd=kd)
         with self.assertRaisesRegex(ValueError, "dt > 0"):
-            actuator.step(model.state(), model.control(), dt=0.0)
+            actuator.step(model.state(), model.control(), dt=0.0, response=response)
 
     def test_prediction_matches_featherstone_step(self):
         """The state the solve predicts is the state the solver actually reaches.
@@ -2833,7 +2829,7 @@ class TestActuatorImplicit(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
+            actuator.prepare_implicit_mode(model)
 
         for kind in ("revolute", "d6"):
             install(build(kind))  # must not raise
@@ -2885,9 +2881,8 @@ class TestActuatorImplicit(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            actuator.set_effort_mode_implicit(
-                response=response,
-                options=newton.actuators.Actuator.ImplicitOptions(max_iters=max_iters, warm_start="zero"),
+            actuator.prepare_implicit_mode(
+                model, newton.actuators.Actuator.ImplicitOptions(max_iters=max_iters, warm_start="zero")
             )
             control.joint_f.zero_()
             _refresh_and_step(actuator, response, state, control, h)
@@ -3193,7 +3188,7 @@ class TestJointSpaceResponse(unittest.TestCase):
         response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
         np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
-        actuator.step(state, control, dt=h)
+        actuator.step(state, control, dt=h, response=response)
 
         f0 = kp * (target - q0)
         jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response_newton
@@ -3248,7 +3243,7 @@ class TestJointSpaceResponse(unittest.TestCase):
             def two_steps():
                 for _ in range(2):  # even count: state buffers line up for graph replay
                     control.joint_f.zero_()
-                    actuator.step(states[0], control, dt=h)
+                    actuator.step(states[0], control, dt=h, response=response)
                     solver.step(states[0], states[1], control, None, h)
                     update_response(states[0])  # states[0] still holds the pre-step pose
                     states[0], states[1] = states[1], states[0]
@@ -3727,7 +3722,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
     def test_selection_api_updates_implicit_solve(self):
         """Gain writes reach the installed implicit solve, through either write path.
 
-        ``set_effort_mode_implicit`` re-points the drive's parameter arrays
+        ``prepare_implicit_mode`` re-points the drive's parameter arrays
         at columns of a packed array. Both the masked scatter used by
         ``set_actuator_parameter`` and a direct ``.assign`` must land in that
         pack. Re-installing the mode must also reuse the same pack, otherwise
@@ -3763,7 +3758,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
         # Re-installing must keep the same pack, so a direct assign still lands.
         pack = actuator.drive._param_pack
-        actuator.set_effort_mode_implicit(response=response)
+        actuator.prepare_implicit_mode(model)
         self.assertIs(actuator.drive._param_pack, pack)
         actuator.drive.kp.assign(np.array([kp1], dtype=np.float32))
         control.joint_f.zero_()
@@ -4281,7 +4276,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
         actuator = model.actuators[0]
         response = JointSpaceResponse(model) if implicit else None
         if response is not None:
-            actuator.set_effort_mode_implicit(response=response)
+            actuator.prepare_implicit_mode(model)
         state, control = model.state(), model.control()
         control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
         s0, s1 = actuator.state(), actuator.state()
@@ -4292,7 +4287,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
                 control.joint_f.zero_()
                 if response is not None:
                     response.refresh(state)
-                actuator.step(state, control, s0, s1, dt=self.DT)
+                actuator.step(state, control, s0, s1, dt=self.DT, response=response if implicit else None)
                 if boundary_assign and steps % 2 == 1 and i == steps - 1:
                     s0.assign(s1)  # keeps a single odd-length graph correct
                 else:
