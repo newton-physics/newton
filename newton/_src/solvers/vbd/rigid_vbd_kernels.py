@@ -6926,9 +6926,6 @@ def update_rod_dahl_state(
 DAT_TRAJECTORY_SAMPLES = wp.constant(8)
 # Bisection refinements of the bracketed crossing time.
 DAT_BISECTION_ITERATIONS = wp.constant(16)
-# Below this relative sine, a feature cross product is too poorly conditioned
-# to normalize reliably in float32. EE then uses its parallel-edge fallback.
-DAT_FEATURE_CROSS_SIN_EPS = wp.constant(1.0e-4)
 # Empty half-width kept on each side of a DAT plane. This is large relative to
 # the nanometer-scale FP32 plane-crossing failures observed in the meter-scale
 # examples, while remaining visually negligible.
@@ -7037,7 +7034,9 @@ def _normalized_feature_cross(first: wp.vec3, second: wp.vec3):
         return wp.vec3(0.0)
     feature_cross = wp.cross(first, second)
     cross_length_sq = wp.length_sq(feature_cross)
-    threshold_sq = DAT_FEATURE_CROSS_SIN_EPS * DAT_FEATURE_CROSS_SIN_EPS * first_length_sq * second_length_sq
+    # Below a relative sine of 1e-4 (squared: 1e-8) the cross product is too poorly
+    # conditioned to normalize reliably in float32; EE then uses its parallel-edge fallback.
+    threshold_sq = 1.0e-8 * first_length_sq * second_length_sq
     if cross_length_sq <= threshold_sq:
         return wp.vec3(0.0)
     # Normalize before generic candidate certification: the raw cross product
@@ -7246,7 +7245,8 @@ def place_dat_division_plane(
 
     ``n`` points from ``negative_support`` toward the positive-side primitive.
     The approach values are the largest motions of the corresponding primitive
-    toward the other side.
+    toward the other side. Each side keeps at least 5 % of the gap and at least
+    ``separation_eps``.
     """
     lmbd = float(0.5)
     if gap >= 2.0 * separation_eps:
@@ -7254,9 +7254,11 @@ def place_dat_division_plane(
         if total_approach > 0.0:
             lmbd = negative_approach / total_approach
 
-        # Clamp the adaptive placement to preserve an (-eps, eps) band between
-        # the two primitive supports.
-        minimum_fraction = separation_eps / gap
+        # Clamp the adaptive placement so each side keeps a fraction of the gap (the
+        # rigid trajectory is evaluated at absolute float32 positions and needs real
+        # clearance to its boundary) and, for small gaps, at least the (-eps, eps)
+        # band that keeps the two primitive supports strictly separated.
+        minimum_fraction = wp.max(0.05, separation_eps / gap)
         lmbd = wp.clamp(lmbd, minimum_fraction, 1.0 - minimum_fraction)
 
     # When the gap is smaller than 2*eps, lambda remains 0.5: the midpoint

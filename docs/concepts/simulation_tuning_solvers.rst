@@ -141,6 +141,7 @@ repository examples spend tuning effort, not a shared solver API.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
      - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+       ``dat_conservative_bound_relaxation``,
        ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
@@ -155,11 +156,10 @@ repository examples spend tuning effort, not a shared solver API.
        ``integrate_with_external_rigid_solver``,
        ``particle_enable_self_contact``, ``particle_self_contact_margin``,
        ``particle_self_contact_gap``,
-       ``particle_conservative_bound_relaxation``,
        ``particle_vertex_contact_buffer_size``,
        ``particle_edge_contact_buffer_size``,
        ``collision_frequency``, ``collision_frequency_type``,
-       ``rigid_soft_enable_dat``, ``rigid_soft_dat_relaxation``,
+       ``rigid_soft_enable_dat``,
        ``rigid_soft_dat_use_interval_arithmetic``,
        ``rigid_soft_contact_use_log_barrier``,
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
@@ -206,8 +206,9 @@ repository examples spend tuning effort, not a shared solver API.
        :class:`~newton.CollisionPipeline` with a positive minimum rigid-soft
        query radius and is not supported with
        ``integrate_with_external_rigid_solver=True``; the ``RIGID`` collision
-       slot may not be ``NONE``. ``rigid_soft_dat_relaxation`` must lie in
-       ``(0, 1)`` and scales the per-detection motion budget.
+       slot may not be ``NONE``. ``dat_conservative_bound_relaxation`` (shared with
+       soft self-contact) must lie in ``(0, 1)`` and scales the per-detection
+       motion budget.
        ``rigid_soft_dat_use_interval_arithmetic`` is experimental.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,

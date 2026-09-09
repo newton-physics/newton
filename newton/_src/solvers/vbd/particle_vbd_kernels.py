@@ -2065,6 +2065,11 @@ def apply_planar_truncation_parallel_by_collision(
                     delta_e2_v2,
                 )
 
+                # Without a strict separator at the reference (the edges intersect within
+                # float precision) DAT cannot tell which side is safe, so the pair is left
+                # unconstrained for this pass: freezing it would pin both edges at the
+                # reference indefinitely. Contact forces separate it and a later detection
+                # certifies a separator.
                 if valid_plane:
                     t = planar_truncation_t(e1_v1_pos, delta_e1_v1, n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, e1_v1, t)
@@ -2074,13 +2079,6 @@ def apply_planar_truncation_parallel_by_collision(
                     wp.atomic_min(truncation_t_out, e2_v1, t)
                     t = planar_truncation_t(e2_v2_pos, delta_e2_v2, -n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, e2_v2, t)
-                else:
-                    # No strictly separating plane exists at the reference
-                    # configuration. Preserve both complete edges.
-                    wp.atomic_min(truncation_t_out, e1_v1, 0.0)
-                    wp.atomic_min(truncation_t_out, e1_v2, 0.0)
-                    wp.atomic_min(truncation_t_out, e2_v1, 0.0)
-                    wp.atomic_min(truncation_t_out, e2_v2, 0.0)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
     # process vertex-triangle collisions
@@ -2121,6 +2119,8 @@ def apply_planar_truncation_parallel_by_collision(
                     delta_t3,
                 )
 
+                # Same policy as the edge-edge pass: a zero-gap or intersecting pair has no
+                # strict separator and is left unconstrained for this pass.
                 if valid_plane:
                     t = planar_truncation_t(
                         colliding_particle_pos, colliding_particle_displacement, n, d, gamma, separation_eps
@@ -2132,13 +2132,6 @@ def apply_planar_truncation_parallel_by_collision(
                     wp.atomic_min(truncation_t_out, tri_b, t)
                     t = planar_truncation_t(t3, delta_t3, -n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, tri_c, t)
-                else:
-                    # A zero-gap or intersecting pair cannot define a strict
-                    # DAT separator. Preserve the complete VT pair.
-                    wp.atomic_min(truncation_t_out, particle_idx, 0.0)
-                    wp.atomic_min(truncation_t_out, tri_a, 0.0)
-                    wp.atomic_min(truncation_t_out, tri_b, 0.0)
-                    wp.atomic_min(truncation_t_out, tri_c, 0.0)
 
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
