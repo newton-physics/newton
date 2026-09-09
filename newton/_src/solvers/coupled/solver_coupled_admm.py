@@ -2836,8 +2836,7 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         """Run ADMM iterations over all sub-solvers."""
         del state_out
-        if dt <= 0.0:
-            raise ValueError("SolverCoupledADMM requires dt > 0")
+        dt = self._finite_scalar(dt, "ADMM dt", lower_bound=0.0, lower_inclusive=False)
         coupling = self._coupling
         iters = int(coupling.iterations)
         self._refresh_collision_contact_groups(state_in)

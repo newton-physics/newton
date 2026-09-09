@@ -11,4 +11,4 @@ For example, at `h = 1/120`, old values `rho=60`, `gamma=0.001`, and
 These conversions preserve the previous equations at the reference timestep;
 use the resulting dimensionless parameters and physical stiffness/damping
 values when changing timesteps instead of repeating the conversion each step.
-Solver steps now require a strictly positive timestep.
+Solver steps now require a finite, strictly positive timestep.
