@@ -19,6 +19,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_body_particle_contact,
     _eval_soft_ef_contact,
     _reset_world_selected,
+    evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
 )
 
@@ -1818,6 +1819,48 @@ def accumulate_spring_force_and_hessian(
             if c_v1 == current_color:
                 wp.atomic_add(particle_forces, v1, force_v1)
                 wp.atomic_add(particle_hessians, v1, hessian)
+
+
+@wp.kernel
+def accumulate_body_particle_attachment_force_and_hessian(
+    dt: float,
+    current_color: int,
+    particle_q_prev: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_body_point: wp.array[wp.vec3],
+    attachment_stiffness: wp.array[float],
+    attachment_damping: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Accumulate body-particle attachment forces and Hessians on particles."""
+    attachment = wp.tid()
+    if not attachment_enabled[attachment]:
+        return
+
+    particle = attachment_particle[attachment]
+    if particle_colors[particle] != current_color:
+        return
+
+    body = attachment_body[attachment]
+    force, hessian = evaluate_body_particle_attachment_particle_force_hessian(
+        particle_q[particle],
+        particle_q_prev[particle],
+        body_q[body],
+        body_q_prev[body],
+        attachment_body_point[attachment],
+        attachment_stiffness[attachment],
+        attachment_damping[attachment],
+        dt,
+    )
+    wp.atomic_add(particle_forces, particle, force)
+    wp.atomic_add(particle_hessians, particle, hessian)
 
 
 @wp.kernel

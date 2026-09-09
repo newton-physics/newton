@@ -39,6 +39,7 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
+    accumulate_body_particle_attachment_force_and_hessian,
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
@@ -59,6 +60,7 @@ from .rigid_vbd_kernels import (
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
     accumulate_body_body_contacts_per_body,
+    accumulate_body_particle_attachments_per_body,
     accumulate_body_particle_contacts_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -129,6 +131,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
+        - Compliant rigid-body-to-particle attachments
 
     For rigid bodies, two paths are supported:
 
@@ -181,6 +184,15 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
+
+    Body-particle attachment limitations:
+        - Attachments are translational and constrain one particle to a body-local point.
+        - The constraint is compliant: ``stiffness`` and ``damping`` enter a quadratic
+          penalty, so a loaded attachment keeps a small offset. There is no rigid mode.
+        - Both endpoints must be integrated by this solver. Attachments are not supported
+          with ``integrate_with_external_rigid_solver=True``.
+
+        See :ref:`Body-particle attachments` for authoring and cross-solver behavior.
 
     Buffer sizing:
         Body-body contact state is pre-allocated from ``model.rigid_contact_max`` when a
@@ -702,22 +714,40 @@ class SolverVBD(SolverBase, CouplingInterface):
         # set_collision_frequency() changes take effect at the next step.
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
 
+        if model.attachment_body_particle_count > 0 and integrate_with_external_rigid_solver:
+            raise ValueError(
+                "Body-particle attachments require SolverVBD to integrate both endpoints; "
+                "integrate_with_external_rigid_solver=True is not supported."
+            )
+
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
-        if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
-            edge_iterations = (
-                particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
-            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
-            vertex_iterations = (
-                particle_vertex_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
-            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
-            truncation_records = 4 * (edge_iterations + vertex_iterations)
-            force_records = 2 * edge_iterations + 4 * vertex_iterations
-            if model.shape_count > 0:
-                force_records += 1
-            particle_deterministic_max_records = max(truncation_records, force_records)
-            coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
+        if effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            if model.attachment_body_particle_count > 0:
+                attachment_particles = model.attachment_body_particle_particle.numpy()
+                attachment_records = int(np.bincount(attachment_particles, minlength=model.particle_count).max())
+                particle_deterministic_max_records = max(
+                    particle_deterministic_max_records,
+                    attachment_records,
+                )
+            if particle_enable_self_contact:
+                edge_iterations = (
+                    particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+                ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+                vertex_iterations = (
+                    particle_vertex_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+                ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+                truncation_records = 4 * (edge_iterations + vertex_iterations)
+                force_records = 2 * edge_iterations + 4 * vertex_iterations
+                if model.shape_count > 0:
+                    force_records += 1
+                particle_deterministic_max_records = max(
+                    particle_deterministic_max_records,
+                    truncation_records,
+                    force_records,
+                )
+                coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
         if model.particle_count > 0:
             self._set_module_options(
                 {
@@ -1017,6 +1047,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             # Adjacency and dimensions
             self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
+            (
+                self.body_particle_attachment_offsets,
+                self.body_particle_attachment_indices,
+            ) = self._compute_body_particle_attachment_adjacency(model)
 
             # Force accumulation arrays
             self.body_torques = wp.zeros(model.body_count, dtype=wp.vec3, device=self.device)
@@ -2101,6 +2135,30 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         return adjacency
 
+    def _compute_body_particle_attachment_adjacency(self, model: Model) -> tuple[wp.array, wp.array]:
+        """Build CSR adjacency from rigid bodies to body-particle attachments."""
+        offsets = np.zeros(model.body_count + 1, dtype=np.int32)
+        if model.attachment_body_particle_count == 0:
+            return (
+                wp.array(offsets, dtype=wp.int32, device=self.device),
+                wp.empty(0, dtype=wp.int32, device=self.device),
+            )
+
+        attachment_bodies = model.attachment_body_particle_body.numpy()
+        np.add.at(offsets, attachment_bodies + 1, 1)
+        np.cumsum(offsets, out=offsets)
+
+        indices = np.empty(model.attachment_body_particle_count, dtype=np.int32)
+        cursors = offsets[:-1].copy()
+        for attachment, body in enumerate(attachment_bodies):
+            indices[cursors[body]] = attachment
+            cursors[body] += 1
+
+        return (
+            wp.array(offsets, dtype=wp.int32, device=self.device),
+            wp.array(indices, dtype=wp.int32, device=self.device),
+        )
+
     # =====================================================
     # Main Solver Methods
     # =====================================================
@@ -3161,6 +3219,29 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
+            if model.attachment_body_particle_count > 0:
+                wp.launch(
+                    kernel=accumulate_body_particle_attachment_force_and_hessian,
+                    dim=model.attachment_body_particle_count,
+                    inputs=[
+                        dt,
+                        color,
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        model.particle_colors,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
+                        model.attachment_body_particle_body,
+                        model.attachment_body_particle_particle,
+                        model.attachment_body_particle_body_point,
+                        model.attachment_body_particle_stiffness,
+                        model.attachment_body_particle_damping,
+                        model.attachment_body_particle_enabled,
+                    ],
+                    outputs=[self.particle_forces, self.particle_hessians],
+                    device=self.device,
+                )
+
             if contacts is not None:
                 wp.launch(
                     kernel=accumulate_particle_body_contact_force_and_hessian,
@@ -3372,6 +3453,37 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
+
+            if model.attachment_body_particle_count > 0:
+                wp.launch(
+                    kernel=accumulate_body_particle_attachments_per_body,
+                    dim=color_group.size,
+                    inputs=[
+                        dt,
+                        color_group,
+                        state_in.particle_q,
+                        self.particle_q_prev,
+                        state_in.body_q,
+                        self.body_q_prev,
+                        model.body_com,
+                        self.body_inv_mass_effective,
+                        model.attachment_body_particle_particle,
+                        model.attachment_body_particle_body_point,
+                        model.attachment_body_particle_stiffness,
+                        model.attachment_body_particle_damping,
+                        model.attachment_body_particle_enabled,
+                        self.body_particle_attachment_offsets,
+                        self.body_particle_attachment_indices,
+                    ],
+                    outputs=[
+                        self.body_forces,
+                        self.body_torques,
+                        self.body_hessian_ll,
+                        self.body_hessian_al,
+                        self.body_hessian_aa,
+                    ],
+                    device=self.device,
+                )
 
             # Accumulate body-particle contact forces/hessians for bodies in this color
             if model.particle_count > 0 and contacts is not None:

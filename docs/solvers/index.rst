@@ -409,11 +409,49 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes| :sup:`3`
      - |no|
      - |no|
+   * - Body-particle attachments
+     - |no|
+     - |no|
+     - |no|
+     - |no|
+     - |yes| :sup:`5`
+     - |no|
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
 | :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`5` See :ref:`Body-particle attachments` for authoring and semantics. Attachments spanning two
+  solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 
+.. _Body-particle attachments:
 
+Body-Particle Attachments
+-------------------------
+
+A body-particle attachment ties one cloth or solid particle to a point in a
+rigid body's local frame. Author attachments with
+:meth:`newton.ModelBuilder.add_attachment_body_particle`. They are stored on the
+:class:`~newton.Model` and do not require a coupled solver.
+
+:class:`~newton.solvers.SolverVBD` applies an attachment whenever it integrates
+both endpoints. The attachment is compliant rather than rigid: it contributes a
+quadratic penalty with ``stiffness`` [N/m] and ``damping`` [N·s/m], so a heavily
+loaded attachment keeps a small offset instead of holding the particle exactly.
+The constraint is translational, similar to the positional part of a ball joint;
+a single particle has no orientation, so there is no angular counterpart. Forces
+are equal and opposite, including the torque about the body's center of mass, and
+the path is independent of contact, so it stays active without penetration.
+
+Both endpoints must be integrated by the same solver, so
+:class:`~newton.solvers.SolverVBD` rejects attachments when it is constructed
+with ``integrate_with_external_rigid_solver=True``.
+
+When the endpoints belong to two different solvers in a coupled simulation,
+:class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` turns the same
+model rows into cross-solver interface constraints; see :ref:`ADMM coupling`.
+The two cases are mutually exclusive, so no attachment is applied twice, and a
+row whose body or particle is owned by no solver applies no force at all. The
+coupler also warns when both endpoints belong to one entry whose solver does not
+support attachments.
 
 .. _Differentiability:
 

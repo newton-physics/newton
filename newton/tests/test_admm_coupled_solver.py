@@ -275,8 +275,7 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
         inertia=wp.mat33(np.eye(3)),
     )
     particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(
-        builder,
+    builder.add_attachment_body_particle(
         body,
         particle,
         stiffness=500.0,
@@ -293,7 +292,7 @@ def _build_two_world_body_particle_attachment_scene() -> newton.Model:
     world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
     particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
-    SolverCoupledADMM.add_body_particle_attachment(world, body, particle, stiffness=500.0)
+    world.add_attachment_body_particle(body, particle, stiffness=500.0)
     world.color()
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1018,9 +1017,10 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
 
 class TestAdmmBodyParticleAttachment(unittest.TestCase):
-    """Custom model attributes are converted to rigid-particle ADMM attachments."""
+    """Model attachment rows are converted to rigid-particle ADMM attachments."""
 
-    def test_custom_attribute_attachment_closes_gap(self):
+    def test_model_attachment_closes_gap(self):
+        """Couple a cross-entry model attachment and pull the endpoints together."""
         model = _build_body_particle_attachment_scene()
         solver = _make_semi_body_particle_solver(model)
         initial_gap = np.linalg.norm(model.state().body_q.numpy()[0, :3] - model.state().particle_q.numpy()[0])
@@ -1029,6 +1029,89 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         final_gap = np.linalg.norm(body_q[0, :3] - particle_q[0])
 
         self.assertLess(final_gap, 0.5 * initial_gap)
+
+    def test_deprecated_helper_preserves_legacy_attachment_row(self):
+        """Keep the deprecated ADMM helper compatible with its custom-row layout."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+
+        with self.assertWarnsRegex(DeprecationWarning, "add_attachment_body_particle"):
+            attachment = SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=500.0)
+
+        self.assertEqual(attachment, 0)
+        self.assertEqual(builder.attachment_body_particle_count, 0)
+
+        builder.color()
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.attachment_body_particle_count, 0)
+        self.assertEqual(
+            model.custom_frequency_counts[SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY],
+            1,
+        )
+        self.assertIn(
+            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_FREQUENCY,
+            model.custom_frequency_counts,
+        )
+
+    def test_single_unsupported_entry_attachment_is_reported(self):
+        """Warn when a same-entry solver cannot apply a model attachment."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("only SolverVBD" in message for message in logs.output))
+
+    def test_single_vbd_entry_attachment_is_left_to_vbd(self):
+        """Leave a same-entry model attachment to SolverVBD without warning."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "both",
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                        bodies=range(model.body_count),
+                        particles=range(model.particle_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertEqual(solver.view("both").attachment_body_particle_count, 1)
+
+    def test_unowned_attachment_endpoint_is_reported(self):
+        """Warn about attachment rows that no entry can apply."""
+        model = _build_body_particle_attachment_scene()
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING") as logs:
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(
+                        "body",
+                        lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                        bodies=range(model.body_count),
+                    ),
+                ],
+                SolverCoupledADMM.Config(iterations=1),
+            )
+
+        self.assertEqual(solver._admm_rp_groups, [])
+        self.assertTrue(any("not owned by any entry" in message for message in logs.output))
 
     def test_masked_reset_preserves_unselected_attachment_history(self):
         """Clear selected attachment duals and preserve every other row."""

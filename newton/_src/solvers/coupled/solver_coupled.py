@@ -623,6 +623,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if index_lists is None:
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
+                self._apply_noncompact_body_particle_attachment_visibility(view, cfg)
             self._customize_compact_view(view)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
@@ -1028,7 +1029,23 @@ class SolverCoupled(SolverBase, CouplingInterface):
         # Particle connectivity remains globally indexed for now. Keeping its
         # projection as identity does not prevent independent rigid compaction.
         particle_order = list(range(model.particle_count)) if visible_particles else []
-        compact, failure_reason = self._compact_index_lists(view, body_order, joint_order, shape_order, particle_order)
+        attachment_order = self._compact_body_particle_attachment_order(
+            {int(i) for i in cfg.bodies},
+            {int(i) for i in cfg.particles},
+        )
+        if attachment_order is None:
+            self._warn_compaction_fallback(
+                cfg, "the selected body-particle attachments do not have a homogeneous world layout"
+            )
+            return None
+        compact, failure_reason = self._compact_index_lists(
+            view,
+            body_order,
+            joint_order,
+            shape_order,
+            particle_order,
+            attachment_order,
+        )
         if compact is None:
             self._warn_compaction_fallback(cfg, failure_reason or "the selected topology is not closed")
             return None
@@ -1124,6 +1141,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_order: list[int],
         shape_order: list[int],
         particle_order: list[int],
+        attachment_order: list[int],
     ) -> tuple[_CompactIndexMaps | None, str | None]:
         model = self.model
         body_set = set(body_order)
@@ -1183,6 +1201,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
+            model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1369,6 +1388,72 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "mimic constraints",
         )
 
+    def _body_particle_attachment_rows(
+        self,
+        body_set: set[int],
+        particle_set: set[int],
+    ) -> set[int]:
+        """Select attachments whose endpoints are both owned by one entry."""
+        model = self.model
+        if model.attachment_body_particle_count == 0:
+            return set()
+        body = model.attachment_body_particle_body.numpy()
+        particle = model.attachment_body_particle_particle.numpy()
+        return {
+            attachment
+            for attachment in range(model.attachment_body_particle_count)
+            if int(body[attachment]) in body_set and int(particle[attachment]) in particle_set
+        }
+
+    def _compact_body_particle_attachment_order(
+        self,
+        body_set: set[int],
+        particle_set: set[int],
+    ) -> list[int] | None:
+        """Order same-entry attachments for compact model views."""
+        selected = self._body_particle_attachment_rows(body_set, particle_set)
+        return self._ordered_world_subset(
+            selected,
+            self.model.attachment_body_particle_world,
+            None,
+            self.model.attachment_body_particle_count,
+            "body-particle attachments",
+            allow_global=True,
+        )
+
+    def _apply_noncompact_body_particle_attachment_visibility(
+        self,
+        view: ModelView,
+        cfg: SolverCoupled.Entry,
+    ) -> None:
+        """Hide attachments not owned entirely by a non-compacted entry."""
+        model = self.model
+        rows = sorted(
+            self._body_particle_attachment_rows(
+                {int(i) for i in cfg.bodies},
+                {int(i) for i in cfg.particles},
+            )
+        )
+        attachment_frequency = model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE
+        projections = self._entry_attribute_projections(None)
+        world_frequency = model.AttributeFrequency.WORLD
+        projections.setdefault(
+            world_frequency,
+            _compact_index_projection(range(model.world_count), model.world_count),
+        )
+        projections[attachment_frequency] = _compact_index_projection(
+            rows,
+            model.attachment_body_particle_count,
+        )
+        view.attachment_body_particle_count = len(rows)
+        self._project_compact_attributes(
+            view,
+            projections,
+            exclude=set(),
+            include=lambda attribute: attribute.frequency == attachment_frequency,
+            source_model=True,
+        )
+
     def _apply_compact_entry_view(
         self,
         view: ModelView,
@@ -1392,6 +1477,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
         spring_order = compact.order(frequency.SPRING)
+        attachment_order = compact.order(frequency.ATTACHMENT_BODY_PARTICLE)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         view.body_count = len(body_order)
@@ -1404,6 +1490,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
+        view.attachment_body_particle_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
