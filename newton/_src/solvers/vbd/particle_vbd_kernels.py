@@ -23,6 +23,8 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _reset_world_selected,
     dat_separation_epsilon,
     evaluate_body_particle_contact,
+    find_edge_edge_separator,
+    find_vertex_triangle_separator,
     place_dat_division_plane,
     planar_truncation_t,
 )
@@ -1932,14 +1934,7 @@ def create_vertex_triangle_division_plane_closest_pt(
     t3: wp.vec3,
     delta_t3: wp.vec3,
 ):
-    """
-    n points to the vertex side
-    """
-    closest_p, _bary, _feature_type = triangle_closest_point(t1, t2, t3, v)
-
-    n_hat = v - closest_p
-    gap = wp.length(n_hat)
-
+    """Build a certified soft-self VT plane whose normal points toward the vertex."""
     coordinate_scale = float(1.0)
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(v)))
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(t1)))
@@ -1947,10 +1942,11 @@ def create_vertex_triangle_division_plane_closest_pt(
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(t3)))
     separation_eps = dat_separation_epsilon(coordinate_scale)
 
-    if gap < 1e-12:
-        return wp.vec3(0.0), v, separation_eps
-
-    n = wp.normalize(n_hat)
+    valid, n, _vertex_support, triangle_support, gap, _candidate_index = find_vertex_triangle_separator(
+        v, t1, t2, t3, wp.vec3(0.0), separation_eps
+    )
+    if not valid:
+        return False, wp.vec3(0.0), v, separation_eps
 
     delta_v_n = wp.max(-wp.dot(n, delta_v), 0.0)
     delta_t_n = wp.max(
@@ -1962,77 +1958,8 @@ def create_vertex_triangle_division_plane_closest_pt(
         )
     )
 
-    d, _lmbd = place_dat_division_plane(n, closest_p, gap, delta_v_n, delta_t_n, separation_eps)
-    return n, d, separation_eps
-
-
-@wp.func
-def robust_edge_pair_normal(
-    e0_v0_pos: wp.vec3,
-    e0_v1_pos: wp.vec3,
-    e1_v0_pos: wp.vec3,
-    e1_v1_pos: wp.vec3,
-    eps: float = 1.0e-6,
-) -> wp.vec3:
-    # Edge directions
-    dir0 = e0_v1_pos - e0_v0_pos
-    dir1 = e1_v1_pos - e1_v0_pos
-
-    len0 = wp.length(dir0)
-    len1 = wp.length(dir1)
-
-    if len0 > eps:
-        dir0 = dir0 / len0
-    else:
-        dir0 = wp.vec3(0.0, 0.0, 0.0)
-
-    if len1 > eps:
-        dir1 = dir1 / len1
-    else:
-        dir1 = wp.vec3(0.0, 0.0, 0.0)
-
-    # Primary: cross of two valid directions
-    n = wp.cross(dir0, dir1)
-    len_n = wp.length(n)
-    if len_n > eps:
-        return n / len_n
-
-    # Parallel or degenerate: pick best non-zero direction
-    reference = dir0
-    if wp.length(reference) <= eps:
-        reference = dir1
-
-    if wp.length(reference) <= eps:
-        # Both edges collapsed: fall back to canonical axis
-        return wp.vec3(1.0, 0.0, 0.0)
-
-    # Try bridge vector between midpoints
-    bridge = 0.5 * ((e1_v0_pos + e1_v1_pos) - (e0_v0_pos + e0_v1_pos))
-    bridge_len = wp.length(bridge)
-    if bridge_len > eps:
-        n = wp.cross(reference, bridge / bridge_len)
-        len_n = wp.length(n)
-        if len_n > eps:
-            return n / len_n
-
-    # Use an axis guaranteed (numerically) to be non-parallel
-    fallback_axis = wp.vec3(1.0, 0.0, 0.0)
-    if wp.abs(wp.dot(reference, fallback_axis)) > 0.9:
-        fallback_axis = wp.vec3(0.0, 1.0, 0.0)
-
-    n = wp.cross(reference, fallback_axis)
-    len_n = wp.length(n)
-    if len_n > eps:
-        return n / len_n
-
-    # Final guard: use the remaining canonical axis
-    fallback_axis = wp.vec3(0.0, 0.0, 1.0)
-    n = wp.cross(reference, fallback_axis)
-    len_n = wp.length(n)
-    if len_n > eps:
-        return n / len_n
-
-    return wp.vec3(1.0, 0.0, 0.0)
+    d, _lmbd = place_dat_division_plane(n, triangle_support, gap, delta_v_n, delta_t_n, separation_eps)
+    return True, n, d, separation_eps
 
 
 @wp.func
@@ -2046,16 +1973,7 @@ def create_edge_edge_division_plane_closest_pt(
     e1_v1_pos: wp.vec3,
     delta_e1_v1: wp.vec3,
 ):
-    st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, 1e-6)
-    s = st[0]
-    t = st[1]
-    c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-    c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
-
-    n_hat = c1 - c2
-
-    gap = wp.length(n_hat)
-
+    """Build a certified soft-self EE plane whose normal points toward edge 0."""
     coordinate_scale = float(1.0)
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(e0_v0_pos)))
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(e0_v1_pos)))
@@ -2063,14 +1981,11 @@ def create_edge_edge_division_plane_closest_pt(
     coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(e1_v1_pos)))
     separation_eps = dat_separation_epsilon(coordinate_scale)
 
-    if gap < 1e-12:
-        return (
-            robust_edge_pair_normal(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos),
-            c1 * 0.5 + c2 * 0.5,
-            separation_eps,
-        )
-
-    n = wp.normalize(n_hat)
+    valid, n, _edge0_support, edge1_support, gap, _candidate_index = find_edge_edge_separator(
+        e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, wp.vec3(0.0), separation_eps
+    )
+    if not valid:
+        return False, wp.vec3(0.0), e0_v0_pos, separation_eps
 
     delta_e0 = wp.max(
         wp.vec3(
@@ -2087,8 +2002,8 @@ def create_edge_edge_division_plane_closest_pt(
         )
     )
 
-    d, _lmbd = place_dat_division_plane(n, c2, gap, delta_e0, delta_e1, separation_eps)
-    return n, d, separation_eps
+    d, _lmbd = place_dat_division_plane(n, edge1_support, gap, delta_e0, delta_e1, separation_eps)
+    return True, n, d, separation_eps
 
 
 @wp.kernel
@@ -2138,7 +2053,7 @@ def apply_planar_truncation_parallel_by_collision(
                 delta_e2_v2 = displacement_in[e2_v2]
 
                 # n points to the edge 1 side
-                n, d, separation_eps = create_edge_edge_division_plane_closest_pt(
+                valid_plane, n, d, separation_eps = create_edge_edge_division_plane_closest_pt(
                     e1_v1_pos,
                     delta_e1_v1,
                     e1_v2_pos,
@@ -2149,7 +2064,7 @@ def apply_planar_truncation_parallel_by_collision(
                     delta_e2_v2,
                 )
 
-                if wp.length_sq(n) > 0.0:
+                if valid_plane:
                     t = planar_truncation_t(e1_v1_pos, delta_e1_v1, n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, e1_v1, t)
                     t = planar_truncation_t(e1_v2_pos, delta_e1_v2, n, d, gamma, separation_eps)
@@ -2158,8 +2073,13 @@ def apply_planar_truncation_parallel_by_collision(
                     wp.atomic_min(truncation_t_out, e2_v1, t)
                     t = planar_truncation_t(e2_v2_pos, delta_e2_v2, -n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, e2_v2, t)
-
-                # planar truncation for 2 sides
+                else:
+                    # No strictly separating plane exists at the reference
+                    # configuration. Preserve both complete edges.
+                    wp.atomic_min(truncation_t_out, e1_v1, 0.0)
+                    wp.atomic_min(truncation_t_out, e1_v2, 0.0)
+                    wp.atomic_min(truncation_t_out, e2_v1, 0.0)
+                    wp.atomic_min(truncation_t_out, e2_v2, 0.0)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
     # process vertex-triangle collisions
@@ -2189,7 +2109,7 @@ def apply_planar_truncation_parallel_by_collision(
                 delta_t2 = displacement_in[tri_b]
                 delta_t3 = displacement_in[tri_c]
 
-                n, d, separation_eps = create_vertex_triangle_division_plane_closest_pt(
+                valid_plane, n, d, separation_eps = create_vertex_triangle_division_plane_closest_pt(
                     colliding_particle_pos,
                     colliding_particle_displacement,
                     t1,
@@ -2200,7 +2120,7 @@ def apply_planar_truncation_parallel_by_collision(
                     delta_t3,
                 )
 
-                if wp.length_sq(n) > 0.0:
+                if valid_plane:
                     t = planar_truncation_t(
                         colliding_particle_pos, colliding_particle_displacement, n, d, gamma, separation_eps
                     )
@@ -2211,6 +2131,13 @@ def apply_planar_truncation_parallel_by_collision(
                     wp.atomic_min(truncation_t_out, tri_b, t)
                     t = planar_truncation_t(t3, delta_t3, -n, d, gamma, separation_eps)
                     wp.atomic_min(truncation_t_out, tri_c, t)
+                else:
+                    # A zero-gap or intersecting pair cannot define a strict
+                    # DAT separator. Preserve the complete VT pair.
+                    wp.atomic_min(truncation_t_out, particle_idx, 0.0)
+                    wp.atomic_min(truncation_t_out, tri_a, 0.0)
+                    wp.atomic_min(truncation_t_out, tri_b, 0.0)
+                    wp.atomic_min(truncation_t_out, tri_c, 0.0)
 
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 

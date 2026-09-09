@@ -11,8 +11,11 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 from newton._src.solvers.vbd.particle_vbd_kernels import (
+    NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+    apply_planar_truncation_parallel_by_collision,
     build_particle_body_contact_adjacency_active,
     create_edge_edge_division_plane_closest_pt,
     create_vertex_triangle_division_plane_closest_pt,
@@ -5816,7 +5819,7 @@ def _soft_self_dat_epsilon_probe(result: wp.array[float]):
     triangle_1 = wp.vec3(1.0, -1.0, 0.0)
     triangle_2 = wp.vec3(0.0, 1.0, 0.0)
     vertex_displacement = wp.vec3(0.0, 0.0, -10.0e-6)
-    vt_n, vt_d, vt_eps = create_vertex_triangle_division_plane_closest_pt(
+    vt_valid, vt_n, vt_d, vt_eps = create_vertex_triangle_division_plane_closest_pt(
         vertex,
         vertex_displacement,
         triangle_0,
@@ -5826,7 +5829,9 @@ def _soft_self_dat_epsilon_probe(result: wp.array[float]):
         triangle_2,
         zero,
     )
-    vt_t = planar_truncation_t(vertex, vertex_displacement, vt_n, vt_d, 0.85, vt_eps)
+    vt_t = float(-1.0)
+    if vt_valid:
+        vt_t = planar_truncation_t(vertex, vertex_displacement, vt_n, vt_d, 0.85, vt_eps)
     result[0] = wp.dot(vt_n, vertex - vt_d)
     result[1] = wp.dot(-vt_n, triangle_0 - vt_d)
     result[2] = wp.dot(vt_n, vertex + vt_t * vertex_displacement - triangle_0)
@@ -5844,7 +5849,7 @@ def _soft_self_dat_epsilon_probe(result: wp.array[float]):
     edge_1_a = wp.vec3(-1.0, 0.0, 0.0)
     edge_1_b = wp.vec3(1.0, 0.0, 0.0)
     edge_0_displacement = wp.vec3(0.0, -10.0e-6, 0.0)
-    ee_n, ee_d, ee_eps = create_edge_edge_division_plane_closest_pt(
+    ee_valid, ee_n, ee_d, ee_eps = create_edge_edge_division_plane_closest_pt(
         edge_0_a,
         edge_0_displacement,
         edge_0_b,
@@ -5854,7 +5859,9 @@ def _soft_self_dat_epsilon_probe(result: wp.array[float]):
         edge_1_b,
         zero,
     )
-    ee_t = planar_truncation_t(edge_0_a, edge_0_displacement, ee_n, ee_d, 0.85, ee_eps)
+    ee_t = float(-1.0)
+    if ee_valid:
+        ee_t = planar_truncation_t(edge_0_a, edge_0_displacement, ee_n, ee_d, 0.85, ee_eps)
     result[7] = wp.dot(ee_n, edge_0_a - ee_d)
     result[8] = wp.dot(-ee_n, edge_1_a - ee_d)
     result[9] = wp.dot(ee_n, edge_0_a + ee_t * edge_0_displacement - edge_1_a)
@@ -5883,6 +5890,156 @@ def test_soft_self_dat_uses_epsilon_separation(test, device):
     test.assertGreaterEqual(ee_accepted_gap, 2.0 * ee_eps)
     test.assertGreater(ee_t, 0.0)
     test.assertLess(ee_t, 1.0)
+
+
+def _run_soft_self_dat_truncation(
+    device,
+    positions,
+    displacements,
+    triangles,
+    edges,
+    vertex_triangle_pair=None,
+    edge_edge_pair=None,
+):
+    """Run the Planar-DAT kernel for one explicitly prescribed primitive pair."""
+    positions = np.asarray(positions, dtype=np.float32)
+    displacements = np.asarray(displacements, dtype=np.float32)
+    triangles = np.asarray(triangles, dtype=np.int32).reshape((-1, 3))
+    edges = np.asarray(edges, dtype=np.int32).reshape((-1, 4))
+    particle_count = len(positions)
+    edge_count = len(edges)
+    collision_info = build_tri_mesh_collision_info(
+        particle_count=particle_count,
+        tri_count=len(triangles),
+        edge_count=edge_count,
+        vertex_collision_buffer_pre_alloc=1,
+        edge_collision_buffer_pre_alloc=1,
+        device=device,
+    )
+
+    vertex_counts = np.zeros(particle_count, dtype=np.int32)
+    if vertex_triangle_pair is not None:
+        vertex_index, triangle_index = vertex_triangle_pair
+        vertex_pairs = np.zeros(2 * particle_count, dtype=np.int32)
+        vertex_pairs[2 * vertex_index : 2 * vertex_index + 2] = (vertex_index, triangle_index)
+        collision_info.vertex_colliding_triangles.assign(vertex_pairs)
+        vertex_counts[vertex_index] = 1
+    collision_info.vertex_colliding_triangles_count.assign(vertex_counts)
+
+    edge_counts = np.zeros(edge_count, dtype=np.int32)
+    if edge_edge_pair is not None:
+        first_edge, second_edge = edge_edge_pair
+        edge_pairs = np.zeros(2 * edge_count, dtype=np.int32)
+        edge_pairs[2 * first_edge : 2 * first_edge + 2] = (first_edge, second_edge)
+        collision_info.edge_colliding_edges.assign(edge_pairs)
+        edge_counts[first_edge] = 1
+    collision_info.edge_colliding_edges_count.assign(edge_counts)
+
+    truncation_t = wp.ones(particle_count, dtype=float, device=device)
+    wp.launch(
+        apply_planar_truncation_parallel_by_collision,
+        dim=max(particle_count, edge_count) * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+        inputs=[
+            wp.array(positions, dtype=wp.vec3, device=device),
+            wp.array(displacements, dtype=wp.vec3, device=device),
+            wp.array(triangles, dtype=wp.int32, ndim=2, device=device),
+            wp.array(edges, dtype=wp.int32, ndim=2, device=device),
+            wp.array([collision_info], dtype=TriMeshCollisionInfo, device=device),
+            0.85,
+        ],
+        outputs=[truncation_t],
+        device=device,
+    )
+    return truncation_t.numpy()
+
+
+def test_soft_self_dat_truncates_complete_primitive_pairs(test, device):
+    """The shared VT/EE separators constrain every vertex, and invalid pairs fail closed."""
+    epsilon = _RIGID_SOFT_DAT_TEST_EPS
+
+    with test.subTest(pair="moving VT vertex"):
+        positions = np.array([[0.0, 0.0, 1.0], [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
+        displacements = np.zeros_like(positions)
+        displacements[0, 2] = -2.0
+        actual = _run_soft_self_dat_truncation(
+            device,
+            positions,
+            displacements,
+            [[1, 2, 3]],
+            [],
+            vertex_triangle_pair=(0, 0),
+        )
+        expected = np.array([0.85 * (1.0 - 2.0 * epsilon) / 2.0, 1.0, 1.0, 1.0])
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1.0e-6)
+
+    with test.subTest(pair="moving VT triangle"):
+        positions = np.array([[0.0, 0.0, 1.0], [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
+        displacements = np.zeros_like(positions)
+        displacements[1:, 2] = 2.0
+        actual = _run_soft_self_dat_truncation(
+            device,
+            positions,
+            displacements,
+            [[1, 2, 3]],
+            [],
+            vertex_triangle_pair=(0, 0),
+        )
+        moving_t = 0.85 * (1.0 - 2.0 * epsilon) / 2.0
+        np.testing.assert_allclose(actual, [1.0, moving_t, moving_t, moving_t], rtol=0.0, atol=1.0e-6)
+
+    with test.subTest(pair="moving EE edges"):
+        positions = np.array(
+            [
+                [-1.0, 0.0, 0.5],
+                [1.0, 0.0, 0.5],
+                [0.0, 1.0, 2.0],
+                [-1.0, 0.0, -0.5],
+                [1.0, 0.0, -0.5],
+                [0.0, -1.0, -2.0],
+            ]
+        )
+        displacements = np.zeros_like(positions)
+        displacements[:2, 2] = -1.0
+        displacements[3:5, 2] = 1.0
+        actual = _run_soft_self_dat_truncation(
+            device,
+            positions,
+            displacements,
+            [[0, 1, 2], [3, 4, 5]],
+            [[-1, -1, 0, 1], [-1, -1, 3, 4]],
+            edge_edge_pair=(0, 1),
+        )
+        moving_t = 0.85 * (0.5 - epsilon)
+        np.testing.assert_allclose(
+            actual,
+            [moving_t, moving_t, 1.0, moving_t, moving_t, 1.0],
+            rtol=0.0,
+            atol=1.0e-6,
+        )
+
+    with test.subTest(pair="touching VT fails closed"):
+        positions = np.array([[0.0, 0.0, 0.0], [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
+        actual = _run_soft_self_dat_truncation(
+            device,
+            positions,
+            np.zeros_like(positions),
+            [[1, 2, 3]],
+            [],
+            vertex_triangle_pair=(0, 0),
+        )
+        np.testing.assert_array_equal(actual, np.zeros(4))
+
+    with test.subTest(pair="intersecting EE fails closed"):
+        positions = np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
+        actual = _run_soft_self_dat_truncation(
+            device,
+            positions,
+            np.zeros_like(positions),
+            [],
+            [[-1, -1, 0, 1], [-1, -1, 2, 3]],
+            edge_edge_pair=(0, 1),
+        )
+        np.testing.assert_array_equal(actual, np.zeros(4))
 
 
 @wp.kernel
@@ -6583,6 +6740,12 @@ add_function_test(
     TestVBDRigidDAT,
     "test_soft_self_dat_uses_epsilon_separation",
     test_soft_self_dat_uses_epsilon_separation,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_soft_self_dat_truncates_complete_primitive_pairs",
+    test_soft_self_dat_truncates_complete_primitive_pairs,
     devices=devices,
 )
 add_function_test(
