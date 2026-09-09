@@ -741,7 +741,7 @@ class Example:
             friction=0.0,
             label="left_bottom_cable_fix",
         )
-        builder.add_joint_ball(
+        right_anchor_joint = builder.add_joint_ball(
             parent=self.table_body,
             child=last_cable_body,
             parent_xform=wp.transform(self.right_anchor_local, wp.quat_identity()),
@@ -751,8 +751,9 @@ class Example:
             label="right_bottom_cable_fix_loop",
         )
         builder.add_articulation(
-            [*table_articulation_joints, *cable_joints, left_anchor_joint],
+            [*table_articulation_joints, *cable_joints, left_anchor_joint, right_anchor_joint],
             label="xy_table_cable_cross_slide",
+            allow_closed_loops=True,
         )
 
         kinematic_body_indices = driven_pulley_bodies

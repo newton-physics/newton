@@ -1268,12 +1268,15 @@ class Model:
         self.articulation_start: wp.array[wp.int32] | None = None
         """Articulation start index plus sentinel, shape [articulation_count + 1], int.
 
-        The sentinel still bounds each articulation's full joint range, including
-        converted loop-closing joints. Use :attr:`articulation_end` for the
-        exclusive end of regular tree joints.
+        The sentinel still bounds each articulation's full stored joint range. Use
+        :attr:`articulation_end` for its exclusive end.
         """
         self.articulation_end: wp.array[wp.int32] | None = None
-        """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
+        """Exclusive end index of explicitly assigned joints per articulation, shape [articulation_count], int.
+
+        The range is normally a kinematic tree, but may contain loop-closing joints
+        when the articulation was added with ``allow_closed_loops=True``.
+        """
         self._fk_articulation_level_start: wp.array[wp.int32] | None = None
         self._fk_level_joint_start: wp.array[wp.int32] | None = None
         self._fk_level_joints: wp.array[wp.int32] | None = None

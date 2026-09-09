@@ -11,6 +11,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.vbd import rigid_sparse_articulation_kernels
+from newton._src.solvers.vbd.rigid_sparse_articulation import build_rigid_articulation_sparse_layout
 from newton._src.solvers.vbd.rigid_sparse_articulation_kernels import _joint_projectors
 from newton.examples.cable import example_cable_cross_slide_table
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -238,15 +239,16 @@ def _make_loop_model(device: str = "cpu") -> newton.Model:
             )
         )
 
-    builder.add_articulation(joints)
-
     mid = 0.5 * (positions[-1] + positions[0])
-    builder.add_joint_fixed(
-        parent=bodies[-1],
-        child=bodies[0],
-        parent_xform=wp.transform(p=wp.vec3(*(mid - positions[-1])), q=wp.quat_identity()),
-        child_xform=wp.transform(p=wp.vec3(*(mid - positions[0])), q=wp.quat_identity()),
+    joints.append(
+        builder.add_joint_fixed(
+            parent=bodies[-1],
+            child=bodies[0],
+            parent_xform=wp.transform(p=wp.vec3(*(mid - positions[-1])), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(*(mid - positions[0])), q=wp.quat_identity()),
+        )
     )
+    builder.add_articulation(joints, allow_closed_loops=True)
     builder.color()
     return builder.finalize(device=device)
 
@@ -307,15 +309,16 @@ def _make_fixed_ring_model(body_count: int) -> newton.Model:
             )
         )
 
-    builder.add_articulation(joints)
-
     mid = 0.5 * (positions[-1] + positions[0])
-    builder.add_joint_fixed(
-        parent=bodies[-1],
-        child=bodies[0],
-        parent_xform=wp.transform(p=wp.vec3(*(mid - positions[-1])), q=wp.quat_identity()),
-        child_xform=wp.transform(p=wp.vec3(*(mid - positions[0])), q=wp.quat_identity()),
+    joints.append(
+        builder.add_joint_fixed(
+            parent=bodies[-1],
+            child=bodies[0],
+            parent_xform=wp.transform(p=wp.vec3(*(mid - positions[-1])), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(*(mid - positions[0])), q=wp.quat_identity()),
+        )
     )
+    builder.add_articulation(joints, allow_closed_loops=True)
     builder.color()
     return builder.finalize(device="cpu")
 
@@ -555,7 +558,7 @@ def _make_cable_rod_model(closed: bool, bend_damping: float = 0.0) -> newton.Mod
             body_frame_origin="start",
             label="sparse_cable_loop" if closed else "sparse_cable_chain",
         )
-    builder.add_articulation(joints)
+    builder.add_articulation(joints, allow_closed_loops=closed)
     builder.color()
     return builder.finalize(device="cpu")
 
@@ -813,6 +816,32 @@ class TestVBDSparseArticulation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiple parents"):
             builder.add_articulation(joints)
 
+    def test_builder_accepts_closed_loop_articulation_opt_in(self):
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        inertia = wp.mat33(np.eye(3, dtype=np.float32))
+        bodies = [
+            builder.add_link(xform=wp.transform(wp.vec3(float(i), 0.0, 0.0)), mass=1.0, inertia=inertia)
+            for i in range(3)
+        ]
+        joints = [builder.add_joint_fixed(parent=-1, child=bodies[0])]
+        joints.append(builder.add_joint_fixed(parent=bodies[0], child=bodies[1]))
+        joints.append(builder.add_joint_fixed(parent=bodies[1], child=bodies[2]))
+        joints.append(builder.add_joint_fixed(parent=bodies[0], child=bodies[2]))
+
+        builder.add_articulation(joints, allow_closed_loops=True)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.articulation_count, 1)
+        np.testing.assert_array_equal(model.joint_articulation.numpy(), np.zeros(4, dtype=np.int32))
+
+        # The loop closure is inside the articulation range, so the direct factorization
+        # covers every joint and body of the articulation.
+        layout = build_rigid_articulation_sparse_layout(model, "cpu")
+        self.assertEqual(layout.articulation_count, 1)
+        np.testing.assert_array_equal(np.sort(layout.articulation_joints.numpy()), np.arange(model.joint_count))
+        np.testing.assert_array_equal(np.sort(layout.articulation_bodies.numpy()), np.arange(model.body_count))
+
     def test_sparse_revolute_projector_uses_parent_frame(self):
         axis = np.array([0.2, -0.4, 0.7], dtype=np.float32)
         axis /= np.linalg.norm(axis)
@@ -912,17 +941,20 @@ class TestVBDSparseArticulation(unittest.TestCase):
                 else:
                     self.assertLess(sparse_angular, 0.9 * local_angular)
 
-    def test_sparse_articulation_includes_xy_table_closure_joint(self):
+    def test_sparse_articulation_includes_declared_xy_table_closure_joint(self):
         example = _make_xy_table_example("block_sparse_joints")
         self.assertEqual(example.model.articulation_count, 1)
-        self.assertLess(int(example.model.joint_articulation.numpy()[-1]), 0)
+        self.assertEqual(int(example.model.joint_articulation.numpy()[-1]), 0)
 
         layout = example.solver.rigid_articulation_sparse_layout
         self.assertIsNotNone(layout)
         joint_offsets = layout.articulation_joint_offsets.numpy()
         joint_counts = np.diff(joint_offsets)
         self.assertEqual(int(np.max(joint_counts)), example.model.joint_count)
-        self.assertEqual(len(np.unique(layout.articulation_bodies.numpy())), example.model.body_count)
+        self.assertEqual(
+            len(np.unique(layout.articulation_bodies.numpy())) + layout.local_body_count,
+            example.model.body_count,
+        )
 
         example.step()
         example.test_post_step()
@@ -961,31 +993,104 @@ def _run_unregistered_fixed_body(device, mode: str) -> np.ndarray:
     return state_in.body_q.numpy()
 
 
-def test_sparse_includes_joint_outside_articulation(test, device):
+def test_sparse_falls_back_to_local_without_articulations(test, device):
     local_q = _run_unregistered_fixed_body(device, "local")
     sparse_q = _run_unregistered_fixed_body(device, "block_sparse_joints")
     np.testing.assert_allclose(sparse_q, local_q, rtol=1.0e-4, atol=1.0e-4)
     test.assertGreater(float(sparse_q[0, 2]), 0.99)
 
 
-def _make_cross_articulation_closure_model(device):
+def test_sparse_uses_local_solve_for_standalone_body(test, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.01)
+    articulated_body = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia
+    )
+    root_joint = builder.add_joint_fixed(
+        parent=-1,
+        child=articulated_body,
+        parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+    )
+    builder.add_articulation([root_joint])
+
+    standalone_body = builder.add_link(
+        xform=wp.transform((0.0, 1.0, 2.0), wp.quat_identity()), mass=1.0, inertia=inertia
+    )
+    builder.add_joint_fixed(
+        parent=-1,
+        child=standalone_body,
+        parent_xform=wp.transform((0.0, 1.0, 2.0), wp.quat_identity()),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+    layout = solver.rigid_articulation_sparse_layout
+    test.assertIsNotNone(layout)
+    test.assertEqual(layout.articulation_body_count, 1)
+    test.assertEqual(layout.local_body_count, 1)
+
+    for _ in range(20):
+        solver.step(state_in, state_out, None, None, 1.0 / 120.0)
+        state_in, state_out = state_out, state_in
+    poses = state_in.body_q.numpy()
+    test.assertGreater(float(poses[articulated_body, 2]), 0.99)
+    test.assertGreater(float(poses[standalone_body, 2]), 1.99)
+
+
+def _make_cross_articulation_closure_model(device, single_articulation: bool):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.1)
     groups = []
+    joints = []
     for y in (0.0, 2.0):
         root = builder.add_link(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
         tip = builder.add_link(xform=wp.transform((1.0, y, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
         root_joint = builder.add_joint_fixed(parent=-1, child=root)
         tip_joint = builder.add_joint_revolute(parent=root, child=tip, axis=newton.Axis.Z)
-        builder.add_articulation([root_joint, tip_joint])
+        joints.extend((root_joint, tip_joint))
+        if not single_articulation:
+            builder.add_articulation([root_joint, tip_joint])
         groups.append((root, tip))
-    builder.add_joint_fixed(parent=groups[0][1], child=groups[1][1])
+    joints.append(builder.add_joint_fixed(parent=groups[0][1], child=groups[1][1]))
+    if single_articulation:
+        builder.add_articulation(joints, allow_closed_loops=True)
     builder.color()
     return builder.finalize(device=device)
 
 
-def test_sparse_merges_cross_articulation_closure(test, device):
-    model = _make_cross_articulation_closure_model(device)
+def test_sparse_handles_cross_articulation_joint_locally(test, device):
+    model = _make_cross_articulation_closure_model(device, single_articulation=False)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=False,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+    layout = solver.rigid_articulation_sparse_layout
+    test.assertIsNotNone(layout)
+    test.assertEqual(layout.articulation_count, 2)
+    test.assertEqual(layout.articulation_joint_count, model.joint_count - 1)
+    test.assertLess(int(layout.joint_articulation_sparse.numpy()[-1]), 0)
+
+    state_in = model.state()
+    state_out = model.state()
+    residual_before = _joint_residual(model, state_in)
+    solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+    test.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+    test.assertLess(_joint_residual(model, state_out), residual_before)
+
+
+def test_sparse_factorizes_closed_loop_articulation(test, device):
+    # Declaring the loop closure inside one articulation puts every joint and body of
+    # that articulation into a single direct factorization.
+    model = _make_cross_articulation_closure_model(device, single_articulation=True)
     solver = newton.solvers.SolverVBD(
         model,
         iterations=8,
@@ -996,13 +1101,11 @@ def test_sparse_merges_cross_articulation_closure(test, device):
     layout = solver.rigid_articulation_sparse_layout
     test.assertIsNotNone(layout)
     test.assertEqual(layout.articulation_count, 1)
-    bodies = layout.articulation_bodies.numpy()
-    np.testing.assert_array_equal(np.sort(bodies), np.arange(model.body_count))
+    np.testing.assert_array_equal(np.sort(layout.articulation_bodies.numpy()), np.arange(model.body_count))
     np.testing.assert_array_equal(np.sort(layout.articulation_joints.numpy()), np.arange(model.joint_count))
 
     state_in = model.state()
     state_out = model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
     for _ in range(5):
         solver.step(state_in, state_out, None, None, 1.0 / 240.0)
         state_in, state_out = state_out, state_in
@@ -1135,14 +1238,26 @@ def test_sparse_updates_soft_contact_penalty_without_rigid_capacity(test, device
 
 add_function_test(
     TestVBDSparseArticulationDevices,
-    "test_sparse_includes_joint_outside_articulation",
-    test_sparse_includes_joint_outside_articulation,
+    "test_sparse_falls_back_to_local_without_articulations",
+    test_sparse_falls_back_to_local_without_articulations,
     devices=devices,
 )
 add_function_test(
     TestVBDSparseArticulationDevices,
-    "test_sparse_merges_cross_articulation_closure",
-    test_sparse_merges_cross_articulation_closure,
+    "test_sparse_uses_local_solve_for_standalone_body",
+    test_sparse_uses_local_solve_for_standalone_body,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_handles_cross_articulation_joint_locally",
+    test_sparse_handles_cross_articulation_joint_locally,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_factorizes_closed_loop_articulation",
+    test_sparse_factorizes_closed_loop_articulation,
     devices=devices,
 )
 add_function_test(

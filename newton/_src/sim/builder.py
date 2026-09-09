@@ -1850,7 +1850,7 @@ class ModelBuilder:
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
         self.articulation_end: list[int] = []
-        """Exclusive end indices of regular tree joints accumulated for :attr:`Model.articulation_end`."""
+        """Exclusive end indices of explicitly assigned joints accumulated for :attr:`Model.articulation_end`."""
         self.articulation_label: list[str] = []
         """Articulation labels accumulated for :attr:`Model.articulation_label`."""
         self.articulation_world: list[int] = []
@@ -3563,7 +3563,12 @@ class ModelBuilder:
         validated[builder] = cache_key
 
     def add_articulation(
-        self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
+        self,
+        joints: list[int],
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+        *,
+        allow_closed_loops: bool = False,
     ):
         """
         Adds an articulation to the model from a list of joint indices.
@@ -3575,9 +3580,18 @@ class ModelBuilder:
             joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
             label: The label of the articulation. If None, a default label will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
+            allow_closed_loops: If True, permit loop-closing joints in the articulation, so that a body may
+                be the child of more than one joint in the range. Maximal-coordinate solvers that assemble
+                the articulation directly, such as :class:`~newton.solvers.SolverVBD` with
+                ``rigid_articulation_solve="block_sparse_joints"``, use this to factorize the closed loop
+                together with the tree. The articulation is no longer a kinematic tree, so reduced-coordinate
+                routines that sweep the range as a tree, including :func:`newton.eval_fk` and
+                :class:`~newton.solvers.SolverFeatherstone`, will not produce meaningful results for it. Use
+                the default when the articulation must remain a tree; see :ref:`Loop closure`.
 
         Raises:
-            ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
+            ValueError: If joints are not contiguous, not monotonic, belong to different worlds, or contain
+                multiple parents without ``allow_closed_loops=True``.
 
         Example:
             .. code-block:: python
@@ -3635,18 +3649,21 @@ class ModelBuilder:
                     f"{self.current_world}. All joints in an articulation must belong to the same world."
                 )
 
-        # Basic tree structure validation (check for cycles, single parent)
-        # Build a simple tree structure check - each child should have only one parent in this articulation
-        child_to_parent = {}
-        for joint_idx in joints:
-            child = self.joint_child[joint_idx]
-            parent = self.joint_parent[joint_idx]
-            if child in child_to_parent and child_to_parent[child] != parent:
-                raise ValueError(
-                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
-                )
-            child_to_parent[child] = parent
+        if not allow_closed_loops:
+            # Basic tree structure validation (check for cycles, single parent)
+            # Build a simple tree structure check - each child should have only one parent in this articulation
+            child_to_parent = {}
+            for joint_idx in joints:
+                child = self.joint_child[joint_idx]
+                parent = self.joint_parent[joint_idx]
+                if child in child_to_parent and child_to_parent[child] != parent:
+                    raise ValueError(
+                        f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
+                        f"This creates an invalid tree structure. Loop-closing joints must not be part of an "
+                        f"articulation unless the articulation is built with allow_closed_loops=True for a "
+                        f"maximal-coordinate solver that assembles loop closures directly."
+                    )
+                child_to_parent[child] = parent
 
         # Validate that only root bodies (parent == -1) can be kinematic
         self._validate_kinematic_articulation_joints(joints)

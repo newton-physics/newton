@@ -32,9 +32,12 @@ class RigidArticulationSparseLayout:
     articulation_diag_slots: wp.array[wp.int32]
     body_articulation_sparse: wp.array[wp.int32]
     body_articulation_local: wp.array[wp.int32]
+    joint_articulation_sparse: wp.array[wp.int32]
+    local_body_color_groups: list[wp.array[wp.int32]]
     articulation_count: int
     articulation_body_count: int
     articulation_joint_count: int
+    local_body_count: int
     block_count: int
 
 
@@ -78,15 +81,19 @@ def _minimum_degree_order(body_count: int, edges: set[tuple[int, int]]) -> list[
 def build_rigid_articulation_sparse_layout(
     model, device: wp.context.Devicelike
 ) -> RigidArticulationSparseLayout | None:
-    """Build the static sparse layout from rigid-body joint connectivity.
+    """Build the static sparse layout from Newton articulation ranges.
 
     This host analysis runs once from :class:`SolverVBD` construction, never
     from the per-step or per-iteration path. Repeated articulation topologies,
     such as replicated RL environments, share cached ordering and fill analysis.
 
-    Newton articulation ranges contain only tree joints. Loop-closing joints,
-    world-root joints, and orphan joints may legally live outside those ranges,
-    so solver groups are connected components over all model joints instead.
+    Each articulation is one direct-factorization group: every joint in
+    ``[articulation_start, articulation_end)`` is assembled into that group's
+    block system, including loop-closing joints added through
+    :meth:`~newton.ModelBuilder.add_articulation` with ``allow_closed_loops=True``.
+    Bodies outside every articulation remain in the regular local VBD solve.
+    Joints outside articulation ranges are likewise excluded from the coupled
+    matrix and handled through per-body local contributions.
     """
 
     if model.body_count == 0:
@@ -94,6 +101,8 @@ def build_rigid_articulation_sparse_layout(
 
     joint_parent = np.asarray(model.joint_parent.to("cpu").numpy(), dtype=np.int32)
     joint_child = np.asarray(model.joint_child.to("cpu").numpy(), dtype=np.int32)
+    articulation_start = np.asarray(model.articulation_start.to("cpu").numpy(), dtype=np.int32)
+    articulation_end = np.asarray(model.articulation_end.to("cpu").numpy(), dtype=np.int32)
 
     articulation_bodies_host: list[int] = []
     articulation_joints_host: list[int] = []
@@ -113,24 +122,6 @@ def build_rigid_articulation_sparse_layout(
 
     body_articulation_sparse_host = np.full((model.body_count,), -1, dtype=np.int32)
     body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
-    component_parent = np.arange(model.body_count, dtype=np.int32)
-
-    def find(body: int) -> int:
-        root = body
-        while int(component_parent[root]) != root:
-            root = int(component_parent[root])
-        while body != root:
-            next_body = int(component_parent[body])
-            component_parent[body] = root
-            body = next_body
-        return root
-
-    def union(body_a: int, body_b: int):
-        root_a = find(body_a)
-        root_b = find(body_b)
-        if root_a != root_b:
-            component_parent[max(root_a, root_b)] = min(root_a, root_b)
-
     for joint_idx in range(model.joint_count):
         parent = int(joint_parent[joint_idx])
         child = int(joint_child[joint_idx])
@@ -139,28 +130,47 @@ def build_rigid_articulation_sparse_layout(
                 f"Joint {joint_idx} references an out-of-range body: parent={parent}, child={child}, "
                 f"body_count={model.body_count}."
             )
-        if parent >= 0 and child >= 0:
-            union(parent, child)
-        elif parent < 0 and child < 0:
+        if parent < 0 and child < 0:
             raise ValueError(f"Joint {joint_idx} has no rigid-body endpoint.")
 
-    component_bodies: dict[int, list[int]] = {}
-    for body in range(model.body_count):
-        component_bodies.setdefault(find(body), []).append(body)
+    # One group per articulation. The range is authoritative, so loop-closing joints
+    # added with allow_closed_loops=True are factorized together with the tree joints.
+    joint_group = np.full((model.joint_count,), -1, dtype=np.int32)
+    body_group = np.full((model.body_count,), -1, dtype=np.int32)
+    articulation_groups: list[tuple[list[int], list[int]]] = []
+    for articulation_id in range(model.articulation_count):
+        joints = list(range(int(articulation_start[articulation_id]), int(articulation_end[articulation_id])))
+        bodies: list[int] = []
+        for joint_idx in joints:
+            for body in (int(joint_parent[joint_idx]), int(joint_child[joint_idx])):
+                if body >= 0 and body not in bodies:
+                    if body_group[body] >= 0:
+                        raise ValueError(
+                            f"Body {body} appears in articulation {articulation_id} and articulation "
+                            f"{int(body_group[body])}. The block-sparse articulation solve requires each body to "
+                            f"belong to at most one articulation."
+                        )
+                    bodies.append(body)
+        if not bodies:
+            continue
+        group = len(articulation_groups)
+        for joint_idx in joints:
+            joint_group[joint_idx] = group
+        for body in bodies:
+            body_group[body] = group
+        articulation_groups.append((bodies, joints))
 
-    component_joints: dict[int, list[int]] = {root: [] for root in component_bodies}
-    for joint_idx in range(model.joint_count):
-        parent = int(joint_parent[joint_idx])
-        child = int(joint_child[joint_idx])
-        endpoint = child if child >= 0 else parent
-        root = find(endpoint)
-        if parent >= 0 and find(parent) != root:
-            raise ValueError(f"Joint {joint_idx} parent and child resolve to different sparse solver groups.")
-        component_joints[root].append(joint_idx)
+    if not articulation_groups:
+        return None
 
-    articulation_groups = [
-        (bodies, component_joints[root]) for root, bodies in sorted(component_bodies.items(), key=lambda item: item[0])
-    ]
+    local_body_color_groups: list[wp.array[wp.int32]] = []
+    local_body_count = 0
+    for color_group in model.body_color_groups:
+        color_bodies = np.asarray(color_group.to("cpu").numpy(), dtype=np.int32)
+        local_bodies = color_bodies[body_group[color_bodies] < 0]
+        if local_bodies.size > 0:
+            local_body_color_groups.append(wp.array(local_bodies, dtype=wp.int32, device=device))
+            local_body_count += int(local_bodies.size)
 
     symbolic_cache: dict[
         tuple[int, tuple[tuple[int, int], ...]],
@@ -270,8 +280,11 @@ def build_rigid_articulation_sparse_layout(
         articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
         body_articulation_sparse=wp.array(body_articulation_sparse_host, dtype=wp.int32, device=device),
         body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
+        joint_articulation_sparse=wp.array(joint_group, dtype=wp.int32, device=device),
+        local_body_color_groups=local_body_color_groups,
         articulation_count=len(articulation_groups),
         articulation_body_count=len(articulation_bodies_host),
         articulation_joint_count=len(articulation_joints_host),
+        local_body_count=local_body_count,
         block_count=len(block_cols_host),
     )
