@@ -2070,11 +2070,6 @@ class CollisionPipeline:
         value = authored("newton:collisionPipeline:contactReport")
         if value is not None:
             kwargs["contact_report"] = bool(value)
-            if kwargs["contact_report"] and kwargs.get("contact_matching", "disabled") == "disabled":
-                raise ValueError(
-                    f"{path}: newton:collisionPipeline:contactReport=True requires "
-                    "newton:collisionPipeline:contactMatching != 'disabled'."
-                )
 
         value = authored("newton:collisionPipeline:verifyBuffers")
         if value is not None:
@@ -2099,6 +2094,13 @@ class CollisionPipeline:
                 )
 
         kwargs.update(overrides)
+
+        if kwargs.get("contact_report", False) and kwargs.get("contact_matching", "disabled") == "disabled":
+            raise ValueError(
+                f"{path}: contact_report=True requires contact_matching != 'disabled' "
+                "(from newton:collisionPipeline:contactReport/contactMatching or **overrides)."
+            )
+
         return cls(model, **kwargs)
 
     @property

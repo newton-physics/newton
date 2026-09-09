@@ -512,6 +512,15 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(override_pipeline.broad_phase_mode, "nxn")
         self.assertFalse(override_pipeline.reduce_contacts)
 
+        # contactReport=True is authored with contactMatching left at its "disabled"
+        # default, so the contact_report/contact_matching cross-field check must be
+        # evaluated after overrides are merged in, not before -- otherwise a
+        # contact_matching override could never satisfy it.
+        prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
+        override_matching_pipeline = CollisionPipeline.create_from_usd(scene, model, contact_matching="latest")
+        self.assertTrue(override_matching_pipeline.contact_report)
+        self.assertEqual(override_matching_pipeline.contact_matching, "latest")
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_soft_limits_warn_and_fall_back_to_default(self):
         """Warn and fall back to the __init__ default, instead of raising, when
@@ -631,8 +640,7 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
         with self.assertRaisesRegex(
             ValueError,
-            r"physicsScene: newton:collisionPipeline:contactReport=True requires "
-            r"newton:collisionPipeline:contactMatching != 'disabled'",
+            r"physicsScene: contact_report=True requires contact_matching != 'disabled'",
         ):
             CollisionPipeline.create_from_usd(scene_prim, model)
         scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Clear()
