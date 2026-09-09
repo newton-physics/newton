@@ -40,11 +40,14 @@ class DVIConfigStruct:
     contact_solver: int32
     """Device-side selector for PGS or APGD contact phases."""
 
-    max_alternating_iterations: int32
+    coupling_iterations: int32
     """Number of complete ``L -> B -> C`` coupling sweeps."""
 
-    inequality_sweeps_per_iteration: int32
-    """Projected sweeps used independently by each PGS ``L`` or ``C`` phase."""
+    limit_pgs_sweeps: int32
+    """Projected sweeps used by each bounded-joint and joint-limit ``L`` phase."""
+
+    contact_pgs_sweeps: int32
+    """Projected sweeps used by each PGS contact ``C`` phase."""
 
     tangential_warmstart_scale: float32
     """Scale applied to cached tangential reactions before each solve."""
@@ -60,7 +63,7 @@ class DVIStatus:
     converged: int32
     """Whether all terminal feasibility, equality, and complementarity residuals satisfy tolerance."""
     iterations: int32
-    """Projected PGS sweeps, or coupling sweeps when APGD owns the contact phase."""
+    """Top-level coupling passes executed; one when at most one family is active."""
     limit_iterations: int32
     """Actual projected sweeps applied to bounded-joint and joint-limit rows."""
     contact_iterations: int32
@@ -211,8 +214,9 @@ def convert_config_to_struct(config: DVISolverConfig) -> DVIConfigStruct:
     config_struct.contact_solver = (
         _DVI_CONTACT_SOLVER_APGD if config.contact_solver == "apgd" else _DVI_CONTACT_SOLVER_PGS
     )
-    config_struct.max_alternating_iterations = config.max_alternating_iterations
-    config_struct.inequality_sweeps_per_iteration = config.inequality_sweeps_per_iteration
+    config_struct.coupling_iterations = config.coupling_iterations
+    config_struct.limit_pgs_sweeps = config.limit_pgs_sweeps
+    config_struct.contact_pgs_sweeps = config.contact_pgs_sweeps
     config_struct.tangential_warmstart_scale = config.tangential_warmstart_scale
     config_struct.post_stabilization_bilateral = int(config.post_stabilization_bilateral)
     return config_struct

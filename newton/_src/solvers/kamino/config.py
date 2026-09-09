@@ -1090,28 +1090,25 @@ class DVISolverConfig:
             return self.contact_law
         return "associated_at" if self.contact_solver == "apgd" else "de_saxce"
 
-    max_alternating_iterations: int = 24
+    coupling_iterations: int = 2
     """
-    Maximum number of ``L -> B -> C`` coupling sweeps. ``L`` contains bounded
+    Number of ``L -> B -> C`` coupling sweeps. ``L`` contains bounded
     joint rows and joint limits, ``B`` contains bilateral joint rows, and ``C``
     contains contact triplets. Empty families are skipped. Must be greater than
-    zero. Defaults to `24`.
+    zero. Defaults to `2`.
     """
 
-    inequality_sweeps_per_iteration: int = 2
+    limit_pgs_sweeps: int = 48
     """
-    Number of projected Gauss-Seidel sweeps used independently by each PGS
-    ``L`` or ``C`` phase in a coupling sweep. Contacts use graph-colored sweeps
-    on CUDA. Must be greater than zero. Defaults to `2`.
+    Number of projected Gauss-Seidel sweeps in each bounded-joint and joint-limit
+    ``L`` phase. Must be greater than zero. Defaults to `48`.
     """
 
-    bilateral_solve_interval: int = 1
-    """Compatibility setting for configurations created before the explicit
-    ``L -> B -> C`` schedule became canonical.
-
-    The canonical schedule solves ``B`` once per coupling sweep, so only the
-    historical default value ``1`` is supported. The field remains available
-    to avoid breaking existing keyword-based configurations.
+    contact_pgs_sweeps: int = 48
+    """
+    Number of graph-colored projected Gauss-Seidel sweeps in each contact ``C``
+    phase when :attr:`contact_solver` is ``pgs``. Must be greater than zero.
+    Defaults to `48`.
     """
 
     post_stabilization_bilateral: bool = False
@@ -1166,27 +1163,25 @@ class DVISolverConfig:
     def register_custom_attributes(builder: ModelBuilder) -> None:
         """Register DVI custom attributes supported by the Kamino USD schema.
 
-        DVI-specific tuning options are currently Python-only. The shared
-        ``max_solver_iterations`` attribute is registered by
-        :class:`PADMMSolverConfig` and parsed by both dynamics solvers.
+        DVI-specific tuning options are currently Python-only. In particular,
+        the shared ``max_solver_iterations`` attribute registered by
+        :class:`PADMMSolverConfig` is a local-solver budget and must not be
+        interpreted as the number of DVI family-coupling sweeps.
         """
 
     @override
     @staticmethod
     def from_model(model: Model, **kwargs: dict[str, Any]) -> DVISolverConfig:
-        """Creates a :class:`DVISolverConfig` from model attributes if available.
+        """Create a :class:`DVISolverConfig` from Python keyword arguments.
+
+        DVI scheduling controls do not currently have dedicated model/USD
+        attributes. The generic PADMM iteration attribute is deliberately
+        ignored because it is not a family-coupling budget.
 
         Args:
-            model: The Newton model from which to parse configurations.
+            model: The Newton model; retained for the common config factory API.
         """
-        cfg = DVISolverConfig(**kwargs)
-        kamino_attrs = getattr(model, "kamino", None)
-        if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
-            max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
-            if max_alternating_iterations >= 0:
-                cfg.max_alternating_iterations = max_alternating_iterations
-        cfg.validate()
-        return cfg
+        return DVISolverConfig(**kwargs)
 
     @override
     def validate(self) -> None:
@@ -1234,18 +1229,13 @@ class DVISolverConfig:
             raise TypeError(f"Invalid APGD config: Expected DVIAPGDConfig, got {type(self.apgd)}.")
         self.apgd.validate()
         integer_controls = (
-            ("maximum alternating iterations", self.max_alternating_iterations),
-            ("inequality sweeps per iteration", self.inequality_sweeps_per_iteration),
-            ("bilateral solve interval", self.bilateral_solve_interval),
+            ("coupling iterations", self.coupling_iterations),
+            ("limit PGS sweeps", self.limit_pgs_sweeps),
+            ("contact PGS sweeps", self.contact_pgs_sweeps),
         )
         for name, value in integer_controls:
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"Invalid {name}: {value}. Must be a positive integer.")
-        if self.bilateral_solve_interval != 1:
-            raise ValueError(
-                "Invalid bilateral solve interval: "
-                f"{self.bilateral_solve_interval}. The canonical L -> B -> C schedule requires a value of 1."
-            )
         if not isinstance(self.post_stabilization_bilateral, bool):
             raise TypeError(
                 f"Invalid post_stabilization_bilateral: {self.post_stabilization_bilateral}. Must be a bool."

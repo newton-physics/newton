@@ -255,8 +255,9 @@ def _solve_dvi(
         jacobians=setup.jacobians if setup is not None else None,
         config=config
         or kamino_config.DVISolverConfig(
-            max_alternating_iterations=300,
-            inequality_sweeps_per_iteration=1,
+            coupling_iterations=2,
+            limit_pgs_sweeps=300,
+            contact_pgs_sweeps=300,
             tolerance=1e-4,
             regularization=1e-5,
         ),
@@ -270,7 +271,7 @@ def _solve_dvi(
 
 def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
     config = solver.config[wid]
-    return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
+    return config.coupling_iterations
 
 
 def _assert_solver_status_converged(testcase: unittest.TestCase, solver: DVISolver):
@@ -341,10 +342,10 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.apgd.max_iterations, 20)
         self.assertEqual(default_config.dvi.apgd.max_backtrack_iterations, 20)
         self.assertEqual(default_config.dvi.apgd.tolerance, 1.0e-3)
-        self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
-        self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
+        self.assertEqual(default_config.dvi.coupling_iterations, 2)
+        self.assertEqual(default_config.dvi.limit_pgs_sweeps, 48)
+        self.assertEqual(default_config.dvi.contact_pgs_sweeps, 48)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
-        self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
         self.assertFalse(default_config.dvi.post_stabilization_bilateral)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
@@ -358,7 +359,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertFalse(dense_config.sparse_jacobian)
         self.assertEqual(dense_config.integrator, "euler")
         self.assertEqual(dense_config.dynamics.linear_solver_type, "LLTBRCM")
-        self.assertEqual(dense_config.dvi.max_alternating_iterations, 24)
+        self.assertEqual(dense_config.dvi.coupling_iterations, 2)
 
         padmm_config = SolverKamino.Config()
         self.assertFalse(padmm_config.sparse_dynamics)
@@ -367,12 +368,12 @@ class TestDVISolver(unittest.TestCase):
 
         config = SolverKamino.Config(
             dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(max_alternating_iterations=32, tolerance=1e-4),
+            dvi=kamino_config.DVISolverConfig(coupling_iterations=32, tolerance=1e-4),
         )
         self.assertEqual(config.dynamics_solver, "dvi")
-        self.assertEqual(config.dvi.max_alternating_iterations, 32)
-        self.assertEqual(config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertEqual(config.dvi.bilateral_solve_interval, 1)
+        self.assertEqual(config.dvi.coupling_iterations, 32)
+        self.assertEqual(config.dvi.limit_pgs_sweeps, 48)
+        self.assertEqual(config.dvi.contact_pgs_sweeps, 48)
         self.assertEqual(config.dvi.contact_warmstart_method, "key_and_position_with_tangential_net_force")
         self.assertFalse(config.dynamics.preconditioning)
 
@@ -401,15 +402,15 @@ class TestDVISolver(unittest.TestCase):
             {"omega": float("nan")},
             {"omega": float("inf")},
             {"omega": True},
-            {"max_alternating_iterations": 0},
-            {"max_alternating_iterations": 1.5},
-            {"max_alternating_iterations": True},
-            {"inequality_sweeps_per_iteration": 0},
-            {"inequality_sweeps_per_iteration": 1.5},
-            {"inequality_sweeps_per_iteration": True},
-            {"bilateral_solve_interval": 0},
-            {"bilateral_solve_interval": 1.5},
-            {"bilateral_solve_interval": True},
+            {"coupling_iterations": 0},
+            {"coupling_iterations": 1.5},
+            {"coupling_iterations": True},
+            {"limit_pgs_sweeps": 0},
+            {"limit_pgs_sweeps": 1.5},
+            {"limit_pgs_sweeps": True},
+            {"contact_pgs_sweeps": 0},
+            {"contact_pgs_sweeps": 1.5},
+            {"contact_pgs_sweeps": True},
             {"tangential_warmstart_scale": -0.1},
             {"tangential_warmstart_scale": 1.1},
             {"tangential_warmstart_scale": float("nan")},
@@ -421,8 +422,6 @@ class TestDVISolver(unittest.TestCase):
         for kwargs in invalid_dvi_configs:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 kamino_config.DVISolverConfig(**kwargs)
-        with self.assertRaisesRegex(ValueError, "canonical L -> B -> C"):
-            kamino_config.DVISolverConfig(bilateral_solve_interval=2)
         with self.assertRaisesRegex(TypeError, "post_stabilization_bilateral"):
             kamino_config.DVISolverConfig(post_stabilization_bilateral=1)
         for method in (
@@ -441,7 +440,14 @@ class TestDVISolver(unittest.TestCase):
         model_with_attrs = SimpleNamespace(
             kamino=SimpleNamespace(max_solver_iterations=wp.array([37], dtype=wp.int32, device=self.device))
         )
-        self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
+        # The shared USD control is a local-solver iteration budget, not a DVI
+        # family-coupling count. DVI coupling remains Python-only until it has
+        # a dedicated schema attribute.
+        self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).coupling_iterations, 2)
+        self.assertEqual(
+            kamino_config.DVISolverConfig.from_model(model_with_attrs, coupling_iterations=3).coupling_iterations,
+            3,
+        )
 
     def test_00a_dvi_contact_capacity_uses_geometry_heuristic(self):
         """Limit DVI contact allocation while honoring explicit overrides."""
@@ -591,8 +597,9 @@ class TestDVISolver(unittest.TestCase):
             contacts=detector.contacts,
             jacobians=jacobians,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=1000,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=2,
+                limit_pgs_sweeps=1000,
+                contact_pgs_sweeps=1,
                 tolerance=1e-5,
                 omega=1.0,
             ),
@@ -672,8 +679,9 @@ class TestDVISolver(unittest.TestCase):
         config = SolverKamino.Config(
             dynamics_solver="dvi",
             dvi=kamino_config.DVISolverConfig(
-                max_alternating_iterations=500,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=2,
+                limit_pgs_sweeps=500,
+                contact_pgs_sweeps=1,
                 tolerance=1e-5,
             ),
             collect_solver_info=True,
@@ -750,8 +758,9 @@ class TestDVISolver(unittest.TestCase):
             contacts=detector.contacts,
             jacobians=jacobians,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=200,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=2,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=200,
                 tolerance=1e-4,
             ),
             warmstart=WarmStartMode.NONE,
@@ -782,8 +791,9 @@ class TestDVISolver(unittest.TestCase):
                 [
                     convert_config_to_struct(
                         kamino_config.DVISolverConfig(
-                            max_alternating_iterations=1,
-                            inequality_sweeps_per_iteration=1,
+                            coupling_iterations=1,
+                            limit_pgs_sweeps=1,
+                            contact_pgs_sweeps=1,
                             tolerance=0.0,
                             regularization=1e-6,
                         )
@@ -814,6 +824,7 @@ class TestDVISolver(unittest.TestCase):
                     int32_array([0]),  # contact_nzb_offsets
                     int32_array([-1 if bounded else limit_index]),  # limit_indices
                     int32_array([-1]),  # contact_indices
+                    int32_array([0]),  # problem_njc
                     int32_array([1 if bounded else 0]),  # problem_nbc
                     int32_array([0 if bounded else 1]),  # problem_nl
                     int32_array([0]),  # problem_nc
@@ -886,8 +897,9 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=32,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=2,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=32,
                         tolerance=0.0,
                         regularization=1.0e-6,
                     ),
@@ -980,8 +992,9 @@ class TestDVISolver(unittest.TestCase):
             limits=setup.limits,
             contacts=setup.contacts,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=1,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=1,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
                 tangential_warmstart_scale=0.5,
             ),
             warmstart=WarmStartMode.CONTAINERS,
@@ -1043,8 +1056,9 @@ class TestDVISolver(unittest.TestCase):
                 model,
                 problem,
                 config=kamino_config.DVISolverConfig(
-                    max_alternating_iterations=sweep_count,
-                    inequality_sweeps_per_iteration=1,
+                    coupling_iterations=2,
+                    limit_pgs_sweeps=1,
+                    contact_pgs_sweeps=sweep_count,
                     tolerance=0.0,
                     regularization=1e-6,
                     omega=omega,
@@ -1097,44 +1111,123 @@ class TestDVISolver(unittest.TestCase):
         expected_sliding = 0.1 * scalar_candidate / np.linalg.norm(scalar_candidate)
         np.testing.assert_allclose(sliding, expected_sliding, atol=1.0e-6, rtol=0.0)
 
-    def test_03k_dvi_single_family_fuses_sweeps_and_reports_budget(self):
-        """Fuse a sole inequality family while reporting its full PGS budget."""
-        max_alternating_iterations = 17
-        inequality_sweeps_per_iteration = 3
+    def test_03k_dvi_single_family_uses_only_its_local_pgs_budget(self):
+        """Run a sole contact family once regardless of the coupling budget."""
+        contact_pgs_sweeps = 3
         for sparse, inequality_kernel in (
             (False, _solve_dvi_inequalities_colored_pgs),
             (True, _solve_dvi_sparse_inequalities_pgs),
         ):
+            solutions = []
+            for coupling_iterations in (1, 17):
+                with self.subTest(sparse=sparse, coupling_iterations=coupling_iterations):
+                    model, problem, setup = self._make_box_on_plane_setup(sparse=sparse)
+                    launch_count = 0
+                    original_launch = wp.launch
+
+                    def tracked_launch(*args, _kernel=inequality_kernel, _launch=original_launch, **kwargs):
+                        nonlocal launch_count
+                        kernel = kwargs.get("kernel", args[0] if args else None)
+                        if kernel is _kernel:
+                            launch_count += 1
+                        return _launch(*args, **kwargs)
+
+                    with mock.patch.object(wp, "launch", side_effect=tracked_launch):
+                        solver = _solve_dvi(
+                            model,
+                            problem,
+                            config=kamino_config.DVISolverConfig(
+                                coupling_iterations=coupling_iterations,
+                                contact_pgs_sweeps=contact_pgs_sweeps,
+                                tolerance=1e-4,
+                                regularization=1e-6,
+                            ),
+                            setup=setup,
+                        )
+
+                    status = solver.data.status.numpy()[0]
+                    self.assertEqual(launch_count, 1)
+                    self.assertEqual(int(status["iterations"]), 1)
+                    self.assertEqual(int(status["limit_iterations"]), 0)
+                    self.assertEqual(int(status["contact_iterations"]), contact_pgs_sweeps)
+                    solutions.append(solver.data.solution.lambdas.numpy().copy())
+            np.testing.assert_array_equal(solutions[0], solutions[1])
+
+    def test_03k1_dvi_heterogeneous_world_uses_per_world_family_count(self):
+        """Do not multiply a sole world's local solve by another world's coupling budget."""
+        builder = newton.ModelBuilder()
+        builder.add_world(basics.build_box_on_plane())
+        builder.add_world(basics.build_boxes_hinged())
+        model = ModelKamino.from_newton(builder.finalize(device=self.device))
+
+        for sparse in (False, True):
             with self.subTest(sparse=sparse):
-                model, problem, setup = self._make_box_on_plane_setup(sparse=sparse)
-                launch_count = 0
-                original_launch = wp.launch
+                model, data, state, limits, detector, jacobians = make_containers(
+                    model=model,
+                    max_world_contacts=16,
+                    sparse=sparse,
+                )
+                update_containers(
+                    model=model,
+                    data=data,
+                    state=state,
+                    limits=limits,
+                    detector=detector,
+                    jacobians=jacobians,
+                )
+                make_problem = _make_sparse_dual_problem if sparse else _make_dense_dual_problem
+                problem = make_problem(model, data, limits, detector.contacts, jacobians)
 
-                def tracked_launch(*args, _kernel=inequality_kernel, _launch=original_launch, **kwargs):
-                    nonlocal launch_count
-                    kernel = kwargs.get("kernel", args[0] if args else None)
-                    if kernel is _kernel:
-                        launch_count += 1
-                    return _launch(*args, **kwargs)
+                joint_counts = problem.data.njc.numpy()
+                limit_counts = problem.data.nbc.numpy() + problem.data.nl.numpy()
+                contact_counts = problem.data.nc.numpy()
+                np.testing.assert_array_equal(joint_counts > 0, np.array([False, True]))
+                np.testing.assert_array_equal(limit_counts, np.zeros(2, dtype=np.int32))
+                self.assertTrue(np.all(contact_counts > 0))
 
-                with mock.patch.object(wp, "launch", side_effect=tracked_launch):
-                    solver = _solve_dvi(
-                        model,
-                        problem,
-                        config=kamino_config.DVISolverConfig(
-                            max_alternating_iterations=max_alternating_iterations,
-                            tolerance=1e-4,
-                            regularization=1e-6,
-                            inequality_sweeps_per_iteration=inequality_sweeps_per_iteration,
+                results = []
+                for sole_family_coupling_iterations in (1, 7):
+                    configs = [
+                        kamino_config.DVISolverConfig(
+                            coupling_iterations=sole_family_coupling_iterations,
+                            limit_pgs_sweeps=1,
+                            contact_pgs_sweeps=1,
+                            tolerance=0.0,
                         ),
-                        setup=setup,
+                        kamino_config.DVISolverConfig(
+                            coupling_iterations=3,
+                            limit_pgs_sweeps=1,
+                            contact_pgs_sweeps=1,
+                            tolerance=0.0,
+                        ),
+                    ]
+                    solver = DVISolver(
+                        model=model,
+                        data=data,
+                        limits=limits,
+                        contacts=detector.contacts,
+                        jacobians=jacobians,
+                        problem=problem if sparse else None,
+                        config=configs,
+                        warmstart=WarmStartMode.NONE,
+                    )
+                    solver.reset()
+                    solver.coldstart()
+                    solver.solve(problem)
+
+                    status = solver.data.status.numpy()
+                    np.testing.assert_array_equal(status["iterations"], np.array([1, 3], dtype=np.int32))
+                    np.testing.assert_array_equal(status["limit_iterations"], np.zeros(2, dtype=np.int32))
+                    np.testing.assert_array_equal(status["contact_iterations"], np.array([1, 3], dtype=np.int32))
+                    results.append(
+                        (
+                            solver.data.solution.lambdas.numpy().copy(),
+                            solver.data.solution.v_plus.numpy().copy(),
+                        )
                     )
 
-                self.assertEqual(launch_count, 1)
-                self.assertEqual(
-                    int(solver.data.status.numpy()[0]["iterations"]),
-                    max_alternating_iterations * inequality_sweeps_per_iteration,
-                )
+                np.testing.assert_array_equal(results[0][0], results[1][0])
+                np.testing.assert_array_equal(results[0][1], results[1][1])
 
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor per-world work counts while executing B in every family sweep."""
@@ -1161,20 +1254,23 @@ class TestDVISolver(unittest.TestCase):
             kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=1,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=1,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
             ),
             kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=3,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=3,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
             ),
             kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=1,
-                inequality_sweeps_per_iteration=3,
+                coupling_iterations=1,
+                limit_pgs_sweeps=3,
+                contact_pgs_sweeps=3,
             ),
         ]
 
@@ -1188,7 +1284,6 @@ class TestDVISolver(unittest.TestCase):
                 config=configs,
                 warmstart=WarmStartMode.NONE,
             )
-            self.assertTrue(all(config.bilateral_solve_interval == 1 for config in solver.config))
             zero_dims = np.zeros(3, dtype=np.int32)
             joint_dims = problem.data.njc.numpy()
             solver._set_bilateral_active_dim(problem, 0)
@@ -1219,7 +1314,8 @@ class TestDVISolver(unittest.TestCase):
             )
             np.testing.assert_array_equal(active_dim_updates[2][1], active_dim_updates[1][1])
             status = solver.data.status.numpy()
-            self.assertEqual([int(status[wid]["iterations"]) for wid in range(3)], [1, 3, 3])
+            self.assertEqual([int(status[wid]["iterations"]) for wid in range(3)], [1, 3, 1])
+            self.assertEqual([int(status[wid]["contact_iterations"]) for wid in range(3)], [1, 3, 3])
             self.assertTrue(np.all(solver.data.state.inequality_num_colors.numpy() > 0))
             np.testing.assert_array_equal(
                 solver.data.state.bilateral_active_dim.numpy(),
@@ -1258,10 +1354,10 @@ class TestDVISolver(unittest.TestCase):
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
             kamino_config.DVISolverConfig(
-                max_alternating_iterations=1,
+                coupling_iterations=1,
             ),
             kamino_config.DVISolverConfig(
-                max_alternating_iterations=3,
+                coupling_iterations=3,
             ),
         ]
         solver = DVISolver(
@@ -1286,7 +1382,6 @@ class TestDVISolver(unittest.TestCase):
         solver.solve(problem)
 
         joint_dims = problem.data.njc.numpy()
-        self.assertTrue(all(config.bilateral_solve_interval == 1 for config in solver.config))
         self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, 2])
         np.testing.assert_array_equal(active_dim_updates[0][1], joint_dims)
         np.testing.assert_array_equal(
@@ -1324,8 +1419,9 @@ class TestDVISolver(unittest.TestCase):
             config=kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=1,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=1,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
                 post_stabilization_bilateral=True,
             ),
             warmstart=WarmStartMode.NONE,
@@ -1377,8 +1473,9 @@ class TestDVISolver(unittest.TestCase):
                             problem=problem if sparse else None,
                             config=kamino_config.DVISolverConfig(
                                 post_stabilization_bilateral=post_stabilization_bilateral,
-                                max_alternating_iterations=2,
-                                inequality_sweeps_per_iteration=1,
+                                coupling_iterations=2,
+                                limit_pgs_sweeps=1,
+                                contact_pgs_sweeps=1,
                                 tolerance=0.0,
                             ),
                             warmstart=WarmStartMode.NONE,
@@ -1483,8 +1580,9 @@ class TestDVISolver(unittest.TestCase):
             config=kamino_config.DVISolverConfig(
                 tolerance=1e-4,
                 regularization=1e-5,
-                max_alternating_iterations=7,
-                inequality_sweeps_per_iteration=3,
+                coupling_iterations=7,
+                limit_pgs_sweeps=3,
+                contact_pgs_sweeps=3,
             ),
             warmstart=WarmStartMode.NONE,
         )
@@ -1528,7 +1626,8 @@ class TestDVISolver(unittest.TestCase):
             config=kamino_config.DVISolverConfig(
                 tolerance=1e-4,
                 regularization=1e-5,
-                inequality_sweeps_per_iteration=5,
+                limit_pgs_sweeps=5,
+                contact_pgs_sweeps=5,
             ),
             warmstart=WarmStartMode.NONE,
         )
@@ -1543,7 +1642,7 @@ class TestDVISolver(unittest.TestCase):
             ],
             device=self.device,
         )
-        self.assertEqual(int(solver.data.status.numpy()[0]["iterations"]), 5)
+        self.assertEqual(int(solver.data.status.numpy()[0]["iterations"]), 0)
 
         solver.solve(problem)
         status = solver.data.status.numpy()[0]
@@ -1830,8 +1929,9 @@ class TestDVISolver(unittest.TestCase):
             model,
             problem,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=32,
-                inequality_sweeps_per_iteration=4,
+                coupling_iterations=32,
+                limit_pgs_sweeps=4,
+                contact_pgs_sweeps=4,
                 tolerance=1e-4,
                 regularization=1e-5,
             ),
@@ -1839,11 +1939,14 @@ class TestDVISolver(unittest.TestCase):
         )
 
         _assert_solver_status_converged(self, solver)
-        iterations = int(solver.data.status.numpy()[0]["iterations"])
+        status = solver.data.status.numpy()[0]
+        self.assertEqual(int(status["iterations"]), solver.config[0].coupling_iterations)
         self.assertEqual(
-            iterations, solver.config[0].max_alternating_iterations * solver.config[0].inequality_sweeps_per_iteration
+            int(status["limit_iterations"]),
+            solver.config[0].coupling_iterations * solver.config[0].limit_pgs_sweeps,
         )
-        self.assertEqual(iterations, 128)
+        self.assertEqual(int(status["limit_iterations"]), 128)
+        self.assertEqual(int(status["contact_iterations"]), 0)
         _check_solution_matches_dual_problem(self, problem, solver)
         limit_offset = int(problem.data.lcgo.numpy()[0])
         limit_impulse = float(solver.data.solution.lambdas.numpy()[limit_offset])
@@ -1908,8 +2011,9 @@ class TestDVISolver(unittest.TestCase):
         config = SolverKamino.Config(
             dynamics_solver="dvi",
             dvi=kamino_config.DVISolverConfig(
-                max_alternating_iterations=300,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=2,
+                limit_pgs_sweeps=300,
+                contact_pgs_sweeps=1,
                 tolerance=1e-4,
             ),
         )
@@ -2004,8 +2108,9 @@ class TestDVISolver(unittest.TestCase):
             config=kamino_config.DVISolverConfig(
                 tolerance=0.0,
                 regularization=1e-5,
-                max_alternating_iterations=1,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=1,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
             ),
             warmstart=WarmStartMode.NONE,
         )
@@ -2088,8 +2193,9 @@ class TestDVISolver(unittest.TestCase):
                 contacts=detector.contacts,
                 jacobians=jacobians,
                 config=kamino_config.DVISolverConfig(
-                    max_alternating_iterations=100,
-                    inequality_sweeps_per_iteration=1,
+                    coupling_iterations=2,
+                    limit_pgs_sweeps=1,
+                    contact_pgs_sweeps=100,
                     tolerance=1e-5,
                 ),
                 warmstart=WarmStartMode.NONE,
@@ -2138,8 +2244,9 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=20,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=2,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=20,
                         tolerance=0.0,
                         regularization=1.0e-6,
                     ),
@@ -2176,8 +2283,9 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=100,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=2,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=100,
                         tolerance=1.0e-5,
                         regularization=1.0e-6,
                     ),
@@ -2296,8 +2404,9 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=500,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=2,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=500,
                         tolerance=1.0e-4,
                         regularization=1.0e-6,
                     ),
@@ -2371,8 +2480,9 @@ class TestDVISolver(unittest.TestCase):
                     model,
                     problem,
                     config=kamino_config.DVISolverConfig(
-                        max_alternating_iterations=64,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=64,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=1,
                         tolerance=1.0e-5,
                         regularization=1.0e-6,
                     ),
@@ -2448,8 +2558,9 @@ class TestDVISolver(unittest.TestCase):
             contacts=detector.contacts,
             jacobians=jacobians,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=300,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=2,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=300,
                 tolerance=1e-4,
                 regularization=1e-5,
             ),
@@ -2551,8 +2662,9 @@ class TestDVISolver(unittest.TestCase):
             dvi=kamino_config.DVISolverConfig(
                 tolerance=1e-5,
                 regularization=1e-5,
-                max_alternating_iterations=32,
-                inequality_sweeps_per_iteration=4,
+                coupling_iterations=32,
+                limit_pgs_sweeps=4,
+                contact_pgs_sweeps=4,
             ),
         )
         solver = SolverKamino(model, config=config)
@@ -2838,6 +2950,11 @@ class TestDVISolver(unittest.TestCase):
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
+                    dvi=kamino_config.DVISolverConfig(
+                        coupling_iterations=24,
+                        limit_pgs_sweeps=2,
+                        contact_pgs_sweeps=2,
+                    ),
                     collision_detector=kamino_config.CollisionDetectorConfig(
                         max_contacts=16,
                         max_contacts_per_world=16,
@@ -2855,14 +2972,14 @@ class TestDVISolver(unittest.TestCase):
                 solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                 state_0, state_1 = state_1, state_0
                 dvi_solver = solver._solver_kamino.solver_fd
-                first_sweeps = int(dvi_solver.data.status.numpy()[0]["iterations"])
+                first_coupling_iterations = int(dvi_solver.data.status.numpy()[0]["iterations"])
                 _assert_solver_status_converged(self, dvi_solver)
                 for _ in range(1, steps):
                     solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                     state_0, state_1 = state_1, state_0
 
                 _assert_solver_status_converged(self, dvi_solver)
-                self.assertGreater(first_sweeps, 1)
+                self.assertEqual(first_coupling_iterations, 24)
                 positions = state_0.body_q.numpy()
                 velocities = state_0.body_qd.numpy()
                 self.assertGreater(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 0)

@@ -67,7 +67,7 @@ class SparseDVIPath:
         bilateral_solver,
         contact_solver: str,
         contact_apgd: ContactAPGDSolver | None,
-        max_alternating_iterations: int,
+        max_coupling_iterations: int,
         has_unilateral_constraints: bool,
         has_limit_constraints: bool,
         has_contact_constraints: bool,
@@ -89,7 +89,7 @@ class SparseDVIPath:
         self.contact_solver = contact_solver
         self.contact_apgd = contact_apgd
         self.contact_operator: SparseContactOperator | None = None
-        self.max_alternating_iterations = max_alternating_iterations
+        self.max_coupling_iterations = max_coupling_iterations
         self.has_unilateral_constraints = has_unilateral_constraints
         self.has_limit_constraints = has_limit_constraints
         self.has_contact_constraints = has_contact_constraints
@@ -256,6 +256,7 @@ def _launch_sparse_inequality_pgs(
             jacobians.contact_constraint_nzb_offsets,
             state.limit_indices,
             state.contact_indices,
+            problem.data.njc,
             problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
@@ -382,6 +383,9 @@ def _solve_sparse_contact_apgd(path: SparseDVIPath, problem: DualProblem, block_
         kernel=_set_dvi_contact_active_mask,
         dim=path.size.num_worlds,
         inputs=[
+            problem.data.njc,
+            problem.data.nbc,
+            problem.data.nl,
             problem.data.nc,
             problem.data.ccgo,
             problem.data.vio,
@@ -421,16 +425,14 @@ def _solve_sparse_family_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
     delassus.diagonal(path.data.state.scratch)
     _prepare_sparse_inequality_pgs(path, problem)
     _prepare_sparse_contact_apgd(path, problem)
-    single_contact_phase = path.contact_solver == "apgd" and not path.has_limit_constraints
-    fused_pgs_family = path.contact_solver == "pgs" and (path.has_limit_constraints != path.has_contact_constraints)
-    if fused_pgs_family:
+    single_family_phase = path.has_limit_constraints != path.has_contact_constraints
+    if single_family_phase:
         if path.has_limit_constraints:
             _solve_sparse_limit_phase(path, problem, _FUSED_SINGLE_FAMILY_BLOCK)
         else:
             _solve_sparse_contact_phase(path, problem, _FUSED_SINGLE_FAMILY_BLOCK)
     else:
-        family_iterations = 1 if single_contact_phase else path.max_alternating_iterations
-        for block_iteration in range(family_iterations):
+        for block_iteration in range(path.max_coupling_iterations):
             if path.has_limit_constraints:
                 _solve_sparse_limit_phase(path, problem, block_iteration)
             if path.has_contact_constraints:
@@ -440,10 +442,10 @@ def _solve_sparse_family_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
         inputs=[
+            problem.data.njc,
             problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
-            single_contact_phase,
             path.data.config,
             path.data.status,
         ],
@@ -703,10 +705,10 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
         inputs=[
+            problem.data.njc,
             problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
-            False,
             path.data.config,
             path.data.status,
         ],
@@ -718,7 +720,7 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
 def _solve_sparse_explicit_family_coupling(path: SparseDVIPath, problem: DualProblem) -> None:
     """Apply exactly ``L -> B -> C`` per sparse coupling sweep."""
     state = path.data.state
-    for block_iteration in range(path.max_alternating_iterations):
+    for block_iteration in range(path.max_coupling_iterations):
         if path.has_limit_constraints:
             _solve_sparse_limit_phase(path, problem, block_iteration)
 

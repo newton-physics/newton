@@ -34,7 +34,7 @@ class TestDVIAPGDIntegration(unittest.TestCase):
     @staticmethod
     def _apgd_config(**kwargs) -> kamino_config.DVISolverConfig:
         """Make a short but accurate associated-contact solve config."""
-        max_alternating_iterations = kwargs.pop("max_alternating_iterations", 1)
+        coupling_iterations = kwargs.pop("coupling_iterations", 1)
         apgd = kamino_config.DVIAPGDConfig(
             max_iterations=100,
             max_backtrack_iterations=20,
@@ -45,8 +45,9 @@ class TestDVIAPGDIntegration(unittest.TestCase):
         )
         return kamino_config.DVISolverConfig(
             contact_solver="apgd",
-            max_alternating_iterations=max_alternating_iterations,
-            inequality_sweeps_per_iteration=1,
+            coupling_iterations=coupling_iterations,
+            limit_pgs_sweeps=1,
+            contact_pgs_sweeps=1,
             tolerance=1.0e-4,
             apgd=apgd,
             **kwargs,
@@ -189,13 +190,13 @@ class TestDVIAPGDIntegration(unittest.TestCase):
         """Dispatch sparse APGD through unified lambda storage with associated status."""
         self._assert_contact_phase(sparse=True)
 
-    def test_02a_contact_only_apgd_runs_one_phase_with_default_outer_budget(self) -> None:
+    def test_02a_contact_only_apgd_runs_one_phase_independent_of_coupling_budget(self) -> None:
         """Avoid redundant contact solves when no other family can change its RHS."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 self._assert_contact_phase(
                     sparse=sparse,
-                    solver_config=self._apgd_config(max_alternating_iterations=24),
+                    solver_config=self._apgd_config(coupling_iterations=24),
                 )
 
     def _assert_public_rollout(self, *, sparse: bool) -> None:
@@ -392,8 +393,9 @@ class TestDVIAPGDIntegration(unittest.TestCase):
                     config = kamino_config.DVISolverConfig(
                         contact_solver="pgs",
                         contact_law=contact_law,
-                        max_alternating_iterations=8,
-                        inequality_sweeps_per_iteration=2,
+                        coupling_iterations=8,
+                        limit_pgs_sweeps=2,
+                        contact_pgs_sweeps=2,
                     )
                     solver = DVISolver(
                         model=model,
@@ -516,8 +518,9 @@ class TestDVIAPGDIntegration(unittest.TestCase):
                     sparse_jacobian=sparse,
                     dvi=kamino_config.DVISolverConfig(
                         contact_solver="apgd",
-                        max_alternating_iterations=2,
-                        inequality_sweeps_per_iteration=1,
+                        coupling_iterations=2,
+                        limit_pgs_sweeps=1,
+                        contact_pgs_sweeps=1,
                         tolerance=2.0e-4,
                         apgd=apgd,
                     ),

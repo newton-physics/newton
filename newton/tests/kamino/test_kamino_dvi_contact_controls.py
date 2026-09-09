@@ -147,8 +147,9 @@ class TestDVIContactControls(unittest.TestCase):
             contacts=detector.contacts,
             jacobians=jacobians,
             config=kamino_config.DVISolverConfig(
-                max_alternating_iterations=4,
-                inequality_sweeps_per_iteration=1,
+                coupling_iterations=4,
+                limit_pgs_sweeps=1,
+                contact_pgs_sweeps=1,
                 tolerance=1.0e-5,
                 regularization=1.0e-8,
             ),

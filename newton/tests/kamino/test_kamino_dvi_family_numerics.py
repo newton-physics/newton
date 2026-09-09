@@ -312,8 +312,9 @@ def _solve_family_fixture(
     )
     config = DVISolverConfig(
         post_stabilization_bilateral=post_stabilization_bilateral,
-        max_alternating_iterations=iterations,
-        inequality_sweeps_per_iteration=1,
+        coupling_iterations=iterations,
+        limit_pgs_sweeps=1,
+        contact_pgs_sweeps=1,
         tolerance=0.0,
         regularization=1.0e-6,
         omega=1.0,
@@ -375,8 +376,9 @@ def _solve_apgd_family_fixture(
     config = DVISolverConfig(
         contact_solver="apgd",
         post_stabilization_bilateral=post_stabilization_bilateral,
-        max_alternating_iterations=iterations,
-        inequality_sweeps_per_iteration=1,
+        coupling_iterations=iterations,
+        limit_pgs_sweeps=1,
+        contact_pgs_sweeps=1,
         tolerance=0.0,
         regularization=1.0e-6,
         omega=1.0,

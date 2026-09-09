@@ -140,8 +140,9 @@ class Example:
             self.config.dvi.post_stabilization_bilateral = True
             self.config.dvi.tolerance = 1e-4
             self.config.dvi.regularization = 1e-5
-            self.config.dvi.max_alternating_iterations = 4
-            self.config.dvi.inequality_sweeps_per_iteration = 3
+            self.config.dvi.coupling_iterations = 4
+            self.config.dvi.limit_pgs_sweeps = 3
+            self.config.dvi.contact_pgs_sweeps = 3
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 

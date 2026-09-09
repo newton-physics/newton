@@ -49,7 +49,23 @@ initialize consistently:
 .. code-block:: python
 
    config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+   config.dvi.coupling_iterations = 2
+   config.dvi.limit_pgs_sweeps = 48
+   config.dvi.contact_pgs_sweeps = 48
    solver = newton.solvers.SolverKamino(model, config=config)
+
+``coupling_iterations`` controls complete ``L -> B -> C`` passes. The two PGS
+sweep settings are independent local budgets for the ``L`` and ``C`` phases;
+APGD contacts instead use ``config.dvi.apgd.max_iterations``. A world with only
+one active family executes that family once, including inside a heterogeneous
+batch. Coupling passes are a fixed block-Gauss--Seidel budget rather than a
+guarantee that the full terminal residual reaches ``config.dvi.tolerance``;
+increase them for problems that need a tighter cross-family fixed point.
+
+The interim DVI controls ``max_alternating_iterations`` and
+``inequality_sweeps_per_iteration`` have been replaced by these three explicit
+settings. ``bilateral_solve_interval`` has been removed because the canonical
+schedule always visits ``B`` between ``L`` and ``C``.
 
 DVI is best suited to performance-sensitive rigid mechanisms with relatively
 few active contacts; PADMM remains the safer and more broadly validated choice.

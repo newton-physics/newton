@@ -37,6 +37,27 @@ _INEQUALITY_FAMILY_CONTACTS = 2
 
 
 @wp.func
+def _world_coupling_iterations(
+    njc: int32,
+    nbc: int32,
+    nl: int32,
+    nc: int32,
+    configured_iterations: int32,
+) -> int32:
+    """Return one phase for a sole family, otherwise the coupling budget."""
+    active_families = int32(0)
+    if nbc + nl > int32(0):
+        active_families += int32(1)
+    if njc > int32(0):
+        active_families += int32(1)
+    if nc > int32(0):
+        active_families += int32(1)
+    if active_families > int32(1):
+        return configured_iterations
+    return int32(1)
+
+
+@wp.func
 def _compute_row_velocity(
     ncts: int32,
     mio: int32,
@@ -378,10 +399,9 @@ def _initialize_dvi_status(
     solver_status: wp.array[DVIStatus],
 ):
     wid = wp.tid()
-    cfg = solver_config[wid]
     status = DVIStatus()
     status.converged = int32(0)
-    status.iterations = cfg.inequality_sweeps_per_iteration
+    status.iterations = int32(0)
     status.limit_iterations = int32(0)
     status.contact_iterations = int32(0)
     status.contact_backtracks = int32(0)
@@ -399,10 +419,10 @@ def _initialize_dvi_status(
 @wp.kernel
 def _set_dvi_direct_status_iterations(
     # Inputs:
+    problem_njc: wp.array[int32],
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
-    single_contact_phase: wp.bool,
     solver_config: wp.array[DVIConfigStruct],
     # Outputs:
     solver_status: wp.array[DVIStatus],
@@ -410,19 +430,16 @@ def _set_dvi_direct_status_iterations(
     wid = wp.tid()
     cfg = solver_config[wid]
     status = solver_status[wid]
-    if problem_nbc[wid] == int32(0) and problem_nl[wid] == int32(0) and problem_nc[wid] == int32(0):
-        status.iterations = int32(1)
-    else:
-        projected_sweeps = cfg.max_alternating_iterations * cfg.inequality_sweeps_per_iteration
-        status.iterations = projected_sweeps
-        if cfg.contact_solver == int32(_DVI_CONTACT_SOLVER_APGD):
-            status.iterations = cfg.max_alternating_iterations
-            if single_contact_phase:
-                status.iterations = int32(1)
-        if problem_nbc[wid] > int32(0) or problem_nl[wid] > int32(0):
-            status.limit_iterations = projected_sweeps
-        if problem_nc[wid] > int32(0) and cfg.contact_solver != int32(_DVI_CONTACT_SOLVER_APGD):
-            status.contact_iterations = projected_sweeps
+    njc = problem_njc[wid]
+    nbc = problem_nbc[wid]
+    nl = problem_nl[wid]
+    nc = problem_nc[wid]
+    family_phases = _world_coupling_iterations(njc, nbc, nl, nc, cfg.coupling_iterations)
+    status.iterations = family_phases
+    if nbc > int32(0) or nl > int32(0):
+        status.limit_iterations = family_phases * cfg.limit_pgs_sweeps
+    if nc > int32(0) and cfg.contact_solver != int32(_DVI_CONTACT_SOLVER_APGD):
+        status.contact_iterations = family_phases * cfg.contact_pgs_sweeps
     solver_status[wid] = status
 
 
@@ -447,6 +464,9 @@ def _accumulate_dvi_apgd_status(
 
 @wp.kernel
 def _set_dvi_contact_active_mask(
+    problem_njc: wp.array[int32],
+    problem_nbc: wp.array[int32],
+    problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     problem_ccgo: wp.array[int32],
     problem_vio: wp.array[int32],
@@ -486,9 +506,14 @@ def _set_dvi_contact_active_mask(
         status.invalid_contact_preconditioner = int32(1)
         status.contact_solver_residual = wp.inf
     solver_status[wid] = status
-    contact_active_mask[wid] = (
-        valid and nc > int32(0) and block_iteration < solver_config[wid].max_alternating_iterations
+    coupling_iterations = _world_coupling_iterations(
+        problem_njc[wid],
+        problem_nbc[wid],
+        problem_nl[wid],
+        nc,
+        solver_config[wid].coupling_iterations,
     )
+    contact_active_mask[wid] = valid and nc > int32(0) and block_iteration < coupling_iterations
 
 
 @wp.kernel
@@ -515,7 +540,14 @@ def _set_dvi_bilateral_active_dim(
     else:
         # Every explicit family sweep contains B between L and C. A world with
         # no active unilateral rows still needs its standalone B solve once.
-        if block_iteration < cfg.max_alternating_iterations and (has_unilateral or block_iteration == int32(0)):
+        coupling_iterations = _world_coupling_iterations(
+            problem_njc[wid],
+            problem_nbc[wid],
+            problem_nl[wid],
+            problem_nc[wid],
+            cfg.coupling_iterations,
+        )
+        if block_iteration < coupling_iterations and (has_unilateral or block_iteration == int32(0)):
             active_dim = problem_njc[wid]
     bilateral_active_dim[wid] = active_dim
 
@@ -565,6 +597,7 @@ def _solve_dvi_inequalities_colored_pgs(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
+    problem_njc: wp.array[int32],
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
@@ -594,12 +627,13 @@ def _solve_dvi_inequalities_colored_pgs(
     lane = tid % threads_per_world
     wid = tid / threads_per_world
     cfg = solver_config[wid]
-    if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
-        return
-
+    njc = problem_njc[wid]
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
+    coupling_iterations = _world_coupling_iterations(njc, nbc, nl, nc, cfg.coupling_iterations)
+    if block_iteration >= int32(0) and block_iteration >= coupling_iterations:
+        return
     nu = nbc + nl + nc
     if (
         nu == 0
@@ -618,14 +652,14 @@ def _solve_dvi_inequalities_colored_pgs(
     uio = problem_uio[wid]
     schedule_offset = uio + wid
     contact_end = ccgo + int32(3) * nc
-    sweep_count = cfg.inequality_sweeps_per_iteration
-    if block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK):
-        sweep_count *= cfg.max_alternating_iterations
+    sweep_count = cfg.contact_pgs_sweeps
+    if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
+        sweep_count = cfg.limit_pgs_sweeps
     for _sweep in range(sweep_count):
         phase_count = int32(2)
         if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
             phase_count = int32(1)
-        elif block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK) and _sweep < sweep_count / int32(2):
+        elif njc == int32(0) and nbc + nl == int32(0) and _sweep < sweep_count / int32(2):
             # Establish the normal support load before friction when contacts
             # are the only active family. This is an internal PGS strategy;
             # it does not combine L and C or change the family schedule.

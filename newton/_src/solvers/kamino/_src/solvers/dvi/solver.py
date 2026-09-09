@@ -114,7 +114,7 @@ class DVISolver:
         self._contact_apgd: ContactAPGDSolver | None = None
         self._dense_contact_operator: DenseContactOperator | None = None
         self._dense_contact_problem: DualProblem | None = None
-        self._max_alternating_iterations: int = 1
+        self._max_coupling_iterations: int = 1
         self._has_unilateral_constraints: bool = False
         self._has_limit_constraints: bool = False
         self._has_contact_constraints: bool = False
@@ -214,7 +214,7 @@ class DVISolver:
         self._contact_law = self._config[0].resolved_contact_law
         self._warmstart = warmstart
         self._collect_info = collect_info
-        self._max_alternating_iterations = max(c.max_alternating_iterations for c in self._config)
+        self._max_coupling_iterations = max(c.coupling_iterations for c in self._config)
         self._has_limit_constraints = self._size.max_of_max_limits > 0 or self._size.max_of_num_bounded_joint_cts > 0
         self._has_contact_constraints = self._size.max_of_max_contacts > 0
         self._has_unilateral_constraints = self._has_limit_constraints or self._has_contact_constraints
@@ -235,7 +235,7 @@ class DVISolver:
             bilateral_solver=self._bilateral_solver,
             contact_solver=self._contact_solver,
             contact_apgd=self._contact_apgd,
-            max_alternating_iterations=self._max_alternating_iterations,
+            max_coupling_iterations=self._max_coupling_iterations,
             has_unilateral_constraints=self._has_unilateral_constraints,
             has_limit_constraints=self._has_limit_constraints,
             has_contact_constraints=self._has_contact_constraints,
@@ -480,7 +480,7 @@ class DVISolver:
         Every coupling sweep then executes ``L -> B -> C`` and skips empty
         families. This retains all cross-family Delassus coupling while using a
         solver suited to each constraint class. Repeating the schedule for
-        ``max_alternating_iterations`` drives the families toward a mutually
+        ``coupling_iterations`` drives the families toward a mutually
         consistent solution. By default the terminal contact phase is freshest:
         the final ``B`` solve includes the same-sweep ``L`` update but not the
         final ``C`` increment. ``post_stabilization_bilateral=True`` adds an
@@ -748,6 +748,7 @@ class DVISolver:
                 problem.data.dim,
                 problem.data.mio,
                 problem.data.vio,
+                problem.data.njc,
                 problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
@@ -775,16 +776,16 @@ class DVISolver:
             block_dim=threads_per_world,
         )
 
-    def _set_projected_iteration_status(self, problem: DualProblem, *, single_contact_phase: bool = False) -> None:
+    def _set_projected_iteration_status(self, problem: DualProblem) -> None:
         """Record the configured projected work budget for each world."""
         wp.launch(
             kernel=_set_dvi_direct_status_iterations,
             dim=self._size.num_worlds,
             inputs=[
+                problem.data.njc,
                 problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
-                single_contact_phase,
                 self._data.config,
                 self._data.status,
             ],
@@ -815,6 +816,9 @@ class DVISolver:
             kernel=_set_dvi_contact_active_mask,
             dim=self._size.num_worlds,
             inputs=[
+                problem.data.njc,
+                problem.data.nbc,
+                problem.data.nl,
                 problem.data.nc,
                 problem.data.ccgo,
                 problem.data.vio,
@@ -842,23 +846,19 @@ class DVISolver:
     def _solve_dense_family_pgs(self, problem: DualProblem) -> None:
         """Apply explicit ``L -> C`` family coupling when no bilateral block exists."""
         self._initialize_projected_iterations(problem)
-        single_contact_phase = self._contact_solver == "apgd" and not self._has_limit_constraints
-        fused_pgs_family = self._contact_solver == "pgs" and (
-            self._has_limit_constraints != self._has_contact_constraints
-        )
-        if fused_pgs_family:
+        single_family_phase = self._has_limit_constraints != self._has_contact_constraints
+        if single_family_phase:
             if self._has_limit_constraints:
                 self._solve_dense_limit_phase(problem, _FUSED_SINGLE_FAMILY_BLOCK)
             else:
                 self._solve_dense_contact_phase(problem, _FUSED_SINGLE_FAMILY_BLOCK)
         else:
-            family_iterations = 1 if single_contact_phase else self._max_alternating_iterations
-            for block_iteration in range(family_iterations):
+            for block_iteration in range(self._max_coupling_iterations):
                 if self._has_limit_constraints:
                     self._solve_dense_limit_phase(problem, block_iteration)
                 if self._has_contact_constraints:
                     self._solve_dense_contact_phase(problem, block_iteration)
-        self._set_projected_iteration_status(problem, single_contact_phase=single_contact_phase)
+        self._set_projected_iteration_status(problem)
 
     def _solve_bilateral_block(self, problem: DualProblem, active_dim: wp.array[wp.int32] | None = None):
         """Solve ``(D_bb + E_hat_bb) * lambda_b = -(v_f,b + D_bu * lambda_u)``."""
@@ -941,7 +941,7 @@ class DVISolver:
 
     def _solve_explicit_family_coupling(self, problem: DualProblem) -> None:
         """Apply exactly ``L -> B -> C`` per coupling sweep."""
-        for block_iteration in range(self._max_alternating_iterations):
+        for block_iteration in range(self._max_coupling_iterations):
             if self._has_limit_constraints:
                 self._solve_dense_limit_phase(problem, block_iteration)
 

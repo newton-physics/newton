@@ -35,7 +35,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
 
 def _apgd_config(
     *,
-    max_alternating_iterations: int = 12,
+    coupling_iterations: int = 12,
     post_stabilization_bilateral: bool = True,
     tolerance: float = 2.0e-4,
     apgd_max_iterations: int = 100,
@@ -43,8 +43,9 @@ def _apgd_config(
     """Build a deterministic APGD family-solver configuration."""
     return kamino_config.DVISolverConfig(
         contact_solver="apgd",
-        max_alternating_iterations=max_alternating_iterations,
-        inequality_sweeps_per_iteration=1,
+        coupling_iterations=coupling_iterations,
+        limit_pgs_sweeps=1,
+        contact_pgs_sweeps=1,
         post_stabilization_bilateral=post_stabilization_bilateral,
         tolerance=tolerance,
         regularization=1.0e-6,
@@ -244,7 +245,7 @@ def test_redundant_stack_support_and_preconditioned_objective(
                 contacts,
                 jacobians,
                 problem,
-                _apgd_config(max_alternating_iterations=24, apgd_max_iterations=400),
+                _apgd_config(coupling_iterations=24, apgd_max_iterations=400),
             )
             status = solver.data.status.numpy()[0]
             test.assertEqual(int(status["converged"]), 1, msg=str(status))
@@ -299,7 +300,7 @@ def test_articulated_contact_limit_runs_multiple_apgd_family_sweeps(
 ) -> None:
     """Couple active limit, bilateral, and APGD contact rows over repeated sweeps."""
     results: dict[tuple[bool, bool], np.ndarray] = {}
-    outer_iterations = 12
+    coupling_iterations = 12
     for sparse in (False, True):
         for post_stabilization_bilateral in (False, True):
             with test.subTest(sparse=sparse, post_stabilization_bilateral=post_stabilization_bilateral):
@@ -325,14 +326,14 @@ def test_articulated_contact_limit_runs_multiple_apgd_family_sweeps(
                     jacobians,
                     problem,
                     _apgd_config(
-                        max_alternating_iterations=outer_iterations,
+                        coupling_iterations=coupling_iterations,
                         post_stabilization_bilateral=post_stabilization_bilateral,
                     ),
                 )
                 status = solver.data.status.numpy()[0]
-                test.assertEqual(int(status["iterations"]), outer_iterations)
-                test.assertGreaterEqual(int(status["contact_iterations"]), outer_iterations)
-                test.assertEqual(int(status["limit_iterations"]), outer_iterations)
+                test.assertEqual(int(status["iterations"]), coupling_iterations)
+                test.assertGreaterEqual(int(status["contact_iterations"]), coupling_iterations)
+                test.assertEqual(int(status["limit_iterations"]), coupling_iterations)
                 test.assertEqual(int(status["converged"]), 1, msg=str(status))
                 for residual_name in ("r_natural", "r_p", "r_d", "r_c", "r_b"):
                     test.assertLessEqual(float(status[residual_name]), 2.0e-4, msg=str(status))
@@ -384,7 +385,7 @@ def _run_compliant_sphere(
             preconditioning=False,
             linear_solver_type="CR" if sparse else "LLTB",
         ),
-        dvi=_apgd_config(max_alternating_iterations=4, apgd_max_iterations=8),
+        dvi=_apgd_config(coupling_iterations=4, apgd_max_iterations=8),
     )
     solver = SolverKamino(model, config=config)
     state_0 = model.state()
@@ -441,7 +442,7 @@ def test_dr_legs_sparse_apgd_graph_smoke(
 ) -> None:
     """Run the real DR Legs contact scene through sparse APGD graph replay.
 
-    This is deliberately a finite-work smoke test rather than an outer-family
+    This is deliberately a finite-work smoke test rather than a coupled-family
     convergence gate. DR Legs' example-tuned four-sweep budget leaves a split
     residual after first contact; the smaller articulated test above provides
     the strict repeated ``L -> B -> C`` convergence regression with optional
@@ -522,11 +523,11 @@ def test_dr_legs_sparse_apgd_terminal_residual(
     solver_init = SolverKamino.__init__
 
     def init_apgd_solver(self, model, config=None):
-        """Give the outer family fixed point a convergence-test budget."""
+        """Give the coupled-family fixed point a convergence-test budget."""
         config.compute_solution_metrics = True
         config.dvi.contact_solver = "apgd"
         config.dvi.contact_law = None
-        config.dvi.max_alternating_iterations = 128
+        config.dvi.coupling_iterations = 128
         config.dvi.post_stabilization_bilateral = True
         config.dvi.tolerance = terminal_tolerance
         config.dvi.apgd = kamino_config.DVIAPGDConfig(

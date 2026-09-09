@@ -14,6 +14,7 @@ from .kernels import (
     _INEQUALITY_FAMILY_CONTACTS,
     _INEQUALITY_FAMILY_LIMITS,
     _sync_threads,
+    _world_coupling_iterations,
 )
 from .projections import (
     project_box_update as _project_box_update,
@@ -310,6 +311,7 @@ def _solve_dvi_sparse_inequalities_pgs(
     contact_nzb_offsets: wp.array[int32],
     limit_indices: wp.array[int32],
     contact_indices: wp.array[int32],
+    problem_njc: wp.array[int32],
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
@@ -344,11 +346,13 @@ def _solve_dvi_sparse_inequalities_pgs(
     lane = tid % threads_per_world
     wid = tid / threads_per_world
     cfg = solver_config[wid]
-    if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
-        return
+    njc = problem_njc[wid]
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
+    coupling_iterations = _world_coupling_iterations(njc, nbc, nl, nc, cfg.coupling_iterations)
+    if block_iteration >= int32(0) and block_iteration >= coupling_iterations:
+        return
     nu = nbc + nl + nc
     if (
         nu == 0
@@ -368,14 +372,14 @@ def _solve_dvi_sparse_inequalities_pgs(
     row_start = bsm_row_start[wid]
     col_start = bsm_col_start[wid]
     matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
-    sweep_count = cfg.inequality_sweeps_per_iteration
-    if block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK):
-        sweep_count *= cfg.max_alternating_iterations
+    sweep_count = cfg.contact_pgs_sweeps
+    if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
+        sweep_count = cfg.limit_pgs_sweeps
     for _sweep in range(sweep_count):
         phase_count = int32(2)
         if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
             phase_count = int32(1)
-        elif block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK) and _sweep < sweep_count / int32(2):
+        elif njc == int32(0) and nbc + nl == int32(0) and _sweep < sweep_count / int32(2):
             # Match the dense C-only PGS support-load warmup without
             # reintroducing the former combined L/C schedule.
             phase_count = int32(1)
