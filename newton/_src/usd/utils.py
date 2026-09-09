@@ -1804,7 +1804,8 @@ def get_mesh(
             is_solid=mesh_out.is_solid,
         )
         mesh_out.has_inertia = True
-    subdivision_scheme = mesh.GetSubdivisionSchemeAttr().Get()
+    subdivision_scheme_attr = mesh.GetSubdivisionSchemeAttr()
+    subdivision_scheme = subdivision_scheme_attr.Get() if subdivision_scheme_attr.HasAuthoredValue() else None
     mesh_out._subdivision_scheme = str(subdivision_scheme) if subdivision_scheme else None
     if return_uv_indices:
         return mesh_out, uv_indices

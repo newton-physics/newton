@@ -136,7 +136,6 @@
 - Fix incorrect hydroelastic contact surfaces for primitive shapes. (#3150, #3239)
 - Fix masked `SolverCoupledProxy.reset()` calls clearing proxy feedback history for unselected worlds.
 - Fix masked solver resets modifying unselected worlds or discarding their coupling and contact history.
-- Fix `ViewerGL` and `ViewerRTX` rendering of USD meshes with non-smoothing subdivision schemes so rough terrain retains sharp features. (#4052)
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
 - Fix fully locked XPBD joints becoming permanently separated after large transient anchor errors.
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
