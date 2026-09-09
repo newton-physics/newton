@@ -310,13 +310,14 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Common parameters
         iterations: int = 10,
         friction_epsilon: float = 1e-2,
+        dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
         particle_enable_self_contact: bool = False,
         particle_self_contact_radius: float | None = None,
         particle_self_contact_margin: float | None = None,
         particle_self_contact_gap: float | None = None,
-        particle_conservative_bound_relaxation: float = 0.85,
+        particle_conservative_bound_relaxation: float | None = None,
         particle_vertex_contact_buffer_size: int = 32,
         particle_edge_contact_buffer_size: int = 64,
         particle_collision_detection_interval: int | None = None,
@@ -354,7 +355,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
-        rigid_soft_dat_relaxation: float = 0.85,  # Relaxation factor for rigid DAT truncation
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
         deterministic: wp.DeterministicMode | None = None,
         collision_pipeline: CollisionPipeline | None = None,
@@ -371,6 +371,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             iterations: Number of VBD iterations per step.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
+            dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
+                (DAT) truncation: soft self-contact (``particle_enable_self_contact``) and rigid-soft
+                (``rigid_soft_enable_dat``). It scales every truncation scalar, and each side's motion
+                budget between detections is 0.5 x relaxation x the detection query radius.
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
 
@@ -391,7 +395,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_self_contact_gap: Additional detection-only distance [m]; self-contact detection
                 queries use ``margin + gap``, mirroring the ``ShapeConfig.margin`` / ``gap`` convention.
                 Defaults to 0. Give it ~0.5-1x the margin of slack to avoid missing contacts.
-            particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
+            particle_conservative_bound_relaxation: Deprecated; use ``dat_conservative_bound_relaxation``
+                instead. When set, it overrides ``dat_conservative_bound_relaxation``.
+
+                .. deprecated:: 1.7
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision
                 buffer. Pairs beyond this capacity are silently dropped during detection.
             particle_edge_contact_buffer_size: Preallocation size for each edge's edge-edge collision buffer. Pairs
@@ -557,7 +564,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 trajectories curved, so crossing times against the contact's stored surface point are
                 found by sampling and bisection.
                 Requires a solver-owned pipeline (``collision_pipeline=``); each side's motion budget
-                between detections is 0.5 x relaxation x the minimum rigid-soft query radius,
+                between detections is 0.5 x ``dat_conservative_bound_relaxation`` x the minimum
+                rigid-soft query radius,
                 where a query radius is the pipeline gap plus the soft feature radius and rigid
                 shape margin. With
                 ``collision_frequency_type`` AUTO, the rigid slot resolves to ``PRE_POST_INIT``
@@ -576,9 +584,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 overflow warning is reported, contacts were dropped and are not truncated on that pass.
                 Sampling and bisection alone can miss a rigid trajectory that crosses and returns
                 between samples; the optional interval path detects such cases but remains experimental.
-            rigid_soft_dat_relaxation: Relaxation factor in (0, 1) applied to rigid DAT
-                truncation scalars and the conservative motion budget. Only used when
-                ``rigid_soft_enable_dat`` is ``True``.
             rigid_soft_dat_use_interval_arithmetic: Selector for rigid DAT trajectory
                 truncation. ``False`` uses sampling and bisection; ``True`` additionally
                 verifies the sampled prefix with interval arithmetic to detect crossings
@@ -736,6 +741,23 @@ class SolverVBD(SolverBase, CouplingInterface):
                 stacklevel=3,
             )
         self._deprecated_particle_interval = particle_collision_detection_interval
+
+        # Shared DAT relaxation; the deprecated particle-only name overrides it with a warning.
+        if particle_conservative_bound_relaxation is not None:
+            dat_conservative_bound_relaxation = particle_conservative_bound_relaxation
+        # Validate before warning so warnings-as-errors cannot mask the ValueError.
+        if not (0.0 < dat_conservative_bound_relaxation < 1.0):
+            raise ValueError(
+                f"dat_conservative_bound_relaxation must be in (0, 1), got {dat_conservative_bound_relaxation}"
+            )
+        if particle_conservative_bound_relaxation is not None:
+            warnings.warn(
+                "particle_conservative_bound_relaxation is deprecated and overrides "
+                "dat_conservative_bound_relaxation; pass only dat_conservative_bound_relaxation.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        self.dat_conservative_bound_relaxation = dat_conservative_bound_relaxation
         # Set before super().__init__: _default_collision_frequency_type (AUTO
         # resolution) reads it as soon as the base class is constructed.
         self.particle_enable_self_contact = particle_enable_self_contact
@@ -841,7 +863,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_enable_self_contact,
             _sc_margin,
             _sc_gap,
-            particle_conservative_bound_relaxation,
             particle_vertex_contact_buffer_size,
             particle_edge_contact_buffer_size,
             particle_collision_detection_interval,
@@ -885,7 +906,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._init_rigid_penetration_free(
             model,
             rigid_soft_enable_dat,
-            rigid_soft_dat_relaxation,
             rigid_soft_dat_use_interval_arithmetic,
         )
 
@@ -900,7 +920,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_enable_self_contact: bool,
         particle_self_contact_margin: float,
         particle_self_contact_gap: float,
-        particle_conservative_bound_relaxation: float,
         particle_vertex_contact_buffer_size: int,
         particle_edge_contact_buffer_size: int,
         particle_collision_detection_interval: int,
@@ -958,7 +977,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
-            self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
             self._self_contact_edge_edge_parallel_epsilon = particle_edge_parallel_epsilon
 
@@ -2695,7 +2713,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self,
         model: Model,
         rigid_soft_enable_dat: bool,
-        rigid_soft_dat_relaxation: float,
         rigid_soft_dat_use_interval_arithmetic: bool,
     ):
         """Initialize rigid-soft DAT state and motion budgets.
@@ -2703,11 +2720,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         A particle-only model can still collide with static rigid shapes, so the
         zero-body case retains the particle-side DAT state with empty body arrays.
         """
-        if not (0.0 < rigid_soft_dat_relaxation < 1.0):
-            raise ValueError(f"rigid_soft_dat_relaxation must be in (0, 1), got {rigid_soft_dat_relaxation}")
-
         self.rigid_soft_enable_dat = rigid_soft_enable_dat
-        self.rigid_soft_dat_relaxation = rigid_soft_dat_relaxation
         self.rigid_soft_dat_use_interval_arithmetic = rigid_soft_dat_use_interval_arithmetic
 
         if not self.rigid_soft_enable_dat:
@@ -2755,7 +2768,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self._rigid_soft_query_radius_min = rigid_soft_query_radius_min
         if np.isfinite(rigid_soft_query_radius_min):
-            rigid_soft_max_displacement = 0.5 * rigid_soft_dat_relaxation * rigid_soft_query_radius_min
+            rigid_soft_max_displacement = 0.5 * self.dat_conservative_bound_relaxation * rigid_soft_query_radius_min
         else:
             rigid_soft_max_displacement = wp.inf
         self._rigid_dat_particle_max_displacement = rigid_soft_max_displacement
@@ -2894,7 +2907,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_q_prev_collision_detection,
                     state.body_q,
                     self.model.body_com,
-                    self.rigid_soft_dat_relaxation,
+                    self.dat_conservative_bound_relaxation,
                     self.rigid_soft_dat_use_interval_arithmetic,
                 ],
                 outputs=[
@@ -2909,7 +2922,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             if self.particle_enable_self_contact:
                 max_displacement = min(
                     max_displacement,
-                    self._self_contact_query_radius * self.particle_conservative_bound_relaxation * 0.5,
+                    self._self_contact_query_radius * self.dat_conservative_bound_relaxation * 0.5,
                 )
             wp.launch(
                 kernel=apply_truncation_ts,
@@ -2963,7 +2976,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         # per side); displacements beyond it degenerate to isotropic truncation.
         max_displacement = wp.inf
         if self.particle_enable_self_contact:
-            max_displacement = self._self_contact_query_radius * self.particle_conservative_bound_relaxation * 0.5
+            max_displacement = self._self_contact_query_radius * self.dat_conservative_bound_relaxation * 0.5
         if rigid_dat_active:
             max_displacement = min(max_displacement, self._rigid_dat_particle_max_displacement)
 
@@ -2979,7 +2992,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.trimesh_collision_info,
-                    self.particle_conservative_bound_relaxation,
+                    self.dat_conservative_bound_relaxation,
                 ],
                 outputs=[
                     self.truncation_ts,
@@ -3008,7 +3021,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_q_prev_collision_detection,
                     state.body_q,
                     self.model.body_com,
-                    self.rigid_soft_dat_relaxation,
+                    self.dat_conservative_bound_relaxation,
                     self.rigid_soft_dat_use_interval_arithmetic,
                 ],
                 outputs=[
