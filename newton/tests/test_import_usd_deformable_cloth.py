@@ -969,7 +969,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         stage = _deformable_stage()
         body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
         _apply_deformable_body_api(body)
-        _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        cloth = _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
         self._add_triangle_mesh(stage, "/World/Body/Graphics", collision=False)
 
         builder = newton.ModelBuilder()

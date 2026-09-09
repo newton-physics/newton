@@ -24,7 +24,12 @@ from newton.examples.sensors.example_deformable_visual_mesh_camera import (
     _CameraRecorder as DeformableVisualMeshCameraRecorder,
 )
 from newton.sensors import SensorTiledCamera
-from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
+from newton.tests._usd_deformable_test_utils import (
+    _add_cable_curve,
+    _add_cloth_mesh,
+    _author_deformable_element_array,
+    _deformable_stage,
+)
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
@@ -1472,6 +1477,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         cloth's owning triangle range."""
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Body/Sim")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
         from pxr import UsdGeom
 
         body = stage.GetPrimAtPath("/World/Body")
