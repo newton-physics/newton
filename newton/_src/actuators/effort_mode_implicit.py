@@ -382,13 +382,14 @@ class _EffortModeImplicit:
             raise ValueError(f"fd_epsilon must be positive, got {self._options.fd_epsilon}")
         self._num_actuators = num_actuators
         self._device = device
+        self._model = model
         self._drive = drive
         # Set for drives that require per-step preparation ahead of the implicit
         # solve, such as advancing an integral term or relinearizing a network.
         self._needs_prepare = type(drive).prepare_implicit is not DriveBase.prepare_implicit
         self._init_solver(drive, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
-        self._build_groups(model, vel_indices)
+        self._build_groups(vel_indices)
 
     def _resolve_force_law(self, drive):
         """Validate the drive's in-kernel force law and adopt its params.
@@ -450,8 +451,9 @@ class _EffortModeImplicit:
         key = (drive.evaluate_force, entries)
         self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
 
-    def _build_groups(self, model: Model, vel_indices) -> None:
+    def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
+        model = self._model
         dofs = vel_indices.numpy().astype(np.int64)
         joint_qd_start = model.joint_qd_start.numpy()
         art_start = model.articulation_start.numpy()
@@ -570,6 +572,8 @@ class _EffortModeImplicit:
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
         """
+        if response.model is not self._model:
+            raise ValueError("response was built for a different model than the implicit mode was prepared for")
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
         if dt <= 0.0:
