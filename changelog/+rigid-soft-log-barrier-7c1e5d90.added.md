@@ -1,0 +1,1 @@
+Add opt-in `SolverVBD(rigid_soft_contact_use_log_barrier=True)` to evaluate body-particle normal contacts with the same C2 log-barrier law as particle self-contact instead of the legacy quadratic penalty.

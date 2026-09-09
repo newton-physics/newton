@@ -159,6 +159,9 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_vertex_contact_buffer_size``,
        ``particle_edge_contact_buffer_size``,
        ``collision_frequency``, ``collision_frequency_type``,
+       ``rigid_soft_enable_dat``, ``rigid_soft_dat_relaxation``,
+       ``rigid_soft_dat_use_interval_arithmetic``,
+       ``rigid_soft_contact_use_log_barrier``,
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
