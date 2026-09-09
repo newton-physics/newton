@@ -10963,13 +10963,7 @@ class TestMuJoCoRefCoordinates(unittest.TestCase):
         self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.4, delta=0.02)
 
     def test_inheritrange_ctrlrange_is_absolute(self):
-        """An inheritrange ctrlrange must be authored in absolute qpos, not displacement.
-
-        ``inheritrange`` copies the joint's range to the actuator ctrlrange.
-        Newton stores limits as displacements from the authored pose, so the
-        derived ctrlrange must be shifted back by ``ref`` to match native
-        MuJoCo, otherwise the actuator can only reach part of its range.
-        """
+        """Verify that inheritrange control ranges use absolute MuJoCo coordinates."""
         mjcf = """<?xml version="1.0" ?>
         <mujoco model="inheritrange">
             <compiler angle="radian" autolimits="true"/>
@@ -10992,7 +10986,7 @@ class TestMuJoCoRefCoordinates(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model, disable_contacts=True)
 
-        # ctrlrange must equal the authored absolute range, matching jnt_range.
+        # Newton stores displacement limits; inheritrange restores absolute MuJoCo coordinates.
         np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
         np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
 

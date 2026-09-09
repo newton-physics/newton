@@ -1480,9 +1480,9 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
         inertia_mat = wp.mat33(np.eye(3))
         joint0_xform, joint1_xform, joint2_xform = self._joint_xforms()
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=wp.vec3(0.0), up_axis=1)
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=wp.vec3(0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             root_body = builder.add_link(mass=1.0, inertia=inertia_mat)

@@ -1969,8 +1969,8 @@ def parse_usd(
                     "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
                     stacklevel=2,
                 )
-                for key in unsupported_ref_attrs:
-                    del joint_custom_attrs[key]
+                for attr_key in unsupported_ref_attrs:
+                    del joint_custom_attrs[attr_key]
             joint_armature = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
             )
