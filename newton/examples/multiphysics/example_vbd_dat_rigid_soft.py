@@ -43,10 +43,8 @@ PARAMS = {
     # (~0.5 * relaxation * gap) from this automatically; it must exceed the fastest
     # per-detection-interval motion or DAT throttles the body
     "soft_contact_gap": 0.06,
-    # body-body contact: compliant ALM with a stiff authored material. The default
-    # ShapeConfig stiffness (2.5e3 N/m) lets these 4-10 kg projectiles interpenetrate
-    # by several centimeters on impact; 3e6 N/m keeps overlap below 0.5 mm, while 1e7
-    # destabilizes the resting box at this substep and iteration budget.
+    # body-body contact: the default 2.5e3 N/m lets these 4-10 kg projectiles overlap by
+    # centimeters; 3e6 N/m keeps it below 1 mm, 1e7 destabilizes the resting box.
     "rigid_compliant_alm": True,
     "shape_ke": 3.0e6,
     "shape_kd": 1.0e3,
@@ -59,7 +57,7 @@ PARAMS = {
     "cloth_tri_kd": 2.0e-1,
     "cloth_edge_ke": 1.0,
     "particle_radius": 6.0e-3,
-    # top cloth sheet (free): drapes over the resting bodies and is struck by the projectiles
+    # free top sheet
     "top_cloth_size": 1.5,
     "top_cloth_res": 25,
     "top_cloth_mass": 0.25,
@@ -96,7 +94,7 @@ PARAMS = {
     "collision_broad_phase": "nxn",
     "rigid_body_particle_contact_buffer_size": 4096,
     # camera (fixed side view)
-    "camera_offset": (2.4, -2.4, 0.6),  # relative to the pinned sheet center
+    "camera_offset": (2.4, -2.4, 0.6),
     "camera_pitch": -11.0,
     "camera_yaw": 135.0,
     "camera_fov": 45.0,
