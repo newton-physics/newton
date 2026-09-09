@@ -8,7 +8,6 @@ import warp as wp
 from .articulation import (
     invert_2d_rotational_dofs,
     invert_3d_rotational_dofs,
-    transform_2d_rotational_axes,
     transform_3d_rotational_axes,
 )
 from .enums import JointType
@@ -17,6 +16,36 @@ from .state import State
 
 _SUPPORTED_JOINT_TYPES = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
 _MAX_REPORTED_UNSUPPORTED_JOINTS = 10
+
+
+@wp.func
+def _twist_coordinate_gradient(axis: wp.vec3, rotation: wp.quat):
+    """Differentiate the signed twist angle, including off-axis swing."""
+    v = wp.vec3(rotation[0], rotation[1], rotation[2])
+    w = rotation[3]
+    s = wp.dot(axis, v)
+    denominator = w * w + s * s
+    if denominator <= 1.0e-12:
+        return axis  # Twist is undefined at a 180-degree orthogonal swing.
+    return (w * w * axis + w * wp.cross(v, axis) + s * v) / denominator
+
+
+@wp.func
+def _euler_coordinate_gradient(a0: wp.vec3, a1: wp.vec3, a2: wp.vec3, component: int):
+    """Return a row of the inverse angular Jacobian, not a rotation axis."""
+    numerator = wp.cross(a1, a2)
+    axis = a0
+    if component == 1:
+        numerator = wp.cross(a2, a0)
+        axis = a1
+    elif component == 2:
+        numerator = wp.cross(a0, a1)
+        axis = a2
+    denominator = wp.dot(axis, numerator)
+    # Euler coordinates are singular at gimbal lock. Bound the inverse there.
+    if wp.abs(denominator) < 1.0e-6:
+        denominator = wp.where(denominator < 0.0, -1.0e-6, 1.0e-6)
+    return numerator / denominator
 
 
 @wp.kernel
@@ -146,7 +175,7 @@ def eval_joint_mimic_coordinate(
     elif type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
         coordinate = wp.quat_twist_angle_signed(axis, rel_q)
-        angular_covector = wp.quat_rotate(q_p, axis)
+        angular_covector = wp.quat_rotate(q_p, _twist_coordinate_gradient(axis, rel_q))
     elif type == JointType.D6:
         if component < lin_axis_count:
             axis = joint_axis[qd_start + component]
@@ -159,23 +188,16 @@ def eval_joint_mimic_coordinate(
             if ang_axis_count == 1:
                 axis = joint_axis[angular_start]
                 coordinate = wp.quat_twist_angle_signed(axis, rel_q)
-                local_covector[0] = axis[0]
-                local_covector[1] = axis[1]
-                local_covector[2] = axis[2]
+                local_covector = _twist_coordinate_gradient(axis, rel_q)
             elif ang_axis_count == 2:
                 axis_0 = joint_axis[angular_start + 0]
                 axis_1 = joint_axis[angular_start + 1]
                 coordinates_2, _unused_velocities_2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, wp.vec3(0.0))
                 coordinate = coordinates_2[angular_component]
-                axis_0_q, axis_1_q = transform_2d_rotational_axes(axis_0, axis_1, coordinates_2[0])
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                else:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
+                axis_0_q, axis_1_q, axis_2_q = transform_3d_rotational_axes(
+                    axis_0, axis_1, wp.cross(axis_0, axis_1), coordinates_2[0], coordinates_2[1]
+                )
+                local_covector = _euler_coordinate_gradient(axis_0_q, axis_1_q, axis_2_q, angular_component)
             elif ang_axis_count == 3:
                 axis_0 = joint_axis[angular_start + 0]
                 axis_1 = joint_axis[angular_start + 1]
@@ -187,18 +209,7 @@ def eval_joint_mimic_coordinate(
                 axis_0_q, axis_1_q, axis_2_q = transform_3d_rotational_axes(
                     axis_0, axis_1, axis_2, coordinates_3[0], coordinates_3[1]
                 )
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                elif angular_component == 1:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
-                else:
-                    local_covector[0] = axis_2_q[0]
-                    local_covector[1] = axis_2_q[1]
-                    local_covector[2] = axis_2_q[2]
+                local_covector = _euler_coordinate_gradient(axis_0_q, axis_1_q, axis_2_q, angular_component)
             angular_covector = wp.quat_rotate(q_p, local_covector)
 
     r_p = wp.vec3(0.0)
@@ -206,7 +217,8 @@ def eval_joint_mimic_coordinate(
         r_p = wp.transform_get_translation(X_wp) - wp.transform_point(pose_p, body_com[parent])
     r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, body_com[child])
 
-    gradient_parent = wp.spatial_vector(-linear_axis, -wp.cross(r_p, linear_axis) - angular_covector)
+    # Rotating the parent rotates both its anchor and the coordinate axis.
+    gradient_parent = wp.spatial_vector(-linear_axis, -wp.cross(r_p + x_err, linear_axis) - angular_covector)
     gradient_child = wp.spatial_vector(linear_axis, wp.cross(r_c, linear_axis) + angular_covector)
     return coordinate, gradient_parent, gradient_child
 

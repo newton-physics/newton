@@ -34,8 +34,9 @@ from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
+from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from .joint_mimic import JointMimicSolver
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -200,12 +201,19 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - :attr:`~newton.Model.joint_friction` is supported for REVOLUTE, PRISMATIC, and D6
           joints as a per-DOF Coulomb dry-friction force or torque [N or N·m]. The friction
-          law is regularized near zero velocity and applies independently to both joints in
-          a mimic relationship.
+          force is ``-joint_friction * tanh(qd / 0.01)`` (velocity in m/s or rad/s).
+          This smooth approximation allows slow creep, not exact static sticking.
+          Each joint's friction contributes to the coupled motion of a mimic pair;
+          it does not change the mimic ratio. Friction values are read live from
+          the model, including during CUDA graph replay.
         - Not supported: :attr:`~newton.Model.joint_armature`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          VBD uses its assembled body Hessians and constraint reaction forces, with
+          one mimic solve per iteration. Changes to mimic references require
+          :meth:`notify_model_changed` with :attr:`~newton.ModelFlags.JOINT_PROPERTIES`
+          and recapturing any existing CUDA graph.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -826,9 +834,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
-        self._mimic_body_deltas = None
-        if self._has_joint_mimics:
-            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
+        self._mimic_solver = JointMimicSolver(model) if self._has_joint_mimics else None
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -1228,6 +1234,11 @@ class SolverVBD(SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(
+                self.model, "SolverVBD"
+            )
+            self._mimic_solver = JointMimicSolver(self.model) if self._has_joint_mimics else None
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
@@ -3036,6 +3047,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         # ---------------------------
         if self._integrates_rigid_bodies:
             self._refresh_rigid_contact_state(contacts, refresh)
+            if self._mimic_solver is not None:
+                self._mimic_solver.reset()
 
             # Per-step penalty decay, lambda retention, C0, and ALM auto-rho
             # (body_q is still collide frame here).
@@ -3444,6 +3457,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
 
+        if self._mimic_solver is not None:
+            self._mimic_solver.accumulate_reactions(state_in.body_q, self.body_forces, self.body_torques)
+
         body_color_groups = model.body_color_groups
 
         # Gauss-Seidel-style per-color updates
@@ -3601,6 +3617,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
+                    self._has_joint_mimics,
                 ],
                 outputs=[
                     state_in.body_q,
@@ -3609,15 +3626,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        if self._has_joint_mimics:
-            project_joint_mimics(
-                model,
+        if self._mimic_solver is not None:
+            self._mimic_solver.solve(
                 state_in.body_q,
-                state_in.body_qd,
                 self.body_inv_mass_effective,
-                self.body_inv_inertia_effective,
-                self._mimic_body_deltas,
-                dt,
+                self.body_hessian_ll,
+                self.body_hessian_al,
+                self.body_hessian_aa,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0:
