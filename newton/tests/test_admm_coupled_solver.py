@@ -517,7 +517,9 @@ def _make_admm_inclined_plane_particle_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=18,
-            rho=50.0,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=50.0 / 360.0,
+            gamma=0.0,
             baumgarte=0.1,
             contact_pairs=[
                 SolverCoupledADMM.ContactPair(
@@ -681,8 +683,9 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=30,
-            rho=5.0,
-            gamma=0.2,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=5.0 / 360.0,
+            gamma=72.0,
             baumgarte=0.03,
             rigid_contact_matching=rigid_contact_matching,
             contact_matching_pos_threshold=contact_matching_pos_threshold,
@@ -733,6 +736,21 @@ def _run_collision_inclined_plane_rigid_box(
 
 class TestAdmmSmoke(unittest.TestCase):
     """End-to-end: construct, run, verify state advances without NaNs."""
+
+    def test_rejects_invalid_timesteps(self):
+        """Reject nonpositive and non-finite timesteps before advancing state."""
+        model = _build_two_particle_scene()
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
+                SolverCoupled.Entry(name="b", solver=SolverSemiImplicit, particles=[1]),
+            ],
+            SolverCoupledADMM.Config(),
+        )
+        for dt in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(dt=dt), self.assertRaisesRegex(ValueError, "dt"):
+                solver.step(model.state(), model.state(), model.control(), contacts=None, dt=dt)
 
     def test_rejects_invalid_numerical_config(self):
         """Reject invalid ADMM coefficients and collision capacities before allocation."""
@@ -1707,8 +1725,9 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=12,
-                rho=45.0,
-                gamma=0.05,
+                # Migrate the legacy tuning at the reference substep of 1/120 s.
+                rho=0.375,
+                gamma=6.0,
                 baumgarte=0.1,
                 contact_pairs=[
                     SolverCoupledADMM.ContactPair(
