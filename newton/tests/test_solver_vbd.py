@@ -1937,14 +1937,12 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
     with wp.ScopedDevice(device):
         particle_q = wp.array([[0.0, 0.0, 0.04]] * 4, dtype=wp.vec3, device=device)
         particle_q_prev = wp.array([[0.0, 0.0, 0.05]] * 4, dtype=wp.vec3, device=device)
-        particle_colors = wp.zeros(4, dtype=int, device=device)
         particle_radius = wp.array([0.1] * 4, dtype=float, device=device)
 
         # Single total soft counter; only the particle path is exercised here (records (p, -1, -1)).
         contact_count = wp.array([4], dtype=int, device=device)
         contact_indices = wp.array([[0, -1, -1], [1, -1, -1], [2, -1, -1], [3, -1, -1]], dtype=wp.vec3i, device=device)
         contact_penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
-        contact_material_ke = wp.array([100.0] * 4, dtype=float, device=device)
         contact_material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
         contact_material_mu = wp.zeros(4, dtype=float, device=device)
 
@@ -1961,22 +1959,32 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         forces = wp.zeros(4, dtype=wp.vec3, device=device)
         hessians = wp.zeros(4, dtype=wp.mat33, device=device)
 
+        # Launch the production gather kernel the way SolverVBD does: build the per-particle
+        # incidence lists over the active prefix, then gather one color (all four particles here).
+        contact_head = wp.full(4, -1, dtype=int, device=device)
+        contact_next = wp.empty(3 * 4, dtype=int, device=device)
         wp.launch(
-            accumulate_particle_body_contact_force_and_hessian,
+            build_particle_body_contact_adjacency_active,
             dim=4,
+            inputs=[contact_indices, contact_count, 4, contact_head, contact_next],
+            device=device,
+        )
+        color_group = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
+        wp.launch(
+            gather_particle_body_contact_force_and_hessian,
+            dim=4,
+            block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
             inputs=[
                 0.1,
-                0,
+                color_group,
                 particle_q_prev,
                 particle_q,
-                particle_colors,
                 0.01,
                 particle_radius,
                 contact_indices,
-                contact_count,
-                4,
+                contact_head,
+                contact_next,
                 contact_penalty_k,
-                contact_material_ke,
                 contact_material_kd,
                 contact_material_mu,
                 shape_body,
@@ -4854,7 +4862,7 @@ add_function_test(
     TestSolverVBD,
     "test_particle_contact_gather_matches_legacy",
     _particle_contact_gather_matches_legacy,
-    devices=cuda_devices,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,
@@ -5318,10 +5326,12 @@ def _set_slot(arr, idx, value):
 
 def _run_face_section2(device, shape_margin):
     """Build a single soft-FACE contact, seed the shared AVBD per-contact material via
-    ``init_body_particle_contacts``, then launch the particle-side kernel once with the given
-    ``shape_margin`` array. The geometry gives a 0.05 penetration along +z; returns
+    ``init_body_particle_contacts``, then run the production two-kernel sequence
+    (``build_particle_body_contact_adjacency_active`` + ``gather_particle_body_contact_force_and_hessian``)
+    with the given ``shape_margin`` array. The geometry gives a 0.05 penetration along +z; returns
     ``(forces, hessians, ke, bary, (p0, p1, p2))`` where ``ke`` is the mixed effective stiffness
-    section 2 reads. All vertices share color 0 so one launch processes the whole triangle."""
+    section 2 reads. All three vertices form one color group so one gather launch processes the
+    whole triangle."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=1.0, hy=1.0, hz=1.0)
     p0 = builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
@@ -5346,7 +5356,6 @@ def _run_face_section2(device, shape_margin):
     _set_slot(contacts.soft_contact_body_pos, 0, [0.3, 0.1, 0.05])
     _set_slot(contacts.soft_contact_body_vel, 0, [0.0, 0.0, 0.0])
     _set_slot(contacts.soft_contact_normal, 0, [0.0, 0.0, 1.0])
-    model.particle_colors.assign([0, 0, 0])
 
     # Dummy single-entry body arrays (the record's shape is on the world, body = -1, so these
     # are never indexed) to avoid passing empty/None body state.
@@ -5382,22 +5391,39 @@ def _run_face_section2(device, shape_margin):
         device=device,
     )
 
+    # Launch the production gather kernel the way SolverVBD does: build the per-particle
+    # incidence lists over the active prefix, then gather one color group holding all three
+    # triangle vertices.
+    contact_head = wp.full(model.particle_count, -1, dtype=int, device=device)
+    contact_next = wp.empty(3 * smax, dtype=int, device=device)
     wp.launch(
-        accumulate_particle_body_contact_force_and_hessian,
+        build_particle_body_contact_adjacency_active,
         dim=smax,
         inputs=[
-            0.01,  # dt
-            0,  # current_color
-            state.particle_q,  # pos_anchor == pos -> no damping / friction
-            state.particle_q,
-            model.particle_colors,
-            1.0,  # friction_epsilon
-            model.particle_radius,
             contacts.soft_contact_indices,
             contacts.soft_contact_count,
             smax,
+            contact_head,
+            contact_next,
+        ],
+        device=device,
+    )
+    color_group = wp.array([p0, p1, p2], dtype=wp.int32, device=device)
+    wp.launch(
+        gather_particle_body_contact_force_and_hessian,
+        dim=color_group.shape[0],
+        block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+        inputs=[
+            0.01,  # dt
+            color_group,
+            state.particle_q,  # pos_anchor == pos -> no damping / friction
+            state.particle_q,
+            1.0,  # friction_epsilon
+            model.particle_radius,
+            contacts.soft_contact_indices,
+            contact_head,
+            contact_next,
             penalty_k,
-            material_ke,
             material_kd,
             material_mu,
             model.shape_body,
