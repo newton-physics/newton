@@ -201,6 +201,14 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_contact_history``. On the legacy path, examples also tune
        ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
        under compliant ALM as an advanced stabilization override.
+
+       ``rigid_soft_enable_dat=True`` requires a solver-owned
+       :class:`~newton.CollisionPipeline` with a positive minimum rigid-soft
+       query radius and is not supported with
+       ``integrate_with_external_rigid_solver=True``; the ``RIGID`` collision
+       slot may not be ``NONE``. ``rigid_soft_dat_relaxation`` must lie in
+       ``(0, 1)`` and scales the per-detection motion budget.
+       ``rigid_soft_dat_use_interval_arithmetic`` is experimental.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.
