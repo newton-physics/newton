@@ -7,7 +7,7 @@ import dataclasses
 import math
 import operator
 import warnings
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -42,6 +42,9 @@ from ..geometry.types import GeoType
 from ..sim.contacts import Contacts
 from ..sim.model import Model
 from ..sim.state import State
+
+if TYPE_CHECKING:
+    from pxr import Usd, UsdPhysics
 
 
 def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndarray:
@@ -1871,7 +1874,9 @@ class CollisionPipeline:
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
 
     @classmethod
-    def create_from_usd(cls, scene_prim: Any, model: Model, **overrides: Any) -> CollisionPipeline:
+    def create_from_usd(
+        cls, scene_prim: Usd.Prim | UsdPhysics.Scene, model: Model, **overrides: Any
+    ) -> CollisionPipeline:
         """Create a :class:`CollisionPipeline` from ``NewtonCollisionPipelineAPI``.
 
         Reads ``newton:collisionPipeline:*`` attributes off ``scene_prim``.
