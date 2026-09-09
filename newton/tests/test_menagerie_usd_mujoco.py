@@ -1128,6 +1128,8 @@ class TestMenagerieUSD(TestMenagerieBase):
     # _compare_body_physics, _compare_dof_physics, _compare_geoms, _compare_jnt_range)
     # are skipped from the generic compare_mjw_models pass, not silently ignored.
     model_skip_fields: ClassVar[set[str]] = DEFAULT_MODEL_SKIP_FIELDS | {
+        # Body IDs and geom counts may differ -> compared via _compare_geoms
+        "geom_",
         # Actuator ordering may differ -> compared via _compare_actuator_physics
         "actuator_",
         # Equality constraints not yet imported from USD

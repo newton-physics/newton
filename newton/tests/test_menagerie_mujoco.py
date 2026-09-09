@@ -405,8 +405,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "tendon_solref_lim",
     # RGBA: Newton uses different default color for geoms without explicit rgba
     "geom_rgba",
-    # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
-    "geom_size",
     # Site size: Only a subset of the 3 elements is meaningful per type (sphere=1,
     # capsule/cylinder=2, box=3). Compared via _compare_sites() instead.
     "site_size",
@@ -423,7 +421,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # visuals). Content is verified by compare_geom_fields_unordered() instead.
     "body_geomadr",
     "body_geomnum",
-    "geom_",
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
@@ -532,7 +529,8 @@ def compare_models(
     prefix is in skip_fields (as used by USD tests with reordered indices).
 
     Args:
-        skip_fields: Substrings to skip in field-level comparison.
+        skip_fields: Substrings to skip in field-level comparison. An explicit
+            "geom_" entry also disables unordered geometry comparison.
         backfill_fields: Fields to validate at relaxed tolerance via
             :func:`compare_compiled_model_fields`.
     """
@@ -542,7 +540,9 @@ def compare_models(
     def _skipped(prefix: str) -> bool:
         return any(s in prefix for s in skip_fields)
 
-    compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields)
+    # Geom arrays require unordered comparison; do not turn this ordered-only
+    # exclusion into an opt-out from the semantic checks below.
+    compare_mjw_models(newton_mjw, native_mjw, skip_fields=skip_fields | {"geom_"})
 
     if not _skipped("body_inertia"):
         compare_inertia_tensors(newton_mjw, native_mjw)
@@ -824,6 +824,7 @@ def compare_geom_fields_unordered(
     GEOM_PLANE = 0
 
     geom_fields = [
+        "geom_group",
         "geom_pos",
         "geom_quat",
         "geom_friction",
@@ -844,7 +845,11 @@ def compare_geom_fields_unordered(
         newton_np = newton_arr.numpy()
         native_np = native_arr.numpy()
 
-        if newton_np.ndim >= 2 and newton_np.shape[0] == newton_mjw.nworld:
+        assert newton_np.shape == native_np.shape, f"{field_name}: shape {newton_np.shape} != {native_np.shape}"
+
+        # Warp array dimensions exclude vector components: 2D arrays have a
+        # leading world axis, while geom_group is a shared 1D integer array.
+        if newton_arr.ndim == 2:
             # Batched: (nworld, ngeom, ...)
             for w in range(newton_np.shape[0]):
                 reordered_native = native_np[w][newton_to_native]
@@ -873,9 +878,10 @@ def compare_geom_fields_unordered(
                 )
 
     # Compare geom_size with type-specific semantics
-    if not any("geom_size" in s for s in skip_fields):
+    if not any(s in "geom_size" for s in skip_fields):
         newton_size = newton_mjw.geom_size.numpy()
         native_size = native_mjw.geom_size.numpy()
+        assert newton_size.shape == native_size.shape, f"geom_size: shape {newton_size.shape} != {native_size.shape}"
         for w in range(newton_size.shape[0]):
             for g in range(ngeom):
                 gtype = newton_type[g]
