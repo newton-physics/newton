@@ -38,6 +38,7 @@ shape_vertex_shader = """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
+layout (location = 10) in vec3 aVertexColor;
 
 // column vectors of the instance transform matrix
 layout (location = 3) in vec4 aInstanceTransform0;
@@ -63,6 +64,7 @@ out vec3 Normal;
 out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
+out vec3 VertexColor;
 out vec4 Material;
 #ifdef ENABLE_TRANSPARENCY
 out float Opacity;
@@ -90,6 +92,7 @@ void main()
     Normal = normalMatrix * aNormal;
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
+    VertexColor = aVertexColor;
     Material = aMaterial;
 #ifdef ENABLE_TRANSPARENCY
     Opacity = clamp(aOpacity, 0.0, 1.0);
@@ -111,6 +114,7 @@ in vec3 Normal;
 in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor;
+in vec3 VertexColor; // optional per-vertex albedo, negative x means disabled
 in vec4 Material;
 #ifdef ENABLE_TRANSPARENCY
 in float Opacity;
@@ -329,7 +333,8 @@ void main()
     float checker_scale = 1.0;
 
     // convert to linear space
-    vec3 albedo = pow(ObjectColor, vec3(2.2));
+    vec3 base_color = VertexColor.x < -0.5 ? ObjectColor : VertexColor;
+    vec3 albedo = pow(base_color, vec3(2.2));
     if (texture_enable > 0.5)
     {
         vec3 tex_color = texture(albedo_map, TexCoord).rgb;

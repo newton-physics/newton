@@ -175,6 +175,21 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
         np.testing.assert_array_equal(mesh_kwargs["vertex_colors"][0], np.array([51, 102, 153], dtype=np.uint8))
 
+    def test_log_mesh_preserves_per_vertex_colors(self):
+        """Rerun forwards dynamic mesh colors instead of replacing them with one color."""
+        viewer = self._create_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        colors = wp.array([[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("colored_mesh", points, indices, colors=colors, color=(0.2, 0.4, 0.6))
+
+        np.testing.assert_array_equal(
+            self.mock_rr.Mesh3D.call_args.kwargs["vertex_colors"],
+            np.array([[255, 0, 0], [0, 127, 0], [0, 0, 255]], dtype=np.uint8),
+        )
+
     def test_log_instances_opacity_uses_albedo_factor_alpha(self):
         """Instanced Rerun meshes bake supported batch opacity into albedo_factor."""
         viewer = self._create_viewer()

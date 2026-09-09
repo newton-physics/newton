@@ -258,6 +258,7 @@ class ViewerRerun(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -279,6 +280,7 @@ class ViewerRerun(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
         name = self._qualify(name)
         previous_mesh = self._meshes.get(name)
@@ -293,6 +295,9 @@ class ViewerRerun(ViewerBase):
         # Convert to numpy arrays
         points_np = to_numpy(points).astype(np.float32)
         indices_np = to_numpy(indices).astype(np.uint32)
+        colors_np = to_numpy(colors).astype(np.float32) if colors is not None else None
+        if colors_np is not None and colors_np.shape != points_np.shape:
+            raise ValueError(f"colors must have shape {points_np.shape}, got {colors_np.shape}")
 
         # Rerun expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -340,6 +345,7 @@ class ViewerRerun(ViewerBase):
             "texture_format": texture_format,
             "opacity": opacity,
             "color": color,
+            "colors": colors_np,
             "visible": not hidden,
         }
 
@@ -353,6 +359,8 @@ class ViewerRerun(ViewerBase):
             "triangle_indices": indices_np,
             "vertex_normals": self._meshes[name]["normals"],
         }
+        if colors_np is not None:
+            mesh_kwargs["vertex_colors"] = np.asarray(np.clip(colors_np, 0.0, 1.0) * 255.0, dtype=np.uint8)
         if uvs_np is not None and self._mesh3d_supports("vertex_texcoords"):
             mesh_kwargs["vertex_texcoords"] = uvs_np
         if texture_buffer is not None and texture_format is not None:
@@ -364,12 +372,12 @@ class ViewerRerun(ViewerBase):
         if opacity is not None or color is not None:
             opacity_u8 = self._opacity_to_u8(opacity)
             has_texture = texture_buffer is not None or texture_image is not None
-            if not has_texture:
+            if not has_texture and colors_np is None:
                 vertex_color = self._rgb_to_u8(color)
                 mesh_kwargs["vertex_colors"] = np.tile(vertex_color, (len(points_np), 1))
-                if opacity is not None and self._mesh3d_supports("albedo_factor"):
-                    mesh_kwargs["albedo_factor"] = (255, 255, 255, opacity_u8)
-            elif self._mesh3d_supports("albedo_factor"):
+            if not has_texture and opacity is not None and self._mesh3d_supports("albedo_factor"):
+                mesh_kwargs["albedo_factor"] = (255, 255, 255, opacity_u8)
+            elif has_texture and self._mesh3d_supports("albedo_factor"):
                 base_rgb = self._rgb_to_u8(color, default=(255, 255, 255))
                 mesh_kwargs["albedo_factor"] = (*base_rgb.tolist(), opacity_u8)
 

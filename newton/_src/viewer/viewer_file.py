@@ -1348,6 +1348,7 @@ class ViewerFile(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """File viewer does not render meshes.
 
@@ -1368,6 +1369,7 @@ class ViewerFile(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
         pass
 

@@ -11,6 +11,7 @@ import sys
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
@@ -544,6 +545,7 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
+        layer._elastic_shape_set: set[int] = set()
         layer._triangle_appearance_groups: (
             list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]] | None
         ) = None
@@ -608,6 +610,10 @@ class ViewerBase(ABC):
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
+        layer.show_elastic_bodies = True
+        layer.show_elastic_strain = False
+        layer.elastic_strain_color_max: float | None = None
+        layer.elastic_strain_color_shape_fraction = 0.1
         layer.show_ground = True
         layer.show_static = False
         layer.show_inertia_boxes = False
@@ -1224,12 +1230,248 @@ class ViewerBase(ABC):
             )
 
         self._log_inertia_boxes(state)
+        self._log_elastic_shapes(state)
+        self._log_elastic_bodies(state)
         self._log_sdf_margin_wireframes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
         self._log_com(state)
+
+    def _log_elastic_shapes(self, state: newton.State):
+        """Render reduced elastic shape geometry by deforming cached vertices."""
+        if (
+            getattr(self.model, "elastic_shape_count", 0) == 0
+            or getattr(self.model, "elastic_shape_vertex_total_count", 0) == 0
+        ):
+            return
+
+        body_q = state.body_q.numpy()
+        joint_q = state.joint_q.numpy()
+        joint_q_start = self.model.joint_q_start.numpy()
+        body_elastic_index = self.model.body_elastic_index.numpy()
+        elastic_joint = self.model.elastic_joint.numpy()
+        elastic_mode_count = self.model.elastic_mode_count.numpy()
+        shape_body = self.model.shape_body.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        body_world = self.model.body_world.numpy()
+        shape_world = self.model.shape_world.numpy()
+        shape_ids = self.model.elastic_shape_shape.numpy()
+        shape_bodies = self.model.elastic_shape_body.numpy()
+        vertex_start = self.model.elastic_shape_vertex_start.numpy()
+        vertex_count = self.model.elastic_shape_vertex_count.numpy()
+        index_start = self.model.elastic_shape_index_start.numpy()
+        index_count = self.model.elastic_shape_index_count.numpy()
+        vertex_local = self.model.elastic_shape_vertex_local.numpy()
+        vertex_phi = self.model.elastic_shape_vertex_phi.numpy()
+        indices = self.model.elastic_shape_indices.numpy()
+        max_modes = int(self.model.elastic_max_mode_count)
+        offsets = self.world_offsets.numpy() if self.world_offsets is not None else None
+
+        def rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+            qv = np.array(q[:3], dtype=float)
+            return v + 2.0 * np.cross(qv, np.cross(qv, v) + q[3] * v)
+
+        def transform_point(xform: np.ndarray, point: np.ndarray) -> np.ndarray:
+            return xform[:3] + rotate(xform[3:7], point)
+
+        for elastic_shape in range(int(self.model.elastic_shape_count)):
+            shape = int(shape_ids[elastic_shape])
+            body = int(shape_bodies[elastic_shape])
+            world = int(body_world[body]) if body >= 0 else int(shape_world[shape])
+            visible = self._should_render_world(world) and self._should_show_shape(
+                int(shape_flags[shape]), bool(shape_body[shape] == -1)
+            )
+
+            start = int(vertex_start[elastic_shape])
+            count = int(vertex_count[elastic_shape])
+            i_start = int(index_start[elastic_shape])
+            i_count = int(index_count[elastic_shape])
+            name = f"/model/elastic_shapes/shape_{shape}"
+
+            if count == 0 or i_count == 0:
+                continue
+            visible = visible and self.show_elastic_bodies and not self._layer_force_hidden()
+
+            rest_vertices = np.array(vertex_local[start : start + count], dtype=float)
+            local_vertices = rest_vertices.copy()
+            if visible:
+                elastic_index = int(body_elastic_index[body])
+                mode_count = int(elastic_mode_count[elastic_index])
+                q_start = int(joint_q_start[int(elastic_joint[elastic_index])]) + 7
+                for local_idx in range(count):
+                    vertex_index = start + local_idx
+                    for mode in range(mode_count):
+                        if mode < max_modes:
+                            local_vertices[local_idx] += (
+                                vertex_phi[vertex_index * max_modes + mode] * joint_q[q_start + mode]
+                            )
+
+            colors_wp = None
+            if visible and self.show_elastic_strain:
+                displacement = np.linalg.norm(local_vertices - rest_vertices, axis=1)
+                color_max = self.elastic_strain_color_max
+                if color_max is None or color_max <= 0.0:
+                    color_max = self._elastic_strain_auto_color_max(rest_vertices)
+                if color_max > 1.0e-12:
+                    color_values = displacement / color_max
+                else:
+                    color_values = np.zeros_like(displacement)
+                colors_wp = wp.array(self._matlab_jet(color_values), dtype=wp.vec3, device=self.device)
+
+            world_vertices = np.empty_like(local_vertices, dtype=np.float32)
+            world_offset = np.zeros(3, dtype=float)
+            if offsets is not None and world >= 0:
+                world_offset = np.array(offsets[world], dtype=float)
+            for local_idx, local in enumerate(local_vertices):
+                if body >= 0:
+                    world_vertices[local_idx] = transform_point(body_q[body], local) + world_offset
+                else:
+                    world_vertices[local_idx] = local + world_offset
+
+            points_wp = wp.array(world_vertices, dtype=wp.vec3, device=self.device)
+            points_wp = self._apply_layer_transform_to_points(points_wp)
+            indices_wp = wp.array(
+                indices[i_start : i_start + i_count].astype(np.int32), dtype=wp.int32, device=self.device
+            )
+            self.log_mesh(
+                name,
+                points_wp,
+                indices_wp,
+                hidden=not visible,
+                backface_culling=False,
+                dynamic=True,
+                colors=colors_wp,
+            )
+
+    @staticmethod
+    def _matlab_jet(values: np.ndarray) -> np.ndarray:
+        """Map normalized scalar values to the Matlab jet color ramp."""
+        values = np.clip(np.asarray(values, dtype=np.float32), 0.0, 1.0)
+        red = np.clip(1.5 - np.abs(4.0 * values - 3.0), 0.0, 1.0)
+        green = np.clip(1.5 - np.abs(4.0 * values - 2.0), 0.0, 1.0)
+        blue = np.clip(1.5 - np.abs(4.0 * values - 1.0), 0.0, 1.0)
+        return np.stack((red, green, blue), axis=1).astype(np.float32)
+
+    def _elastic_strain_auto_color_max(self, rest_vertices: np.ndarray) -> float:
+        """Compute a fixed displacement scale from the rest-shape bounds."""
+        if len(rest_vertices) == 0:
+            return 1.0
+        extents = np.ptp(rest_vertices, axis=0)
+        diagonal = float(np.linalg.norm(extents))
+        return max(self.elastic_strain_color_shape_fraction * diagonal, 1.0e-6)
+
+    def _log_elastic_bodies(self, state: newton.State):
+        """Render reduced elastic body centerlines from sampled modal shape data."""
+        if (
+            not self.show_visual
+            or not self.show_elastic_bodies
+            or getattr(self.model, "elastic_body_count", 0) == 0
+            or getattr(self.model, "elastic_render_point_total_count", 0) == 0
+        ):
+            self.log_lines("/model/elastic_bodies/centerlines", None, None, None)
+            self.log_points("/model/elastic_bodies/samples", None)
+            self.log_points("/model/elastic_bodies/endpoints", None)
+            return
+
+        body_q = state.body_q.numpy()
+        joint_q = state.joint_q.numpy()
+        elastic_body = self.model.elastic_body.numpy()
+        elastic_joint = self.model.elastic_joint.numpy()
+        elastic_mode_count = self.model.elastic_mode_count.numpy()
+        joint_q_start = self.model.joint_q_start.numpy()
+        body_world = self.model.body_world.numpy()
+        point_start = self.model.elastic_render_point_start.numpy()
+        point_count = self.model.elastic_render_point_count.numpy()
+        point_local = self.model.elastic_render_point_local.numpy()
+        point_phi = self.model.elastic_render_point_phi.numpy()
+        max_modes = int(self.model.elastic_max_mode_count)
+        offsets = self.world_offsets.numpy() if self.world_offsets is not None else None
+
+        def rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+            qv = np.array(q[:3], dtype=float)
+            return v + 2.0 * np.cross(qv, np.cross(qv, v) + q[3] * v)
+
+        def transform_point(xform: np.ndarray, point: np.ndarray) -> np.ndarray:
+            return xform[:3] + rotate(xform[3:7], point)
+
+        line_starts: list[np.ndarray] = []
+        line_ends: list[np.ndarray] = []
+        sample_points: list[np.ndarray] = []
+        endpoint_points: list[np.ndarray] = []
+
+        for elastic_index in range(int(self.model.elastic_body_count)):
+            body = int(elastic_body[elastic_index])
+            world = int(body_world[body])
+            if not self._should_render_world(world) or self._layer_force_hidden():
+                continue
+
+            mode_count = int(elastic_mode_count[elastic_index])
+            q_start = int(joint_q_start[int(elastic_joint[elastic_index])]) + 7
+            start = int(point_start[elastic_index])
+            count = int(point_count[elastic_index])
+            if count < 2:
+                continue
+
+            world_offset = np.zeros(3, dtype=float)
+            if offsets is not None and world >= 0:
+                world_offset = np.array(offsets[world], dtype=float)
+
+            points = []
+            for local_index in range(count):
+                point_index = start + local_index
+                local = np.array(point_local[point_index], dtype=float)
+                for mode in range(mode_count):
+                    if mode < max_modes:
+                        local += point_phi[point_index * max_modes + mode] * joint_q[q_start + mode]
+                points.append(transform_point(body_q[body], local) + world_offset)
+
+            for point_a, point_b in pairwise(points):
+                line_starts.append(point_a)
+                line_ends.append(point_b)
+            sample_points.extend(points)
+            endpoint_points.append(points[0])
+            endpoint_points.append(points[-1])
+
+        if not line_starts:
+            self.log_lines("/model/elastic_bodies/centerlines", None, None, None)
+            self.log_points("/model/elastic_bodies/samples", None)
+            self.log_points("/model/elastic_bodies/endpoints", None)
+            return
+
+        starts = wp.array(np.array(line_starts, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        ends = wp.array(np.array(line_ends, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        colors = wp.array(
+            np.tile(np.array([[0.0, 0.85, 1.0]], dtype=np.float32), (len(line_starts), 1)),
+            dtype=wp.vec3,
+            device=self.device,
+        )
+        markers = wp.array(np.array(endpoint_points, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        samples = wp.array(np.array(sample_points, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        starts = self._apply_layer_transform_to_points(starts)
+        ends = self._apply_layer_transform_to_points(ends)
+        markers = self._apply_layer_transform_to_points(markers)
+        samples = self._apply_layer_transform_to_points(samples)
+        sample_radii = wp.array(
+            np.full(len(sample_points), 0.009, dtype=np.float32), dtype=wp.float32, device=self.device
+        )
+        sample_colors = wp.array(
+            np.tile(np.array([[0.0, 0.85, 1.0]], dtype=np.float32), (len(sample_points), 1)),
+            dtype=wp.vec3,
+            device=self.device,
+        )
+        marker_radii = wp.array(
+            np.full(len(endpoint_points), 0.024, dtype=np.float32), dtype=wp.float32, device=self.device
+        )
+        marker_colors = wp.array(
+            np.tile(np.array([[1.0, 0.35, 0.1]], dtype=np.float32), (len(endpoint_points), 1)),
+            dtype=wp.vec3,
+            device=self.device,
+        )
+        self.log_lines("/model/elastic_bodies/centerlines", starts, ends, colors, width=0.012)
+        self.log_points("/model/elastic_bodies/samples", samples, radii=sample_radii, colors=sample_colors)
+        self.log_points("/model/elastic_bodies/endpoints", markers, radii=marker_radii, colors=marker_colors)
 
     def log_contacts(self, contacts: newton.Contacts, state: newton.State):
         """Render contact visualizations.
@@ -1813,6 +2055,7 @@ class ViewerBase(ABC):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1839,6 +2082,7 @@ class ViewerBase(ABC):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
         pass
 
@@ -2425,10 +2669,18 @@ class ViewerBase(ABC):
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        self._elastic_shape_set = (
+            {int(s) for s in self.model.elastic_shape_shape.numpy()}
+            if getattr(self.model, "elastic_shape_count", 0) > 0
+            else set()
+        )
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
 
         # loop over shapes
         for s in range(shape_count):
+            if s in self._elastic_shape_set:
+                continue
+
             # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
                 continue

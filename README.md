@@ -160,6 +160,230 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_fourbar.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_fourbar.jpg" alt="Reduced Elastic Fourbar">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_beam.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_beam.jpg" alt="Reduced Elastic Beam">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_beam_vibration.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_beam_vibration.jpg" alt="Reduced Elastic Beam Vibration">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_fourbar</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_beam</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_beam_vibration</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_torsion.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_torsion.jpg" alt="Reduced Elastic Torsion">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_prismatic.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_prismatic.jpg" alt="Reduced Elastic Prismatic">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_cantilever_weight.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_cantilever_weight.jpg" alt="Reduced Elastic Cantilever Weight">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_torsion</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_prismatic</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_cantilever_weight</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_crank_slider.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_crank_slider.jpg" alt="Reduced Elastic Crank Slider">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_watt.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_watt.jpg" alt="Reduced Elastic Watt Linkage">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_bellcrank.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_bellcrank.jpg" alt="Reduced Elastic Bellcrank">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_crank_slider</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_watt</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_bellcrank</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_vertical_weight.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_vertical_weight.jpg" alt="Reduced Elastic Vertical Weight">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_matrix_rom.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_matrix_rom.jpg" alt="Reduced Elastic Matrix ROM">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_dipper.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_dipper.jpg" alt="Reduced Elastic Dipper">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_vertical_weight</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_matrix_rom</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_dipper</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_wall_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_wall_contact.jpg" alt="Reduced Elastic Wall Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_gripper_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_gripper_contact.jpg" alt="Reduced Elastic Gripper Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_scraper_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_scraper_contact.jpg" alt="Reduced Elastic Scraper Contact">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_wall_contact</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_gripper_contact</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_scraper_contact</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_chair_stick_slip.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_chair_stick_slip.jpg" alt="Reduced Elastic Chair Stick Slip">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_angular_frame_coupling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_angular_frame_coupling.jpg" alt="Reduced Elastic Angular Frame Coupling">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_base_excitation.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_base_excitation.jpg" alt="Reduced Elastic Base Excitation">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_chair_stick_slip</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_angular_frame_coupling</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_base_excitation</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_base_rotation.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_base_rotation.jpg" alt="Reduced Elastic Base Rotation">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_centrifugal.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_centrifugal.jpg" alt="Reduced Elastic Centrifugal Coupling">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_clamp_moment.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_clamp_moment.jpg" alt="Reduced Elastic Clamp Moment">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_base_rotation</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_centrifugal</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_clamp_moment</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_coriolis.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_coriolis.jpg" alt="Reduced Elastic Coriolis Coupling">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_frame_coupling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_frame_coupling.jpg" alt="Reduced Elastic Frame Coupling">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_reduced_elastic_gravity_coupling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_reduced_elastic_gravity_coupling.jpg" alt="Reduced Elastic Gravity Coupling">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_coriolis</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_frame_coupling</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_reduced_elastic_gravity_coupling</code>
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Robot Examples</h3></td>
   </tr>
   <tr>
@@ -257,6 +481,11 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_asroballet.jpg" alt="asRoBallet">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10_elastic_panel.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_ur10_elastic_panel.jpg" alt="UR10 Elastic Panel">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -264,6 +493,9 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_asroballet</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples robot_ur10_elastic_panel</code>
     </td>
   </tr>
   <tr>
