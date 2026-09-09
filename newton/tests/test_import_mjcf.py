@@ -5302,7 +5302,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
 
     def test_ref_shifts_joint_limits(self):
-        """Shift MJCF absolute joint ranges into authored-pose displacements."""
+        """Shift MJCF absolute joint ranges relative to the authored pose."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <compiler angle="radian"/>

@@ -66,6 +66,28 @@ class TestEqualityConstraintWithSimStepBase:
     def _use_mujoco_cpu(self):
         raise NotImplementedError
 
+    @staticmethod
+    def _inertia_matrix():
+        return wp.mat33(np.eye(3))
+
+    @staticmethod
+    def _new_mujoco_builder():
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
+        SolverMuJoCo.register_custom_attributes(builder)
+        return builder
+
+    def _finalize_sim(self, all_worlds_builder):
+        model = all_worlds_builder.finalize()
+        return Sim(model, self._create_solver(model), model.state(), model.state(), model.control())
+
+    @staticmethod
+    def _add_scalar_joint(builder, joint_type, **kwargs):
+        if joint_type == "prismatic":
+            return builder.add_joint_prismatic(**kwargs)
+        if joint_type == "revolute":
+            return builder.add_joint_revolute(**kwargs)
+        raise ValueError(f"Unsupported joint_type={joint_type!r}")
+
 
 class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase):
     """Test that a CONNECT equality constraint pins two bodies at a point."""
@@ -112,34 +134,22 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         for row in joint_dof_refs:
             self.assertEqual(len(row), 3, "each joint_dof_refs row must have 3 elements")
 
-        body_inertia = 1.0
-        inertia_mat = wp.mat33(
-            body_inertia,
-            0.0,
-            0.0,
-            0.0,
-            body_inertia,
-            0.0,
-            0.0,
-            0.0,
-            body_inertia,
-        )
+        inertia_mat = self._inertia_matrix()
 
         all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
-            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+            builder = self._new_mujoco_builder()
 
             # root_link (body index 0 in Newton's list of bodies), fixed joint to world
             root_link = builder.add_link(
-                mass=body_inertia,
+                mass=1.0,
                 inertia=inertia_mat,
             )
             root_joint = builder.add_joint_fixed(parent=-1, child=root_link)
 
             # ball_link (body index 1 in Newton's list of bodies), ball joint from root_link
-            ball_link = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            ball_link = builder.add_link(mass=1.0, inertia=inertia_mat)
             ball_joint = builder.add_joint_ball(
                 parent=root_link,
                 child=ball_link,
@@ -147,14 +157,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             )
 
             # link0 (body index 2 in Newton's list of bodies), joint0 from ball_link
-            link0 = builder.add_link(mass=body_inertia, inertia=inertia_mat)
-            if joint_types[0] == "prismatic":
-                joint_fn = builder.add_joint_prismatic
-            elif joint_types[0] == "revolute":
-                joint_fn = builder.add_joint_revolute
-            else:
-                raise ValueError(f"Unsupported joint_type={joint_types[0]!r}")
-            joint0 = joint_fn(
+            link0 = builder.add_link(mass=1.0, inertia=inertia_mat)
+            joint0 = self._add_scalar_joint(
+                builder,
+                joint_types[0],
                 parent=ball_link,
                 child=link0,
                 axis=joint_axes[0],
@@ -166,24 +172,17 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             # leafbody2 (body index 4 in Newton's list of bodies), joint2
             connect_bodies = [None] * 2
             connect_joints = [None] * 2
-            connect_joint_types = [joint_types[1], joint_types[2]]
-            connect_joint_axes = [joint_axes[1], joint_axes[2]]
-            connect_joint_dof_refs = [joint_dof_refs[w][1], joint_dof_refs[w][2]]
             for i in range(2):
                 connect_body = builder.add_link(mass=1.0, inertia=inertia_mat, com=wp.vec3(0.0, 0.0, 0.0))
 
-                if connect_joint_types[i] == "prismatic":
-                    joint_fn = builder.add_joint_prismatic
-                elif connect_joint_types[i] == "revolute":
-                    joint_fn = builder.add_joint_revolute
-                else:
-                    raise ValueError(f"Unsupported joint_type={connect_joint_types[i]!r}")
-                connect_joint = joint_fn(
-                    axis=connect_joint_axes[i],
+                connect_joint = self._add_scalar_joint(
+                    builder,
+                    joint_types[i + 1],
                     parent=link0,
                     child=connect_body,
+                    axis=joint_axes[i + 1],
                     armature=0.0,
-                    custom_attributes={"mujoco:dof_ref": connect_joint_dof_refs[i]},
+                    custom_attributes={"mujoco:dof_ref": joint_dof_refs[w][i + 1]},
                 )
 
                 connect_bodies[i] = connect_body
@@ -202,13 +201,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
             all_worlds_builder.add_world(builder)
 
-        model = all_worlds_builder.finalize()
-        state_in = model.state()
-        state_out = model.state()
-        control = model.control()
-        solver = self._create_solver(model)
-
-        return Sim(model, solver, state_in, state_out, control)
+        return self._finalize_sim(all_worlds_builder)
 
     def compute_joint_transform(self, joint_axis: int, joint_pos: float, joint_type: str) -> wp.transform:
         J = wp.transform_identity()
@@ -227,9 +220,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         Performs FK at the reference joint coordinates to get world poses of
         leafbody1 and leafbody2, then computes the leafbody2-local anchor
         that coincides with ``connect_anchor_leafbody1`` on leafbody1 in the
-        reference configuration.  With SolverMuJoCo's offset coordinates
-        (``qpos = joint_q + ref``), the reference pose is the authored pose
-        at zero scalar joint coordinates, independent of ``dof_ref``.
+        reference configuration. Since ``qpos = joint_q + ref``, the authored pose is at zero scalar joint
+        coordinates, independent of ``dof_ref``.
 
         The model topology is: root_link (fixed) -> ball_link (ball) -> link0 (joint0) -> leafbody1 (joint1)
                                                                                       -> leafbody2 (joint2)
@@ -305,9 +297,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         changed_connect_anchor_leafbody1 = [[-1.5, -2.5, -3.5], [-1.8, -2.2, -3.1]]
         changed_joint_dof_refs = [[0.5, -1.0, 2.0], [0.3, -0.8, 1.5]]
 
-        # Newton scalar joint coordinates are offsets from the MuJoCo
-        # reference (qpos = joint_q + ref), so the reference pose is at zero
-        # scalar coordinates for any dof_ref.
+        # Since qpos = joint_q + ref, the authored pose is at zero scalar joint coordinates for any dof_ref.
         ref_pose_q = [0.0, 0.0, 0.0]
 
         # Ball joint identity quaternion coords (x, y, z, w)
@@ -411,10 +401,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
                     ##############
                     # TEST 1
-                    # Set the start state to the reference pose (zero scalar
-                    # joint coordinates) to ensure that the start state
-                    # satisfies the connect constraint. Nothing should move,
-                    # even though the joints have nonzero dof_ref values.
+                    # The reference pose is at zero scalar joint coordinates, so this state must satisfy the
+                    # constraint and remain still despite the nonzero dof_ref values.
                     ##############
 
                     sim.state_in.joint_q.assign(flat_ref_joint_q)
@@ -607,18 +595,14 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
                     ##############
                     # TEST 4
-                    # Change dof_ref at runtime via JOINT_DOF_PROPERTIES.
-                    # dof_ref only relabels the joint coordinates
-                    # (qpos = joint_q + ref); it does not move the reference
-                    # pose, so the recomputed connect constraint anchors must
-                    # be unchanged while qpos0 picks up the new values.
+                    # dof_ref only changes qpos = joint_q + ref; it does not move the reference pose. Updating it
+                    # through JOINT_DOF_PROPERTIES must therefore preserve the anchors while updating qpos0.
                     ##############
 
                     eq_data_before_ref_update = sim.solver.mjw_model.eq_data.numpy().copy()
                     sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
                     sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
-                    # Verify that the anchors in mjw_model.eq_data are unchanged.
                     np.testing.assert_array_equal(
                         sim.solver.mjw_model.eq_data.numpy(),
                         eq_data_before_ref_update,
@@ -714,10 +698,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
                     ##############
                     # TEST 5
-                    # Restore the original dof_ref via JOINT_PROPERTIES alone
-                    # and verify the recomputed connect constraint anchors are
-                    # still the reference-pose anchors.  No simulation is run
-                    # because JOINT_PROPERTIES does not sync qpos0.
+                    # JOINT_PROPERTIES recomputes the reference-pose anchors without syncing qpos0, so this check
+                    # restores dof_ref without running another simulation.
                     ##############
 
                     sim.model.mujoco.dof_ref.assign(np.array(flat_original_dof_ref, dtype=np.float32))
@@ -799,13 +781,10 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
 
 
 class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
-    """Test the anchors of loop-joint-synthesized CONNECT constraints.
+    """Test loop-joint-synthesized CONNECT anchors at the authored reference pose.
 
-    Creates a single articulation with a revolute loop joint closing back to
-    its root body. The loop joint generates 2 CONNECT constraints in MuJoCo.
-    Verifies that the anchors are derived at the authored reference pose,
-    stay unchanged when dof_ref changes at runtime (dof_ref only relabels
-    the joint coordinates), and are recomputed when joint_X_p changes.
+    A revolute loop joint closes an articulation back to its root and creates two CONNECT constraints. Its anchors
+    must remain unchanged when dof_ref changes but be recomputed when joint_X_p changes.
     """
 
     def _build_loop_joint_model(
@@ -840,27 +819,15 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
         Returns:
             A :class:`Sim` containing the model, solver, states, and control.
         """
-        body_inertia = 1.0
-        inertia_mat = wp.mat33(
-            body_inertia,
-            0.0,
-            0.0,
-            0.0,
-            body_inertia,
-            0.0,
-            0.0,
-            0.0,
-            body_inertia,
-        )
+        inertia_mat = self._inertia_matrix()
 
         all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
-            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+            builder = self._new_mujoco_builder()
 
             # root_body (body 0), fixed to world
-            root_body = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            root_body = builder.add_link(mass=1.0, inertia=inertia_mat)
             root_joint = builder.add_joint_fixed(parent=-1, child=root_body)
 
             # body_a (body 1), connected to root_body via joint0
@@ -868,47 +835,31 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             # this ensures all CONNECT constraints are active after mj_forward
             # (needed to avoid a mujoco_warp put_data reshape issue).
             joint0_xform = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
-            body_a = builder.add_link(mass=body_inertia, inertia=inertia_mat)
-            if joint0_type == "prismatic":
-                joint0 = builder.add_joint_prismatic(
-                    parent=root_body,
-                    child=body_a,
-                    axis=joint0_axis,
-                    parent_xform=joint0_xform,
-                    armature=1000000000000.0,
-                    custom_attributes={"mujoco:dof_ref": dof_refs[w][0]},
-                )
-            else:
-                joint0 = builder.add_joint_revolute(
-                    parent=root_body,
-                    child=body_a,
-                    axis=joint0_axis,
-                    parent_xform=joint0_xform,
-                    armature=1000000000000.0,
-                    custom_attributes={"mujoco:dof_ref": dof_refs[w][0]},
-                )
+            body_a = builder.add_link(mass=1.0, inertia=inertia_mat)
+            joint0 = self._add_scalar_joint(
+                builder,
+                joint0_type,
+                parent=root_body,
+                child=body_a,
+                axis=joint0_axis,
+                parent_xform=joint0_xform,
+                armature=1000000000000.0,
+                custom_attributes={"mujoco:dof_ref": dof_refs[w][0]},
+            )
 
             # body_b (body 2), connected to body_a via joint1
             joint1_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
-            body_b = builder.add_link(mass=body_inertia, inertia=inertia_mat)
-            if joint1_type == "prismatic":
-                joint1 = builder.add_joint_prismatic(
-                    parent=body_a,
-                    child=body_b,
-                    axis=joint1_axis,
-                    parent_xform=joint1_xform,
-                    armature=1000000000000.0,
-                    custom_attributes={"mujoco:dof_ref": dof_refs[w][1]},
-                )
-            else:
-                joint1 = builder.add_joint_revolute(
-                    parent=body_a,
-                    child=body_b,
-                    axis=joint1_axis,
-                    parent_xform=joint1_xform,
-                    armature=1000000000000.0,
-                    custom_attributes={"mujoco:dof_ref": dof_refs[w][1]},
-                )
+            body_b = builder.add_link(mass=1.0, inertia=inertia_mat)
+            joint1 = self._add_scalar_joint(
+                builder,
+                joint1_type,
+                parent=body_a,
+                child=body_b,
+                axis=joint1_axis,
+                parent_xform=joint1_xform,
+                armature=1000000000000.0,
+                custom_attributes={"mujoco:dof_ref": dof_refs[w][1]},
+            )
 
             builder.add_articulation(joints=[root_joint, joint0, joint1])
 
@@ -923,13 +874,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
 
             all_worlds_builder.add_world(builder)
 
-        model = all_worlds_builder.finalize()
-        state_in = model.state()
-        state_out = model.state()
-        control = model.control()
-        solver = self._create_solver(model)
-
-        return Sim(model, solver, state_in, state_out, control)
+        return self._finalize_sim(all_worlds_builder)
 
     def _compute_loop_joint_expected_anchors(
         self,
@@ -943,10 +888,8 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
     ):
         """Compute expected anchor1 and anchor2 for both CONNECT constraints from a revolute loop joint.
 
-        The anchors are derived at the reference pose.  With SolverMuJoCo's
-        offset coordinates (``qpos = joint_q + ref``), the reference pose is
-        the authored pose at zero scalar joint coordinates — independent of
-        ``dof_ref`` — so all joint transforms are identity in the FK below.
+        Since ``qpos = joint_q + ref``, the authored reference pose is at zero scalar joint coordinates regardless
+        of ``dof_ref``, so all joint transforms are identity in the FK below.
 
         Args:
             joint_X_p_np: Numpy array of joint parent transforms.
@@ -961,12 +904,6 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             Tuple of (anchor1_a, anchor2_a, anchor1_b, anchor2_b) where
             anchor1/anchor2 are for the first and second CONNECT constraints.
         """
-        # Compute world poses via FK at the reference pose.
-        # Topology: root_body(identity) -> joint0(X_p0) -> body_a -> joint1(X_p1) -> body_b
-        # Loop joint: body_b (parent) -> root_body (child)
-        # T_child = T_parent * X_p * inv(X_c)
-
-        # Joint 0: T_body_a = T_root * X_p0 * inv(X_c0)
         X_p0 = wp.transform(
             wp.vec3(
                 float(joint_X_p_np[joint0_idx][0]),
@@ -993,7 +930,6 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                 float(joint_X_c_np[joint0_idx][6]),
             ),
         )
-        # Joint 1: T_body_b = T_body_a * X_p1 * inv(X_c1)
         X_p1 = wp.transform(
             wp.vec3(
                 float(joint_X_p_np[joint1_idx][0]),
@@ -1132,9 +1068,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                 neq = sim.solver.mj_model.neq
                 self.assertEqual(neq, 2, "Expected 2 CONNECT constraints from revolute loop joint")
 
-                # Verify initial eq_data is correct.  The anchors are derived
-                # at the authored reference pose and are independent of the
-                # (nonzero) dof_ref values.
+                # Nonzero dof_ref values must not change anchors derived from the authored reference pose.
                 for w in range(num_worlds):
                     loop_joint_idx = w * joints_per_world + 3
 
@@ -1152,8 +1086,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
 
                 ##############
                 # TEST: Change dof_ref and verify CONNECT anchors are recomputed
-                # and unchanged — dof_ref relabels the joint coordinates but does
-                # not move the reference pose.
+                # dof_ref changes qpos but not the reference pose, so recomputation must preserve the anchors.
                 ##############
 
                 # Build flat dof_ref array. Per world, the DOF layout in Newton is:
@@ -1170,7 +1103,6 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                 sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
                 sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
-                # Verify eq_data still holds the reference-pose anchors
                 for w in range(num_worlds):
                     loop_joint_idx = w * joints_per_world + 3
 
@@ -1436,14 +1368,11 @@ class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, uni
 
 
 class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
-    """Regression test: CONNECT anchors must be derived at the reference pose.
+    """Keep CONNECT anchors tied to the authored reference pose.
 
-    With SolverMuJoCo's offset coordinates (``qpos = joint_q + ref``), the
-    authored body poses correspond to zero scalar joint coordinates, so
-    nonzero ``mujoco:dof_ref`` values must not displace the reference pose
-    used to derive the CONNECT ``anchor2``.  The joint frames carry both
-    translation and rotation so that ``anchor2`` differs nontrivially from
-    ``anchor1`` at the reference pose.
+    Since ``qpos = joint_q + ref``, nonzero ``mujoco:dof_ref`` values do not move the reference pose used for
+    ``anchor2``. The joint frames deliberately include translation and rotation so ``anchor2`` differs from
+    ``anchor1`` there.
     """
 
     def _joint_xforms(self):
@@ -1564,7 +1493,6 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
         sim = self._build_model(anchor_body_b, dof_refs, num_worlds)
         expected_anchor2 = self._expected_anchor2(anchor_body_b)
 
-        # Anchors use the authored reference pose and stay identical across worlds.
         measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
         for w in range(num_worlds):
             for k in range(3):

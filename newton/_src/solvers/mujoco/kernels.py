@@ -1085,10 +1085,8 @@ def build_ref_q_kernel(
     - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
       ``joint_q``.
     - **BALL**: identity quaternion [xyzw].
-    - **PRISMATIC / REVOLUTE / D6**: zero. Newton scalar coordinates are
-      offsets from the MuJoCo reference (``qpos = joint_q + ref``), so the
-      reference pose — where the authored body poses hold — is at zero
-      scalar coordinates regardless of ``dof_ref``.
+    - **PRISMATIC / REVOLUTE / D6**: zero. Since ``qpos = joint_q + ref``, the authored pose is at zero scalar
+      joint coordinates regardless of ``dof_ref``.
     - **FIXED** and others: no DOFs, no writes.
 
     Args:
@@ -1584,11 +1582,9 @@ def apply_mjc_control_kernel(
     """Apply Newton control inputs to MuJoCo control array.
 
     For JOINT_TARGET (source=0), uses sign encoding in mjc_actuator_to_newton_idx:
-    - Positive value (>=0): position actuator; the value is the per-world DOF
-      index and the index into ``joint_target_q`` is read from
-      ``mjc_actuator_to_newton_target_q_idx``. Scalar targets are shifted by
-      ``dof_ref`` [m or rad] because Newton targets are displacements from the
-      authored pose while MuJoCo ctrl is absolute qpos.
+    - Positive value (>=0): position actuator; the value is the per-world DOF index. The ``joint_target_q`` index
+      comes from ``mjc_actuator_to_newton_target_q_idx``. Scalar targets add ``dof_ref`` [m or rad] because Newton
+      targets are relative to the authored pose while MuJoCo ctrl is absolute qpos.
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
@@ -1614,7 +1610,6 @@ def apply_mjc_control_kernel(
             axis_idx = mjc_actuator_to_target_q_axis_idx[actuator]
             if axis_idx < 0:
                 if world_target_q < joint_target_q.shape[0]:
-                    # Shift scalar targets from Newton displacements to MuJoCo absolute qpos.
                     ref = float(0.0)
                     if dof_ref:
                         ref = dof_ref[world * dofs_per_world + idx]
@@ -2111,38 +2106,9 @@ def update_axis_properties_kernel(
 
 
 @wp.kernel
-def update_inherited_actuator_ctrlrange_kernel(
-    actuator_inheritrange: wp.array[wp.float32],
-    actuator_inheritrange_dof: wp.array[wp.int32],
-    joint_limit_lower: wp.array[wp.float32],
-    joint_limit_upper: wp.array[wp.float32],
-    dof_ref: wp.array[wp.float32],
-    dofs_per_world: wp.int32,
-    # outputs
-    actuator_ctrlrange: wp.array2d[wp.vec2],
-):
-    """Recompute inherited control ranges from current joint limits and refs."""
-    world, actuator = wp.tid()
-    inheritrange = actuator_inheritrange[actuator]
-    template_dof = actuator_inheritrange_dof[actuator]
-    if inheritrange <= 0.0 or template_dof < 0:
-        return
-
-    dof = world * dofs_per_world + template_dof
-    ref = float(0.0)
-    if dof_ref:
-        ref = dof_ref[dof]
-    lower = joint_limit_lower[dof] + ref
-    upper = joint_limit_upper[dof] + ref
-    mean = 0.5 * (lower + upper)
-    radius = 0.5 * (upper - lower) * inheritrange
-    actuator_ctrlrange[world, actuator] = wp.vec2(mean - radius, mean + radius)
-
-
-@wp.kernel
-def update_ctrl_direct_actuator_properties_kernel(
+def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
-    mjc_actuator_to_newton_idx: wp.array[wp.int32],
+    mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
     newton_actuator_dynprm: wp.array[vec10],
@@ -2162,15 +2128,14 @@ def update_ctrl_direct_actuator_properties_kernel(
     actuator_gear: wp.array2d[wp.spatial_vector],
     actuator_cranklength: wp.array2d[float],
 ):
-    """Update MuJoCo actuator properties for CTRL_DIRECT actuators from Newton custom attributes.
+    """Update MuJoCo actuator properties from Newton custom attributes.
 
-    Only updates actuators where mjc_actuator_ctrl_source == CTRL_DIRECT.
-    Uses mjc_actuator_to_newton_idx to map from MuJoCo actuator index to Newton's
-    mujoco:actuator frequency index.
+    JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
+    corresponding MuJoCo actuator custom attributes.
 
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
-        mjc_actuator_to_newton_idx: Index into Newton's mujoco:actuator arrays
+        mjc_actuator_to_newton_actuator_idx: Index into Newton's mujoco:actuator arrays
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
@@ -2184,18 +2149,19 @@ def update_ctrl_direct_actuator_properties_kernel(
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
 
+    newton_actuator_idx = mjc_actuator_to_newton_actuator_idx[actuator]
+    if newton_actuator_idx < 0:
+        return
+
+    world_newton_idx = world * actuators_per_world + newton_actuator_idx
+    actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
+
     if source != CTRL_SOURCE_CTRL_DIRECT:
         return
 
-    newton_idx = mjc_actuator_to_newton_idx[actuator]
-    if newton_idx < 0:
-        return
-
-    world_newton_idx = world * actuators_per_world + newton_idx
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
     actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
     actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
-    actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
     actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
     actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
@@ -2314,7 +2280,6 @@ def update_jnt_properties_kernel(
     if limit_margin:
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
-    # Shift Newton displacement limits into MuJoCo's absolute qpos range.
     ref = float(0.0)
     if dof_ref:
         ref = dof_ref[newton_dof]

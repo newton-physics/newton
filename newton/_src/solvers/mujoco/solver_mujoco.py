@@ -88,18 +88,17 @@ from .kernels import (
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
     sync_worldbody_geom_xposes_kernel,
+    update_actuator_properties_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_body_properties_kernel,
     update_connect_constraint_anchors_kernel,
     update_connect_constraint_rel_body_poses_at_qref_kernel,
-    update_ctrl_direct_actuator_properties_kernel,
     update_dof_properties_kernel,
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
-    update_inherited_actuator_ctrlrange_kernel,
     update_jnt_connect_constraint_anchors_kernel,
     update_jnt_connect_constraint_rel_body_poses_at_qref_kernel,
     update_jnt_properties_kernel,
@@ -988,9 +987,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def parse_joint_angle_usd(value: Any, context: dict[str, Any]) -> float:
             """Convert a revolute MuJoCo joint coordinate to radians.
 
-            ``mjc:ref`` and ``mjc:springref`` use the units declared by
-            ``mjc:compiler:angle``. The mjcPhysics schema defaults that field
-            to degrees when it is unauthored.
+            ``mjc:ref`` and ``mjc:springref`` use the units declared by ``mjc:compiler:angle``; the mjcPhysics
+            schema defaults an unauthored value to degrees.
             """
             angle = float(value)
             prim = context.get("prim")
@@ -1890,7 +1888,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dof_idx = b.joint_qd_start[joint_idx]
             if dof_idx < 0 or dof_idx >= len(b.joint_limit_lower):
                 return None
-            # Newton limits are displacements from the authored pose, while
+            # Newton limits are relative to the authored pose, while
             # ``actuator_ctrlrange`` is native MuJoCo data in absolute qpos.
             dof_ref_value = 0.0
             ref_attr = b.custom_attributes.get("mujoco:dof_ref")
@@ -2256,18 +2254,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_limited_transformer("mjc:forceLimited", "mjc:forceRange"),
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_inheritrange",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                mjcf_attribute_name="inheritrange",
-                usd_attribute_name="mjc:inheritRange",
             )
         )
         builder.add_custom_attribute(
@@ -4901,10 +4887,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
-            if (
-                flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
-                and self.mjc_actuator_inheritrange is not None
-            ):
+            if flags & ModelFlags.ACTUATOR_PROPERTIES:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
@@ -4913,7 +4896,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # factors; ``jnt_solimp`` was already written by
                 # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
-            # Restore per-world CONNECT anchors after MuJoCo constant recomputation.
+            # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
             self._notify_connect_constraints_changed(
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
                 update_connect_constraint_anchors,
@@ -4942,7 +4925,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         # ``jnt_solimp`` was already written by
                         # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
-                    # Restore per-world CONNECT anchors after MuJoCo constant recomputation.
+                    # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
                     self._notify_connect_constraints_changed(
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
                         update_connect_constraint_anchors,
@@ -6630,7 +6613,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Key = (dof, is_position): position and velocity sub-actuators can have
         # different ranges.
         joint_target_ranges: dict[tuple[int, bool], dict[str, Any]] = {}
-        jt_inheritrange = None
         if mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):
             jt_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
             jt_trnid = get_custom_attribute("actuator_trnid")
@@ -6638,7 +6620,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jt_trntype = get_custom_attribute("actuator_trntype")
             jt_world = get_custom_attribute("actuator_world")
             jt_ctrl_type = get_custom_attribute("ctrl_type")
-            jt_inheritrange = get_custom_attribute("actuator_inheritrange")
             jt_has_ctrlrange = get_custom_attribute("actuator_has_ctrlrange")
             jt_ctrlrange = get_custom_attribute("actuator_ctrlrange")
             jt_ctrllimited = get_custom_attribute("actuator_ctrllimited")
@@ -6674,7 +6655,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if dof < 0:
                     continue
                 info = {
-                    "inheritrange": float(jt_inheritrange[row]) if jt_inheritrange is not None else 0.0,
+                    "actuator_idx": row,
                     "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
                     "ctrlrange": tuple(jt_ctrlrange[row]) if jt_ctrlrange is not None else None,
                     "ctrllimited": int(jt_ctrllimited[row]) if jt_ctrllimited is not None else None,
@@ -6962,7 +6943,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         joint_params["limited"] = True
 
-                    # Newton limits are displacements from the authored pose;
+                    # Newton limits are relative to the authored pose;
                     # MuJoCo's jnt_range is absolute qpos, so shift by ref.
                     dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
@@ -7084,7 +7065,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         joint_params["limited"] = True
 
-                    # Newton limits are displacements from the authored pose;
+                    # Newton limits are relative to the authored pose;
                     # MuJoCo's jnt_range is absolute qpos, so shift by ref.
                     dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
@@ -7499,33 +7480,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             site_mapping,
         )
 
-        # Preserve which compiled actuator ranges came from ``inheritrange``.
-        # Unlike explicitly authored ctrlrange values, these ranges must be
-        # recomputed when the Newton displacement limits or MuJoCo ref change.
-        inherited_range = np.zeros(len(mjc_actuator_ctrl_source_list), dtype=np.float32)
-        inherited_range_dof = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
+        actuator_custom_attr_idx = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
         for actuator, (ctrl_source, newton_idx) in enumerate(
             zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
         ):
-            if ctrl_source == int(SolverMuJoCo.CtrlSource.JOINT_TARGET) and newton_idx >= 0:
-                info = joint_target_ranges.get((newton_idx, True))
-                if info is not None and info["inheritrange"] > 0.0:
-                    inherited_range[actuator] = info["inheritrange"]
-                    inherited_range_dof[actuator] = newton_idx
-            elif (
-                ctrl_source == int(SolverMuJoCo.CtrlSource.CTRL_DIRECT)
-                and newton_idx >= 0
-                and jt_inheritrange is not None
-                and jt_trnid is not None
-                and jt_trntype is not None
-                and float(jt_inheritrange[newton_idx]) > 0.0
-                and int(jt_trntype[newton_idx])
-                in (int(SolverMuJoCo.TrnType.JOINT), int(SolverMuJoCo.TrnType.JOINT_IN_PARENT))
-            ):
-                target_dof = int(jt_trnid[newton_idx, 0])
-                if 0 <= target_dof < model.joint_dof_count // model.world_count:
-                    inherited_range[actuator] = float(jt_inheritrange[newton_idx])
-                    inherited_range_dof[actuator] = target_dof
+            if ctrl_source == int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
+                is_position = newton_idx >= 0
+                dof = newton_idx if is_position else -(newton_idx + 2)
+                info = joint_target_ranges.get((dof, is_position))
+                if info is not None:
+                    actuator_custom_attr_idx[actuator] = info["actuator_idx"]
+            elif newton_idx >= 0:
+                actuator_custom_attr_idx[actuator] = newton_idx
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
@@ -7554,9 +7520,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=model.device,
             )
-            self.mjc_actuator_inheritrange = wp.array(inherited_range, dtype=wp.float32, device=model.device)
-            self.mjc_actuator_inheritrange_dof = wp.array(
-                inherited_range_dof,
+            self.mjc_actuator_to_newton_actuator_idx = wp.array(
+                actuator_custom_attr_idx,
                 dtype=wp.int32,
                 device=model.device,
             )
@@ -7566,8 +7531,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_target_q_idx = None
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
-            self.mjc_actuator_inheritrange = None
-            self.mjc_actuator_inheritrange_dof = None
+            self.mjc_actuator_to_newton_actuator_idx = None
 
         dampratio_actuators = [
             (actuator.id, actuator.biasprm[2])
@@ -8452,30 +8416,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_inherited_actuator_ctrlranges(self) -> None:
-        """Refresh ctrlrange values derived from MuJoCo ``inheritrange``."""
-        if self.mjc_actuator_inheritrange is None or self.mjc_actuator_inheritrange_dof is None:
-            return
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-        nworld = self.mjw_model.actuator_ctrlrange.shape[0]
-        nu = self.mjw_model.actuator_ctrlrange.shape[1]
-        dofs_per_world = self.model.joint_dof_count // nworld if nworld > 0 else self.model.joint_dof_count
-        wp.launch(
-            update_inherited_actuator_ctrlrange_kernel,
-            dim=(nworld, nu),
-            inputs=[
-                self.mjc_actuator_inheritrange,
-                self.mjc_actuator_inheritrange_dof,
-                self.model.joint_limit_lower,
-                self.model.joint_limit_upper,
-                dof_ref,
-                dofs_per_world,
-            ],
-            outputs=[self.mjw_model.actuator_ctrlrange],
-            device=self.model.device,
-        )
-
     def _update_joint_dof_properties(self):
         """Update joint DOF properties in the MuJoCo model.
 
@@ -8604,7 +8544,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        self._update_inherited_actuator_ctrlranges()
 
     def _update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
@@ -8663,13 +8602,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _build_ref_q(model: Model) -> wp.array:
         """Build the joint coordinates of the reference pose.
 
-        Launches ``build_ref_q_kernel`` to produce joint coordinates in
-        Newton convention (xyzw quaternions). FREE/DISTANCE joints copy
-        position and orientation from ``joint_q``, BALL joints use
-        identity, and hinge/slide/D6 joints use zero: Newton scalar
-        coordinates are offsets from the MuJoCo reference
-        (``qpos = joint_q + ref``), so the reference pose is at zero
-        scalar coordinates regardless of ``dof_ref``.
+        MuJoCo references are applied at the solver boundary (``qpos = joint_q + ref``), so hinge, slide, and D6
+        coordinates are zero here regardless of ``dof_ref``. FREE/DISTANCE joints retain their model coordinates,
+        and BALL joints use the identity quaternion.
 
         Args:
             model: The Newton :class:`Model`.
@@ -9565,12 +9500,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _update_actuator_properties(self):
-        """Update CTRL_DIRECT actuator properties in the MuJoCo model.
+        """Update actuator properties in the MuJoCo model.
 
-        Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
-        updated via _update_joint_dof_properties() using joint_target_ke/kd.
+        JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
+        corresponding MuJoCo actuator custom attributes.
         """
-        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
+        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
 
         nu = self.mjc_actuator_ctrl_source.shape[0]
@@ -9605,11 +9540,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actuators_per_world = actuator_gainprm.shape[0] // nworld if nworld > 0 else actuator_gainprm.shape[0]
 
         wp.launch(
-            update_ctrl_direct_actuator_properties_kernel,
+            update_actuator_properties_kernel,
             dim=(nworld, nu),
             inputs=[
                 self.mjc_actuator_ctrl_source,
-                self.mjc_actuator_to_newton_idx,
+                self.mjc_actuator_to_newton_actuator_idx,
                 actuator_gainprm,
                 actuator_biasprm,
                 actuator_dynprm,
@@ -9632,9 +9567,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        # Explicit actuator properties were copied above. Derived inherited
-        # ranges remain tied to the current Newton limits and MuJoCo ref.
-        self._update_inherited_actuator_ctrlranges()
 
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.

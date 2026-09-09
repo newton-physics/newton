@@ -82,14 +82,15 @@ MuJoCo scalar joints (hinge and slide) may carry a reference value
 authored body poses correspond to ``qpos = ref``, and MuJoCo interprets
 limits, position-actuator controls, and keyframes as absolute ``qpos``
 values. Newton has no reference concept — its scalar joint coordinates
-measure displacement from the authored pose — so the two conventions are
-reconciled at the solver boundary:
+are relative to the authored pose — so the two conventions are reconciled
+at the solver boundary:
 
-* Newton-side quantities are displacements from the authored pose:
-  ``joint_q``, ``joint_qd``, joint limits
+* In Newton, ``joint_q``, joint limits
   (``joint_limit_lower`` / ``joint_limit_upper``), and position targets
-  (``Control.joint_target_q``). The MJCF importer and MuJoCo-converter USD
-  importer shift authored joint ranges by ``-ref`` accordingly.
+  (``Control.joint_target_q``) are relative to the authored pose. The MJCF
+  importer and MuJoCo-converter USD importer shift authored joint ranges by
+  ``-ref`` accordingly. ``joint_qd`` is unaffected because ``ref`` changes
+  position coordinates only.
 * MuJoCo-side quantities keep MuJoCo's absolute convention: the solver
   adds ``ref`` back when it writes ``qpos``, ``jnt_range``, and
   position-actuator ``ctrl``, so the compiled MuJoCo model and its
@@ -100,10 +101,9 @@ reconciled at the solver boundary:
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
-:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) relabels the MuJoCo
-coordinates only: Newton displacements keep their meaning, while the
-exported ``qpos0``, ``jnt_range``, and position controls shift with the
-new reference.
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
+``qpos0``, ``jnt_range``, and position controls with the new reference.
+Native MuJoCo attributes remain absolute and are not shifted.
 
 
 Geometry types

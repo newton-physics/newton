@@ -7337,6 +7337,63 @@ def Xform "Articulation" (
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], np.deg2rad(90.0), places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ref_does_not_change_usd_drive_target(self):
+        """Keep a standard USD drive target unchanged when ``mjc:ref`` is present."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+    }
+
+    def Cube "child" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "joint" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/base>
+        rel physics:body1 = </Articulation/child>
+        float drive:angular:physics:stiffness = 10.0
+        float drive:angular:physics:targetPosition = 20.0
+        float mjc:ref = 30.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        joint_idx = model.joint_label.index("/Articulation/joint")
+        target_idx = model.joint_target_q_start.numpy()[joint_idx]
+        self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
         """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
         from pxr import Usd
@@ -7437,9 +7494,8 @@ def Xform "Articulation" (
     def test_converter_degree_joint_angles_are_converted(self):
         """Convert declared degree refs and springrefs while preserving prismatic lengths.
 
-        Both are native MuJoCo scalar joint coordinates, so a stage declaring
-        ``mjc:compiler:angle = "degree"`` authors them in degrees. Prismatic joints carry lengths
-        and must stay untouched.
+        Both are native MuJoCo scalar joint coordinates, so ``mjc:compiler:angle = "degree"`` authors them in
+        degrees. Prismatic values are lengths and must stay unchanged.
         """
         from pxr import Usd
 

@@ -2024,10 +2024,8 @@ def parse_mjcf(
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
-                # MJCF ranges are absolute qpos values, while Newton joint
-                # coordinates measure displacement from the authored pose
-                # (qpos - ref). Shift authored limits into Newton's convention;
-                # SolverMuJoCo shifts them back when it builds jnt_range.
+                # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
+                # SolverMuJoCo adds ref back when it builds jnt_range.
                 if has_range:
                     joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
                     if is_angular and use_degrees:
@@ -3318,11 +3316,8 @@ def parse_mjcf(
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
                 if inheritrange > 0 and joint_name and qd_start >= 0:
-                    # Newton stores joint limits as displacements from the
-                    # authored pose (qpos - ref), but inheritrange copies the
-                    # joint's absolute qpos range to ctrlrange, which is
-                    # authored as native MuJoCo (absolute qpos). Shift back by
-                    # +ref so the derived range matches native MuJoCo.
+                    # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
+                    # Add ref back so the derived ctrlrange matches native MuJoCo.
                     dof_ref_value = 0.0
                     ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
                     if ref_attr is not None and isinstance(ref_attr.values, dict):
