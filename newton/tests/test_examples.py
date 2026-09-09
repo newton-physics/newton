@@ -659,13 +659,6 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
-add_example_test(
-    TestClothExamples,
-    name="vbd.example_vbd_dat_rigid_soft",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 300},
-    use_viewer=True,
-)
 
 
 class TestRobotExamples(unittest.TestCase):
@@ -1341,6 +1334,13 @@ add_example_test(
         "grid-padding": 8,
         "substeps": 1,
     },
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_vbd_dat_rigid_soft",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300},
     use_viewer=True,
 )
 
