@@ -151,7 +151,7 @@ class Example:
             self.center_particle,
             self.ball_body,
             body_point=wp.vec3(0.0, 0.0, ball_radius),
-            stiffness=1.0e3,
+            stiffness=4.8e5,
         )
 
         link_hx = 0.28
@@ -220,9 +220,10 @@ class Example:
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=2,
-                rho=50,
-                gamma=0.1,
+                rho=0.1,
+                gamma=50.0,
                 baumgarte=0.01,
+                joint_stiffness=4.8e6,
                 joint_proximal_bodies=args.joint_proximal_bodies,
                 joint_proximal_destination_entries=(rigid_name,),
             ),

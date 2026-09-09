@@ -274,8 +274,8 @@ sub-solver. This avoids solving the same constraint twice. The current generic
 ADMM path supports ``BALL``, ``FIXED``, and ``REVOLUTE`` joints. Ball joints
 create translational anchor-coincidence rows. Fixed joints add angular rows.
 Revolute joints preserve the hinge axis and can add a dry-friction row from
-model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
-the experimental API.
+model joint friction [N·m]. Prismatic, distance, and D6 joint rows are not yet
+part of the experimental API.
 
 Particle-body attachments cover interfaces that cannot be represented by a
 model joint because one endpoint is a particle. The coupler reads the model
@@ -283,10 +283,11 @@ attachment rows described under :ref:`Particle-body attachments` and owns those
 whose body and particle endpoints belong to different entries; rows owned
 entirely by one entry are left to that entry's solver. The coupler logs a warning
 if that solver does not support attachments or if an endpoint is owned by no
-entry. Rows authored under the legacy ``coupling:body_particle_attachment``
-custom frequency are also consumed by ADMM, so importers that write those
-attributes keep working; these legacy rows remain invisible to
-:class:`~newton.solvers.SolverVBD`.
+entry. Each row carries a body id, particle id, body-local point [m], stiffness
+[N/m], damping [N·s/m], and enabled state. Rows authored under the legacy
+``coupling:body_particle_attachment`` custom frequency are also consumed by
+ADMM, so importers that write those attributes keep working; these legacy rows
+remain invisible to :class:`~newton.solvers.SolverVBD`.
 ``SolverCoupledADMM.add_body_particle_attachment()`` is deprecated in favor of
 :meth:`newton.ModelBuilder.add_attachment_particle_body`, but keeps writing the
 legacy custom-row layout until it is removed.
@@ -300,10 +301,11 @@ For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
 shapes on bodies owned by other entries, rigid-rigid rows from cross-entry shape
 pairs, and particle-particle rows from cross-entry particle sets through a
-private hash-grid stream. Friction is read from model material properties such
-as ``shape_material_mu`` and ``Model.particle_mu`` at row-fill time; it is not a
-``ContactPair`` field. Contact rows use an isotropic Coulomb
-maximum-dissipation projection. They do not solve cone complementarity directly.
+private hash-grid stream. Dimensionless friction coefficients are read from
+model material properties such as ``shape_material_mu`` and ``Model.particle_mu``
+at row-fill time; they are not ``ContactPair`` fields. Contact rows use an
+isotropic Coulomb maximum-dissipation projection. They do not solve cone
+complementarity directly.
 
 ADMM contact buffers are fixed-capacity device arrays. Persistent contacts
 warm-start local variables and dual variables by stable contact keys across
@@ -314,12 +316,23 @@ stream.
 The main ADMM parameters are:
 
 - ``iterations``: fixed iteration count, chosen to be graph-capture friendly;
-- ``rho``: penalty weight for interface rows;
-- ``gamma``: proximal inertia and velocity weight;
-- ``baumgarte``: positional error stabilization for attachment/contact rows;
-- stiffness and damping values for model-joint and particle-body attachment
-  rows;
-- rigid contact matching mode, thresholds, and warm-start force scale.
+- ``rho``: dimensionless penalty weight for interface rows (default ``0.5``);
+- ``gamma``: dimensionless proximal inertia and velocity weight (default ``0.1``);
+- ``baumgarte``: dimensionless position error correction fraction for
+  attachment/contact rows;
+- ``joint_stiffness`` and ``joint_damping``: translational model-joint
+  attachment stiffness [N/m] and damping [N·s/m];
+- ``joint_angular_stiffness`` and ``joint_angular_damping``: angular model-joint
+  attachment stiffness [N·m/rad] and damping [N·m·s/rad];
+- ``stiffness`` and ``damping`` of particle-body attachment rows
+  (:meth:`newton.ModelBuilder.add_attachment_particle_body`): attachment
+  stiffness [N/m] and damping [N·s/m];
+- ``joint_proximal_mass_scale``: dimensionless proxy mass multiplier;
+- ``rigid_contact_matching``: rigid contact matching mode;
+- ``contact_matching_pos_threshold``: contact matching distance threshold [m];
+- ``contact_matching_normal_dot_threshold``: dimensionless minimum dot product
+  between matched contact normals;
+- ``contact_matching_force_scale``: dimensionless warm-start multiplier.
 
 ADMM detects cross-entry contacts with its own collision pipeline. Set
 ``Config.contact_max_triangle_pairs`` to size its triangle-pair storage and
