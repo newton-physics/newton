@@ -308,6 +308,26 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in additio
     viewer.log_state(state)
     viewer.end_frame()
 
+**Live plots**: :meth:`~newton.viewer.ViewerRTX.log_scalar` displays scalar
+signals as rolling line plots, and :meth:`~newton.viewer.ViewerRTX.log_array`
+displays scalar, 1-D, and 2-D NumPy or Warp arrays as heatmaps in the same
+Plots window. Set ``plot_history_size`` when constructing the viewer to
+configure the number of plotted samples (default: 250). For example:
+
+.. code-block:: python
+
+    viewer.log_scalar("Training/reward", reward, smoothing=10)
+    viewer.log_array("Training/observations", observations)
+
+Use ``clear=True`` with ``log_scalar`` to reset a signal's history and
+pending smoothing samples. Pass ``None`` to ``log_array`` to remove a
+heatmap. Logging works before the first rendered frame and in headless
+mode; plots are displayed when the viewer window and its UI are active.
+
+The plots use ``imgui_bundle``, included in the ``examples`` dependencies.
+Install both viewer and UI dependencies with
+``uv sync --extra rtx --extra examples``.
+
 Recording and Offline Viewers
 -----------------------------
 

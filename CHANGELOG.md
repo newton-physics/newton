@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add live scalar plots and array heatmaps to `ViewerRTX` through `log_scalar()` and `log_array()`, with configurable plot history and scalar smoothing. ([#4046](https://github.com/newton-physics/newton/issues/4046))
+
 <!-- towncrier release notes start -->
 
 ## [1.5.1] - 2026-08-27
