@@ -533,7 +533,7 @@ class SolverCoupledADMM(SolverCoupled):
             particle: Particle index for the deformable endpoint.
             body_point: Body-local attachment point [m].
             stiffness: Quadratic ADMM attachment stiffness [N/m].
-            damping: Quadratic ADMM attachment damping [N*s/m].
+            damping: Quadratic ADMM attachment damping [N·s/m].
             enabled: Whether the attachment row is active.
 
         Returns:
@@ -563,9 +563,9 @@ class SolverCoupledADMM(SolverCoupled):
         particle-particle} ADMM contact rows. If neither entry owns shapes or
         particles, no contacts are emitted.
 
-        Friction is derived from shape and particle material properties
-        (``shape_material_mu`` and ``Model.particle_mu``), so it is not a
-        ContactPair field — set those on the model to control friction.
+        Dimensionless friction coefficients are derived from shape and particle
+        material properties (``shape_material_mu`` and ``Model.particle_mu``).
+        Set those on the model to control friction.
 
         Args:
             source: Name of one solver entry.
@@ -580,28 +580,33 @@ class SolverCoupledADMM(SolverCoupled):
     class Config:
         """Linearized ADMM coupling configuration.
 
+        Revolute joint dry-friction torque limits come from model joint
+        friction [N·m].
+
         Args:
             iterations: Positive number of ADMM iterations per solver step.
-            rho: Positive ADMM penalty parameter.
-            gamma: Nonnegative proximal mass scaling parameter.
-            baumgarte: Nonnegative position error correction fraction.
+            rho: Positive dimensionless ADMM penalty parameter.
+            gamma: Nonnegative dimensionless proximal mass scaling parameter.
+            baumgarte: Nonnegative dimensionless position error correction
+                fraction.
             joint_stiffness: Quadratic stiffness for translational ADMM
                 attachments derived from cross-solver model joints [N/m].
             joint_damping: Quadratic damping for translational ADMM
-                attachments derived from cross-solver model joints [N*s/m].
+                attachments derived from cross-solver model joints [N·s/m].
             joint_angular_stiffness: Quadratic stiffness for angular ADMM
                 attachments derived from cross-solver fixed and revolute
-                joints [N*m/rad].
+                joints [N·m/rad].
             joint_angular_damping: Quadratic damping for angular ADMM
                 attachments derived from cross-solver fixed and revolute
-                joints [N*m*s/rad].
+                joints [N·m·s/rad].
             joint_proximal_bodies: Keep cross-solver joint neighbor bodies
                 dynamic in each subsolver view as local inertial proxies.
             joint_proximal_destination_entries: Optional entry names that
                 receive cross-solver joint proximal proxy bodies. ``None``
                 keeps the default symmetric visibility.
-            joint_proximal_mass_scale: Multiplier applied to source effective
-                masses before installing cross-solver joint proxy inertias.
+            joint_proximal_mass_scale: Dimensionless multiplier applied to source
+                effective masses before installing cross-solver joint proxy
+                inertias.
             rigid_contact_matching: Frame-to-frame contact matching mode for
                 collision-detected rigid-rigid ADMM contacts. Use
                 ``"disabled"`` to reset dynamic rigid contact state every
@@ -613,14 +618,14 @@ class SolverCoupledADMM(SolverCoupled):
                 between previous and current rigid contact midpoints for
                 non-disabled ``rigid_contact_matching`` modes. ``None`` uses
                 the :class:`CollisionPipeline` default.
-            contact_matching_normal_dot_threshold: Minimum dot product between
-                previous and current rigid contact normals for non-disabled
-                ``rigid_contact_matching`` modes. ``None`` uses the
+            contact_matching_normal_dot_threshold: Dimensionless minimum dot
+                product between previous and current rigid contact normals for
+                non-disabled ``rigid_contact_matching`` modes. ``None`` uses the
                 :class:`CollisionPipeline` default.
-            contact_matching_force_scale: Multiplier applied to the rescaled
-                previous-refresh ADMM contact dual when a rigid-rigid contact
-                matches. ``0`` disables dual warm-start while preserving
-                contact matching.
+            contact_matching_force_scale: Dimensionless multiplier applied to
+                the rescaled previous-refresh ADMM contact dual when a
+                rigid-rigid contact matches. ``0`` disables dual warm-start
+                while preserving contact matching.
             contact_pairs: Per-interface contact pairs to enable. Empty list
                 disables ADMM-managed contacts. Use
                 :meth:`SolverCoupledADMM.auto_detect_contact_pairs` to build the
@@ -628,8 +633,8 @@ class SolverCoupledADMM(SolverCoupled):
         """
 
         iterations: int = 5
-        rho: float = 1.0
-        gamma: float = 0.0
+        rho: float = 0.5
+        gamma: float = 0.1
         baumgarte: float = 0.0
         joint_stiffness: float = 1.0e4
         joint_damping: float = 0.0
@@ -2831,6 +2836,8 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         """Run ADMM iterations over all sub-solvers."""
         del state_out
+        if dt <= 0.0:
+            raise ValueError("SolverCoupledADMM requires dt > 0")
         coupling = self._coupling
         iters = int(coupling.iterations)
         self._refresh_collision_contact_groups(state_in)
@@ -3767,13 +3774,14 @@ class SolverCoupledADMM(SolverCoupled):
             device=self.model.device,
         )
 
-    def _update_admm_quadratic_dual(self, group: _AdmmQuadraticGroup) -> None:
+    def _update_admm_quadratic_dual(self, group: _AdmmQuadraticGroup, dt: float) -> None:
         wp.launch(
             u_update_quadratic_kernel,
             dim=group.count,
             inputs=[
                 group.kappa,
                 group.damping,
+                float(dt),
                 group.W,
                 float(self._coupling.rho),
                 group.lambda_,
@@ -3811,6 +3819,7 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         del iteration_k
         coupling = self._coupling
+        inv_dt = 1.0 / float(dt)
         for group in self._admm_rr_groups:
             if group.count == 0:
                 continue
@@ -3849,6 +3858,7 @@ class SolverCoupledADMM(SolverCoupled):
                     entry_a.view.body_com,
                     entry_b.state_0.body_q,
                     entry_b.view.body_com,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -3882,6 +3892,7 @@ class SolverCoupledADMM(SolverCoupled):
                 inputs=[
                     group.body_ids_a,
                     group.body_ids_b,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -3920,6 +3931,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.frame_a,
                     group.body_ids_b,
                     entry_a.state_0.body_q,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -3958,6 +3970,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.frame_a,
                     group.body_ids_b,
                     entry_a.state_0.body_q,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -3998,6 +4011,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.particle_ids,
                     body_entry.state_0.body_q,
                     body_entry.view.body_com,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -4053,6 +4067,7 @@ class SolverCoupledADMM(SolverCoupled):
                     entry_a.view.body_com,
                     entry_b.state_0.body_q,
                     entry_b.view.body_com,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -4099,6 +4114,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.body_sign,
                     body_entry.state_0.body_q,
                     body_entry.view.body_com,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -4136,6 +4152,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.active_count,
                     group.particle_ids_a,
                     group.particle_ids_b,
+                    inv_dt,
                     float(coupling.rho),
                     group.W,
                     group.lambda_,
@@ -4164,7 +4181,7 @@ class SolverCoupledADMM(SolverCoupled):
                 )
 
     def _update_admm_dual(self, iteration_k: int, dt: float) -> None:
-        del iteration_k, dt
+        del iteration_k
         coupling = self._coupling
         for group in self._admm_rr_groups:
             if group.count == 0:
@@ -4189,7 +4206,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            self._update_admm_quadratic_dual(group)
+            self._update_admm_quadratic_dual(group, dt)
         for group in self._admm_rr_angular_groups:
             if group.count == 0:
                 continue
@@ -4207,7 +4224,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            self._update_admm_quadratic_dual(group)
+            self._update_admm_quadratic_dual(group, dt)
         for group in self._admm_rr_revolute_angular_groups:
             if group.count == 0:
                 continue
@@ -4227,7 +4244,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            self._update_admm_quadratic_dual(group)
+            self._update_admm_quadratic_dual(group, dt)
         for group in self._admm_rr_angular_friction_groups:
             if group.count == 0:
                 continue
@@ -4250,7 +4267,7 @@ class SolverCoupledADMM(SolverCoupled):
             wp.launch(
                 joint_box_friction_u_update_kernel,
                 dim=group.count,
-                inputs=[group.friction, group.W, float(coupling.rho), group.lambda_, group.Jv],
+                inputs=[group.friction, float(dt), group.W, float(coupling.rho), group.lambda_, group.Jv],
                 outputs=[group.u],
                 device=self.model.device,
             )
@@ -4281,7 +4298,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            self._update_admm_quadratic_dual(group)
+            self._update_admm_quadratic_dual(group, dt)
         for group in self._admm_dynamic_rr_contact_groups:
             if group.count == 0:
                 continue

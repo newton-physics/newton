@@ -779,6 +779,38 @@ class TestAdmmSmoke(unittest.TestCase):
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
 
+    def test_default_proximal_stabilizes_stiff_attachment(self):
+        """Converge to a shared velocity for a nearly rigid attachment."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=1.0e12)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "body",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    bodies=[body],
+                ),
+                SolverCoupled.Entry(
+                    "particle",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=[particle],
+                ),
+            ],
+            SolverCoupledADMM.Config(iterations=40),
+        )
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), contacts=None, dt=1.0 / 120.0)
+
+        # Equal masses share the initial momentum in the hard-constraint limit.
+        np.testing.assert_allclose(state_out.body_qd.numpy()[body, :3], (0.5, 0.0, 0.0), atol=1.0e-4)
+        np.testing.assert_allclose(state_out.particle_qd.numpy()[particle], (0.5, 0.0, 0.0), atol=1.0e-4)
+
     def test_gamma_does_not_change_unconstrained_freefall(self):
         # Place the rigid body high so it stays in free-fall across the
         # window; with no ADMM constraints, gamma should not alter the result.

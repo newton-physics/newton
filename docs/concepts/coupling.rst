@@ -255,16 +255,17 @@ sub-solver. This avoids solving the same constraint twice. The current generic
 ADMM path supports ``BALL``, ``FIXED``, and ``REVOLUTE`` joints. Ball joints
 create translational anchor-coincidence rows. Fixed joints add angular rows.
 Revolute joints preserve the hinge axis and can add a dry-friction row from
-model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
-the experimental API.
+model joint friction [N·m]. Prismatic, distance, and D6 joint rows are not yet
+part of the experimental API.
 
 Body-particle attachments cover interfaces that cannot be represented by a
 model joint because one endpoint is a particle. The helper
 ``SolverCoupledADMM.add_body_particle_attachment()`` registers and fills custom
 attributes under ``coupling:body_particle_attachment`` with body id, particle id,
-body-local point, stiffness, damping, and enabled state. Importers can author the
-same custom attributes directly. Rows whose endpoints are unowned or owned by
-the same entry are ignored; only cross-solver attachments are coupled by ADMM.
+body-local point [m], stiffness [N/m], damping [N·s/m], and enabled state.
+Importers can author the same custom attributes directly. Rows whose endpoints
+are unowned or owned by the same entry are ignored; only cross-solver
+attachments are coupled by ADMM.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries.
@@ -275,10 +276,11 @@ For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
 shapes on bodies owned by other entries, rigid-rigid rows from cross-entry shape
 pairs, and particle-particle rows from cross-entry particle sets through a
-private hash-grid stream. Friction is read from model material properties such
-as ``shape_material_mu`` and ``Model.particle_mu`` at row-fill time; it is not a
-``ContactPair`` field. Contact rows use an isotropic Coulomb
-maximum-dissipation projection. They do not solve cone complementarity directly.
+private hash-grid stream. Dimensionless friction coefficients are read from
+model material properties such as ``shape_material_mu`` and ``Model.particle_mu``
+at row-fill time; they are not ``ContactPair`` fields. Contact rows use an
+isotropic Coulomb maximum-dissipation projection. They do not solve cone
+complementarity directly.
 
 ADMM contact buffers are fixed-capacity device arrays. Persistent contacts
 warm-start local variables and dual variables by stable contact keys across
@@ -289,12 +291,22 @@ stream.
 The main ADMM parameters are:
 
 - ``iterations``: fixed iteration count, chosen to be graph-capture friendly;
-- ``rho``: penalty weight for interface rows;
-- ``gamma``: proximal inertia and velocity weight;
-- ``baumgarte``: positional error stabilization for attachment/contact rows;
-- stiffness and damping values for model-joint and body-particle attachment
-  rows;
-- rigid contact matching mode, thresholds, and warm-start force scale.
+- ``rho``: dimensionless penalty weight for interface rows (default ``0.5``);
+- ``gamma``: dimensionless proximal inertia and velocity weight (default ``0.1``);
+- ``baumgarte``: dimensionless position error correction fraction for
+  attachment/contact rows;
+- ``joint_stiffness`` and ``joint_damping``: translational model-joint
+  attachment stiffness [N/m] and damping [N·s/m];
+- ``joint_angular_stiffness`` and ``joint_angular_damping``: angular model-joint
+  attachment stiffness [N·m/rad] and damping [N·m·s/rad];
+- ``stiffness`` and ``damping`` in ``add_body_particle_attachment()``:
+  body-particle attachment stiffness [N/m] and damping [N·s/m];
+- ``joint_proximal_mass_scale``: dimensionless proxy mass multiplier;
+- ``rigid_contact_matching``: rigid contact matching mode;
+- ``contact_matching_pos_threshold``: contact matching distance threshold [m];
+- ``contact_matching_normal_dot_threshold``: dimensionless minimum dot product
+  between matched contact normals;
+- ``contact_matching_force_scale``: dimensionless warm-start multiplier.
 
 When ``gamma`` is positive, the coupler scales owned body and particle masses in
 each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and
