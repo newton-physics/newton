@@ -3737,9 +3737,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            njmax: Maximum number of constraints per world. If None, a default
+                value is estimated automatically. An explicit value is preserved
+                unless it cannot hold the initial MuJoCo constraints; in that case,
+                it is increased with a warning.
             njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
-            nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            nconmax: Number of contact points per world. If None, a default value
+                is estimated automatically. An explicit value is preserved unless
+                it cannot hold the initial MuJoCo contacts; in that case, it is
+                increased with a warning.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
@@ -7781,41 +7787,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if disable_contacts:
                 nconmax = 0
             elif not self._use_mujoco_contacts:
-                # The initialization forward intentionally produces no contacts
-                # in this mode, so size MJWarp from Newton's collision budget.
-                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
-
-                newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
-                default_nconmax = (newton_contact_max + nworld - 1) // nworld
                 if nconmax is None:
-                    nconmax = default_nconmax
-                elif nconmax >= 0:
-                    nconmax = max(nconmax, default_nconmax)
+                    # The initialization forward intentionally produces no contacts
+                    # in this mode, so size MJWarp from Newton's collision budget.
+                    newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                    nconmax = (newton_contact_max + nworld - 1) // nworld
 
-                max_contact_dim = max(
-                    1,
-                    int(np.max(self.mj_model.geom_condim, initial=1)),
-                    int(np.max(self.mj_model.pair_dim, initial=1)),
-                )
-                if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
-                    constraint_rows_per_contact = max_contact_dim
-                else:
-                    constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
-
-                # MJWarp stores contacts in one heterogeneous buffer, so every
-                # contact can belong to any compatible world even though
-                # nconmax is passed as a per-world allocation. Constraint rows
-                # are strictly per-world, so size them from the busiest-world
-                # topology rather than duplicating the global capacity.
-                per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
-                default_njmax = max(
-                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
-                    self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
-                )
                 if njmax is None:
-                    njmax = default_njmax
-                elif njmax >= 0:
-                    njmax = max(njmax, default_njmax)
+                    from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
+                    max_contact_dim = max(
+                        1,
+                        int(np.max(self.mj_model.geom_condim, initial=1)),
+                        int(np.max(self.mj_model.pair_dim, initial=1)),
+                    )
+                    if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                        constraint_rows_per_contact = max_contact_dim
+                    else:
+                        constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+
+                    # MJWarp stores contacts in one heterogeneous buffer, so every
+                    # contact can belong to any compatible world even though
+                    # nconmax is passed as a per-world allocation. Constraint rows
+                    # are strictly per-world, so size them from the busiest-world
+                    # topology rather than duplicating the global capacity.
+                    per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
+                    njmax = max(
+                        estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                        self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                    )
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",

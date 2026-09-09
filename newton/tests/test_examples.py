@@ -655,6 +655,14 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_g1",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},

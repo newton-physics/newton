@@ -1085,6 +1085,7 @@ Two approaches available:
         shape_margin=0.001,                   # Shrink SDF surface inward [m] (0.0)
         scale=(1.0, 1.0, 1.0),                # Bake non-unit scale into the SDF (None)
         edge_lower_angle_threshold_rad=math.radians(0.1),  # Drop near-coplanar edges below this angle (0.1 deg)
+        edge_concave_filter=True,             # Drop concave edges with two fully concave endpoints
         edge_box_absorption=False,            # Drop edges fully covered by another edge's oriented box
     )
 
@@ -1104,9 +1105,14 @@ which materially reduces edge-vs-shape work for typical CAD or scanned meshes. T
 threshold (``edge_lower_angle_threshold_rad=math.radians(0.1)``) drops only edges that are
 geometrically coplanar to within 0.1 degrees, so it is safe for most meshes; raise it to
 prune more aggressively, set it to ``0`` to keep every manifold edge, or pass a negative
-value (e.g. ``-1.0``) to opt out of the simplification pass entirely. Set
-``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered by
-another nearby edge's oriented box — useful for densely tessellated curved surfaces.
+value (e.g. ``-1.0``) to opt out of the simplification pass entirely. By default,
+``edge_concave_filter=True`` also drops a concave manifold edge when both endpoints are
+fully concave: every neighbor in each endpoint's closed manifold one-ring lies on or
+outward from its angle-weighted tangent plane, with at least one neighbor strictly outward.
+The filter is skipped for ``sign_method="normal"`` because pseudo-normal SDFs do not
+define an unambiguous solid interior.
+Set ``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered
+by another nearby edge's oriented box — useful for densely tessellated curved surfaces.
 ``edge_box_half_normal``/``edge_box_half_normal_rel`` and
 ``edge_box_half_lateral``/``edge_box_half_lateral_rel`` tune the box extents (absolute
 metres or fractions of the mesh AABB diagonal); see :meth:`~Mesh.build_sdf` for full
@@ -1383,24 +1389,22 @@ linear and angular velocity at the contact points. Common motion and receding mo
 therefore do not enlarge the gap. Broad phase uses a conservative motion bound; narrow
 phase applies the normal-directed test above.
 
-Enable the feature with :class:`CollisionPipeline.SpeculativeContactConfig`:
+Enable the feature with the keyword-only ``speculative_contact_gap_max`` constructor argument:
 
 .. code-block:: python
 
     pipeline = newton.CollisionPipeline(
         model,
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.1,
-        ),
+        speculative_contact_gap_max=0.1,
     )
 
     pipeline.collide(state, contacts, dt=1.0 / 60.0)
 
 The per-call ``dt`` is the time [s] until the next planned
 :meth:`CollisionPipeline.collide` call, including skipped solver substeps, and is
-required when speculative contacts are enabled. ``dt=0.0`` uses only the fixed
-gaps. ``max_speculative_extension`` caps the velocity-based distance [m]; ``0.0``
-also disables velocity adaptation.
+required when speculative contacts are enabled. ``dt=0.0`` uses only the authored
+gaps. ``speculative_contact_gap_max`` caps the velocity-derived detection gap [m];
+it must be non-negative and finite. ``0.0`` does not enlarge authored gaps.
 
 Speculation changes when a contact is retained, not its geometry: contact points remain
 at their current separation rather than a predicted impact pose. Mesh and SDF contact
