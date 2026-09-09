@@ -52,11 +52,13 @@ def Xform "World"
             (-1.5, 0, 1.54999995)
         ]
             float[] physics:masses = [
-            0.186008379, 0.372016758, 0.372016758, 0.372016758, 0.372018605, 0.37201491, 0.372018605, 0.37201491, 0.372018605, 0.372016758, 0.372016758, 0.372016758,
-            0.372016758, 0.372016758, 0.372018605, 0.37201491, 0.372018605, 0.37201491, 0.372018605, 0.372016758, 0.372016758, 0.372016758, 0.372016758, 0.372016758,
-            0.372018605, 0.37201491, 0.372018605, 0.37201491, 0.3720195, 0.372014016, 0.372020394, 0.372013122, 0.372020394, 0.372014016, 0.3720195, 0.37201491,
-            0.186009303
+            0.372016758, 0.372016758, 0.372016758, 0.372017682, 0.372016757, 0.372016757, 0.372016757, 0.372016757, 0.372017682, 0.372016758, 0.372016758, 0.372016758,
+            0.372016758, 0.372017682, 0.372016757, 0.372016757, 0.372016757, 0.372016757, 0.372017682, 0.372016758, 0.372016758, 0.372016758, 0.372016758, 0.372017682,
+            0.372016757, 0.372016757, 0.372016757, 0.372017205, 0.372016758, 0.372017205, 0.372016758, 0.372016758, 0.372017205, 0.372016758, 0.372017205, 0.372016758
         ]
+            uniform token physics:masses:elementType = "segment"
+            float[] physics:thicknesses = [0.07]
+            uniform token physics:thicknesses:elementType = "constant"
             token[] physics:deformablePose:bind:purposes = ["bindPose"]
             point3f[] physics:deformablePose:bind:points = [
             (-3.29999995, 0, 1.54999995), (-3.25, 0, 1.54999995), (-3.20000005, 0, 1.54999995),
@@ -2241,6 +2243,9 @@ def Xform "World"
                 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001, 0.100000001,
                 0.100000001
             ]
+            uniform token physics:masses:elementType = "point"
+            float[] physics:thicknesses = [0.02]
+            uniform token physics:thicknesses:elementType = "constant"
             token[] physics:deformablePose:bind:purposes = ["bindPose"]
             point3f[] physics:deformablePose:bind:points = [
                 (-0.595000029, -0.595000029, 1.04999995), (-0.560000002, -0.595000029, 1.04999995), (-0.525000036, -0.595000029, 1.04999995),
@@ -4257,13 +4262,14 @@ def Xform "World"
             (46, 62, 42, 47), (63, 47, 59, 62), (47, 59, 62, 42)
         ]
             float[] physics:masses = [
-            0, 8, 8, 8, 0, 8, 8, 8, 0, 8, 8, 8,
-            0, 8, 8, 8, 0, 8, 8, 8, 0, 8, 8, 8,
-            0, 8, 8, 8, 0, 8, 8, 8, 0, 8, 8, 8,
-            0, 8, 8, 8, 0, 8, 8, 8, 0, 8, 8, 8,
-            0, 8, 8, 8, 0, 8, 8, 8, 0, 8, 8, 8,
-            0, 8, 8, 8
+            8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+            8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+            8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+            8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+            8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+            8, 8, 8, 8
         ]
+            uniform token physics:masses:elementType = "point"
             token[] physics:deformablePose:bind:purposes = ["bindPose"]
             point3f[] physics:deformablePose:bind:points = [
             (2.0999999, -0.100000001, 1), (2.29999995, -0.100000001, 1), (2.5, -0.100000001, 1),
@@ -7331,7 +7337,6 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsCurvesDeformableMaterialAPI"]
         )
         {
-            float physics:curvesThickness = 0.07
             float physics:density = 1000
             float physics:curvesStretchStiffness = 5000
             float physics:curvesShearStiffness = 5000
@@ -7343,9 +7348,9 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsSurfaceDeformableMaterialAPI"]
         )
         {
-            float physics:thickness = 0.02
             float physics:density = 1000
-            float physics:stretchStiffness = 50000
+            float physics:surfaceStretchStiffness = 1000
+            float physics:surfaceBendStiffness = 100
         }
 
         def Material "VolumePhysics" (

@@ -1570,6 +1570,11 @@ class TestDeformableVisualMeshCameraParity(unittest.TestCase):
         example = DeformableVisualMeshCameraExample.__new__(DeformableVisualMeshCameraExample)
         return example._build_model_builder(SimpleNamespace(load_from_usd=load_from_usd))
 
+    def test_usd_asset_imports_without_warnings(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self._build(True)
+
     def test_procedural_and_usd_builders_match(self):
         procedural = self._build(False)
         usd = self._build(True)

@@ -259,6 +259,11 @@ class Example:
                 builder.joint_target_kd[dof] = 1.0
 
         cloth = import_result["path_cloth_map"]["/World/Cloth/Sim"]
+        cloth_particle_start, cloth_particle_end = cloth["particle"]
+        for particle in range(cloth_particle_start, cloth_particle_end):
+            # Keep the reference scene's direct uniform particle masses after the
+            # proposal's point-mass conversion, so this example compares rendering.
+            builder.particle_mass[particle] = 0.1
         tri_start, tri_end = cloth["tri"]
         for tri in range(tri_start, tri_end):
             tri_ke, _tri_ka, _tri_kd, tri_drag, tri_lift = builder.tri_materials[tri]
@@ -266,6 +271,16 @@ class Example:
             builder.tri_materials[tri] = (tri_ke, 1.0e3, 2.0e1, tri_drag, tri_lift)
 
         soft = import_result["path_soft_map"]["/World/Volume/Sim"]
+        soft_particle_start, soft_particle_end = soft["particle"]
+        fixed_x = min(
+            float(builder.particle_q[particle][0]) for particle in range(soft_particle_start, soft_particle_end)
+        )
+        for particle in range(soft_particle_start, soft_particle_end):
+            # Per-point kinematic state is not imported yet; mirror fix_left from
+            # the procedural scene while retaining current typed USD masses.
+            builder.particle_mass[particle] = (
+                0.0 if math.isclose(float(builder.particle_q[particle][0]), fixed_x, abs_tol=1.0e-6) else 8.0
+            )
         tet_start, tet_end = soft["tet"]
         for tet in range(tet_start, tet_end):
             k_mu, k_lambda, _k_damp = builder.tet_materials[tet]
