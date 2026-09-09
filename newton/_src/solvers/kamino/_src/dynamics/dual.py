@@ -107,6 +107,24 @@ class DualProblemConfigStruct:
     """Baumgarte stabilization parameter for unilateral contact constraints."""
     delta: wp.float32
     """Contact penetration margin used for unilateral contact constraints"""
+    joint_compliance: wp.float32
+    """Physical compliance of kinematic bilateral-joint rows."""
+    joint_stabilization_time: wp.float32
+    """Bilateral-joint stabilization time [s], or a negative value for the legacy alpha rule."""
+    joint_recovery_speed: wp.float32
+    """Maximum bilateral-joint drift-recovery speed [m/s or rad/s], or a negative value when unbounded."""
+    joint_limit_compliance: wp.float32
+    """Physical compliance of unilateral joint-limit rows."""
+    joint_limit_stabilization_time: wp.float32
+    """Joint-limit stabilization time [s], or a negative value for the legacy beta rule."""
+    joint_limit_recovery_speed: wp.float32
+    """Maximum joint-limit drift-recovery speed [m/s or rad/s], or a negative value when unbounded."""
+    contact_compliance: wp.float32
+    """Physical contact compliance [m/N]."""
+    contact_stabilization_time: wp.float32
+    """Contact stabilization time [s], or a negative value for the legacy gamma rule."""
+    contact_recovery_speed: wp.float32
+    """Maximum penetration-recovery speed [m/s], or a negative value when unbounded."""
     preconditioning: wp.bool
     """Flag to enable preconditioning of the dual problem."""
 
@@ -239,6 +257,21 @@ class DualProblemData:
     """
     The flat array of Delassus matrix blocks (constraint-space apparent inertia).
     Shape of `(sum_of_max_total_delassus_size,)`.
+    """
+
+    E: wp.array[wp.float32] | None = None
+    """
+    Physical constraint-compliance diagonal in unpreconditioned units.
+    Entries are nonzero only for configured kinematic-joint, active joint-limit,
+    and active contact rows.
+    Shape of `(sum_of_max_total_cts,)`.
+    """
+
+    E_hat: wp.array[wp.float32] | None = None
+    """
+    Constraint-compliance diagonal represented in solver coordinates as
+    ``E_hat = P * E * P``. Entries are zero for unconfigured and inactive rows.
+    Shape of `(sum_of_max_total_cts,)`.
     """
 
     P: wp.array[wp.float32] | None = None
@@ -421,21 +454,22 @@ def _build_dual_preconditioner_entry(
     diagonal_offset: wp.int32,
     diagonal_stride: wp.int32,
     vio: wp.int32,
+    problem_E: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
 ):
     """Build one scalar or three-dimensional contact preconditioner entries."""
     diagonal_idx = diagonal_offset + diagonal_stride * tid
     # First handle joint, bounded, and limit constraints, then contact constraints.
     if tid < njlc:
-        problem_P[vio + tid] = precondition_scalar(diagonal[diagonal_idx])
+        problem_P[vio + tid] = precondition_scalar(diagonal[diagonal_idx] + problem_E[vio + tid])
     else:
         ccid = tid - njlc
         # Only the first contact-dimension thread computes the preconditioner.
         if ccid % 3 == 0:
             # Retrieve the Delassus-matrix diagonal entries for the contact set.
-            d_kk_0 = diagonal[diagonal_idx]
-            d_kk_1 = diagonal[diagonal_idx + diagonal_stride]
-            d_kk_2 = diagonal[diagonal_idx + 2 * diagonal_stride]
+            d_kk_0 = diagonal[diagonal_idx] + problem_E[vio + tid]
+            d_kk_1 = diagonal[diagonal_idx + diagonal_stride] + problem_E[vio + tid + 1]
+            d_kk_2 = diagonal[diagonal_idx + 2 * diagonal_stride] + problem_E[vio + tid + 2]
             # Compute the effective diagonal entry.
             # Possible options are mean, min, max.
             # d_kk = (d_kk_0 + d_kk_1 + d_kk_2) / 3.0
@@ -541,6 +575,19 @@ def _build_generalized_free_velocity(
     problem_u_f[bid] = wp.spatial_vectorf(*v_f_i, *omega_f_i)
 
 
+@wp.func
+def _compute_physical_compliance(
+    compliance: wp.float32,
+    inv_dt: wp.float32,
+    stabilization_time: wp.float32,
+) -> wp.float32:
+    """Return the implicit-Euler operator compliance ``c / (dt * (dt + alpha))``."""
+    E_i = wp.float32(0.0)
+    if compliance > 0.0 and stabilization_time >= 0.0:
+        E_i = compliance * inv_dt * inv_dt / (1.0 + stabilization_time * inv_dt)
+    return E_i
+
+
 @wp.kernel
 def _build_free_velocity_bias_joint_dynamics(
     # Inputs:
@@ -581,6 +628,7 @@ def _build_free_velocity_bias_joint_kinematics(
     problem_config: wp.array[DualProblemConfigStruct],
     # Outputs:
     problem_v_b: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
 ):
     # Retrieve the joint index as the thread index
     jid = wp.tid()
@@ -601,12 +649,22 @@ def _build_free_velocity_bias_joint_kinematics(
     # Retrieve the dual problem config
     config = problem_config[wid]
 
-    # Compute baumgarte constraint stabilization coefficient
+    # Compute the bilateral-joint stabilization coefficient. A non-negative
+    # time opts into the DVI-style correction error / (dt + time); the
+    # negative sentinel preserves Kamino's dimensionless alpha rule exactly.
     c_b = config.alpha * inv_dt
+    if config.joint_stabilization_time >= 0.0:
+        c_b = inv_dt / (1.0 + config.joint_stabilization_time * inv_dt)
+    E_j = _compute_physical_compliance(config.joint_compliance, inv_dt, config.joint_stabilization_time)
 
-    # Compute the free-velocity bias for the joint
+    # Compute the free-velocity bias for the joint. Bilateral drift is signed,
+    # so its optional recovery bound is symmetric.
     for j in range(num_kin_cts_j):
-        problem_v_b[cts_row_start_j + j] = c_b * data_joints_r_j[res_row_start_j + j]
+        correction = c_b * data_joints_r_j[res_row_start_j + j]
+        if config.joint_recovery_speed > 0.0:
+            correction = wp.clamp(correction, -config.joint_recovery_speed, config.joint_recovery_speed)
+        problem_v_b[cts_row_start_j + j] = correction
+        problem_E[cts_row_start_j + j] = E_j
 
 
 @wp.kernel
@@ -701,6 +759,7 @@ def _build_free_velocity_bias_limits(
     problem_vio: wp.array[wp.int32],
     # Outputs:
     problem_v_b: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
 ):
     # Retrieve the limit index as the thread index
     tid = wp.tid()
@@ -726,8 +785,21 @@ def _build_free_velocity_bias_limits(
     # Compute the total constraint index offset of the current contact
     lcio_l = vio + lcio + lid
 
-    # Compute the contact constraint stabilization bias
-    problem_v_b[lcio_l] = config.beta * inv_dt * wp.min(0.0, r_q)
+    # Compute the active, one-sided joint-limit stabilization bias. A
+    # non-negative time opts into error / (dt + time); otherwise retain the
+    # dimensionless beta rule.
+    c_b = config.beta * inv_dt
+    if config.joint_limit_stabilization_time >= 0.0:
+        c_b = inv_dt / (1.0 + config.joint_limit_stabilization_time * inv_dt)
+    correction = c_b * wp.min(0.0, r_q)
+
+    # Joint limits are unilateral: bound only negative violation recovery.
+    if config.joint_limit_recovery_speed > 0.0 and correction < 0.0:
+        correction = wp.max(correction, -config.joint_limit_recovery_speed)
+    problem_v_b[lcio_l] = correction
+    problem_E[lcio_l] = _compute_physical_compliance(
+        config.joint_limit_compliance, inv_dt, config.joint_limit_stabilization_time
+    )
 
 
 @wp.kernel
@@ -748,6 +820,7 @@ def _build_free_velocity_bias_contacts(
     problem_v_b: wp.array[wp.float32],
     problem_v_i: wp.array[wp.float32],
     problem_mu: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
 ):
     # Retrieve the contact index as the thread index
     tid = wp.tid()
@@ -791,28 +864,43 @@ def _build_free_velocity_bias_contacts(
     # penetration_k by delta to preserve continuity w.r.t. distance_k.
     penetration_k = wp.sign(distance_k) * wp.max(0.0, wp.abs(distance_k) - config.delta)
 
-    # Compute the per-contact penetration error reduction term
-    # NOTE#1: Penetrations are represented as penetration_k < 0
-    # NOTE#2: xi corresponds to one-sided Baumgarte-like stabilization
+    # Compute the per-contact penetration error reduction term. A non-negative
+    # stabilization time opts into the spring-damper discretization; the
+    # negative sentinel preserves Kamino's dimensionless gamma rule exactly.
     xi = inv_dt * penetration_k
-    xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
+    xi_relaxed = wp.float32(0.0)
+    if config.contact_stabilization_time >= 0.0:
+        xi_relaxed = xi / (1.0 + config.contact_stabilization_time * inv_dt)
+    else:
+        xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
+
+    # Limit only penetration recovery. Positive speculative-gap velocities
+    # retain the selected stabilization rule and are never clamped.
+    if config.contact_recovery_speed > 0.0 and xi_relaxed < 0.0:
+        xi_relaxed = wp.max(xi_relaxed, -config.contact_recovery_speed)
 
     # Gate contact stabilization for restitutive impacts with
     # critical restitution coefficients (i.e. epsilon_k >= 1.0)
     # NOTE: Otherwise the bias would be too large and destabilize the solver
-    alpha = wp.where(epsilon_k >= 1.0, 0.0, 1.0)
+    stabilization_gate = wp.where(epsilon_k >= 1.0, 0.0, 1.0)
 
     # Store the contact constraint stabilization bias in the output vector
     # NOTE: We still write zeros to overwrite previous values
     problem_v_b[ccio_k] = 0.0
     problem_v_b[ccio_k + 1] = 0.0
-    problem_v_b[ccio_k + 2] = alpha * xi_relaxed
+    problem_v_b[ccio_k + 2] = stabilization_gate * xi_relaxed
 
     # Initialize the restitutive Newton-type impact model term
     # NOTE: We still write zeros to overwrite previous values
     problem_v_i[ccio_k] = 0.0
     problem_v_i[ccio_k + 1] = 0.0
     problem_v_i[ccio_k + 2] = epsilon_k
+
+    # Implicit-Euler contact spring-damper compliance.
+    E_k = _compute_physical_compliance(config.contact_compliance, inv_dt, config.contact_stabilization_time)
+    problem_E[ccio_k] = E_k
+    problem_E[ccio_k + 1] = E_k
+    problem_E[ccio_k + 2] = E_k
 
     # Store the contact friction coefficient in the output vector
     problem_mu[cio_k] = mu_k
@@ -963,6 +1051,7 @@ def _build_dual_preconditioner_all_constraints(
     problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_D: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
     # Outputs:
     problem_P: wp.array[wp.float32],
 ):
@@ -998,6 +1087,7 @@ def _build_dual_preconditioner_all_constraints(
         mio,
         ncts + 1,
         vio,
+        problem_E,
         problem_P,
     )
 
@@ -1011,6 +1101,7 @@ def _build_dual_preconditioner_all_constraints_sparse(
     problem_njc: wp.array[wp.int32],
     problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
+    problem_E: wp.array[wp.float32],
     # Outputs:
     problem_P: wp.array[wp.float32],
 ):
@@ -1023,12 +1114,19 @@ def _build_dual_preconditioner_all_constraints_sparse(
     # Retrieve the number of active constraints in the world
     ncts = problem_dim[wid]
 
-    # Skip if row index exceed the problem size
-    if tid >= ncts or not config.preconditioning:
+    # Skip if row index exceeds the problem size.
+    if tid >= ncts:
         return
 
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
+
+    # ``problem_P`` temporarily stores the raw sparse Delassus diagonal for
+    # every world. Restore identity for worlds that opt out so a heterogeneous
+    # batch cannot accidentally use that diagonal as a scale factor.
+    if not config.preconditioning:
+        problem_P[vio + tid] = wp.float32(1.0)
+        return
 
     # Infer the start of the contact constraints for this world
     njc = problem_njc[wid]
@@ -1043,6 +1141,7 @@ def _build_dual_preconditioner_all_constraints_sparse(
         vio,
         1,
         vio,
+        problem_E,
         problem_P,
     )
 
@@ -1131,6 +1230,25 @@ def _apply_dual_preconditioner_to_vector(
 
 
 @wp.kernel
+def _build_represented_compliance(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_E: wp.array[wp.float32],
+    problem_P: wp.array[wp.float32],
+    # Outputs:
+    problem_E_hat: wp.array[wp.float32],
+):
+    """Transform the physical constraint-compliance diagonal into solver coordinates."""
+    wid, tid = wp.tid()
+    if tid >= problem_dim[wid]:
+        return
+    v_i = problem_vio[wid] + tid
+    P_i = problem_P[v_i]
+    problem_E_hat[v_i] = P_i * P_i * problem_E[v_i]
+
+
+@wp.kernel
 def _apply_dual_preconditioner_to_bounds(
     # Inputs:
     problem_nbc: wp.array[wp.int32],
@@ -1185,6 +1303,33 @@ class DualProblem:
             config_struct.beta = wp.float32(self.constraints.beta)
             config_struct.gamma = wp.float32(self.constraints.gamma)
             config_struct.delta = wp.float32(self.constraints.delta)
+            config_struct.joint_compliance = wp.float32(self.constraints.joint_compliance)
+            config_struct.joint_stabilization_time = wp.float32(
+                -1.0 if self.constraints.joint_stabilization_time is None else self.constraints.joint_stabilization_time
+            )
+            config_struct.joint_recovery_speed = wp.float32(
+                -1.0 if self.constraints.joint_recovery_speed is None else self.constraints.joint_recovery_speed
+            )
+            config_struct.joint_limit_compliance = wp.float32(self.constraints.joint_limit_compliance)
+            config_struct.joint_limit_stabilization_time = wp.float32(
+                -1.0
+                if self.constraints.joint_limit_stabilization_time is None
+                else self.constraints.joint_limit_stabilization_time
+            )
+            config_struct.joint_limit_recovery_speed = wp.float32(
+                -1.0
+                if self.constraints.joint_limit_recovery_speed is None
+                else self.constraints.joint_limit_recovery_speed
+            )
+            config_struct.contact_compliance = wp.float32(self.constraints.contact_compliance)
+            config_struct.contact_stabilization_time = wp.float32(
+                -1.0
+                if self.constraints.contact_stabilization_time is None
+                else self.constraints.contact_stabilization_time
+            )
+            config_struct.contact_recovery_speed = wp.float32(
+                -1.0 if self.constraints.contact_recovery_speed is None else self.constraints.contact_recovery_speed
+            )
             config_struct.preconditioning = wp.bool(self.dynamics.preconditioning)
             return config_struct
 
@@ -1454,6 +1599,8 @@ class DualProblem:
                     mio=None,
                     vio=self._delassus.info.vio,
                     D=None,
+                    E=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
+                    E_hat=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                     # Allocate new memory for the remaining dual problem quantities
                     config=wp.array([c.to_struct() for c in self.config], dtype=DualProblemConfigStruct),
                     h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
@@ -1493,6 +1640,8 @@ class DualProblem:
                     mio=self._delassus.info.mio,
                     vio=self._delassus.info.vio,
                     D=self._delassus.D,
+                    E=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
+                    E_hat=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                     # Allocate new memory for the remaining dual problem quantities
                     config=wp.array([c.to_struct() for c in self.config], dtype=DualProblemConfigStruct),
                     h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
@@ -1515,6 +1664,8 @@ class DualProblem:
         self._data.v_b.zero_()
         self._data.v_i.zero_()
         self._data.v_f.zero_()
+        self._data.E.zero_()
+        self._data.E_hat.zero_()
         self._data.mu.zero_()
         self._data.bound_lower.zero_()
         self._data.bound_upper.zero_()
@@ -1627,6 +1778,21 @@ class DualProblem:
                     ],
                     device=self.device,
                 )
+
+        # Keep the constitutive constraint diagonal separate from both the
+        # physical Delassus operator and solver-owned proximal regularization.
+        wp.launch(
+            _build_represented_compliance,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                self._data.dim,
+                self._data.vio,
+                self._data.E,
+                self._data.P,
+                self._data.E_hat,
+            ],
+            device=self.device,
+        )
 
     ###
     # Internals
@@ -1808,6 +1974,7 @@ class DualProblem:
                     self._data.config,
                     # Outputs:
                     self._data.v_b,
+                    self._data.E,
                 ],
                 device=self.device,
             )
@@ -1829,6 +1996,7 @@ class DualProblem:
                     self._data.vio,
                     # Outputs:
                     self._data.v_b,
+                    self._data.E,
                 ],
                 device=self.device,
             )
@@ -1854,6 +2022,7 @@ class DualProblem:
                     self._data.v_b,
                     self._data.v_i,
                     self._data.mu,
+                    self._data.E,
                 ],
                 device=self.device,
             )
@@ -1899,6 +2068,7 @@ class DualProblem:
                     self._data.njc,
                     self._data.nbc,
                     self._data.nl,
+                    self._data.E,
                     # Outputs:
                     self._data.P,
                 ],
@@ -1918,6 +2088,7 @@ class DualProblem:
                     self._data.nbc,
                     self._data.nl,
                     self._data.D,
+                    self._data.E,
                     # Outputs:
                     self._data.P,
                 ],

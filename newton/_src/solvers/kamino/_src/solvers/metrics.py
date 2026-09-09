@@ -76,7 +76,7 @@ A typical example for using this module is:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import warp as wp
 
@@ -92,7 +92,6 @@ from ..kinematics.limits import LimitsKamino
 from ..solvers.padmm.math import (
     compute_desaxce_corrections,
     compute_dot_product,
-    compute_double_dot_product,
     compute_ncp_complementarity_residual,
     compute_ncp_dual_residual,
     compute_ncp_natural_map_residual,
@@ -319,8 +318,12 @@ class SolutionMetricsData:
     `r_ncp_dual(v_hat^+) = || v_hat^+ - P_K*(v_hat^+) ||_inf`, where `P_K*()` is
     the Euclidean projection, i.e. proximal operator, onto K*, and `v_hat^+` is
     the so-called augmented constraint-space velocity. The latter is defined as
-    `v_hat^+ = v^+ + Gamma(v^+)`, where `v^+ := v_f D @ lambda` is the post-event
-    constraint-space velocity, and `Gamma(v^+)` is the De Saxce correction term.
+    `v_hat^+ = v_eff + Gamma(v_eff)`, where
+    `v_eff := v_f + (D + E) @ lambda` is the effective constraint-space velocity.
+    `D` is the physical Delassus operator and `E` is the physical constitutive
+    compliance diagonal. `Gamma` is the De Saxce correction for the
+    non-associated contact law and zero for the associated law. The exported
+    physical post-event velocity remains `v^+ := v_f + D @ lambda`.
 
     Shape of ``(num_worlds,)``.
     """
@@ -388,9 +391,11 @@ class SolutionMetricsData:
     Represents only the energy dissipated through friction.
 
     Computed as as:
-    `f_ncp(lambda) := 0.5 * lambda.T @ D @ lambda + lambda.T @ v_f + lambda.T @ s`,
-    where `D` is the Delassus operator, `v_f` is the unconstrained constraint-space
-    velocity and `s := Gamma(v^+)` is the De Saxce correction term.
+    `f_ncp(lambda) := 0.5 * lambda.T @ (D + E) @ lambda + lambda.T @ v_f + lambda.T @ s`,
+    where `D` is the Delassus operator, `E` is the physical constitutive
+    compliance diagonal, `v_f` is the unconstrained constraint-space velocity,
+    and `s := Gamma(v_eff)` is the selected contact-law correction (zero for the
+    associated law).
 
     It is also equivalently computed as:
     `f_ncp(lambda) = f_ccp(lambda) + lambda.T @ s`,
@@ -406,13 +411,15 @@ class SolutionMetricsData:
     Represents only the energy dissipated through friction.
 
     Computed as as:
-    `f_ccp(lambda) := 0.5 * lambda.T @ D @ lambda + v_f.T @ lambda`,
+    `f_ccp(lambda) := 0.5 * lambda.T @ (D + E) @ lambda + v_f.T @ lambda`,
     where `lambda` is the vector of all constraint reactions (i.e. Lagrange multipliers),
-    `D` is the Delassus operator and `v_f` is the unconstrained constraint-space velocity.
+    `D` is the Delassus operator, `E` is the physical constitutive compliance
+    diagonal, and `v_f` is the unconstrained constraint-space velocity.
 
     It is also equivalently computed as:
-    `f_ccp(lambda) := 0.5 * lambda.T @ (v+ + v_f)`,
-    where `v+ = v_f + D @ lambda` is the post-event constraint-space velocity.
+    `f_ccp(lambda) := 0.5 * lambda.T @ (v_eff + v_f)`,
+    where `v_eff = v_f + (D + E) @ lambda` is the effective constraint-space
+    velocity.
 
     Shape of ``(num_worlds,)``.
     """
@@ -1022,12 +1029,14 @@ def _compute_dual_problem_metrics(
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
     problem_D: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
     solution_sigma: wp.array[wp.vec2f],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_desaxce: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1072,11 +1081,25 @@ def _compute_dual_problem_metrics(
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
 
-    # Compute the De Saxce correction for each contact as: s = G(v_plus)
-    compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
+    # Constraint residuals include physical compliance, while r_v_plus above
+    # deliberately compares the exported body-relative velocity N*lambda+v_f.
+    for i in range(ncts):
+        buffer_v[vio + i] += problem_E[vio + i] * solution_lambdas[vio + i]
 
-    # Compute the CCP optimization objective as: f_ccp = 0.5 * lambda.dot(v_plus + v_f)
-    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    # The associated cone QP uses the physical/constitutive velocity directly.
+    # The non-associated law augments it with the De Saxce correction.
+    if use_desaxce:
+        compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
+    else:
+        for i in range(ncts):
+            buffer_s[vio + i] = 0.0
+
+    # Compute the physical CCP objective. ``problem_v_f`` remains represented
+    # as P*v_f, whereas the exported lambdas and ``buffer_v`` are physical.
+    f_ccp = float32(0.0)
+    for i in range(ncts):
+        v_i = vio + i
+        f_ccp += float32(0.5) * solution_lambdas[v_i] * (buffer_v[v_i] + problem_v_f[v_i] / problem_P[v_i])
 
     # Compute the NCP optimization objective as:  f_ncp = f_ccp + lambda.dot(s)
     f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s)
@@ -1188,11 +1211,13 @@ def _compute_dual_problem_metrics_sparse(
     problem_vio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
+    problem_E: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
+    use_desaxce: wp.bool,
     # Buffers:
     buffer_s: wp.array[wp.float32],
     buffer_v: wp.array[wp.float32],
@@ -1236,11 +1261,25 @@ def _compute_dual_problem_metrics_sparse(
     # Compute the post-event constraint-space velocity error as: r_v_plus = || v_plus_est - v_plus_true ||_inf
     r_v_plus, r_v_plus_argmax = compute_vector_difference_infnorm(ncts, vio, solution_v_plus, buffer_v)
 
-    # Compute the De Saxce correction for each contact as: s = G(v_plus)
-    compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
+    # Constraint residuals use the constitutive velocity E*lambda, but the
+    # exported solution velocity and its consistency metric remain physical.
+    for i in range(ncts):
+        buffer_v[vio + i] += problem_E[vio + i] * solution_lambdas[vio + i]
 
-    # Compute the CCP optimization objective as: f_ccp = 0.5 * lambda.dot(v_plus + v_f)
-    f_ccp = 0.5 * compute_double_dot_product(ncts, vio, solution_lambdas, buffer_v, problem_v_f)
+    # The associated cone QP uses the physical/constitutive velocity directly.
+    # The non-associated law augments it with the De Saxce correction.
+    if use_desaxce:
+        compute_desaxce_corrections(nc, cio, vio, ccgo, problem_mu, buffer_v, buffer_s)
+    else:
+        for i in range(ncts):
+            buffer_s[vio + i] = 0.0
+
+    # Compute the physical CCP objective. ``problem_v_f`` remains represented
+    # as P*v_f, whereas the exported lambdas and ``buffer_v`` are physical.
+    f_ccp = float32(0.0)
+    for i in range(ncts):
+        v_i = vio + i
+        f_ccp += float32(0.5) * solution_lambdas[v_i] * (buffer_v[v_i] + problem_v_f[v_i] / problem_P[v_i])
 
     # Compute the NCP optimization objective as:  f_ncp = f_ccp + lambda.dot(s)
     f_ncp = compute_dot_product(ncts, vio, solution_lambdas, buffer_s)
@@ -1463,6 +1502,7 @@ class SolutionMetrics:
         jacobians: DenseSystemJacobians | SparseSystemJacobians,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
+        contact_law: Literal["de_saxce", "associated_at"] = "de_saxce",
     ):
         """
         Evaluates all solution performance metrics.
@@ -1478,11 +1518,13 @@ class SolutionMetrics:
             sigma: The array diagonal regularization applied to the Delassus matrix of the current dual problem.
             lambdas: The array of constraint reactions (i.e. Lagrange multipliers) of the current dual problem solution.
             v_plus: The array of post-event constraint-space velocities of the current dual problem solution.
+            contact_law: Contact law used to compute the solution. Associated-law
+                metrics omit the De Saxce velocity correction.
         """
         self._assert_has_data()
         self._evaluate_constraint_violations_perf(model, data, limits, contacts)
         self._evaluate_primal_problem_perf(model, data, state_p, jacobians)
-        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem)
+        self._evaluate_dual_problem_perf(sigma, lambdas, v_plus, problem, contact_law=contact_law)
 
     ###
     # Internals
@@ -1669,6 +1711,7 @@ class SolutionMetrics:
         lambdas: wp.array[wp.float32],
         v_plus: wp.array[wp.float32],
         problem: DualProblem,
+        contact_law: Literal["de_saxce", "associated_at"] = "de_saxce",
     ):
         """
         Evaluates the dual problem performance metrics.
@@ -1678,9 +1721,13 @@ class SolutionMetrics:
             sigma: The array of sigma values for the dual problem.
             lambdas: The array of lambda values for the dual problem.
             v_plus: The array of v_plus values for the dual problem.
+            contact_law: Contact law used by the solver.
         """
         # Ensure metrics data is available
         self._assert_has_data()
+        if contact_law not in {"de_saxce", "associated_at"}:
+            raise ValueError(f"Unsupported contact law for solution metrics: {contact_law}.")
+        use_desaxce = contact_law == "de_saxce"
 
         # Compute the dual problem NCP/VI performance metrics
         if problem.sparse:
@@ -1714,11 +1761,13 @@ class SolutionMetrics:
                     problem.data.vio,
                     problem.data.mu,
                     problem.data.v_f,
+                    problem.data.E,
                     problem.data.P,
                     problem.data.bound_lower,
                     problem.data.bound_upper,
                     lambdas,
                     v_plus,
+                    use_desaxce,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,
@@ -1758,12 +1807,14 @@ class SolutionMetrics:
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.D,
+                    problem.data.E,
                     problem.data.P,
                     problem.data.bound_lower,
                     problem.data.bound_upper,
                     sigma,
                     lambdas,
                     v_plus,
+                    use_desaxce,
                     # Buffers:
                     self._buffer_s,
                     self._buffer_v,

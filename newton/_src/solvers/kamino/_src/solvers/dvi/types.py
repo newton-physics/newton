@@ -20,13 +20,16 @@ uint64 = wp.uint64
 vec2f = wp.vec2f
 vec2i = wp.vec2i
 
+_DVI_CONTACT_SOLVER_PGS = 0
+_DVI_CONTACT_SOLVER_APGD = 1
+
 
 @wp.struct
 class DVIConfigStruct:
     """On-device DVI solver configuration."""
 
     tolerance: float32
-    """Tolerance for iterate-change stopping and terminal DVI residuals."""
+    """Tolerance for the terminal full-system DVI residuals."""
 
     regularization: float32
     """Diagonal regularization used by projected Gauss-Seidel updates."""
@@ -34,17 +37,20 @@ class DVIConfigStruct:
     omega: float32
     """Projected Gauss-Seidel update relaxation."""
 
+    contact_solver: int32
+    """Device-side selector for PGS or APGD contact phases."""
+
     max_alternating_iterations: int32
-    """Outer projected-inequality blocks, with direct bilateral solves when available."""
+    """Number of complete ``L -> B -> C`` coupling sweeps."""
 
     inequality_sweeps_per_iteration: int32
-    """Projected sweeps for unilateral inequalities in each direct-bilateral block."""
+    """Projected sweeps used independently by each PGS ``L`` or ``C`` phase."""
 
     tangential_warmstart_scale: float32
     """Scale applied to cached tangential reactions before each solve."""
 
-    bilateral_solve_interval: int32
-    """Block iteration period for repeated direct bilateral solves."""
+    post_stabilization_bilateral: int32
+    """Whether the bilateral block is refreshed after the final contact phase."""
 
 
 @wp.struct
@@ -54,7 +60,25 @@ class DVIStatus:
     converged: int32
     """Whether all terminal feasibility, equality, and complementarity residuals satisfy tolerance."""
     iterations: int32
-    """Projected sweeps; direct-bilateral solves report block/contact sweeps."""
+    """Projected PGS sweeps, or coupling sweeps when APGD owns the contact phase."""
+    limit_iterations: int32
+    """Actual projected sweeps applied to bounded-joint and joint-limit rows."""
+    contact_iterations: int32
+    """Actual PGS or APGD iterations applied to contact rows across all contact phases."""
+    contact_backtracks: int32
+    """Actual APGD Lipschitz-doubling passes across all contact phases."""
+    contact_restarts: int32
+    """Actual APGD momentum restarts across all contact phases."""
+    contact_solver_residual: float32
+    """Last APGD phase's running-minimum Res4 norm; zero for PGS."""
+    invalid_contact_preconditioner: int32
+    """Whether APGD rejected invalid or unequal contact-triplet scaling.
+
+    A rejected world's exported impulses and velocities are zero sentinels and
+    must not be interpreted as a physical solution.
+    """
+    r_natural: float32
+    """Terminal infinity norm of the law-specific projected natural map."""
     r_p: float32
     """Maximum primal box- and cone-feasibility residual."""
     r_d: float32
@@ -96,6 +120,7 @@ class DVIState:
         self.bilateral_solution: wp.array[float32] | None = None
         self.bilateral_preconditioner: wp.array[float32] | None = None
         self.bilateral_active_dim: wp.array[int32] | None = None
+        self.contact_active_mask: wp.array[wp.bool] | None = None
         self.limit_indices: wp.array[int32] | None = None
         self.contact_indices: wp.array[int32] | None = None
         self.inequality_bodies: wp.array[vec2i] | None = None
@@ -117,6 +142,7 @@ class DVIState:
         self.bilateral_solution = wp.zeros(size.sum_of_num_bilateral_joint_cts, dtype=float32)
         self.bilateral_preconditioner = wp.zeros(size.sum_of_num_bilateral_joint_cts, dtype=float32)
         self.bilateral_active_dim = wp.zeros(size.num_worlds, dtype=int32)
+        self.contact_active_mask = wp.zeros(size.num_worlds, dtype=wp.bool)
         self.limit_indices = wp.full(max(1, size.sum_of_max_limits), -1, dtype=int32)
         self.contact_indices = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
         self.inequality_bodies = wp.full(max(1, size.sum_of_max_inequalities), vec2i(-1, -1), dtype=vec2i)
@@ -136,6 +162,7 @@ class DVIState:
         self.bilateral_solution.zero_()
         self.bilateral_preconditioner.zero_()
         self.bilateral_active_dim.zero_()
+        self.contact_active_mask.zero_()
         self.limit_indices.fill_(-1)
         self.contact_indices.fill_(-1)
         self.inequality_bodies.fill_(vec2i(-1, -1))
@@ -181,8 +208,11 @@ def convert_config_to_struct(config: DVISolverConfig) -> DVIConfigStruct:
     config_struct.tolerance = config.tolerance
     config_struct.regularization = config.regularization
     config_struct.omega = config.omega
+    config_struct.contact_solver = (
+        _DVI_CONTACT_SOLVER_APGD if config.contact_solver == "apgd" else _DVI_CONTACT_SOLVER_PGS
+    )
     config_struct.max_alternating_iterations = config.max_alternating_iterations
     config_struct.inequality_sweeps_per_iteration = config.inequality_sweeps_per_iteration
     config_struct.tangential_warmstart_scale = config.tangential_warmstart_scale
-    config_struct.bilateral_solve_interval = config.bilateral_solve_interval
+    config_struct.post_stabilization_bilateral = int(config.post_stabilization_bilateral)
     return config_struct

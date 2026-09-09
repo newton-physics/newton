@@ -24,7 +24,9 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJaco
 from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
+from newton._src.solvers.kamino._src.solvers.dvi import sparse as dvi_sparse
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    _INEQUALITY_FAMILY_LIMITS,
     _initialize_dvi_status,
     _solve_dvi_inequalities_colored_pgs,
 )
@@ -333,10 +335,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dynamics.linear_solver_type, "LLTBRCM")
         self.assertEqual(default_config.dynamics.linear_solver_kwargs, {})
         self.assertEqual(default_config.dvi.omega, 1.0)
+        self.assertEqual(default_config.dvi.contact_solver, "pgs")
+        self.assertIsNone(default_config.dvi.contact_law)
+        self.assertEqual(default_config.dvi.resolved_contact_law, "de_saxce")
+        self.assertEqual(default_config.dvi.apgd.max_iterations, 20)
+        self.assertEqual(default_config.dvi.apgd.max_backtrack_iterations, 20)
+        self.assertEqual(default_config.dvi.apgd.tolerance, 1.0e-3)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
+        self.assertFalse(default_config.dvi.post_stabilization_bilateral)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
 
@@ -373,27 +382,49 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(sparse_config.dvi.omega, 1.0)
         self.assertEqual(sparse_config.dynamics.linear_solver_type, "CR")
         self.assertEqual(sparse_config.dynamics.linear_solver_kwargs, {"maxiter": 9})
-        with self.assertRaises(ValueError):
-            SolverKamino.Config(
-                dynamics_solver="dvi",
-                dynamics=kamino_config.ConstrainedDynamicsConfig(preconditioning=True),
-            )
+        preconditioned_config = SolverKamino.Config(
+            dynamics_solver="dvi",
+            dynamics=kamino_config.ConstrainedDynamicsConfig(preconditioning=True),
+        )
+        self.assertTrue(preconditioned_config.dynamics.preconditioning)
         invalid_dvi_configs = (
             {"tolerance": -1.0},
+            {"tolerance": float("nan")},
+            {"tolerance": float("inf")},
+            {"tolerance": True},
             {"regularization": 0.0},
+            {"regularization": float("nan")},
+            {"regularization": float("inf")},
+            {"regularization": True},
             {"omega": 0.0},
             {"omega": 2.1},
+            {"omega": float("nan")},
+            {"omega": float("inf")},
+            {"omega": True},
             {"max_alternating_iterations": 0},
+            {"max_alternating_iterations": 1.5},
+            {"max_alternating_iterations": True},
             {"inequality_sweeps_per_iteration": 0},
+            {"inequality_sweeps_per_iteration": 1.5},
+            {"inequality_sweeps_per_iteration": True},
             {"bilateral_solve_interval": 0},
+            {"bilateral_solve_interval": 1.5},
+            {"bilateral_solve_interval": True},
             {"tangential_warmstart_scale": -0.1},
             {"tangential_warmstart_scale": 1.1},
+            {"tangential_warmstart_scale": float("nan")},
+            {"tangential_warmstart_scale": float("inf")},
+            {"tangential_warmstart_scale": True},
             {"bilateral_solver_type": "invalid"},
             {"warmstart_mode": "invalid"},
         )
         for kwargs in invalid_dvi_configs:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 kamino_config.DVISolverConfig(**kwargs)
+        with self.assertRaisesRegex(ValueError, "canonical L -> B -> C"):
+            kamino_config.DVISolverConfig(bilateral_solve_interval=2)
+        with self.assertRaisesRegex(TypeError, "post_stabilization_bilateral"):
+            kamino_config.DVISolverConfig(post_stabilization_bilateral=1)
         for method in (
             "key_and_position",
             "geom_pair_net_force",
@@ -799,12 +830,14 @@ class TestDVISolver(unittest.TestCase):
                     float_array([0.25 if bounded else 0.0]),  # problem_bound_upper
                     float_array([1.0]),  # problem_P
                     float_array([-1.0]),  # problem_v_f
+                    float_array([0.0]),  # problem_E_hat
                     float_array([1.0]),  # problem_diag
                     float_array([0.0]),  # eta
                     int32_array([1]),  # inequality_num_colors
                     int32_array([0]),  # inequality_ids_by_color
                     int32_array([0, 1]),  # inequality_color_starts
                     -1,  # block_iteration
+                    _INEQUALITY_FAMILY_LIMITS,
                     config,
                     body_space,
                     lambdas,
@@ -1064,8 +1097,8 @@ class TestDVISolver(unittest.TestCase):
         expected_sliding = 0.1 * scalar_candidate / np.linalg.norm(scalar_candidate)
         np.testing.assert_allclose(sliding, expected_sliding, atol=1.0e-6, rtol=0.0)
 
-    def test_03k_dvi_inequality_only_status_reports_the_sweep_budget(self):
-        """Fuse inequality-only sweeps while reporting their full budget."""
+    def test_03k_dvi_single_family_fuses_sweeps_and_reports_budget(self):
+        """Fuse a sole inequality family while reporting its full PGS budget."""
         max_alternating_iterations = 17
         inequality_sweeps_per_iteration = 3
         for sparse, inequality_kernel in (
@@ -1104,7 +1137,7 @@ class TestDVISolver(unittest.TestCase):
                 )
 
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
-        """Honor each world's projected and bilateral iteration schedule."""
+        """Honor per-world work counts while executing B in every family sweep."""
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -1136,7 +1169,6 @@ class TestDVISolver(unittest.TestCase):
                 regularization=1e-5,
                 max_alternating_iterations=3,
                 inequality_sweeps_per_iteration=1,
-                bilateral_solve_interval=2,
             ),
             kamino_config.DVISolverConfig(
                 tolerance=0.0,
@@ -1156,18 +1188,18 @@ class TestDVISolver(unittest.TestCase):
                 config=configs,
                 warmstart=WarmStartMode.NONE,
             )
-            self.assertEqual(solver._bilateral_solve_after_block, (False, True))
+            self.assertTrue(all(config.bilateral_solve_interval == 1 for config in solver.config))
             zero_dims = np.zeros(3, dtype=np.int32)
             joint_dims = problem.data.njc.numpy()
             solver._set_bilateral_active_dim(problem, 0)
-            np.testing.assert_array_equal(solver.data.state.bilateral_active_dim.numpy(), zero_dims)
+            np.testing.assert_array_equal(solver.data.state.bilateral_active_dim.numpy(), joint_dims)
             solver._set_bilateral_active_dim(problem, 1)
             np.testing.assert_array_equal(
                 solver.data.state.bilateral_active_dim.numpy(),
                 np.array([0, joint_dims[1], 0], dtype=np.int32),
             )
             solver._set_bilateral_active_dim(problem, -1)
-            np.testing.assert_array_equal(solver.data.state.bilateral_active_dim.numpy(), joint_dims)
+            np.testing.assert_array_equal(solver.data.state.bilateral_active_dim.numpy(), zero_dims)
             active_dim_updates = []
             set_bilateral_active_dim = solver._set_bilateral_active_dim
 
@@ -1179,18 +1211,19 @@ class TestDVISolver(unittest.TestCase):
             solver.reset()
             solver.coldstart()
             solver.solve(problem)
-            self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [1, -1])
+            self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, 2])
+            np.testing.assert_array_equal(active_dim_updates[0][1], joint_dims)
             np.testing.assert_array_equal(
-                active_dim_updates[0][1],
+                active_dim_updates[1][1],
                 np.array([0, joint_dims[1], 0], dtype=np.int32),
             )
-            np.testing.assert_array_equal(active_dim_updates[1][1], joint_dims)
+            np.testing.assert_array_equal(active_dim_updates[2][1], active_dim_updates[1][1])
             status = solver.data.status.numpy()
             self.assertEqual([int(status[wid]["iterations"]) for wid in range(3)], [1, 3, 3])
             self.assertTrue(np.all(solver.data.state.inequality_num_colors.numpy() > 0))
             np.testing.assert_array_equal(
                 solver.data.state.bilateral_active_dim.numpy(),
-                problem.data.njc.numpy(),
+                np.array([0, joint_dims[1], 0], dtype=np.int32),
             )
 
             lambdas = extract_problem_vector(
@@ -1204,8 +1237,8 @@ class TestDVISolver(unittest.TestCase):
         self.assertGreater(normal_sums[1], normal_sums[0])
         self.assertGreater(normal_sums[2], normal_sums[0])
 
-    def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
-        """Restrict sparse bilateral re-solves to each world's configured interval."""
+    def test_03d1_sparse_dvi_executes_bilateral_in_every_family_sweep(self):
+        """Execute sparse B once per host-side family sweep for each active world."""
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -1225,12 +1258,10 @@ class TestDVISolver(unittest.TestCase):
         problem = _make_sparse_dual_problem(model, data, limits, detector.contacts, jacobians)
         configs = [
             kamino_config.DVISolverConfig(
-                max_alternating_iterations=3,
-                bilateral_solve_interval=1,
+                max_alternating_iterations=1,
             ),
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
-                bilateral_solve_interval=99,
             ),
         ]
         solver = DVISolver(
@@ -1255,15 +1286,17 @@ class TestDVISolver(unittest.TestCase):
         solver.solve(problem)
 
         joint_dims = problem.data.njc.numpy()
-        self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
+        self.assertTrue(all(config.bilateral_solve_interval == 1 for config in solver.config))
+        self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, 2])
+        np.testing.assert_array_equal(active_dim_updates[0][1], joint_dims)
         np.testing.assert_array_equal(
-            active_dim_updates[0][1],
-            np.array([joint_dims[0], 0], dtype=np.int32),
+            active_dim_updates[1][1],
+            np.array([0, joint_dims[1]], dtype=np.int32),
         )
-        np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
-        np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+        np.testing.assert_array_equal(active_dim_updates[2][1], active_dim_updates[1][1])
 
-    def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
+    def test_03d2_dvi_post_stabilization_finishes_with_bilateral_solve(self):
+        """Verify the opt-in post-stabilization pass leaves bilateral rows solved."""
         builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
@@ -1293,6 +1326,7 @@ class TestDVISolver(unittest.TestCase):
                 regularization=1e-5,
                 max_alternating_iterations=1,
                 inequality_sweeps_per_iteration=1,
+                post_stabilization_bilateral=True,
             ),
             warmstart=WarmStartMode.NONE,
         )
@@ -1306,6 +1340,117 @@ class TestDVISolver(unittest.TestCase):
         self.assertGreater(njc, 0)
         self.assertLess(float(np.max(np.abs(v_plus[:njc]))), 1e-6)
         self.assertLess(float(status["r_b"]), 1e-6)
+
+    def test_03d2a_dvi_family_coupling_orders_phases_and_optional_post_bilateral(self):
+        """Execute exact L-B-C sweeps and honor the optional post-stabilization B pass."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                builder = basics.build_boxes_hinged(dynamic_joints=True)
+                model = ModelKamino.from_newton(builder.finalize(device=self.device))
+                model, data, state, limits, detector, jacobians = make_containers(
+                    model=model,
+                    max_world_contacts=8,
+                    sparse=sparse,
+                )
+                update_containers(
+                    model=model,
+                    data=data,
+                    state=state,
+                    limits=limits,
+                    detector=detector,
+                    jacobians=jacobians,
+                )
+                make_problem = _make_sparse_dual_problem if sparse else _make_dense_dual_problem
+                problem = make_problem(model, data, limits, detector.contacts, jacobians)
+                self.assertGreater(int(problem.data.njc.numpy()[0]), 0)
+                self.assertGreater(int(problem.data.nbc.numpy()[0]), 0)
+                self.assertGreater(int(problem.data.nc.numpy()[0]), 0)
+
+                for post_stabilization_bilateral in (False, True):
+                    with self.subTest(post_stabilization_bilateral=post_stabilization_bilateral):
+                        solver = DVISolver(
+                            model=model,
+                            data=data,
+                            limits=limits,
+                            contacts=detector.contacts,
+                            jacobians=jacobians,
+                            problem=problem if sparse else None,
+                            config=kamino_config.DVISolverConfig(
+                                post_stabilization_bilateral=post_stabilization_bilateral,
+                                max_alternating_iterations=2,
+                                inequality_sweeps_per_iteration=1,
+                                tolerance=0.0,
+                            ),
+                            warmstart=WarmStartMode.NONE,
+                        )
+                        solver.coldstart()
+                        events: list[str] = []
+
+                        def record(name, operation, event_log=events):
+                            def wrapped(*args, **kwargs):
+                                event_log.append(name)
+                                return operation(*args, **kwargs)
+
+                            return wrapped
+
+                        if sparse:
+                            factor = dvi_sparse._factor_sparse_bilateral_block
+                            solve_b = dvi_sparse._solve_sparse_bilateral_block
+                            solve_l = dvi_sparse._solve_sparse_limit_phase
+                            solve_c = dvi_sparse._solve_sparse_contact_phase
+                            patches = (
+                                mock.patch.object(
+                                    dvi_sparse,
+                                    "_factor_sparse_bilateral_block",
+                                    side_effect=record("factor", factor),
+                                ),
+                                mock.patch.object(
+                                    dvi_sparse,
+                                    "_solve_sparse_bilateral_block",
+                                    side_effect=record("B", solve_b),
+                                ),
+                                mock.patch.object(
+                                    dvi_sparse,
+                                    "_solve_sparse_limit_phase",
+                                    side_effect=record("L", solve_l),
+                                ),
+                                mock.patch.object(
+                                    dvi_sparse,
+                                    "_solve_sparse_contact_phase",
+                                    side_effect=record("C", solve_c),
+                                ),
+                            )
+                        else:
+                            patches = (
+                                mock.patch.object(
+                                    solver,
+                                    "_factor_bilateral_block",
+                                    side_effect=record("factor", solver._factor_bilateral_block),
+                                ),
+                                mock.patch.object(
+                                    solver,
+                                    "_solve_bilateral_block",
+                                    side_effect=record("B", solver._solve_bilateral_block),
+                                ),
+                                mock.patch.object(
+                                    solver,
+                                    "_solve_dense_limit_phase",
+                                    side_effect=record("L", solver._solve_dense_limit_phase),
+                                ),
+                                mock.patch.object(
+                                    solver,
+                                    "_solve_dense_contact_phase",
+                                    side_effect=record("C", solver._solve_dense_contact_phase),
+                                ),
+                            )
+
+                        with patches[0], patches[1], patches[2], patches[3]:
+                            solver.solve(problem)
+
+                        expected = ["factor", "L", "B", "C", "L", "B", "C"]
+                        if post_stabilization_bilateral:
+                            expected.append("B")
+                        self.assertEqual(events, expected)
 
     def test_03e_dvi_direct_block_no_unilateral_rows_reports_single_iteration(self):
         builder = basics.build_box_pendulum(ground=False)
@@ -2006,7 +2151,9 @@ class TestDVISolver(unittest.TestCase):
                     ),
                 )
                 low_budget_dual_residual = float(low_budget_solver.data.status.numpy()[0]["r_d"])
-                self.assertLess(low_budget_dual_residual, 7.0e-4)
+                # Status is reported in physical velocity units after undoing
+                # the contact-row preconditioner (P=0.5 for this stack).
+                self.assertLess(low_budget_dual_residual, 1.4e-3)
 
                 default_solver = _solve_dvi(
                     model,
@@ -2181,7 +2328,7 @@ class TestDVISolver(unittest.TestCase):
                 )
 
     def test_05d_dvi_colors_contacts_with_joint_limits(self):
-        """Solve contacts and joint limits through one colored inequality path."""
+        """Solve separately colored contact and joint-limit family phases."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 builder = _build_five_box_stack()

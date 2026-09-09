@@ -444,10 +444,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ValueError(
                     f"Invalid dynamics solver: {self.dynamics_solver}. Must be one of {supported_dynamics_solvers}."
                 )
-            if self.dynamics_solver == "dvi" and self.dynamics.preconditioning:
+            has_physical_compliance = any(
+                compliance > 0.0
+                for compliance in (
+                    self.constraints.joint_compliance,
+                    self.constraints.joint_limit_compliance,
+                    self.constraints.contact_compliance,
+                )
+            )
+            if self.dynamics_solver == "padmm" and has_physical_compliance:
                 raise ValueError(
-                    "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
-                    "contact cone updates stay in physical constraint units."
+                    "Physical constraint compliance is currently supported only by the DVI solver; PADMM support "
+                    "requires keeping its proximal regularization separate from the constitutive diagonal."
                 )
             if (
                 self.dynamics_solver == "padmm"

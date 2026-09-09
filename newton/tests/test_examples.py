@@ -1338,6 +1338,14 @@ add_example_test(
 )
 add_example_test(
     TestKaminoExamples,
+    name="kamino.example_kamino_robot_dr_legs",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 10, "dynamics-solver": "dvi", "contact-solver": "apgd"},
+    use_viewer=True,
+    test_suffix="dvi_apgd",
+)
+add_example_test(
+    TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
     test_options={"num-frames": 500},

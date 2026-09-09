@@ -14,10 +14,16 @@ from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
+from .apgd import ContactAPGDSolver
+from .apgd_sparse import SparseContactOperator
 from .kernels import (
-    _FUSED_INEQUALITY_BLOCK,
+    _FUSED_SINGLE_FAMILY_BLOCK,
+    _INEQUALITY_FAMILY_CONTACTS,
+    _INEQUALITY_FAMILY_LIMITS,
+    _accumulate_dvi_apgd_status,
     _initialize_dvi_status,
     _scatter_bilateral_solution,
+    _set_dvi_contact_active_mask,
     _set_dvi_direct_status_iterations,
 )
 from .sparse_kernels import (
@@ -59,10 +65,14 @@ class SparseDVIPath:
         contacts: ContactsKamino | None,
         jacobians: SparseSystemJacobians | None,
         bilateral_solver,
+        contact_solver: str,
+        contact_apgd: ContactAPGDSolver | None,
         max_alternating_iterations: int,
         has_unilateral_constraints: bool,
+        has_limit_constraints: bool,
+        has_contact_constraints: bool,
+        has_post_stabilization_bilateral: bool,
         all_worlds_mask: wp.array[wp.bool],
-        should_solve_bilateral_after_block,
         set_bilateral_active_dim,
     ):
         """Initialize the sparse-path workspace references."""
@@ -76,10 +86,15 @@ class SparseDVIPath:
         self.jacobians = jacobians
         self.body_space = wp.empty(shape=size.sum_of_num_body_dofs, dtype=wp.float32, device=device)
         self.bilateral_solver = bilateral_solver
+        self.contact_solver = contact_solver
+        self.contact_apgd = contact_apgd
+        self.contact_operator: SparseContactOperator | None = None
         self.max_alternating_iterations = max_alternating_iterations
         self.has_unilateral_constraints = has_unilateral_constraints
+        self.has_limit_constraints = has_limit_constraints
+        self.has_contact_constraints = has_contact_constraints
+        self.has_post_stabilization_bilateral = has_post_stabilization_bilateral
         self.all_worlds_mask = all_worlds_mask
-        self.should_solve_bilateral_after_block = should_solve_bilateral_after_block
         self.set_bilateral_active_dim = set_bilateral_active_dim
         self.bilateral_nzb_pairs: (
             tuple[
@@ -98,6 +113,8 @@ class SparseDVIPath:
         _get_sparse_delassus(problem)
         if self.model_data is None or self.jacobians is None:
             raise RuntimeError("Sparse DVI requires model data and sparse Jacobians.")
+        if self.contact_solver == "apgd" and self.contact_operator is None:
+            self.contact_operator = _make_sparse_contact_operator(self, problem)
         if self.bilateral_solver is not None and self.data.bilateral_operator is not None:
             _build_sparse_bilateral_pairs(self, problem)
 
@@ -106,7 +123,7 @@ class SparseDVIPath:
         if self.bilateral_solver is not None and self.data.bilateral_operator is not None:
             _solve_sparse_with_bilateral_direct_block(self, problem)
         elif _can_use_sparse_colored_inequalities(self):
-            _solve_sparse_inequality_pgs(self, problem)
+            _solve_sparse_family_pgs(self, problem)
         elif self.has_unilateral_constraints:
             raise RuntimeError(_SPARSE_INEQUALITY_TOPOLOGY_ERROR)
         else:
@@ -204,8 +221,13 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
     )
 
 
-def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, block_iteration: int) -> None:
-    """Apply colored sparse PGS from the current full dual iterate."""
+def _launch_sparse_inequality_pgs(
+    path: SparseDVIPath,
+    problem: DualProblem,
+    block_iteration: int,
+    inequality_family: int,
+) -> None:
+    """Apply selected colored sparse PGS rows from the current full dual iterate."""
     state = path.data.state
     jacobians = path.jacobians
     if jacobians is None:
@@ -250,12 +272,14 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
             problem.data.bound_upper,
             problem.data.P,
             problem.data.v_f,
+            problem.data.E_hat,
             state.scratch,
             delassus.regularization,
             state.inequality_num_colors,
             state.inequality_ids_by_color,
             state.inequality_color_starts,
             block_iteration,
+            inequality_family,
             path.data.config,
             path.body_space,
             path.data.solution.lambdas,
@@ -265,18 +289,164 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
     )
 
 
-def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
+def _solve_sparse_limit_phase(path: SparseDVIPath, problem: DualProblem, block_iteration: int) -> None:
+    """Solve bounded joint rows and joint limits from the latest iterate."""
+    _launch_sparse_inequality_pgs(path, problem, block_iteration, _INEQUALITY_FAMILY_LIMITS)
+
+
+def _solve_sparse_contact_phase(path: SparseDVIPath, problem: DualProblem, block_iteration: int) -> None:
+    """Solve contact triplets from the latest iterate with the selected backend."""
+    if path.contact_solver == "apgd":
+        _solve_sparse_contact_apgd(path, problem, block_iteration)
+    else:
+        _launch_sparse_inequality_pgs(path, problem, block_iteration, _INEQUALITY_FAMILY_CONTACTS)
+
+
+def _make_sparse_contact_operator(path: SparseDVIPath, problem: DualProblem) -> SparseContactOperator:
+    """Bind APGD to Kamino's raw sparse Jacobian and represented dual arrays."""
+    if path.contact_apgd is None:
+        raise RuntimeError("The APGD contact solver has not been allocated.")
+    if path.model_data is None or path.jacobians is None:
+        raise RuntimeError("Sparse contact APGD requires model data and sparse Jacobians.")
+    delassus = _get_sparse_delassus(problem)
+    jacobian = delassus.constraint_jacobian
+    return SparseContactOperator(
+        problem_dim=problem.data.dim,
+        problem_vio=problem.data.vio,
+        problem_nc=problem.data.nc,
+        problem_cio=problem.data.cio,
+        problem_ccgo=problem.data.ccgo,
+        contact_indices=path.data.state.contact_indices,
+        contact_nzb_offsets=path.jacobians.contact_constraint_nzb_offsets,
+        jacobian_num_nzb=jacobian.num_nzb,
+        jacobian_nzb_start=jacobian.nzb_start,
+        jacobian_nzb_coords=jacobian.nzb_coords,
+        jacobian_nzb_values=jacobian.nzb_values,
+        jacobian_row_start=jacobian.row_start,
+        jacobian_col_start=jacobian.col_start,
+        body_offset=path.model.info.bodies_offset,
+        body_inv_mass=path.model.bodies.inv_m_i,
+        body_inv_inertia=path.model_data.bodies.inv_I_i,
+        preconditioner=problem.data.P,
+        regularization=delassus.regularization,
+        represented_compliance=problem.data.E_hat,
+        free_velocity=problem.data.v_f,
+        contact_row_offset=path.contact_apgd.contact_row_offset,
+        num_worlds=path.size.num_worlds,
+        max_contacts_per_world=path.contact_apgd.max_contacts_per_world,
+        max_bodies_per_world=path.size.max_of_num_bodies,
+        total_body_dofs=path.size.sum_of_num_body_dofs,
+        device=path.device,
+    )
+
+
+def _rebind_sparse_contact_operator(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Rebind graph-time workspace when a solver is reused with a new problem."""
+    if path.contact_operator is None:
+        path.contact_operator = _make_sparse_contact_operator(path, problem)
+        return
+
+    delassus = _get_sparse_delassus(problem)
+    jacobian = delassus.constraint_jacobian
+    operator = path.contact_operator
+    operator.problem_dim = problem.data.dim
+    operator.problem_vio = problem.data.vio
+    operator.problem_nc = problem.data.nc
+    operator.problem_cio = problem.data.cio
+    operator.problem_ccgo = problem.data.ccgo
+    operator.jacobian_num_nzb = jacobian.num_nzb
+    operator.jacobian_nzb_start = jacobian.nzb_start
+    operator.jacobian_nzb_coords = jacobian.nzb_coords
+    operator.jacobian_nzb_values = jacobian.nzb_values
+    operator.jacobian_row_start = jacobian.row_start
+    operator.jacobian_col_start = jacobian.col_start
+    operator.preconditioner = problem.data.P
+    operator.regularization = delassus.regularization
+    operator.represented_compliance = problem.data.E_hat
+    operator.free_velocity = problem.data.v_f
+
+
+def _prepare_sparse_contact_apgd(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Bind APGD arrays and build topology once for the complete family solve."""
+    if path.contact_solver != "apgd" or not path.has_contact_constraints:
+        return
+    _rebind_sparse_contact_operator(path, problem)
+    path.contact_operator.prepare()
+
+
+def _solve_sparse_contact_apgd(path: SparseDVIPath, problem: DualProblem, block_iteration: int) -> None:
+    """Solve the associated sparse contact subproblem with L and B fixed."""
+    if path.contact_apgd is None:
+        raise RuntimeError("The APGD contact solver has not been allocated.")
+    wp.launch(
+        kernel=_set_dvi_contact_active_mask,
+        dim=path.size.num_worlds,
+        inputs=[
+            problem.data.nc,
+            problem.data.ccgo,
+            problem.data.vio,
+            problem.data.P,
+            block_iteration,
+            path.data.config,
+            path.data.status,
+            path.data.state.contact_active_mask,
+        ],
+        device=path.device,
+    )
+    operator = path.contact_operator
+    phase_mask = path.data.state.contact_active_mask
+    operator.build_rhs(path.data.solution.lambdas, path.contact_apgd.rhs, phase_mask)
+    operator.gather(path.data.solution.lambdas, path.contact_apgd.solution, phase_mask)
+    apgd_status = path.contact_apgd.solve(
+        problem.data.nc,
+        problem.data.mu,
+        path.contact_apgd.rhs,
+        path.contact_apgd.solution,
+        operator.matvec,
+        phase_mask=phase_mask,
+        contact_offset=problem.data.cio,
+    )
+    operator.scatter(path.contact_apgd.solution, path.data.solution.lambdas, phase_mask)
+    wp.launch(
+        kernel=_accumulate_dvi_apgd_status,
+        dim=path.size.num_worlds,
+        inputs=[apgd_status, phase_mask, path.data.status],
+        device=path.device,
+    )
+
+
+def _solve_sparse_family_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Apply explicit ``L -> C`` family coupling without a bilateral block."""
     delassus = _get_sparse_delassus(problem)
     delassus.diagonal(path.data.state.scratch)
     _prepare_sparse_inequality_pgs(path, problem)
-    # Inequality-only solves need no host work between PGS blocks.
-    for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
-        _launch_sparse_inequality_pgs(path, problem, block_iteration)
+    _prepare_sparse_contact_apgd(path, problem)
+    single_contact_phase = path.contact_solver == "apgd" and not path.has_limit_constraints
+    fused_pgs_family = path.contact_solver == "pgs" and (path.has_limit_constraints != path.has_contact_constraints)
+    if fused_pgs_family:
+        if path.has_limit_constraints:
+            _solve_sparse_limit_phase(path, problem, _FUSED_SINGLE_FAMILY_BLOCK)
+        else:
+            _solve_sparse_contact_phase(path, problem, _FUSED_SINGLE_FAMILY_BLOCK)
+    else:
+        family_iterations = 1 if single_contact_phase else path.max_alternating_iterations
+        for block_iteration in range(family_iterations):
+            if path.has_limit_constraints:
+                _solve_sparse_limit_phase(path, problem, block_iteration)
+            if path.has_contact_constraints:
+                _solve_sparse_contact_phase(path, problem, block_iteration)
     _compute_sparse_solution_vectors(path, problem)
     wp.launch(
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
-        inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, path.data.config, path.data.status],
+        inputs=[
+            problem.data.nbc,
+            problem.data.nl,
+            problem.data.nc,
+            single_contact_phase,
+            path.data.config,
+            path.data.status,
+        ],
         device=path.device,
     )
 
@@ -302,6 +472,8 @@ def _compute_sparse_solution_vectors(path: SparseDVIPath, problem: DualProblem) 
             problem.data.dim,
             problem.data.vio,
             problem.data.v_f,
+            problem.data.E_hat,
+            path.data.solution.lambdas,
             state.s,
             state.v_aug,
             path.data.solution.v_plus,
@@ -355,6 +527,7 @@ def _sparse_delassus_matvec_rows(solver, problem: DualProblem, row_kind: int) ->
 
 
 def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Build and factor the represented ``D_bb + E_hat_bb`` operator."""
     operator = path.data.bilateral_operator
     state = path.data.state
     operator.info.dim = operator.info.maxdim
@@ -374,6 +547,8 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
             operator.info.mio,
             operator.info.vio,
             state.scratch,
+            problem.data.P,
+            problem.data.E_hat,
             operator.mat,
             state.bilateral_preconditioner,
         ],
@@ -394,6 +569,8 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
                 pair_i,
                 pair_j,
                 jacobian.nzb_values,
+                problem.data.vio,
+                problem.data.P,
                 problem.data.njc,
                 operator.info.mio,
                 operator.info.vio,
@@ -499,11 +676,10 @@ def _solve_sparse_bilateral_block(
 
 
 def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: DualProblem) -> None:
-    """Alternate a direct ``D_bb`` solve with projected sparse unilateral sweeps."""
-    state = path.data.state
+    """Factor ``D_bb + E_hat_bb`` once and execute the sparse coupling schedule."""
     _factor_sparse_bilateral_block(path, problem)
-    _solve_sparse_bilateral_block(path, problem)
     if not path.has_unilateral_constraints:
+        _solve_sparse_bilateral_block(path, problem)
         _compute_sparse_solution_vectors(path, problem)
         return
 
@@ -519,16 +695,10 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
     if not _can_use_sparse_colored_inequalities(path):
         raise RuntimeError(_SPARSE_INEQUALITY_TOPOLOGY_ERROR)
     _prepare_sparse_inequality_pgs(path, problem)
+    _prepare_sparse_contact_apgd(path, problem)
 
-    for block_iteration in range(path.max_alternating_iterations):
-        _launch_sparse_inequality_pgs(path, problem, block_iteration)
+    _solve_sparse_explicit_family_coupling(path, problem)
 
-        if path.should_solve_bilateral_after_block(block_iteration):
-            path.set_bilateral_active_dim(problem, block_iteration)
-            _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
-
-    path.set_bilateral_active_dim(problem, -1)
-    _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
     wp.launch(
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
@@ -536,9 +706,36 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
             problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
+            False,
             path.data.config,
             path.data.status,
         ],
         device=path.device,
     )
     _compute_sparse_solution_vectors(path, problem)
+
+
+def _solve_sparse_explicit_family_coupling(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Apply exactly ``L -> B -> C`` per sparse coupling sweep."""
+    state = path.data.state
+    for block_iteration in range(path.max_alternating_iterations):
+        if path.has_limit_constraints:
+            _solve_sparse_limit_phase(path, problem, block_iteration)
+
+        path.set_bilateral_active_dim(problem, block_iteration)
+        _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
+
+        if path.has_contact_constraints:
+            # Rebuilding body_space in this launch makes C see the B impulse
+            # that was just scattered into the unified lambda vector.
+            _solve_sparse_contact_phase(path, problem, block_iteration)
+
+    _solve_sparse_post_stabilization_bilateral(path, problem)
+
+
+def _solve_sparse_post_stabilization_bilateral(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Apply the configured optional terminal sparse bilateral refresh."""
+    if not path.has_post_stabilization_bilateral:
+        return
+    path.set_bilateral_active_dim(problem, -1)
+    _solve_sparse_bilateral_block(path, problem, active_dim=path.data.state.bilateral_active_dim)

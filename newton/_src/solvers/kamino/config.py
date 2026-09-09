@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from numbers import Real
 from typing import Any, Literal
 
 import warp as wp
@@ -25,6 +26,7 @@ __all__ = [
     "ConfigBase",
     "ConstrainedDynamicsConfig",
     "ConstraintStabilizationConfig",
+    "DVIAPGDConfig",
     "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
     "PADMMSolverConfig",
@@ -259,6 +261,85 @@ class ConstraintStabilizationConfig(ConfigBase):
     Defaults to `1.0e-6`.
     """
 
+    joint_compliance: float = 0.0
+    """
+    Global physical compliance of kinematic bilateral-joint rows. The value is
+    inverse constraint stiffness, with row-dependent units of [m/N] for
+    translational rows and [rad/(N·m)] for rotational rows. A positive value
+    adds ``joint_compliance / (dt * (dt + joint_stabilization_time))`` to the
+    corresponding DVI operator diagonal. Dynamic actuator rows are unaffected.
+    Must be non-negative and requires an explicit
+    :attr:`joint_stabilization_time`. Defaults to ``0.0`` (rigid joints).
+    """
+
+    joint_stabilization_time: float | None = None
+    """
+    Bilateral-joint stabilization time constant [s]. When set, kinematic
+    joint drift uses ``error / (dt + joint_stabilization_time)`` instead of
+    the dimensionless :attr:`alpha` rule. ``None`` preserves the existing
+    rule. Must be non-negative when specified. Defaults to ``None``.
+    """
+
+    joint_recovery_speed: float | None = None
+    """
+    Maximum bilateral-joint drift-recovery speed [m/s or rad/s]. The bound is
+    applied symmetrically to positive and negative correction velocities.
+    ``None`` leaves recovery unbounded. Must be positive when specified.
+    Defaults to ``None``.
+    """
+
+    joint_limit_compliance: float = 0.0
+    """
+    Global physical joint-limit compliance, expressed as inverse stiffness in
+    the units conjugate to each joint DoF. A positive value adds
+    ``joint_limit_compliance / (dt * (dt + joint_limit_stabilization_time))``
+    to each active joint-limit row of the DVI operator. Bounded joint-friction
+    and actuator-effort rows are unaffected. Must be non-negative and requires
+    an explicit :attr:`joint_limit_stabilization_time`. Defaults to ``0.0``
+    (rigid joint limits).
+    """
+
+    joint_limit_stabilization_time: float | None = None
+    """
+    Joint-limit stabilization time constant [s]. When set, active limit drift
+    uses ``error / (dt + joint_limit_stabilization_time)`` instead of the
+    dimensionless :attr:`beta` rule. ``None`` preserves the existing rule.
+    Must be non-negative when specified. Defaults to ``None``.
+    """
+
+    joint_limit_recovery_speed: float | None = None
+    """
+    Maximum joint-limit drift-recovery speed [m/s or rad/s]. The bound applies
+    only to the negative stabilization velocity of an active unilateral row.
+    ``None`` leaves recovery unbounded. Must be positive when specified.
+    Defaults to ``None``.
+    """
+
+    contact_compliance: float = 0.0
+    """
+    Global contact compliance [m/N]. A positive value adds the physical
+    contact-operator diagonal
+    ``contact_compliance / (dt * (dt + contact_stabilization_time))``.
+    Must be non-negative and requires an explicit
+    :attr:`contact_stabilization_time`. Defaults to ``0.0`` (rigid contact).
+    """
+
+    contact_stabilization_time: float | None = None
+    """
+    Contact stabilization time constant [s]. When set, contact stabilization
+    uses the contact-margin-adjusted signed gap divided by
+    ``dt + contact_stabilization_time`` instead of the dimensionless
+    :attr:`gamma` rule. ``None`` preserves the existing rule. Must be
+    non-negative when specified. Defaults to ``None``.
+    """
+
+    contact_recovery_speed: float | None = None
+    """
+    Maximum penetration-recovery speed [m/s]. The bound applies only to the
+    negative contact stabilization velocity. ``None`` leaves recovery
+    unbounded. Must be positive when specified. Defaults to ``None``.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -350,6 +431,100 @@ class ConstraintStabilizationConfig(ConfigBase):
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
         if self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
+        if self.joint_stabilization_time is not None and (
+            not isinstance(self.joint_stabilization_time, Real)
+            or isinstance(self.joint_stabilization_time, bool)
+            or not math.isfinite(self.joint_stabilization_time)
+            or self.joint_stabilization_time < 0.0
+        ):
+            raise ValueError(
+                "Invalid joint_stabilization_time: "
+                f"{self.joint_stabilization_time}. Must be a real, finite, non-negative number when specified."
+            )
+        if self.joint_recovery_speed is not None and (
+            not isinstance(self.joint_recovery_speed, Real)
+            or isinstance(self.joint_recovery_speed, bool)
+            or not math.isfinite(self.joint_recovery_speed)
+            or self.joint_recovery_speed <= 0.0
+        ):
+            raise ValueError(
+                f"Invalid joint_recovery_speed: {self.joint_recovery_speed}. "
+                "Must be a real, finite, positive number when specified."
+            )
+        if self.joint_limit_stabilization_time is not None and (
+            not isinstance(self.joint_limit_stabilization_time, Real)
+            or isinstance(self.joint_limit_stabilization_time, bool)
+            or not math.isfinite(self.joint_limit_stabilization_time)
+            or self.joint_limit_stabilization_time < 0.0
+        ):
+            raise ValueError(
+                "Invalid joint_limit_stabilization_time: "
+                f"{self.joint_limit_stabilization_time}. "
+                "Must be a real, finite, non-negative number when specified."
+            )
+        if self.joint_limit_recovery_speed is not None and (
+            not isinstance(self.joint_limit_recovery_speed, Real)
+            or isinstance(self.joint_limit_recovery_speed, bool)
+            or not math.isfinite(self.joint_limit_recovery_speed)
+            or self.joint_limit_recovery_speed <= 0.0
+        ):
+            raise ValueError(
+                f"Invalid joint_limit_recovery_speed: {self.joint_limit_recovery_speed}. "
+                "Must be a real, finite, positive number when specified."
+            )
+        for name, compliance in (
+            ("joint_compliance", self.joint_compliance),
+            ("joint_limit_compliance", self.joint_limit_compliance),
+            ("contact_compliance", self.contact_compliance),
+        ):
+            if (
+                not isinstance(compliance, Real)
+                or isinstance(compliance, bool)
+                or not math.isfinite(compliance)
+                or compliance < 0.0
+            ):
+                raise ValueError(f"Invalid {name}: {compliance}. Must be a real, finite, non-negative number.")
+        if self.contact_stabilization_time is not None and (
+            not isinstance(self.contact_stabilization_time, Real)
+            or isinstance(self.contact_stabilization_time, bool)
+            or not math.isfinite(self.contact_stabilization_time)
+            or self.contact_stabilization_time < 0.0
+        ):
+            raise ValueError(
+                "Invalid contact_stabilization_time: "
+                f"{self.contact_stabilization_time}. Must be a real, finite, non-negative number when specified."
+            )
+        if self.contact_recovery_speed is not None and (
+            not isinstance(self.contact_recovery_speed, Real)
+            or isinstance(self.contact_recovery_speed, bool)
+            or not math.isfinite(self.contact_recovery_speed)
+            or self.contact_recovery_speed <= 0.0
+        ):
+            raise ValueError(
+                f"Invalid contact_recovery_speed: {self.contact_recovery_speed}. "
+                "Must be a real, finite, positive number when specified."
+            )
+        compliance_time_pairs = (
+            ("joint_compliance", self.joint_compliance, "joint_stabilization_time", self.joint_stabilization_time),
+            (
+                "joint_limit_compliance",
+                self.joint_limit_compliance,
+                "joint_limit_stabilization_time",
+                self.joint_limit_stabilization_time,
+            ),
+            (
+                "contact_compliance",
+                self.contact_compliance,
+                "contact_stabilization_time",
+                self.contact_stabilization_time,
+            ),
+        )
+        for compliance_name, compliance, time_name, stabilization_time in compliance_time_pairs:
+            if compliance > 0.0 and stabilization_time is None:
+                raise ValueError(
+                    f"Nonzero {compliance_name} requires an explicit {time_name} so the physical "
+                    "diagonal uses an unambiguous time scale."
+                )
 
     @override
     def __post_init__(self):
@@ -794,6 +969,75 @@ class PADMMSolverConfig:
 
 
 @dataclass
+class DVIAPGDConfig:
+    """Controls for the associated-contact APGD phase of the DVI solver.
+
+    APGD always uses the full Res4 stopping residual and deterministic staged
+    reductions. Those are solver invariants rather than selectable modes.
+    """
+
+    max_iterations: int = 20
+    """Maximum APGD iterations in each contact-family phase. Defaults to ``20``."""
+
+    max_backtrack_iterations: int = 20
+    """Backtracking passes per APGD iteration, including the initial check.
+
+    A value of zero disables the descent check. Defaults to ``20``.
+    """
+
+    tolerance: float = 1.0e-3
+    """Absolute tolerance on the running minimum full Res4 norm. Defaults to ``1e-3``."""
+
+    min_iterations: int = 1
+    """Minimum completed APGD iterations before early exit. Defaults to ``1``."""
+
+    early_exit: bool = True
+    """Whether converged worlds stop participating in the contact phase. Defaults to ``True``."""
+
+    use_graph_conditionals: bool = True
+    """Use nested device-conditional loops when supported. Defaults to ``True``."""
+
+    def validate(self) -> None:
+        """Validate APGD iteration budgets and stopping controls."""
+        if (
+            not isinstance(self.max_iterations, int)
+            or isinstance(self.max_iterations, bool)
+            or self.max_iterations <= 0
+        ):
+            raise ValueError(f"Invalid APGD maximum iterations: {self.max_iterations}. Must be a positive integer.")
+        if (
+            not isinstance(self.max_backtrack_iterations, int)
+            or isinstance(self.max_backtrack_iterations, bool)
+            or self.max_backtrack_iterations < 0
+        ):
+            raise ValueError(
+                "Invalid APGD maximum backtrack iterations: "
+                f"{self.max_backtrack_iterations}. Must be a non-negative integer."
+            )
+        if (
+            not isinstance(self.min_iterations, int)
+            or isinstance(self.min_iterations, bool)
+            or not 1 <= self.min_iterations <= self.max_iterations
+        ):
+            raise ValueError(f"Invalid APGD minimum iterations: {self.min_iterations}. Must be in [1, max_iterations].")
+        if (
+            not isinstance(self.tolerance, Real)
+            or isinstance(self.tolerance, bool)
+            or not math.isfinite(self.tolerance)
+            or self.tolerance < 0.0
+        ):
+            raise ValueError(f"Invalid APGD tolerance: {self.tolerance}. Must be a real, finite, non-negative number.")
+        if not isinstance(self.early_exit, bool):
+            raise TypeError(f"Invalid APGD early_exit: {self.early_exit}. Must be a bool.")
+        if not isinstance(self.use_graph_conditionals, bool):
+            raise TypeError(f"Invalid APGD use_graph_conditionals: {self.use_graph_conditionals}. Must be a bool.")
+
+    def __post_init__(self) -> None:
+        """Validate values immediately after construction."""
+        self.validate()
+
+
+@dataclass
 class DVISolverConfig:
     """
     A container to hold configurations for the DVI forward dynamics solver.
@@ -801,8 +1045,10 @@ class DVISolverConfig:
 
     tolerance: float = 1e-5
     """
-    The convergence tolerance on the projected update size.
-    Must be non-negative. Defaults to `1e-5`.
+    Terminal convergence tolerance for the full DVI bilateral, primal, dual,
+    and complementarity residuals. The PGS family phases use a fixed sweep
+    budget; APGD has its own inner tolerance. Must be non-negative. Defaults
+    to `1e-5`.
     """
 
     regularization: float = 1e-6
@@ -817,26 +1063,62 @@ class DVISolverConfig:
     Must be in the range `(0, 2]`. Defaults to `1.0`.
     """
 
+    contact_solver: Literal["pgs", "apgd"] = "pgs"
+    """
+    Backend used for the contact family. ``pgs`` retains Kamino's split
+    normal/tangent contact update. ``apgd`` solves the associated Coulomb-cone
+    contact QP with accelerated projected gradient descent. APGD remains
+    opt-in while robot-scale outer-family convergence is evaluated. Defaults
+    to ``pgs``.
+    """
+
+    contact_law: Literal["de_saxce", "associated_at"] | None = None
+    """
+    Contact-law formulation. ``None`` selects the backend-native law:
+    ``de_saxce`` for PGS and ``associated_at`` for APGD. Crossed combinations
+    are rejected because they are different physical models, not numerical
+    tuning aliases. Defaults to ``None``.
+    """
+
+    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig)
+    """Configuration of the APGD contact phase."""
+
+    @property
+    def resolved_contact_law(self) -> Literal["de_saxce", "associated_at"]:
+        """Return the explicit law or the current backend's native law."""
+        if self.contact_law is not None:
+            return self.contact_law
+        return "associated_at" if self.contact_solver == "apgd" else "de_saxce"
+
     max_alternating_iterations: int = 24
     """
-    Maximum number of outer DVI iterations alternating direct bilateral
-    solves with projected inequality solves. Must be greater than zero.
-    This schedule is also used when no bilateral constraints are present;
-    in that case, the bilateral solve is skipped. Defaults to `24`.
+    Maximum number of ``L -> B -> C`` coupling sweeps. ``L`` contains bounded
+    joint rows and joint limits, ``B`` contains bilateral joint rows, and ``C``
+    contains contact triplets. Empty families are skipped. Must be greater than
+    zero. Defaults to `24`.
     """
 
     inequality_sweeps_per_iteration: int = 2
     """
-    Number of projected Gauss-Seidel sweeps used for unilateral inequalities
-    during each alternating DVI iteration. Contacts use graph-colored sweeps
+    Number of projected Gauss-Seidel sweeps used independently by each PGS
+    ``L`` or ``C`` phase in a coupling sweep. Contacts use graph-colored sweeps
     on CUDA. Must be greater than zero. Defaults to `2`.
     """
 
     bilateral_solve_interval: int = 1
+    """Compatibility setting for configurations created before the explicit
+    ``L -> B -> C`` schedule became canonical.
+
+    The canonical schedule solves ``B`` once per coupling sweep, so only the
+    historical default value ``1`` is supported. The field remains available
+    to avoid breaking existing keyword-based configurations.
     """
-    Number of alternating DVI iterations between repeated direct bilateral solves.
-    A value of `1` re-solves after every projected inequality block, preserving
-    the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+
+    post_stabilization_bilateral: bool = False
+    """
+    Whether to solve the bilateral block once more after the final contact
+    phase. This optional refresh makes bilateral rows the freshest family but
+    can make the final contact residual stale. Defaults to ``False``.
     """
 
     tangential_warmstart_scale: float = 0.97
@@ -912,29 +1194,72 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
-        if self.tolerance < 0.0:
-            raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
-        if self.regularization <= 0.0:
-            raise ValueError(f"Invalid regularization: {self.regularization}. Must be greater than zero.")
-        if self.omega <= 0.0 or self.omega > 2.0:
-            raise ValueError(f"Invalid omega: {self.omega}. Must be in the range (0, 2].")
-        if self.max_alternating_iterations <= 0:
+        if (
+            not isinstance(self.tolerance, Real)
+            or isinstance(self.tolerance, bool)
+            or not math.isfinite(self.tolerance)
+            or self.tolerance < 0.0
+        ):
+            raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be a real, finite, non-negative number.")
+        if (
+            not isinstance(self.regularization, Real)
+            or isinstance(self.regularization, bool)
+            or not math.isfinite(self.regularization)
+            or self.regularization <= 0.0
+        ):
             raise ValueError(
-                f"Invalid maximum alternating iterations: {self.max_alternating_iterations}. "
-                "Must be a positive integer."
+                f"Invalid regularization: {self.regularization}. Must be a real, finite number greater than zero."
             )
-        if self.inequality_sweeps_per_iteration <= 0:
+        if (
+            not isinstance(self.omega, Real)
+            or isinstance(self.omega, bool)
+            or not math.isfinite(self.omega)
+            or self.omega <= 0.0
+            or self.omega > 2.0
+        ):
+            raise ValueError(f"Invalid omega: {self.omega}. Must be a real, finite number in the range (0, 2].")
+        if self.contact_solver not in {"pgs", "apgd"}:
+            raise ValueError(f"Invalid DVI contact solver: {self.contact_solver}. Must be one of ['apgd', 'pgs'].")
+        if self.contact_law is not None and self.contact_law not in {"de_saxce", "associated_at"}:
             raise ValueError(
-                f"Invalid inequality sweeps per iteration: {self.inequality_sweeps_per_iteration}. "
-                "Must be a positive integer."
+                f"Invalid DVI contact law: {self.contact_law}. Must be one of ['associated_at', 'de_saxce']."
             )
-        if self.bilateral_solve_interval <= 0:
+        expected_contact_law = "associated_at" if self.contact_solver == "apgd" else "de_saxce"
+        if self.contact_law is not None and self.contact_law != expected_contact_law:
             raise ValueError(
-                f"Invalid bilateral solve interval: {self.bilateral_solve_interval}. Must be a positive integer."
+                f"DVI contact solver '{self.contact_solver}' requires contact_law='{expected_contact_law}', "
+                f"not '{self.contact_law}'."
             )
-        if self.tangential_warmstart_scale < 0.0 or self.tangential_warmstart_scale > 1.0:
+        if not isinstance(self.apgd, DVIAPGDConfig):
+            raise TypeError(f"Invalid APGD config: Expected DVIAPGDConfig, got {type(self.apgd)}.")
+        self.apgd.validate()
+        integer_controls = (
+            ("maximum alternating iterations", self.max_alternating_iterations),
+            ("inequality sweeps per iteration", self.inequality_sweeps_per_iteration),
+            ("bilateral solve interval", self.bilateral_solve_interval),
+        )
+        for name, value in integer_controls:
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"Invalid {name}: {value}. Must be a positive integer.")
+        if self.bilateral_solve_interval != 1:
             raise ValueError(
-                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
+                "Invalid bilateral solve interval: "
+                f"{self.bilateral_solve_interval}. The canonical L -> B -> C schedule requires a value of 1."
+            )
+        if not isinstance(self.post_stabilization_bilateral, bool):
+            raise TypeError(
+                f"Invalid post_stabilization_bilateral: {self.post_stabilization_bilateral}. Must be a bool."
+            )
+        if (
+            not isinstance(self.tangential_warmstart_scale, Real)
+            or isinstance(self.tangential_warmstart_scale, bool)
+            or not math.isfinite(self.tangential_warmstart_scale)
+            or self.tangential_warmstart_scale < 0.0
+            or self.tangential_warmstart_scale > 1.0
+        ):
+            raise ValueError(
+                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. "
+                "Must be a real, finite number in the range [0, 1]."
             )
         if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
             raise ValueError(

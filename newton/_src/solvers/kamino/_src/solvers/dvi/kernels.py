@@ -13,6 +13,7 @@ from ..padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
+from .apgd_kernels import ContactAPGDStatus
 from .projections import (
     project_box_update as _project_box_update,
 )
@@ -22,7 +23,7 @@ from .projections import (
 from .projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
-from .types import DVIConfigStruct, DVIStatus
+from .types import _DVI_CONTACT_SOLVER_APGD, DVIConfigStruct, DVIStatus
 
 wp.set_module_options({"enable_backward": False})
 
@@ -30,7 +31,9 @@ float32 = wp.float32
 int32 = wp.int32
 vec3f = wp.vec3f
 
-_FUSED_INEQUALITY_BLOCK = -2
+_FUSED_SINGLE_FAMILY_BLOCK = -1
+_INEQUALITY_FAMILY_LIMITS = 1
+_INEQUALITY_FAMILY_CONTACTS = 2
 
 
 @wp.func
@@ -54,6 +57,22 @@ def _compute_row_velocity(
 
 
 @wp.func
+def _compute_effective_row_velocity(
+    ncts: int32,
+    mio: int32,
+    vio: int32,
+    row: int32,
+    D: wp.array[float32],
+    E_hat: wp.array[float32],
+    v_f: wp.array[float32],
+    lambdas: wp.array[float32],
+) -> float32:
+    """Evaluate ``N lambda + v_f + E lambda`` in solver coordinates."""
+    v_i = vio + row
+    return _compute_row_velocity(ncts, mio, vio, row, D, v_f, lambdas) + E_hat[v_i] * lambdas[v_i]
+
+
+@wp.func
 def _contact_velocity_aug(
     ncts: int32,
     mio: int32,
@@ -62,6 +81,7 @@ def _contact_velocity_aug(
     cio: int32,
     cid: int32,
     D: wp.array[float32],
+    E_hat: wp.array[float32],
     v_f: wp.array[float32],
     lambdas: wp.array[float32],
     mu: wp.array[float32],
@@ -69,9 +89,9 @@ def _contact_velocity_aug(
     # Contact rows are [t0, t1, n]. De Saxce augments the normal velocity by
     # mu * ||v_t|| before enforcing Coulomb-cone complementarity.
     ccio = ccgo + 3 * cid
-    v_t0 = _compute_row_velocity(ncts, mio, vio, ccio + 0, D, v_f, lambdas)
-    v_t1 = _compute_row_velocity(ncts, mio, vio, ccio + 1, D, v_f, lambdas)
-    v_n = _compute_row_velocity(ncts, mio, vio, ccio + 2, D, v_f, lambdas)
+    v_t0 = _compute_effective_row_velocity(ncts, mio, vio, ccio + 0, D, E_hat, v_f, lambdas)
+    v_t1 = _compute_effective_row_velocity(ncts, mio, vio, ccio + 1, D, E_hat, v_f, lambdas)
+    v_n = _compute_effective_row_velocity(ncts, mio, vio, ccio + 2, D, E_hat, v_f, lambdas)
     vt_norm = wp.sqrt(v_t0 * v_t0 + v_t1 * v_t1)
     return vec3f(v_t0, v_t1, v_n + mu[cio + cid] * vt_norm)
 
@@ -131,8 +151,10 @@ def _copy_bilateral_block(
     # Inputs:
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
+    problem_vio: wp.array[int32],
     problem_njc: wp.array[int32],
     problem_D: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     bilateral_mio: wp.array[int32],
     bilateral_vio: wp.array[int32],
     # Outputs:
@@ -152,18 +174,20 @@ def _copy_bilateral_block(
 
     ncts = problem_dim[wid]
     pmio = problem_mio[wid]
+    pvio = problem_vio[wid]
     bmio = bilateral_mio[wid]
     bvio = bilateral_vio[wid]
     row = tid // njc
     col = tid - row * njc
 
-    D_rr = problem_D[pmio + ncts * row + row]
-    D_cc = problem_D[pmio + ncts * col + col]
-    p_row = wp.sqrt(1.0 / (wp.abs(D_rr) + FLOAT32_EPS))
-    p_col = wp.sqrt(1.0 / (wp.abs(D_cc) + FLOAT32_EPS))
+    A_rr = problem_D[pmio + ncts * row + row] + problem_E_hat[pvio + row]
+    A_cc = problem_D[pmio + ncts * col + col] + problem_E_hat[pvio + col]
+    p_row = wp.sqrt(1.0 / (wp.abs(A_rr) + FLOAT32_EPS))
+    p_col = wp.sqrt(1.0 / (wp.abs(A_cc) + FLOAT32_EPS))
 
     val = p_row * problem_D[pmio + ncts * row + col] * p_col
     if row == col:
+        val += p_row * problem_E_hat[pvio + row] * p_col
         # Smaller floors reduce equality residual, but closed-loop robots lose contact below this.
         val += float32(7.0e-7)
         bilateral_P[bvio + row] = p_row
@@ -241,6 +265,7 @@ def _compute_dvi_status_residuals(
     problem_bcio: wp.array[int32],
     problem_cio: wp.array[int32],
     problem_mu: wp.array[float32],
+    problem_P: wp.array[float32],
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
     solver_config: wp.array[DVIConfigStruct],
@@ -274,11 +299,13 @@ def _compute_dvi_status_residuals(
     r_p = float32(0.0)
     r_d = float32(0.0)
     r_c = float32(0.0)
+    r_natural = float32(0.0)
 
     # Bilateral rows require v_aug = 0.
     for jid in range(njc):
         v_j = state_v_aug[vio + jid]
         r_b = wp.max(r_b, wp.abs(v_j))
+        r_natural = wp.max(r_natural, wp.abs(v_j))
 
     # Bounded-multiplier rows require lambda in the box `[lower, upper]` and directional
     # complementarity with the face selected by the sign of v_aug. There is no dual
@@ -287,10 +314,16 @@ def _compute_dvi_status_residuals(
         bcio_v = vio + bcgo + bid
         lambda_b = solution_lambdas[bcio_v]
         v_b = state_v_aug[bcio_v]
-        lower = problem_bound_lower[bcio + bid]
-        upper = problem_bound_upper[bcio + bid]
+        # The solver exports physical impulses before evaluating terminal
+        # status, while bounded-row limits remain stored in represented
+        # coordinates. Map the latter back with lambda=P*lambda_hat.
+        P_b = problem_P[bcio_v]
+        lower = P_b * problem_bound_lower[bcio + bid]
+        upper = P_b * problem_bound_upper[bcio + bid]
         r_p = wp.max(r_p, wp.abs(lambda_b - wp.clamp(lambda_b, lower, upper)))
         r_c = wp.max(r_c, wp.abs(compute_box_complementarity_residual(lambda_b, v_b, lower, upper)))
+        natural_b = lambda_b - wp.clamp(lambda_b - v_b, lower, upper)
+        r_natural = wp.max(r_natural, wp.abs(natural_b))
 
     # Limits require lambda and v_aug in R+ with lambda * v_aug = 0.
     for lid in range(nl):
@@ -300,6 +333,8 @@ def _compute_dvi_status_residuals(
         r_p = wp.max(r_p, wp.abs(lambda_l - wp.max(0.0, lambda_l)))
         r_d = wp.max(r_d, wp.abs(v_l - wp.max(0.0, v_l)))
         r_c = wp.max(r_c, wp.abs(lambda_l * v_l))
+        natural_l = lambda_l - wp.max(float32(0.0), lambda_l - v_l)
+        r_natural = wp.max(r_natural, wp.abs(natural_l))
 
     # Contacts require lambda in K_mu, v_aug in its dual cone, and orthogonality.
     for cid in range(nc):
@@ -312,6 +347,8 @@ def _compute_dvi_status_residuals(
         r_p = wp.max(r_p, wp.max(wp.abs(lambda_c - lambda_proj)))
         r_d = wp.max(r_d, wp.max(wp.abs(v_c - v_proj)))
         r_c = wp.max(r_c, wp.abs(wp.dot(lambda_c, v_c)))
+        natural_c = lambda_c - project_to_coulomb_cone(lambda_c - v_c, mu_c)
+        r_natural = wp.max(r_natural, wp.max(wp.abs(natural_c)))
 
     # Thus r_p and r_d are infinity-norm box- and cone-projection distances, while r_c
     # is the maximum absolute impulse-velocity product.
@@ -319,8 +356,16 @@ def _compute_dvi_status_residuals(
     status.r_p = r_p
     status.r_d = wp.max(r_d, r_b)
     status.r_c = r_c
+    status.r_natural = r_natural
     status.converged = int32(0)
-    if ncts == 0 or (r_b <= cfg.tolerance and r_p <= cfg.tolerance and r_d <= cfg.tolerance and r_c <= cfg.tolerance):
+    if status.invalid_contact_preconditioner != int32(0):
+        # APGD projects in represented Euclidean coordinates. Unequal scaling
+        # within [t0, t1, n] changes the cone and is therefore unsupported.
+        status.r_p = wp.inf
+        status.r_d = wp.inf
+        status.r_c = wp.inf
+        status.r_natural = wp.inf
+    elif ncts == 0 or (r_b <= cfg.tolerance and r_p <= cfg.tolerance and r_d <= cfg.tolerance and r_c <= cfg.tolerance):
         status.converged = int32(1)
     solver_status[wid] = status
 
@@ -337,6 +382,13 @@ def _initialize_dvi_status(
     status = DVIStatus()
     status.converged = int32(0)
     status.iterations = cfg.inequality_sweeps_per_iteration
+    status.limit_iterations = int32(0)
+    status.contact_iterations = int32(0)
+    status.contact_backtracks = int32(0)
+    status.contact_restarts = int32(0)
+    status.contact_solver_residual = float32(0.0)
+    status.invalid_contact_preconditioner = int32(0)
+    status.r_natural = float32(0.0)
     status.r_p = float32(0.0)
     status.r_d = float32(0.0)
     status.r_c = float32(0.0)
@@ -350,6 +402,7 @@ def _set_dvi_direct_status_iterations(
     problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
+    single_contact_phase: wp.bool,
     solver_config: wp.array[DVIConfigStruct],
     # Outputs:
     solver_status: wp.array[DVIStatus],
@@ -360,8 +413,82 @@ def _set_dvi_direct_status_iterations(
     if problem_nbc[wid] == int32(0) and problem_nl[wid] == int32(0) and problem_nc[wid] == int32(0):
         status.iterations = int32(1)
     else:
-        status.iterations = cfg.max_alternating_iterations * cfg.inequality_sweeps_per_iteration
+        projected_sweeps = cfg.max_alternating_iterations * cfg.inequality_sweeps_per_iteration
+        status.iterations = projected_sweeps
+        if cfg.contact_solver == int32(_DVI_CONTACT_SOLVER_APGD):
+            status.iterations = cfg.max_alternating_iterations
+            if single_contact_phase:
+                status.iterations = int32(1)
+        if problem_nbc[wid] > int32(0) or problem_nl[wid] > int32(0):
+            status.limit_iterations = projected_sweeps
+        if problem_nc[wid] > int32(0) and cfg.contact_solver != int32(_DVI_CONTACT_SOLVER_APGD):
+            status.contact_iterations = projected_sweeps
     solver_status[wid] = status
+
+
+@wp.kernel
+def _accumulate_dvi_apgd_status(
+    apgd_status: wp.array[ContactAPGDStatus],
+    phase_mask: wp.array[bool],
+    solver_status: wp.array[DVIStatus],
+):
+    """Accumulate actual APGD work and retain the latest contact Res4 norm."""
+    wid = wp.tid()
+    if not phase_mask[wid]:
+        return
+    contact_status = apgd_status[wid]
+    status = solver_status[wid]
+    status.contact_iterations += contact_status.iterations
+    status.contact_backtracks += contact_status.backtracks
+    status.contact_restarts += contact_status.restarts
+    status.contact_solver_residual = contact_status.residual
+    solver_status[wid] = status
+
+
+@wp.kernel
+def _set_dvi_contact_active_mask(
+    problem_nc: wp.array[int32],
+    problem_ccgo: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_P: wp.array[float32],
+    block_iteration: int32,
+    solver_config: wp.array[DVIConfigStruct],
+    solver_status: wp.array[DVIStatus],
+    contact_active_mask: wp.array[bool],
+):
+    """Activate valid APGD worlds participating in this coupling sweep."""
+    wid = wp.tid()
+    nc = problem_nc[wid]
+    vio = problem_vio[wid]
+    ccgo = problem_ccgo[wid]
+    valid = wp.bool(True)
+    for cid in range(nc):
+        ccio = vio + ccgo + int32(3) * cid
+        p_t0 = problem_P[ccio]
+        p_t1 = problem_P[ccio + int32(1)]
+        p_n = problem_P[ccio + int32(2)]
+        scale = wp.max(float32(1.0), wp.max(wp.abs(p_t0), wp.max(wp.abs(p_t1), wp.abs(p_n))))
+        tolerance = float32(8.0) * FLOAT32_EPS * scale
+        if (
+            not wp.isfinite(p_t0)
+            or not wp.isfinite(p_t1)
+            or not wp.isfinite(p_n)
+            or p_t0 <= float32(0.0)
+            or p_t1 <= float32(0.0)
+            or p_n <= float32(0.0)
+            or wp.abs(p_t0 - p_t1) > tolerance
+            or wp.abs(p_t0 - p_n) > tolerance
+        ):
+            valid = False
+
+    status = solver_status[wid]
+    if not valid:
+        status.invalid_contact_preconditioner = int32(1)
+        status.contact_solver_residual = wp.inf
+    solver_status[wid] = status
+    contact_active_mask[wid] = (
+        valid and nc > int32(0) and block_iteration < solver_config[wid].max_alternating_iterations
+    )
 
 
 @wp.kernel
@@ -378,14 +505,18 @@ def _set_dvi_bilateral_active_dim(
 ):
     wid = wp.tid()
     active_dim = int32(0)
-    if problem_nbc[wid] > int32(0) or problem_nl[wid] > int32(0) or problem_nc[wid] > int32(0):
-        if block_iteration < int32(0):
+    has_unilateral = problem_nbc[wid] > int32(0) or problem_nl[wid] > int32(0) or problem_nc[wid] > int32(0)
+    cfg = solver_config[wid]
+    if block_iteration < int32(0):
+        # This optional solve is specifically the B refresh after C. Limits
+        # precede B in the canonical schedule and do not need another B pass.
+        if problem_nc[wid] > int32(0) and cfg.post_stabilization_bilateral != int32(0):
             active_dim = problem_njc[wid]
-        else:
-            next_block = block_iteration + int32(1)
-            cfg = solver_config[wid]
-            if next_block < cfg.max_alternating_iterations and next_block % cfg.bilateral_solve_interval == int32(0):
-                active_dim = problem_njc[wid]
+    else:
+        # Every explicit family sweep contains B between L and C. A world with
+        # no active unilateral rows still needs its standalone B solve once.
+        if block_iteration < cfg.max_alternating_iterations and (has_unilateral or block_iteration == int32(0)):
+            active_dim = problem_njc[wid]
     bilateral_active_dim[wid] = active_dim
 
 
@@ -407,6 +538,7 @@ def _compute_dvi_unilateral_velocities(
     problem_nc: wp.array[int32],
     problem_bcgo: wp.array[int32],
     problem_D: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     problem_v_f: wp.array[float32],
     solution_lambdas: wp.array[float32],
     state_v_aug: wp.array[float32],
@@ -423,7 +555,9 @@ def _compute_dvi_unilateral_velocities(
     mio = problem_mio[wid]
     vio = problem_vio[wid]
     row = problem_bcgo[wid] + local_row
-    state_v_aug[vio + row] = _compute_row_velocity(ncts, mio, vio, row, problem_D, problem_v_f, solution_lambdas)
+    state_v_aug[vio + row] = _compute_effective_row_velocity(
+        ncts, mio, vio, row, problem_D, problem_E_hat, problem_v_f, solution_lambdas
+    )
 
 
 @wp.kernel
@@ -444,7 +578,9 @@ def _solve_dvi_inequalities_colored_pgs(
     problem_bound_lower: wp.array[float32],
     problem_bound_upper: wp.array[float32],
     problem_D: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     block_iteration: int32,
+    inequality_family: int32,
     inequality_num_colors: wp.array[int32],
     inequality_ids_by_color: wp.array[int32],
     inequality_color_starts: wp.array[int32],
@@ -452,7 +588,7 @@ def _solve_dvi_inequalities_colored_pgs(
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
-    """Apply one graph-colored PGS schedule to all DVI inequalities."""
+    """Apply one graph-colored PGS schedule to a selected DVI row family."""
     tid = wp.tid()
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
@@ -465,7 +601,11 @@ def _solve_dvi_inequalities_colored_pgs(
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     nu = nbc + nl + nc
-    if nu == 0:
+    if (
+        nu == 0
+        or (inequality_family == int32(_INEQUALITY_FAMILY_LIMITS) and nbc + nl == int32(0))
+        or (inequality_family == int32(_INEQUALITY_FAMILY_CONTACTS) and nc == int32(0))
+    ):
         return
     ncts = problem_dim[wid]
     mio = problem_mio[wid]
@@ -479,12 +619,16 @@ def _solve_dvi_inequalities_colored_pgs(
     schedule_offset = uio + wid
     contact_end = ccgo + int32(3) * nc
     sweep_count = cfg.inequality_sweeps_per_iteration
-    if block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
+    if block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK):
         sweep_count *= cfg.max_alternating_iterations
     for _sweep in range(sweep_count):
         phase_count = int32(2)
-        if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < sweep_count / int32(2):
-            # Establish the support load before friction in inequality-only solves.
+        if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
+            phase_count = int32(1)
+        elif block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK) and _sweep < sweep_count / int32(2):
+            # Establish the normal support load before friction when contacts
+            # are the only active family. This is an internal PGS strategy;
+            # it does not combine L and C or change the family schedule.
             phase_count = int32(1)
         for phase in range(phase_count):
             # Symmetric tangent ordering reduces load bias in redundant sticking patches.
@@ -499,12 +643,17 @@ def _solve_dvi_inequalities_colored_pgs(
                 color_slot = color_start + lane
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
+                    is_contact = uid >= nbc + nl
+                    selected = (inequality_family == int32(_INEQUALITY_FAMILY_LIMITS) and not is_contact) or (
+                        inequality_family == int32(_INEQUALITY_FAMILY_CONTACTS) and is_contact
+                    )
                     delta_0 = float32(0.0)
                     delta_1 = float32(0.0)
                     column = bcgo + uid
                     column_count = int32(1)
-                    active = int32(1)
-                    if uid < nbc:
+                    active = int32(0)
+                    if selected and uid < nbc:
+                        active = int32(1)
                         if phase == int32(1):
                             active = int32(0)
                         else:
@@ -523,14 +672,15 @@ def _solve_dvi_inequalities_colored_pgs(
                             )
                             solution_lambdas[vec_idx] = lambda_bound_new
                             delta_0 = lambda_bound_new - lambda_bound_old
-                    elif uid < nbc + nl:
+                    elif selected and uid < nbc + nl:
+                        active = int32(1)
                         column = lcgo + (uid - nbc)
                         if phase == int32(1):
                             active = int32(0)
                         else:
                             vec_idx = vio + column
                             lambda_limit_old = solution_lambdas[vec_idx]
-                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                            diagonal = wp.abs(problem_D[mio + ncts * column + column] + problem_E_hat[vec_idx])
                             lambda_limit_new = lambda_limit_old
                             if diagonal > FLOAT32_EPS:
                                 lambda_limit_new = wp.max(
@@ -540,14 +690,15 @@ def _solve_dvi_inequalities_colored_pgs(
                                 )
                             solution_lambdas[vec_idx] = lambda_limit_new
                             delta_0 = lambda_limit_new - lambda_limit_old
-                    else:
+                    elif selected:
+                        active = int32(1)
                         cid = uid - nbc - nl
                         column = ccgo + int32(3) * cid
                         if phase == int32(0):
                             column += int32(2)
                             vec_idx = vio + column
                             lambda_n_old = solution_lambdas[vec_idx]
-                            diagonal_n = wp.abs(problem_D[mio + ncts * column + column])
+                            diagonal_n = wp.abs(problem_D[mio + ncts * column + column] + problem_E_hat[vec_idx])
                             lambda_n_new = _project_contact_normal_update(
                                 lambda_n_old,
                                 state_v_aug[vec_idx],
@@ -562,8 +713,11 @@ def _solve_dvi_inequalities_colored_pgs(
                             vec_idx = vio + column
                             lambda_t0_old = solution_lambdas[vec_idx]
                             lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
-                            diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column])
-                            diagonal_t1 = wp.abs(problem_D[mio + ncts * (column + int32(1)) + column + int32(1)])
+                            diagonal_t0 = wp.abs(problem_D[mio + ncts * column + column] + problem_E_hat[vec_idx])
+                            diagonal_t1 = wp.abs(
+                                problem_D[mio + ncts * (column + int32(1)) + column + int32(1)]
+                                + problem_E_hat[vec_idx + int32(1)]
+                            )
                             lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
                             lambda_t_new = _project_contact_tangent_update(
                                 lambda_t_old,
@@ -584,8 +738,12 @@ def _solve_dvi_inequalities_colored_pgs(
                         while row < contact_end:
                             row_mio = mio + ncts * row
                             dv = problem_D[row_mio + column] * delta_0
+                            if row == column:
+                                dv += problem_E_hat[vio + row] * delta_0
                             if column_count == int32(2):
                                 dv += problem_D[row_mio + column + int32(1)] * delta_1
+                                if row == column + int32(1):
+                                    dv += problem_E_hat[vio + row] * delta_1
                             wp.atomic_add(state_v_aug, vio + row, dv)
                             row += int32(1)
                     color_slot += threads_per_world
@@ -599,6 +757,7 @@ def _compute_dvi_solution_vectors(
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_D: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     problem_v_f: wp.array[float32],
     # Outputs:
     state_s: wp.array[float32],
@@ -614,12 +773,13 @@ def _compute_dvi_solution_vectors(
 
     mio = problem_mio[wid]
     vio = problem_vio[wid]
-    # Recover the physical post-event velocity v_plus = D * lambda + v_f.
-    # De Saxce augmentation is stored separately for cone residual evaluation.
-    v_i = _compute_row_velocity(ncts, mio, vio, tid, problem_D, problem_v_f, solution_lambdas)
-    solution_v_plus[vio + tid] = v_i
-    state_v_aug[vio + tid] = v_i
-    state_s[vio + tid] = 0.0
+    # Export the physical point velocity N*lambda+v_f, but retain the
+    # constitutive E*lambda contribution in the effective constraint velocity.
+    v_i = vio + tid
+    v_plus_i = _compute_row_velocity(ncts, mio, vio, tid, problem_D, problem_v_f, solution_lambdas)
+    solution_v_plus[v_i] = v_plus_i
+    state_v_aug[v_i] = v_plus_i + problem_E_hat[v_i] * solution_lambdas[v_i]
+    state_s[v_i] = 0.0
 
 
 @wp.kernel
@@ -633,7 +793,6 @@ def _compute_dvi_desaxce_corrections(
     # Outputs:
     state_s: wp.array[float32],
     state_v_aug: wp.array[float32],
-    solution_v_plus: wp.array[float32],
 ):
     wid, cid = wp.tid()
 
@@ -644,13 +803,13 @@ def _compute_dvi_desaxce_corrections(
     vio = problem_vio[wid]
     ccgo = problem_ccgo[wid]
     ccio = ccgo + 3 * cid
-    vt0 = solution_v_plus[vio + ccio]
-    vt1 = solution_v_plus[vio + ccio + 1]
-    # s = [0, 0, mu * ||v_t||] maps physical contact velocity to the dual-cone
-    # variable v_aug = v_plus + s used by the DVI contact conditions.
+    vt0 = state_v_aug[vio + ccio]
+    vt1 = state_v_aug[vio + ccio + 1]
+    # De Saxce operates on the contact-law velocity, which includes the
+    # constitutive E*lambda term, while solution_v_plus remains physical.
     s_n = problem_mu[problem_cio[wid] + cid] * wp.sqrt(vt0 * vt0 + vt1 * vt1)
     state_s[vio + ccio + 2] = s_n
-    state_v_aug[vio + ccio + 2] = solution_v_plus[vio + ccio + 2] + s_n
+    state_v_aug[vio + ccio + 2] += s_n
 
 
 @wp.kernel
@@ -659,6 +818,7 @@ def _unprecondition_dvi_solution(
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_P: wp.array[float32],
+    solver_status: wp.array[DVIStatus],
     # Outputs:
     state_s: wp.array[float32],
     state_v_aug: wp.array[float32],
@@ -673,7 +833,24 @@ def _unprecondition_dvi_solution(
 
     vio = problem_vio[wid]
     v_i = vio + tid
+    if solver_status[wid].invalid_contact_preconditioner != int32(0):
+        # An invalid contact metric rejects the whole world's solve. Clear all
+        # exported rows so stale warm-start impulses cannot reach integration.
+        solution_lambdas[v_i] = float32(0.0)
+        solution_v_plus[v_i] = float32(0.0)
+        state_v_aug[v_i] = float32(0.0)
+        state_s[v_i] = float32(0.0)
+        return
     P_i = problem_P[v_i]
+    if not wp.isfinite(P_i) or P_i <= float32(0.0):
+        # A non-positive or non-finite scale has no inverse and cannot define
+        # physical constraint coordinates. Keep this row finite even for an
+        # invalid scale outside the APGD contact block.
+        solution_lambdas[v_i] = float32(0.0)
+        solution_v_plus[v_i] = float32(0.0)
+        state_v_aug[v_i] = float32(0.0)
+        state_s[v_i] = float32(0.0)
+        return
     # The solver uses D_hat = P * D * P: impulses map with P, while
     # constraint-space velocities and De Saxce terms map with P^-1.
     solution_lambdas[v_i] = P_i * solution_lambdas[v_i]

@@ -1188,6 +1188,9 @@ class SolverKaminoImpl(SolverBase):
                 jacobians=self._jacobians,
                 limits=self._limits,
                 contacts=contacts,
+                contact_law=(
+                    self._config.dvi.resolved_contact_law if self._config.dynamics_solver == "dvi" else "de_saxce"
+                ),
             )
 
     def _advance_time(self):

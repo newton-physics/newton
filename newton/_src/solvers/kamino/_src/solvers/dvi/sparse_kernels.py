@@ -9,7 +9,12 @@ import warp as wp
 
 from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
-from .kernels import _FUSED_INEQUALITY_BLOCK, _sync_threads
+from .kernels import (
+    _FUSED_SINGLE_FAMILY_BLOCK,
+    _INEQUALITY_FAMILY_CONTACTS,
+    _INEQUALITY_FAMILY_LIMITS,
+    _sync_threads,
+)
 from .projections import (
     project_box_update as _project_box_update,
 )
@@ -321,17 +326,19 @@ def _solve_dvi_sparse_inequalities_pgs(
     problem_bound_upper: wp.array[float32],
     problem_P: wp.array[float32],
     problem_v_f: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     problem_diag: wp.array[float32],
     eta: wp.array[float32],
     inequality_num_colors: wp.array[int32],
     inequality_ids_by_color: wp.array[int32],
     inequality_color_starts: wp.array[int32],
     block_iteration: int32,
+    inequality_family: int32,
     solver_config: wp.array[DVIConfigStruct],
     body_space: wp.array[float32],
     solution_lambdas: wp.array[float32],
 ):
-    """Apply one conflict-free sparse PGS schedule to every inequality."""
+    """Apply one conflict-free sparse PGS schedule to a selected row family."""
     tid = wp.tid()
     threads_per_world = int32(wp.block_dim())
     lane = tid % threads_per_world
@@ -343,7 +350,11 @@ def _solve_dvi_sparse_inequalities_pgs(
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     nu = nbc + nl + nc
-    if nu == 0:
+    if (
+        nu == 0
+        or (inequality_family == int32(_INEQUALITY_FAMILY_LIMITS) and nbc + nl == int32(0))
+        or (inequality_family == int32(_INEQUALITY_FAMILY_CONTACTS) and nc == int32(0))
+    ):
         return
     bcio = problem_bcio[wid]
     lio = problem_lio[wid]
@@ -358,12 +369,15 @@ def _solve_dvi_sparse_inequalities_pgs(
     col_start = bsm_col_start[wid]
     matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
     sweep_count = cfg.inequality_sweeps_per_iteration
-    if block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
+    if block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK):
         sweep_count *= cfg.max_alternating_iterations
     for _sweep in range(sweep_count):
         phase_count = int32(2)
-        if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < sweep_count / int32(2):
-            # Match the dense path's inequality-only normal-load warmup.
+        if inequality_family == int32(_INEQUALITY_FAMILY_LIMITS):
+            phase_count = int32(1)
+        elif block_iteration == int32(_FUSED_SINGLE_FAMILY_BLOCK) and _sweep < sweep_count / int32(2):
+            # Match the dense C-only PGS support-load warmup without
+            # reintroducing the former combined L/C schedule.
             phase_count = int32(1)
         for phase in range(phase_count):
             # Symmetric tangent ordering reduces load bias in redundant sticking patches.
@@ -378,10 +392,14 @@ def _solve_dvi_sparse_inequalities_pgs(
                 color_slot = color_start + lane
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
+                    is_contact = uid >= nbc + nl
+                    selected = (inequality_family == int32(_INEQUALITY_FAMILY_LIMITS) and not is_contact) or (
+                        inequality_family == int32(_INEQUALITY_FAMILY_CONTACTS) and is_contact
+                    )
                     if uid < nbc:
                         # Bounded-row topology is static, so unlike limits/contacts it
                         # always has valid Jacobian offsets and needs no active-set lookup.
-                        if phase == int32(0):
+                        if selected and phase == int32(0):
                             bid = bcio + uid
                             row = bcgo + uid
                             vec_idx = vio + row
@@ -433,10 +451,11 @@ def _solve_dvi_sparse_inequalities_pgs(
                     # An inequality without mapped topology has no Jacobian offsets
                     # to read, so it is skipped rather than dereferenced.
                     mapped_id = int32(-1)
-                    if uid < nbc + nl:
-                        mapped_id = limit_indices[lio + (uid - nbc)]
-                    else:
-                        mapped_id = contact_indices[cio + uid - nbc - nl]
+                    if selected:
+                        if uid < nbc + nl:
+                            mapped_id = limit_indices[lio + (uid - nbc)]
+                        else:
+                            mapped_id = contact_indices[cio + uid - nbc - nl]
                     if mapped_id >= int32(0):
                         if uid < nbc + nl:
                             if phase == int32(0):
@@ -444,7 +463,9 @@ def _solve_dvi_sparse_inequalities_pgs(
                                 row = lcgo + (uid - nbc)
                                 vec_idx = vio + row
                                 nzb_offset = limit_nzb_offsets[limit_id]
-                                limit_value = eta[row_start + row] * solution_lambdas[vec_idx]
+                                limit_value = (eta[row_start + row] + problem_E_hat[vec_idx]) * solution_lambdas[
+                                    vec_idx
+                                ]
                                 for k in range(2):
                                     nzb_idx = nzb_offset + k
                                     if nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
@@ -454,7 +475,7 @@ def _solve_dvi_sparse_inequalities_pgs(
                                             limit_value += block[j] * body_space[x_idx_base + j]
                                 limit_value += problem_v_f[vec_idx]
                                 P_i = problem_P[vec_idx]
-                                diagonal_raw = wp.abs(problem_diag[vec_idx]) * P_i * P_i
+                                diagonal_raw = wp.abs(problem_diag[vec_idx]) * P_i * P_i + problem_E_hat[vec_idx]
                                 lambda_limit_old = solution_lambdas[vec_idx]
                                 lambda_limit_new = lambda_limit_old
                                 if diagonal_raw > FLOAT32_EPS:
@@ -490,6 +511,7 @@ def _solve_dvi_sparse_inequalities_pgs(
                                 ):
                                     contact_value[component] = (
                                         eta[row_start + row + component] * solution_lambdas[vec_idx + component]
+                                        + problem_E_hat[vec_idx + component] * solution_lambdas[vec_idx + component]
                                     )
                             for local_block in range(block_count):
                                 component = local_block % int32(3)
@@ -507,7 +529,10 @@ def _solve_dvi_sparse_inequalities_pgs(
                                 contact_value.z += problem_v_f[vec_idx + int32(2)]
                                 lambda_n_old = solution_lambdas[vec_idx + int32(2)]
                                 P_n = problem_P[vec_idx + int32(2)]
-                                diagonal_n = wp.abs(problem_diag[vec_idx + int32(2)]) * P_n * P_n
+                                diagonal_n = (
+                                    wp.abs(problem_diag[vec_idx + int32(2)]) * P_n * P_n
+                                    + problem_E_hat[vec_idx + int32(2)]
+                                )
                                 lambda_n_new = _project_contact_normal_update(
                                     lambda_n_old,
                                     contact_value.z,
@@ -524,8 +549,11 @@ def _solve_dvi_sparse_inequalities_pgs(
                                 lambda_t1_old = solution_lambdas[vec_idx + int32(1)]
                                 P_t0 = problem_P[vec_idx]
                                 P_t1 = problem_P[vec_idx + int32(1)]
-                                diagonal_t0 = wp.abs(problem_diag[vec_idx]) * P_t0 * P_t0
-                                diagonal_t1 = wp.abs(problem_diag[vec_idx + int32(1)]) * P_t1 * P_t1
+                                diagonal_t0 = wp.abs(problem_diag[vec_idx]) * P_t0 * P_t0 + problem_E_hat[vec_idx]
+                                diagonal_t1 = (
+                                    wp.abs(problem_diag[vec_idx + int32(1)]) * P_t1 * P_t1
+                                    + problem_E_hat[vec_idx + int32(1)]
+                                )
                                 lambda_t_old = wp.vec2f(lambda_t0_old, lambda_t1_old)
                                 off_diagonal = float32(0.0)
                                 body_group = int32(0)
@@ -581,6 +609,8 @@ def _build_sparse_bilateral_block(
     pair_i: wp.array[int32],
     pair_j: wp.array[int32],
     jacobian_cts_nzb_values: wp.array[vec6f],
+    problem_vio: wp.array[int32],
+    problem_P: wp.array[float32],
     problem_njc: wp.array[int32],
     bilateral_mio: wp.array[int32],
     bilateral_vio: wp.array[int32],
@@ -606,9 +636,14 @@ def _build_sparse_bilateral_block(
     D_ij = inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
 
     bvio = bilateral_vio[wid]
-    p_row = bilateral_P[bvio + row]
-    p_col = bilateral_P[bvio + col]
-    val = p_row * D_ij * p_col
+    # The sparse Jacobian above is deliberately raw, while the DVI iterate
+    # lives in the represented system N_hat=P*N*P. Apply both the problem
+    # preconditioner P and the bilateral block preconditioner Q here so this
+    # entry matches Q*N_hat*Q, just like the dense extraction path.
+    pvio = problem_vio[wid]
+    scale_row = bilateral_P[bvio + row] * problem_P[pvio + row]
+    scale_col = bilateral_P[bvio + col] * problem_P[pvio + col]
+    val = scale_row * D_ij * scale_col
 
     bmio = bilateral_mio[wid]
     wp.atomic_add(bilateral_D, bmio + njc * row + col, val)
@@ -623,6 +658,8 @@ def _set_sparse_bilateral_diagonal(
     bilateral_mio: wp.array[int32],
     bilateral_vio: wp.array[int32],
     problem_diag: wp.array[float32],
+    problem_P: wp.array[float32],
+    problem_E_hat: wp.array[float32],
     # Outputs:
     bilateral_D: wp.array[float32],
     bilateral_P: wp.array[float32],
@@ -641,10 +678,15 @@ def _set_sparse_bilateral_diagonal(
     pvio = problem_vio[wid]
     bvio = bilateral_vio[wid]
     bmio = bilateral_mio[wid]
-    diag = wp.abs(problem_diag[pvio + row])
-    p = wp.sqrt(1.0 / (diag + FLOAT32_EPS))
-    bilateral_P[bvio + row] = p
-    bilateral_D[bmio + njc * row + row] = p * diag * p + float32(7.0e-7)
+    # ``problem_diag`` is the raw physical Delassus diagonal even when the
+    # sparse dual is preconditioned. Build Q from the represented diagonal
+    # A_hat_ii=P_i^2*N_ii+E_hat_ii because Q scales represented RHS values and
+    # maps the direct solution back to represented lambdas.
+    problem_p = problem_P[pvio + row]
+    represented_diag = wp.abs(problem_diag[pvio + row]) * problem_p * problem_p + problem_E_hat[pvio + row]
+    bilateral_p = wp.sqrt(1.0 / (represented_diag + FLOAT32_EPS))
+    bilateral_P[bvio + row] = bilateral_p
+    bilateral_D[bmio + njc * row + row] = bilateral_p * represented_diag * bilateral_p + float32(7.0e-7)
 
 
 @wp.kernel
@@ -653,6 +695,8 @@ def _compute_dvi_sparse_solution_vectors(
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_v_f: wp.array[float32],
+    problem_E_hat: wp.array[float32],
+    solution_lambdas: wp.array[float32],
     # Outputs:
     state_s: wp.array[float32],
     state_v_aug: wp.array[float32],
@@ -667,5 +711,5 @@ def _compute_dvi_sparse_solution_vectors(
     v_i = problem_vio[wid] + tid
     v_plus = state_v_aug[v_i] + problem_v_f[v_i]
     solution_v_plus[v_i] = v_plus
-    state_v_aug[v_i] = v_plus
+    state_v_aug[v_i] = v_plus + problem_E_hat[v_i] * solution_lambdas[v_i]
     state_s[v_i] = 0.0

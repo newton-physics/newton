@@ -92,8 +92,9 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
             s_i[v_idx + 2] = mu_i[contact_id] * np.linalg.norm(v_plus_true_i[v_idx : v_idx + 2])
         output["s"].append(s_i)
 
-        # Compute the CCP optimization objective as: f_ccp = 0.5 * lambda.dot(v_plus + v_f)
-        f_ccp_i = 0.5 * lambdas_i.dot(v_f_i + v_plus_true_i)
+        # Compute the objective in physical coordinates; ``v_f_i`` is stored
+        # in represented coordinates as P*v_f.
+        f_ccp_i = 0.5 * lambdas_i.dot(P_inv_i * v_f_i + v_plus_true_i)
         output["f_ccp"].append(f_ccp_i)
 
         # Compute the NCP optimization objective as:  f_ncp = f_ccp + lambda.dot(s)

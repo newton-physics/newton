@@ -25,6 +25,7 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
+        self.contact_solver = getattr(args, "contact_solver", "pgs") if args else "pgs"
         self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
         target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
@@ -118,6 +119,11 @@ class Example:
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         if self.dynamics_solver == "dvi":
             self.config.use_fk_solver = False
+            self.config.dvi.contact_solver = self.contact_solver
+            if self.contact_solver == "apgd":
+                self.config.dvi.apgd.use_graph_conditionals = (
+                    getattr(args, "use_graph_conditionals", True) if args else True
+                )
             if self.use_kamino_contacts:
                 self.config.integrator = "moreau"
             self.config.constraints.alpha = 0.1
@@ -128,11 +134,14 @@ class Example:
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
             self.config.dvi.bilateral_solver_type = "LLTBRCM"
             self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            # This stiff, closed-chain contact example benefits from refreshing
+            # bilateral rows after the last contact phase. The solver-wide
+            # default remains the contact-fresh L -> B -> C endpoint.
+            self.config.dvi.post_stabilization_bilateral = True
             self.config.dvi.tolerance = 1e-4
             self.config.dvi.regularization = 1e-5
             self.config.dvi.max_alternating_iterations = 4
             self.config.dvi.inequality_sweeps_per_iteration = 3
-            self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
@@ -323,6 +332,12 @@ class Example:
             help="Kamino dynamics solver to use.",
         )
         parser.add_argument(
+            "--contact-solver",
+            choices=("pgs", "apgd"),
+            default="pgs",
+            help="Kamino DVI contact solver to use; APGD remains experimental and opt-in.",
+        )
+        parser.add_argument(
             "--linear-solver-type",
             choices=("LLTB", "LLTBRCM", "CR"),
             default="LLTB",
@@ -333,7 +348,7 @@ class Example:
             "--no-graph-conditionals",
             dest="use_graph_conditionals",
             action="store_false",
-            help="Disable CUDA graph conditional nodes in Kamino PADMM.",
+            help="Disable CUDA graph conditional nodes in Kamino PADMM or DVI APGD.",
         )
         parser.add_argument(
             "--animated",

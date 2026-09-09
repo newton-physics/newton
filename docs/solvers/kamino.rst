@@ -34,12 +34,14 @@ Kamino provides two forward-dynamics backends:
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
 * ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics
-  with the RCM-reordered blocked LLT solver, and the Euler integrator. It is
-  generally faster, but approximates the coupled problem by alternating between
-  a direct solve for equality constraints and projected iterations for
-  inequality constraints. As a rule of thumb, DVI solves inequality constraints
-  less accurately than PADMM, particularly as the number of active inequalities
-  grows. Dual preconditioning is not supported.
+  with the RCM-reordered blocked LLT solver, and the Euler integrator. Its
+  coupling sweeps use the explicit ``L -> B -> C`` schedule: projected bounded
+  joint and joint-limit rows, a direct bilateral-joint solve, then a projected
+  contact solve. The contact phase supports De Saxce PGS and an opt-in
+  associated-contact APGD solver. It is generally faster than PADMM, but can
+  solve large active inequality sets less accurately. Dual preconditioning is
+  supported as an opt-in setting through
+  ``config.dynamics.preconditioning=True``.
 
 Select the backend when constructing the configuration so dependent defaults
 initialize consistently:
@@ -69,6 +71,45 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
+
+DVI physical compliance
+-----------------------
+
+The DVI backend provides independent physical-compliance controls through
+``config.constraints`` for three constraint families:
+
+* ``joint_compliance`` applies to kinematic bilateral-joint rows.
+* ``joint_limit_compliance`` applies to active unilateral joint-limit rows.
+* ``contact_compliance`` applies isotropically to the two tangential rows and
+  normal row of each active contact.
+
+All three values default to zero, which preserves rigid-constraint behavior.
+Each nonzero compliance must be paired with its corresponding stabilization
+time: ``joint_stabilization_time``, ``joint_limit_stabilization_time``, or
+``contact_stabilization_time``. For family ``f``, timestep ``dt``, physical
+compliance ``c_f``, and stabilization time ``tau_f``, Kamino forms
+
+.. math::
+
+   E_f = \frac{c_f}{dt\,(dt + \tau_f)}
+
+and adds this diagonal to that family's DVI operator. Compliance is inverse
+stiffness. Its units follow the constrained coordinate: [m/N] for a
+translational row, [rad/(N·m)] for a rotational row, and [m/N] for contact.
+
+Joint compliance deliberately excludes dynamic actuator rows. Joint-limit
+compliance likewise excludes the bounded joint-friction and actuator-effort
+rows (the internal ``nbc`` family). Those rows already have their own dynamic
+or bound semantics and are not modeled as compliant positional constraints.
+
+``E`` and its represented counterpart ``E_hat = P E P = P^2 E`` are internal
+solver storage, where ``P`` is the diagonal dual preconditioner. Users set only
+the physical per-family compliance and stabilization-time fields. The
+constitutive term ``E lambda`` participates in the effective constraint
+velocity and solver residuals; the exported physical post-constraint velocity
+continues to represent ``N lambda + v_f`` without that constitutive term, where
+``N`` is the physical Delassus operator and ``v_f`` is the free constraint
+velocity.
 
 Inspecting terminal status
 --------------------------
