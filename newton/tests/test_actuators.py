@@ -32,6 +32,7 @@ from newton.actuators import (
     ClampingPositionBased,
     Delay,
     DriveBase,
+    DriveNeuralGRU,
     DriveNeuralLSTM,
     DriveNeuralMLP,
     DrivePD,
@@ -195,6 +196,114 @@ def _build_lstm_onnx(
     meta_prop.value = json.dumps(full_meta)
     onnx_mod.checker.check_model(model)
     onnx_mod.save(model, path)
+
+
+def _build_gru_onnx(
+    path: str,
+    input_size: int,
+    hidden_size: int,
+    metadata: dict[str, Any],
+    layer_count: int = 1,
+    output_size: int = 1,
+    output_scale: float = 2.5,
+    apply_tanh: bool = True,
+    include_bias: bool = True,
+    linear_before_reset: int = 1,
+    rng_seed: int = 1946,
+) -> dict[str, Any]:
+    """Build a GRU plus scalar-head ONNX checkpoint and return its weights."""
+    onnx_mod, TensorProto, helper, numpy_helper = _onnx_modules()
+    rng = np.random.default_rng(rng_seed)
+
+    x_in = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, None, input_size])
+    graph_inputs = [x_in]
+    graph_outputs = []
+    initializers = []
+    nodes = []
+    layers = []
+    layer_input = "input"
+
+    for layer_index in range(layer_count):
+        layer_input_size = input_size if layer_index == 0 else hidden_size
+        weight_ih = (rng.standard_normal((1, 3 * hidden_size, layer_input_size)) * 0.3).astype(np.float32)
+        weight_hh = (rng.standard_normal((1, 3 * hidden_size, hidden_size)) * 0.3).astype(np.float32)
+        bias = (
+            (rng.standard_normal((1, 6 * hidden_size)) * 0.05).astype(np.float32)
+            if include_bias
+            else np.zeros((1, 6 * hidden_size), dtype=np.float32)
+        )
+        layers.append((weight_ih, weight_hh, bias))
+
+        weight_ih_name = f"gru_{layer_index}_W"
+        weight_hh_name = f"gru_{layer_index}_R"
+        bias_name = f"gru_{layer_index}_B"
+        hidden_in_name = f"hidden_in_{layer_index}"
+        hidden_out_name = f"hidden_out_{layer_index}"
+        sequence_name = f"sequence_{layer_index}"
+        squeezed_name = f"sequence_squeezed_{layer_index}"
+        axes_name = f"direction_axis_{layer_index}"
+
+        graph_inputs.append(helper.make_tensor_value_info(hidden_in_name, TensorProto.FLOAT, [1, None, hidden_size]))
+        graph_outputs.append(helper.make_tensor_value_info(hidden_out_name, TensorProto.FLOAT, [1, None, hidden_size]))
+        initializers.extend(
+            [
+                numpy_helper.from_array(weight_ih, name=weight_ih_name),
+                numpy_helper.from_array(weight_hh, name=weight_hh_name),
+                numpy_helper.from_array(np.array([1], dtype=np.int64), name=axes_name),
+            ]
+        )
+        if include_bias:
+            initializers.append(numpy_helper.from_array(bias, name=bias_name))
+        gru_inputs = [layer_input, weight_ih_name, weight_hh_name, bias_name if include_bias else ""]
+        nodes.append(
+            helper.make_node(
+                "GRU",
+                [*gru_inputs, "", hidden_in_name],
+                [sequence_name, hidden_out_name],
+                hidden_size=hidden_size,
+                linear_before_reset=linear_before_reset,
+            )
+        )
+        nodes.append(helper.make_node("Squeeze", [sequence_name, axes_name], [squeezed_name]))
+        layer_input = squeezed_name
+
+    final_axes_name = "sequence_axis"
+    initializers.append(numpy_helper.from_array(np.array([0], dtype=np.int64), name=final_axes_name))
+    nodes.append(helper.make_node("Squeeze", [layer_input, final_axes_name], ["features"]))
+
+    head_weight = (rng.standard_normal((output_size, hidden_size)) * 0.3).astype(np.float32)
+    head_bias = (rng.standard_normal((output_size,)) * 0.05).astype(np.float32)
+    initializers.extend(
+        [
+            numpy_helper.from_array(head_weight, name="head_weight"),
+            numpy_helper.from_array(head_bias, name="head_bias"),
+        ]
+    )
+    nodes.append(helper.make_node("Gemm", ["features", "head_weight", "head_bias"], ["head"], transB=1))
+    output_name = "head"
+    if apply_tanh:
+        nodes.append(helper.make_node("Tanh", [output_name], ["bounded_head"]))
+        output_name = "bounded_head"
+    if output_scale != 1.0:
+        initializers.append(numpy_helper.from_array(np.array(output_scale, dtype=np.float32), name="output_scale"))
+        nodes.append(helper.make_node("Mul", [output_name, "output_scale"], ["effort"]))
+        output_name = "effort"
+
+    graph_outputs.insert(0, helper.make_tensor_value_info(output_name, TensorProto.FLOAT, [None, output_size]))
+    graph = helper.make_graph(nodes, "gru", graph_inputs, graph_outputs, initializer=initializers)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    meta_prop = model.metadata_props.add()
+    meta_prop.key = "metadata"
+    meta_prop.value = json.dumps(metadata)
+    onnx_mod.checker.check_model(model)
+    onnx_mod.save(model, path)
+    return {
+        "layers": layers,
+        "head_weight": head_weight,
+        "head_bias": head_bias,
+        "apply_tanh": apply_tanh,
+        "output_scale": output_scale,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +648,732 @@ class TestDrivePID(unittest.TestCase):
             state_0, state_1 = state_1, state_0
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
+
+
+@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
+class TestDriveNeuralGRU(unittest.TestCase):
+    """DriveNeuralGRU ONNX loading and Warp-NN inference."""
+
+    FEATURES = ("position", "position_error", "velocity", "dynamic_bias")
+    ALL_FEATURES = (
+        "position",
+        "position_error",
+        "velocity",
+        "target_velocity",
+        "velocity_error",
+        "dynamic_bias",
+    )
+    SAMPLE_DT = 0.02
+
+    def setUp(self):
+        self.device = wp.get_device("cpu")
+        self._tmp_dir = tempfile.mkdtemp()
+        self._networks: dict[str, dict[str, Any]] = {}
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _metadata(self, input_columns: Sequence[str] | None = None) -> dict[str, Any]:
+        return {
+            "model_type": "gru",
+            "input_columns": list(self.FEATURES if input_columns is None else input_columns),
+            "sample_dt_s": self.SAMPLE_DT,
+            "normalization": {
+                "inputs": {
+                    "mean": dict(zip(self.ALL_FEATURES, (0.5, -0.25, 1.0, -1.5, 0.75, -2.0), strict=True)),
+                    "std": dict(zip(self.ALL_FEATURES, (2.0, 0.5, 4.0, 3.0, 2.5, 5.0), strict=True)),
+                },
+                "targets": {"mean": {"torque": 7.0}, "std": {"torque": 3.0}},
+            },
+        }
+
+    def _save_gru(self, filename: str = "gru.onnx", metadata=None, **kwargs) -> str:
+        path = os.path.join(self._tmp_dir, filename)
+        metadata = self._metadata() if metadata is None else metadata
+        input_columns = metadata.get("input_columns")
+        default_input_size = len(input_columns) if isinstance(input_columns, list) and input_columns else 4
+        self._networks[path] = _build_gru_onnx(
+            path,
+            input_size=kwargs.pop("input_size", default_input_size),
+            hidden_size=kwargs.pop("hidden_size", 4),
+            metadata=metadata,
+            **kwargs,
+        )
+        return path
+
+    def _mutate_gru(self, source: str, filename: str, edit: Callable[[Any], None]) -> str:
+        onnx_mod, _, _, _ = _onnx_modules()
+        model = onnx_mod.load(source)
+        edit(model)
+        path = os.path.join(self._tmp_dir, filename)
+        onnx_mod.save(model, path)
+        if source in self._networks:
+            self._networks[path] = self._networks[source]
+        return path
+
+    def _write_single_joint_gru_usd(self, model_path: str, filename: str) -> str:
+        """Write a single-joint GRU fixture using typed USD physics APIs."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage_path = os.path.join(self._tmp_dir, filename)
+        stage = Usd.Stage.CreateNew(stage_path)
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+        UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+
+        UsdGeom.Xform.Define(stage, "/World/Robot")
+
+        base = UsdGeom.Xform.Define(stage, "/World/Robot/Base")
+        base_rigid_body = UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        base_rigid_body.CreateKinematicEnabledAttr(True)
+        base_mass = UsdPhysics.MassAPI.Apply(base.GetPrim())
+        base_mass.CreateMassAttr(1.0)
+        base_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.01, 0.01, 0.01))
+
+        link = UsdGeom.Xform.Define(stage, "/World/Robot/Link")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        link_mass = UsdPhysics.MassAPI.Apply(link.GetPrim())
+        link_mass.CreateMassAttr(0.5)
+        link_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.005, 0.005, 0.005))
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets([base.GetPath()])
+        joint.CreateBody1Rel().SetTargets([link.GetPath()])
+        joint.CreateAxisAttr("Z")
+
+        actuator = stage.DefinePrim("/World/Robot/Actuator", "NewtonActuator")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["NewtonNeuralControlAPI"]
+        actuator.SetMetadata("apiSchemas", schemas)
+        actuator.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Robot/Joint")])
+        actuator.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(
+            Sdf.AssetPath(os.path.basename(model_path))
+        )
+        stage.GetRootLayer().Save()
+        return stage_path
+
+    def _make_case(self, model_path: str, n: int) -> types.SimpleNamespace:
+        indices = np.array([3, 1, 5][:n], dtype=np.uint32)
+        pos_indices = np.array([4, 0, 2][:n], dtype=np.uint32)
+        target_indices = np.array([2, 4, 0][:n], dtype=np.uint32)
+        position = np.array([-1.0, 0.5, 2.0, -0.25, 1.25, -2.0], dtype=np.float32)
+        velocity = np.array([0.1, -0.4, 0.7, 1.1, -1.3, 0.2], dtype=np.float32)
+        target = np.array([1.0, -1.5, 0.2, 2.0, 0.5, -0.7], dtype=np.float32)
+        target_velocity = np.array([0.9, -1.7, 2.5, -0.2, 1.2, 3.4], dtype=np.float32)
+        dynamic_bias = np.array([3.0, -2.5, 0.0, 4.5, -1.0, 2.0], dtype=np.float32)
+        actuator = Actuator(
+            indices=wp.array(indices, dtype=wp.uint32, device=self.device),
+            pos_indices=wp.array(pos_indices, dtype=wp.uint32, device=self.device),
+            target_pos_indices=wp.array(target_indices, dtype=wp.uint32, device=self.device),
+            drive=DriveNeuralGRU(model_path),
+        )
+        state = types.SimpleNamespace(
+            joint_q=wp.array(position, dtype=wp.float32, device=self.device),
+            joint_qd=wp.array(velocity, dtype=wp.float32, device=self.device),
+        )
+        control = types.SimpleNamespace(
+            joint_target_q=wp.array(target, dtype=wp.float32, device=self.device),
+            joint_target_qd=wp.array(target_velocity, dtype=wp.float32, device=self.device),
+            joint_act=wp.full(6, 456.0, dtype=wp.float32, device=self.device),
+            joint_f=wp.zeros(6, dtype=wp.float32, device=self.device),
+            dynamic_bias=wp.array(dynamic_bias, dtype=wp.float32, device=self.device),
+        )
+        return types.SimpleNamespace(
+            actuator=actuator,
+            state=state,
+            control=control,
+            state_a=actuator.state(),
+            state_b=actuator.state(),
+            indices=indices,
+            pos_indices=pos_indices,
+            target_indices=target_indices,
+            position=position,
+            velocity=velocity,
+            target=target,
+            target_velocity=target_velocity,
+            target_vel_indices=indices,
+            dynamic_bias=dynamic_bias,
+            network=self._networks[model_path],
+        )
+
+    def _expected(self, metadata, case, hidden=None, target_vel_indices=None):
+        keys = metadata["input_columns"]
+        stats = metadata["normalization"]["inputs"]
+        position = case.position[case.pos_indices]
+        velocity = case.velocity[case.indices]
+        if target_vel_indices is None:
+            target_vel_indices = case.target_vel_indices
+        target_velocity = case.target_velocity[target_vel_indices]
+        values = {
+            "position": position,
+            "position_error": case.target[case.target_indices] - position,
+            "velocity": velocity,
+            "target_velocity": target_velocity,
+            "velocity_error": target_velocity - velocity,
+            "dynamic_bias": case.dynamic_bias[case.indices],
+        }
+        raw = np.stack(tuple(values[key] for key in keys), axis=1)
+        means = np.array([stats["mean"][key] for key in keys], dtype=np.float32)
+        stds = np.array([stats["std"][key] for key in keys], dtype=np.float32)
+        layer_input = (raw - means) / stds
+        layers = case.network["layers"]
+        if hidden is None:
+            hidden = np.zeros((len(layers), len(case.indices), layers[0][1].shape[2]), dtype=np.float32)
+        next_hidden = []
+        for layer_index, (weight_ih, weight_hh, bias) in enumerate(layers):
+            size = weight_hh.shape[2]
+            input_gates = layer_input @ weight_ih[0].T + bias[0, : 3 * size]
+            hidden_gates = hidden[layer_index] @ weight_hh[0].T + bias[0, 3 * size :]
+            z = 1.0 / (1.0 + np.exp(-(input_gates[:, :size] + hidden_gates[:, :size])))
+            r = 1.0 / (1.0 + np.exp(-(input_gates[:, size : 2 * size] + hidden_gates[:, size : 2 * size])))
+            candidate = np.tanh(input_gates[:, 2 * size :] + r * hidden_gates[:, 2 * size :])
+            layer_input = (1.0 - z) * candidate + z * hidden[layer_index]
+            next_hidden.append(layer_input)
+        output = layer_input @ case.network["head_weight"].T + case.network["head_bias"]
+        if case.network["apply_tanh"]:
+            output = np.tanh(output)
+        output *= case.network["output_scale"]
+        targets = metadata["normalization"]["targets"]
+        return output[:, 0] * targets["std"]["torque"] + targets["mean"]["torque"], np.stack(next_hidden)
+
+    def _step(self, case):
+        case.control.joint_f.zero_()
+        case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        return case.control.joint_f.numpy()[case.indices], case.state_b.drive_state.hidden.numpy()
+
+    def _compute_direct(self, case, state, dt=SAMPLE_DT, target_vel_indices=None, feedforward=None):
+        forces = wp.zeros(len(case.indices), dtype=wp.float32, device=self.device)
+        if feedforward is not None:
+            case.actuator.drive.dynamic_bias = feedforward
+        if target_vel_indices is None:
+            target_vel_indices = case.actuator.indices
+        elif not isinstance(target_vel_indices, wp.array):
+            target_vel_indices = wp.array(target_vel_indices, dtype=wp.uint32, device=self.device)
+        case.actuator.drive.compute(
+            case.state.joint_q,
+            case.state.joint_qd,
+            case.control.joint_target_q,
+            case.control.joint_target_qd,
+            feedforward,
+            case.actuator.pos_indices,
+            case.actuator.indices,
+            case.actuator.target_pos_indices,
+            target_vel_indices,
+            forces,
+            state,
+            dt,
+            self.device,
+        )
+        return forces
+
+    def test_scalar_vectorized_and_stacked_inference(self):
+        for n, layers in ((1, 1), (3, 1), (3, 2)):
+            with self.subTest(batch=n, layers=layers):
+                metadata = self._metadata()
+                path = self._save_gru(f"gru_{n}_{layers}.onnx", metadata, layer_count=layers)
+                case = self._make_case(path, n)
+                expected_effort, expected_hidden = self._expected(metadata, case)
+
+                effort, hidden = self._step(case)
+
+                np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+                np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+                np.testing.assert_array_equal(
+                    np.delete(case.control.joint_f.numpy(), case.indices.astype(np.int64)), 0.0
+                )
+
+    def test_arbitrary_ordered_feature_subsets(self):
+        feature_sets = (
+            ("target_velocity",),
+            ("velocity_error", "position", "dynamic_bias"),
+            tuple(reversed(self.ALL_FEATURES)),
+        )
+        for index, features in enumerate(feature_sets):
+            with self.subTest(features=features):
+                metadata = self._metadata(features)
+                path = self._save_gru(f"feature_subset_{index}.onnx", metadata)
+                case = self._make_case(path, 3)
+
+                effort, hidden = self._step(case)
+                expected_effort, expected_hidden = self._expected(metadata, case)
+
+                np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+                np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_target_velocity_features_use_nonsequential_indices(self):
+        features = ("target_velocity", "velocity_error")
+        metadata = self._metadata(features)
+        path = self._save_gru("target_velocity_indices.onnx", metadata)
+        case = self._make_case(path, 3)
+        target_vel_indices = np.array([5, 0, 2], dtype=np.uint32)
+
+        forces = self._compute_direct(case, case.state_a.drive_state, target_vel_indices=target_vel_indices)
+
+        expected, _ = self._expected(metadata, case, target_vel_indices=target_vel_indices)
+        np.testing.assert_allclose(forces.numpy(), expected, rtol=1e-5, atol=1e-6)
+
+    def test_output_head_and_target_normalization(self):
+        metadata = self._metadata()
+        metadata["normalization"]["targets"] = {"mean": {"torque": -3.0}, "std": {"torque": 4.0}}
+        path = self._save_gru("linear_head.onnx", metadata, output_scale=1.0, apply_tanh=False)
+        case = self._make_case(path, 2)
+
+        effort, _ = self._step(case)
+
+        np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_gru_without_bias(self):
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("no_gru_bias.onnx", metadata, input_size=3, include_bias=False)
+        case = self._make_case(path, 2)
+
+        effort, hidden = self._step(case)
+        expected_effort, expected_hidden = self._expected(metadata, case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_hidden_state_evolves_and_resets(self):
+        path = self._save_gru("state.onnx")
+        case = self._make_case(path, 3)
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+        _, hidden_second = self._step(case)
+        self.assertFalse(np.allclose(hidden_first, hidden_second))
+
+        hidden_before = case.state_b.drive_state.hidden.numpy().copy()
+        case.state_b.reset(wp.array([False, True, False], dtype=wp.bool, device=self.device))
+        hidden_after = case.state_b.drive_state.hidden.numpy()
+        np.testing.assert_array_equal(hidden_after[:, 1, :], 0.0)
+        np.testing.assert_array_equal(hidden_after[:, 0, :], hidden_before[:, 0, :])
+        np.testing.assert_array_equal(hidden_after[:, 2, :], hidden_before[:, 2, :])
+        case.state_b.reset()
+        np.testing.assert_array_equal(case.state_b.drive_state.hidden.numpy(), 0.0)
+
+    def test_sim_state_swap_uses_current_control_dynamic_bias(self):
+        metadata = self._metadata(("position", "dynamic_bias"))
+        path = self._save_gru("state_swap.onnx", metadata)
+        case = self._make_case(path, 3)
+        _, hidden_first = self._step(case)
+
+        case.state_a, case.state_b = case.state_b, case.state_a
+        case.position = np.array([0.2, -0.8, 1.7, 2.1, -1.4, 0.6], dtype=np.float32)
+        case.state = types.SimpleNamespace(
+            joint_q=wp.array(case.position, dtype=wp.float32, device=self.device),
+            joint_qd=wp.array(case.velocity, dtype=wp.float32, device=self.device),
+        )
+        case.dynamic_bias = np.array([-0.7, 1.6, 2.2, -3.5, 0.4, 4.1], dtype=np.float32)
+        case.control.dynamic_bias.assign(case.dynamic_bias)
+        expected_effort, expected_hidden = self._expected(metadata, case, hidden=hidden_first)
+
+        effort, hidden = self._step(case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_delay_applies_to_targets_but_not_dynamic_bias(self):
+        metadata = self._metadata(("position_error", "target_velocity", "dynamic_bias"))
+        path = self._save_gru("delayed_targets.onnx", metadata)
+        case = self._make_case(path, 3)
+        case.actuator = Actuator(
+            indices=case.actuator.indices,
+            pos_indices=case.actuator.pos_indices,
+            target_pos_indices=case.actuator.target_pos_indices,
+            drive=DriveNeuralGRU(path),
+            delay=Delay(
+                delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
+                max_delay=1,
+            ),
+        )
+        case.state_a = case.actuator.state()
+        case.state_b = case.actuator.state()
+
+        delayed_target = case.target.copy()
+        delayed_target_velocity = case.target_velocity.copy()
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+
+        case.target = np.array([-3.0, 2.5, 1.4, -0.6, 3.2, -2.1], dtype=np.float32)
+        case.target_velocity = np.array([2.1, 0.4, -1.6, 3.3, -2.2, 0.8], dtype=np.float32)
+        case.dynamic_bias = np.array([-4.0, 5.5, 1.2, -2.7, 3.1, 6.4], dtype=np.float32)
+        case.control.joint_target_q.assign(case.target)
+        case.control.joint_target_qd.assign(case.target_velocity)
+        case.control.dynamic_bias.assign(case.dynamic_bias)
+
+        expected_case = types.SimpleNamespace(**vars(case))
+        expected_case.target = delayed_target
+        expected_case.target_velocity = delayed_target_velocity
+        expected_effort, expected_hidden = self._expected(metadata, expected_case, hidden=hidden_first)
+
+        effort, hidden = self._step(case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
+    def test_dynamic_bias_feature_is_optional(self):
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("no_bias.onnx", metadata, input_size=3)
+        case = self._make_case(path, 2)
+        del case.control.dynamic_bias
+
+        effort, _ = self._step(case)
+
+        np.testing.assert_allclose(effort, self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_direct_compute_without_dynamic_bias(self):
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("direct.onnx", metadata, input_size=3)
+        case = self._make_case(path, 1)
+
+        forces = self._compute_direct(case, case.state_a.drive_state)
+
+        np.testing.assert_allclose(forces.numpy(), self._expected(metadata, case)[0], rtol=1e-5, atol=1e-6)
+
+    def test_runtime_dt_and_state_contract(self):
+        path = self._save_gru("contract.onnx")
+        for dt in (None, self.SAMPLE_DT * 2.0):
+            with self.subTest(dt=dt):
+                case = self._make_case(path, 1)
+                with self.assertRaisesRegex(ValueError, "dt|sample_dt_s"):
+                    case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=dt)
+
+        case = self._make_case(path, 1)
+        with self.assertRaisesRegex(RuntimeError, "sim_control.dynamic_bias"):
+            self._compute_direct(case, case.state_a.drive_state)
+        with self.assertRaisesRegex(RuntimeError, "compute must run"):
+            case.actuator.drive.update_state(case.state_a.drive_state, case.state_b.drive_state)
+        with self.assertRaisesRegex(ValueError, "current drive state"):
+            metadata = self._metadata(self.FEATURES[:-1])
+            no_bias_path = self._save_gru("no_state.onnx", metadata, input_size=3)
+            no_bias_case = self._make_case(no_bias_path, 1)
+            self._compute_direct(no_bias_case, None)
+
+    def test_metadata_validation(self):
+        for index, input_columns in enumerate(
+            ([], ["position", "position"], ["position", "unknown_feature"], "position", None)
+        ):
+            metadata = self._metadata()
+            metadata["input_columns"] = input_columns
+            path = self._save_gru(f"bad_columns_{index}.onnx", metadata)
+            with self.assertRaisesRegex(ValueError, "input_columns"):
+                DriveNeuralGRU(path)
+
+        metadata = self._metadata(self.FEATURES[:-1])
+        path = self._save_gru("bad_input_size.onnx", metadata, input_size=4)
+        with self.assertRaisesRegex(ValueError, "input size.*input_columns"):
+            DriveNeuralGRU(path)
+
+        for group, statistic, name, value in (
+            ("inputs", "mean", "position", math.nan),
+            ("inputs", "std", "velocity", 0.0),
+            ("targets", "mean", "torque", math.nan),
+            ("targets", "std", "torque", math.inf),
+        ):
+            metadata = self._metadata()
+            metadata["normalization"][group][statistic][name] = value
+            path = self._save_gru(f"bad_{group}_{statistic}_{name}.onnx", metadata)
+            with self.assertRaisesRegex(ValueError, "normalization"):
+                DriveNeuralGRU(path)
+
+    def test_checkpoint_and_network_validation(self):
+        with self.assertRaisesRegex(ValueError, "model_path"):
+            DriveNeuralGRU.resolve_arguments({})
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            DriveNeuralGRU.resolve_arguments({"model_path": ""})
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            DriveNeuralGRU(os.path.join(self._tmp_dir, "missing.onnx"))
+
+        wrong_suffix = os.path.join(self._tmp_dir, "network.pt")
+        with open(wrong_suffix, "w", encoding="utf-8"):
+            pass
+        with self.assertRaisesRegex(ValueError, "ONNX"):
+            DriveNeuralGRU(wrong_suffix)
+
+        path = os.path.join(self._tmp_dir, "no_gru.onnx")
+        _build_mlp_onnx(path, np.zeros((1, 4), np.float32), np.zeros(1, np.float32), self._metadata())
+        with self.assertRaisesRegex(ValueError, "no GRU"):
+            DriveNeuralGRU(path)
+        with self.assertRaisesRegex(ValueError, "linear_before_reset"):
+            DriveNeuralGRU(self._save_gru("bad_reset.onnx", linear_before_reset=0))
+        with self.assertRaisesRegex(ValueError, "one scalar|output head"):
+            DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2))
+
+    def test_rejects_unsupported_onnx_graphs(self):
+        _, TensorProto, helper, numpy_helper = _onnx_modules()
+        source = self._save_gru("valid_for_mutation.onnx")
+
+        def node(model, op_type, index=0):
+            return [item for item in model.graph.node if item.op_type == op_type][index]
+
+        def set_attribute(model, op_type, name, value, index=0):
+            target = node(model, op_type, index)
+            for attribute in target.attribute:
+                if attribute.name == name:
+                    attribute.CopyFrom(helper.make_attribute(name, value))
+                    return
+            target.attribute.append(helper.make_attribute(name, value))
+
+        def replace_initializer(model, name, value):
+            target = next(item for item in model.graph.initializer if item.name == name)
+            target.CopyFrom(numpy_helper.from_array(np.asarray(value), name=name))
+
+        edits = []
+
+        def reverse(model):
+            set_attribute(model, "GRU", "direction", "reverse")
+
+        edits.append(("reverse.onnx", reverse, "forward"))
+
+        def batch_major(model):
+            set_attribute(model, "GRU", "layout", 1)
+
+        edits.append(("batch_major.onnx", batch_major, "layout"))
+
+        def missing_initial_hidden(model):
+            node(model, "GRU").input[5] = ""
+
+        edits.append(("missing_initial_hidden.onnx", missing_initial_hidden, "initial_h|initial hidden"))
+
+        def sequence_lengths(model):
+            model.graph.input.append(helper.make_tensor_value_info("sequence_lens", TensorProto.INT32, [None]))
+            node(model, "GRU").input[4] = "sequence_lens"
+
+        edits.append(("sequence_lengths.onnx", sequence_lengths, "sequence_lens"))
+
+        def clipped_gru(model):
+            set_attribute(model, "GRU", "clip", 0.25)
+
+        edits.append(("clipped_gru.onnx", clipped_gru, "clip"))
+
+        def custom_activations(model):
+            set_attribute(model, "GRU", "activations", ["HardSigmoid", "Tanh"])
+
+        edits.append(("custom_activations.onnx", custom_activations, "activations"))
+
+        for attribute in ("activation_alpha", "activation_beta"):
+
+            def custom_activation_parameter(model, attribute=attribute):
+                set_attribute(model, "GRU", attribute, [0.25, 0.5])
+
+            edits.append((f"{attribute}.onnx", custom_activation_parameter, attribute))
+
+        def missing_weights(model):
+            node(model, "GRU").input[1] = "missing_weight"
+
+        edits.append(("missing_weights.onnx", missing_weights, "embed GRU weights"))
+
+        def flat_input_weights(model):
+            replace_initializer(model, "gru_0_W", np.zeros((12, 4), dtype=np.float32))
+
+        edits.append(("flat_input_weights.onnx", flat_input_weights, "input weights"))
+
+        def mismatched_input_weights(model):
+            set_attribute(model, "GRU", "hidden_size", 5)
+
+        edits.append(("mismatched_input_weights.onnx", mismatched_input_weights, "input weights"))
+
+        def mismatched_hidden_weights(model):
+            replace_initializer(model, "gru_0_R", np.zeros((1, 12, 3), dtype=np.float32))
+
+        edits.append(("mismatched_hidden_weights.onnx", mismatched_hidden_weights, "hidden weights"))
+
+        def missing_bias(model):
+            node(model, "GRU").input[3] = "missing_bias"
+
+        edits.append(("missing_bias.onnx", missing_bias, "embed GRU biases"))
+
+        def mismatched_bias(model):
+            replace_initializer(model, "gru_0_B", np.zeros((1, 23), dtype=np.float32))
+
+        edits.append(("mismatched_bias.onnx", mismatched_bias, "biases"))
+
+        def missing_head(model):
+            node(model, "Gemm").op_type = "MatMul"
+
+        edits.append(("missing_head.onnx", missing_head, "one scalar Gemm"))
+
+        def unsupported_head(model):
+            set_attribute(model, "Gemm", "alpha", 2.0)
+
+        edits.append(("unsupported_head.onnx", unsupported_head, "unsupported Gemm"))
+
+        def missing_head_weight(model):
+            node(model, "Gemm").input[1] = "missing_head_weight"
+
+        edits.append(("missing_head_weight.onnx", missing_head_weight, "output-head weights"))
+
+        def branched_head(model):
+            model.graph.node.append(helper.make_node("Identity", ["head"], ["unused_head"]))
+
+        edits.append(("branched_head.onnx", branched_head, "one linear path"))
+
+        def vector_scale(model):
+            replace_initializer(model, "output_scale", np.array([1.0, 2.0], dtype=np.float32))
+
+        edits.append(("vector_scale.onnx", vector_scale, "scale must be scalar"))
+
+        def nonfinite_scale(model):
+            replace_initializer(model, "output_scale", np.array(math.nan, dtype=np.float32))
+
+        edits.append(("nonfinite_scale.onnx", nonfinite_scale, "scale must be finite"))
+
+        def unsupported_output(model):
+            node(model, "Tanh").op_type = "Relu"
+
+        edits.append(("unsupported_output.onnx", unsupported_output, "unsupported output operation"))
+
+        def reversed_output_operations(model):
+            tanh = node(model, "Tanh")
+            scale = node(model, "Mul")
+            tanh.op_type = "Mul"
+            tanh.input.append("output_scale")
+            scale.op_type = "Tanh"
+            del scale.input[1:]
+
+        edits.append(("reversed_output_operations.onnx", reversed_output_operations, "order|unsupported output"))
+
+        def disconnected_head(model):
+            model.graph.input.append(helper.make_tensor_value_info("unrelated_features", TensorProto.FLOAT, [None, 4]))
+            node(model, "Gemm").input[0] = "unrelated_features"
+
+        edits.append(("disconnected_head.onnx", disconnected_head, "GRU|output head"))
+
+        def disconnected_output(model):
+            model.graph.output[0].name = "not_the_head_output"
+
+        edits.append(("disconnected_output.onnx", disconnected_output, "does not reach"))
+
+        for filename, edit, message in edits:
+            with self.subTest(filename=filename):
+                path = self._mutate_gru(source, filename, edit)
+                with self.assertRaisesRegex(ValueError, message):
+                    DriveNeuralGRU(path)
+
+    def test_accepts_identity_output_and_rejects_invalid_runtime_state(self):
+        source = self._save_gru("linear_output.onnx", apply_tanh=False, output_scale=1.0)
+
+        def append_identity(model):
+            _, _, helper, _ = _onnx_modules()
+            model.graph.node.append(helper.make_node("Identity", ["head"], ["identity_output"]))
+            model.graph.output[0].name = "identity_output"
+
+        path = self._mutate_gru(source, "identity_output.onnx", append_identity)
+        case = self._make_case(path, 1)
+        self._step(case)
+
+        with self.assertRaisesRegex(ValueError, "device"):
+            case.actuator.drive.state(1, object())
+
+        self._compute_direct(case, case.state_a.drive_state, feedforward=case.control.dynamic_bias)
+        with self.assertRaisesRegex(ValueError, "next drive state"):
+            case.actuator.drive.update_state(case.state_a.drive_state, DriveNeuralGRU.State())
+
+    def test_state_creation_and_graphability(self):
+        path = self._save_gru("state_contract.onnx")
+        drive = DriveNeuralGRU(path)
+        with self.assertRaisesRegex(RuntimeError, "finalized"):
+            drive.state(1, self.device)
+
+        case = self._make_case(path, 2)
+        self.assertTrue(case.actuator.drive.is_stateful())
+        self.assertTrue(case.actuator.drive.is_graphable())
+        with self.assertRaisesRegex(ValueError, "no hidden"):
+            DriveNeuralGRU.State().reset()
+
+    def test_dynamic_bias_is_allocated_on_control_only(self):
+        def build_model(model_path):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+            builder.add_articulation([joint])
+            builder.add_actuator(
+                DriveNeuralGRU,
+                index=builder.joint_qd_start[joint],
+                model_path=model_path,
+            )
+            return builder.finalize(device=self.device)
+
+        model = build_model(self._save_gru("control_bias.onnx"))
+        control = model.control()
+        state = model.state()
+        self.assertEqual(control.dynamic_bias.shape, (model.joint_dof_count,))
+        self.assertEqual(control.dynamic_bias.dtype, wp.float32)
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
+        self.assertFalse(hasattr(state, "dynamic_bias"))
+
+        control.dynamic_bias.assign(np.full(model.joint_dof_count, 2.5, dtype=np.float32))
+        control.clear()
+        np.testing.assert_array_equal(control.dynamic_bias.numpy(), 2.5)
+
+        metadata = self._metadata(("position", "target_velocity"))
+        model_without_bias = build_model(self._save_gru("control_no_bias.onnx", metadata))
+        self.assertFalse(hasattr(model_without_bias.control(), "dynamic_bias"))
+        self.assertFalse(hasattr(model_without_bias.state(), "dynamic_bias"))
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_model_builder_constructs_relative_onnx_usd_actuator(self):
+        """Construct a finalized GRU actuator from a relative USD asset path."""
+        model_path = self._save_gru("builder_gru.onnx")
+        stage_path = self._write_single_joint_gru_usd(model_path, "builder_gru.usda")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage_path, floating=False, load_visual_shapes=False)
+        self.assertEqual(result["actuator_count"], 1)
+        # This test covers actuator parsing, not the OpenUSD package-dependent
+        # articulation discovery performed by LoadUsdPhysicsFromRange.
+        joint_index = builder.joint_label.index("/World/Robot/Joint")
+        builder.add_articulation([joint_index], label="/World/Robot")
+        model = builder.finalize(device=self.device)
+        self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
+        self.assertEqual(model.control().dynamic_bias.shape, (model.joint_dof_count,))
+        self.assertFalse(hasattr(model.state(), "dynamic_bias"))
+
+    def test_builder_groups_equal_model_paths(self):
+        shared_path = self._save_gru("shared.onnx")
+        distinct_path = self._save_gru("distinct.onnx", rng_seed=2026)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [builder.add_link() for _ in range(3)]
+        joints = [
+            builder.add_joint_revolute(parent=-1 if i == 0 else links[i - 1], child=link, axis=newton.Axis.Z)
+            for i, link in enumerate(links)
+        ]
+        builder.add_articulation(joints)
+        dofs = [builder.joint_qd_start[joint] for joint in joints]
+        builder.add_actuator(DriveNeuralGRU, index=dofs[0], model_path=shared_path)
+        builder.add_actuator(DriveNeuralGRU, index=dofs[1], model_path=shared_path)
+        builder.add_actuator(DriveNeuralGRU, index=dofs[2], model_path=distinct_path)
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(len(model.actuators), 2)
+        by_path = {actuator.drive.model_path: actuator for actuator in model.actuators}
+        self.assertEqual(by_path[shared_path].num_actuators, 2)
+        self.assertEqual(by_path[distinct_path].num_actuators, 1)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_usd_dispatches_onnx_asset_to_gru(self):
+        from pxr import Sdf
+
+        model_path = self._save_gru("usd_gru.onnx")
+        stage_path = os.path.join(self._tmp_dir, "gru.usda")
+        stage = Usd.Stage.CreateNew(stage_path)
+        stage.DefinePrim("/World/Joint", "PhysicsRevoluteJoint")
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        prim = stage.DefinePrim("/World/Actuator", "NewtonActuator")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["NewtonNeuralControlAPI"]
+        prim.SetMetadata("apiSchemas", schemas)
+        prim.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Joint")])
+        prim.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(
+            Sdf.AssetPath(os.path.basename(model_path))
+        )
+        stage.GetRootLayer().Save()
+
+        parsed = parse_actuator_prim(prim)
+
+        self.assertEqual(parsed.drive_class, DriveNeuralGRU)
+        self.assertEqual(os.path.realpath(parsed.drive_kwargs["model_path"]), os.path.realpath(model_path))
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")

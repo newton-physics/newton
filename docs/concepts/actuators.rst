@@ -85,8 +85,8 @@ Drives and clamping objects are pluggable: implement the
 .. note::
 
    **Current limitations:** the first version does not include a transmission
-   model (gear ratios / linkage transforms), supports only single-input
-   single-output (SISO) actuators (one DOF per actuator), and does not model
+   model (gear ratios / linkage transforms), supports only one DOF per
+   actuator, and does not model
    actuator dynamics (inertia, friction, thermal effects).
 
 Usage
@@ -175,7 +175,8 @@ Stateful Actuators
 ------------------
 
 Drives that maintain internal state (e.g. :class:`DrivePID` with an
-integral accumulator, or :class:`DriveNeuralLSTM` with hidden/cell state) and
+integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
+:class:`DriveNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -257,11 +258,10 @@ state objects — simply omit them:
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives (:class:`DriveNeuralMLP`,
-:class:`DriveNeuralLSTM`) support two checkpoint backends. `ONNX
-<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
-Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
-and require PyTorch.
+Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
+Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
+:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
+Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -281,6 +281,109 @@ the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
 may omit them: they contain the original module, whose ``torch.nn.LSTM``
 submodule is inspected directly, while ``torch.export`` flattens the network
 into a computation graph that no longer exposes it.
+
+.. _gru-actuator-support:
+
+GRU
+^^^
+
+:class:`DriveNeuralGRU` accepts an ONNX network and evaluates it with
+`Warp-NN <https://github.com/NVIDIA/warp-nn>`_. PyTorch is not required.
+The drive supports explicit, stateful actuator models.
+
+Each network invocation has the following contract:
+
+* input shape ``[1, N, F]``, with the ordered features selected by
+  ``input_columns``;
+* hidden-state shape ``[layer_count, N, hidden_size]``; and
+* one scalar output per actuator.
+
+The ONNX graph contains one or more forward ``GRU`` nodes followed by a scalar
+``Gemm`` output head. ``Tanh`` and a scalar ``Mul`` may optionally follow the
+head. GRU weights, output-head weights, dimensions, activation, and output
+scale are read from the graph. GRU nodes use ``layout=0`` and
+``linear_before_reset=1``; stacked layers share one hidden size. All weights
+must be embedded in the ONNX file.
+
+``input_columns`` is a non-empty, duplicate-free ordered selection from:
+
+* ``position``;
+* ``position_error``, computed as ``target_position - position`` without angle
+  wrapping;
+* ``velocity``;
+* ``target_velocity``;
+* ``velocity_error``, computed as ``target_velocity - velocity``; and
+* ``dynamic_bias``.
+
+The first five features use the standard State and Control arrays already
+passed to every drive. ``dynamic_bias`` is an optional, caller-supplied
+generalized bias-force input. When selected, :meth:`ModelBuilder.add_actuator`
+automatically registers a one-dimensional ``wp.float32`` custom Control
+attribute named ``dynamic_bias``. It is exposed as ``control.dynamic_bias``,
+has the same global joint-DOF layout and length as ``state.joint_qd``, and is
+gathered with the actuator's velocity indices. Checkpoints that do not select
+this feature do not allocate the attribute. The same setup applies when the
+actuator is imported from USD; the actuator prim only needs
+``newton:modelPath`` and ``newton:targets``.
+
+Newton allocates but does not compute or clear this custom Control array.
+Populate the generalized bias force before every actuator evaluation:
+
+.. code-block:: python
+
+   control.clear(model)
+   control.joint_target_q.assign(target_positions)
+   control.dynamic_bias.assign(computed_generalized_bias_force)
+   actuator.step(state, control, actuator_state_a, actuator_state_b, dt=sample_dt_s)
+   actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
+
+For models
+trained with MuJoCo data, this feature commonly corresponds to ``qfrc_bias =
+c(q, v)``: the Coriolis, centrifugal, and gravitational generalized forces.
+Other solvers may provide the equivalent quantity. Checkpoint producers and
+applications are responsible for using consistent physical semantics for this
+feature. Before each evaluation, :class:`Actuator` assigns this same-named
+Control array to ``DriveNeuralGRU.dynamic_bias``. The drive uses it only to
+condition the network; it is not added to the predicted torque or interpreted
+as feedforward effort.
+
+Newton reads ``input_columns``, ``sample_dt_s``, and normalization statistics
+for the selected inputs and torque output. The runtime actuator timestep must
+match ``sample_dt_s``. A separate :class:`Delay` may be composed when additional
+runtime delay is desired. Target-derived features use its delayed target
+arrays. ``dynamic_bias`` is sampled directly from the current Control and is
+not delayed.
+
+Input normalization is applied feature by feature as
+``(value - mean) / std``. The network's scalar output is converted back to
+physical torque with ``output * torque_std + torque_mean``. Any output-head
+activation or scale is already part of the exported network and is not applied
+a second time.
+
+Deferred capabilities are tracked here:
+
+.. list-table:: Deferred GRU capabilities
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Capability
+     - Status
+   * - Raw target position as a network feature
+     - Deferred; the drive derives and consumes position error.
+   * - Additional State or Control features
+     - Deferred; the drive supports the five built-in features listed above and optional ``dynamic_bias``.
+   * - Automatic generalized-bias-force computation
+     - Deferred; Newton allocates the optional Control input, and callers compute and populate it.
+   * - Additive feedforward effort, solver-PD, and previous torque
+     - Deferred.
+   * - Residual torque and hybrid physics baselines
+     - Deferred; the scalar output is interpreted as predicted torque.
+   * - Multi-rate or resampled evaluation
+     - Deferred; the runtime evaluation cadence must match ``sample_dt_s``.
+   * - Alternative normalization layouts and raw training checkpoints
+     - Deferred; deploy an ONNX network with the expected runtime metadata layout.
+   * - Additional ONNX operators, implicit mode, and differentiation
+     - Deferred; the drive uses explicit Warp-NN inference. CUDA graph capture is supported.
 
 .. _effort-modes:
 
@@ -415,6 +518,8 @@ Drives
 * :class:`DrivePD` — proportional-derivative control law (stateless).
 * :class:`DrivePID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
+* :class:`DriveNeuralGRU` — GRU neural-network drive
+  (stateful: hidden state; explicit Warp-NN inference).
 * :class:`DriveNeuralMLP` — MLP neural-network drive
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
