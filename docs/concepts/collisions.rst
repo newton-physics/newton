@@ -453,7 +453,9 @@ Newton supports the following geometry types via :class:`~GeoType`:
    MuJoCo solver, however, compiles every mesh geom through a convex-hull path: a bowl,
    tube or C-channel loses its cavity, and bodies can come to rest on the hull surface.
    ``SolverMuJoCo`` warns when it exports a non-convex mesh collider while generating
-   MuJoCo contacts. To resolve the warning, approximate the mesh with
+   MuJoCo contacts. Meshes with too many faces and vertices to verify convexity get a
+   softer warning, since an unverified mesh may still be non-convex. To resolve the
+   warning, approximate the mesh with
    ``builder.approximate_meshes("coacd")`` (convex decomposition), pass
    ``use_mujoco_contacts=False`` so Newton's collision pipeline handles the contacts,
    or build the shape with ``add_shape_convex_hull`` to make the approximation explicit.

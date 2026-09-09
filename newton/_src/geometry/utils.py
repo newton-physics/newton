@@ -691,12 +691,12 @@ def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
     return order[np.array(chain, dtype=np.int32)]
 
 
-def is_mesh_convex(
+def _is_mesh_convex(
     vertices: np.ndarray,
     indices: np.ndarray | None = None,
     *,
     max_face_vertex_pairs: int = 5_000_000,
-) -> bool:
+) -> bool | None:
     """Test whether a triangle mesh is geometrically convex.
 
     A mesh is convex when every vertex lies on the same side of (or on) every
@@ -711,26 +711,34 @@ def is_mesh_convex(
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
         indices: A numpy array of shape (K, 3) or (3 * K,) containing the triangle
-            indices. When ``None`` the mesh is assumed convex.
+            indices. When ``None`` the surface is unknown and the result is
+            ``None`` (no evidence either way).
         max_face_vertex_pairs: Upper bound on faces x vertices for the exact
-            test. Larger meshes return ``True`` (assumed convex) instead of
-            paying the cost, so treat ``True`` as "no evidence of
-            non-convexity" rather than a proof.
+            test. Larger meshes return ``None`` instead of paying the cost, so
+            the caller can decide how to treat an unverified mesh rather than
+            silently reading a skipped check as convex.
 
     Returns:
-        ``False`` if some face plane separates the vertex set, ``True``
-        otherwise.
+        ``False`` if some face plane separates the vertex set, ``True`` if the
+        exact test passes (or the mesh is too small to enclose a cavity, so its
+        convex hull loses nothing), and ``None`` when the check was skipped.
+
+    Internal helper: kept private until it has a proven contract; callers must
+    handle all three outcomes.
     """
     if indices is None:
-        return True
+        return None
     verts = np.asarray(vertices, dtype=np.float64)
     faces = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
     num_verts = len(verts)
     num_faces = len(faces)
     if num_verts < 4 or num_faces < 4:
+        # Too small to enclose a cavity: the convex hull equals the mesh, so
+        # hulling loses no geometry and "convex" is exact, not an assumption.
         return True
     if num_faces * num_verts > max_face_vertex_pairs:
-        return True
+        # Skipped check; report unknown instead of pretending convex.
+        return None
 
     extent = float(np.max(np.max(verts, axis=0) - np.min(verts, axis=0)))
     eps = 1e-6 * max(extent, 1.0)

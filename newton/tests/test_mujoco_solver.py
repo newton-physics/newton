@@ -6776,6 +6776,44 @@ class TestMuJoCoConversion(unittest.TestCase):
             warnings.simplefilter("error", category=UserWarning)
             SolverMuJoCo(model, use_mujoco_contacts=False)
 
+    @staticmethod
+    def _subdivided_u_channel(subdivisions: int):
+        """A closed non-convex U-channel with enough faces x vertices to exceed
+        the default exact convexity-check budget (faces x vertices > 5e6)."""
+        verts, faces = TestMuJoCoConversion._u_channel_mesh()
+        for _ in range(subdivisions):
+            verts = list(verts)
+            edges: dict[tuple[int, int], int] = {}
+            new_faces = []
+            for f in faces:
+                mids = []
+                for a, b in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
+                    key = (min(a, b), max(a, b))
+                    if key not in edges:
+                        edges[key] = len(verts)
+                        verts.append((verts[a] + verts[b]) / 2.0)
+                    mids.append(edges[key])
+                m0, m1, m2 = mids
+                new_faces += [[f[0], m0, m2], [m0, f[1], m1], [m2, m1, f[2]], [m0, m1, m2]]
+            verts = np.array(verts, dtype=np.float32)
+            faces = np.array(new_faces, dtype=np.int32)
+        return verts, faces
+
+    def test_oversized_mesh_unverified_convexity_warns(self):
+        """Test that a mesh too large to verify convexity warns softly instead of silently hulling."""
+        # Four midpoint subdivisions grow the U-channel past the exactness
+        # budget, so convexity is unverified and the warning must reflect that.
+        verts, faces = self._subdivided_u_channel(4)
+        builder = newton.ModelBuilder()
+        builder.add_shape_mesh(-1, mesh=Mesh(verts, faces.flatten()), label="big_u_channel")
+        ball = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+        builder.add_shape_sphere(ball, radius=0.08)
+        model = builder.finalize()
+
+        self.assertGreater(len(faces) * len(verts), 5_000_000)
+        with self.assertWarnsRegex(UserWarning, "too many faces and vertices to verify convexity"):
+            SolverMuJoCo(model)
+
     def test_mesh_geoms_across_worlds(self):
         """Test that mesh geoms work correctly across different worlds in MuJoCo solver."""
         # Create a simple model with 2 worlds, each containing a mesh

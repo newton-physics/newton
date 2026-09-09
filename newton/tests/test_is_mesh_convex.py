@@ -1,21 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for :func:`newton._src.geometry.utils.is_mesh_convex`.
+"""Tests for :func:`newton._src.geometry.utils._is_mesh_convex`.
+
+The helper reports a three-valued result:
+
+- ``True``: the exact test passed, or the mesh is too small to enclose a
+  cavity (its convex hull loses nothing)
+- ``False``: a face plane separates the vertex set (non-convex)
+- ``None``: the check was skipped (missing indices or the cost guard tripped)
 
 Covers:
 - convex closed meshes (box, tetrahedron) with both windings
 - non-convex closed meshes (U-channel built from three boxes)
 - open/planar meshes (no volume, not a violation)
 - degenerate and trivial inputs
-- the ``max_face_vertex_pairs`` cost guard
+- skipped checks reporting ``None`` instead of ``True``
 """
 
 import unittest
 
 import numpy as np
 
-from newton._src.geometry.utils import is_mesh_convex
+from newton._src.geometry.utils import _is_mesh_convex
 
 
 def box_mesh(cx=0.0, cy=0.0, cz=0.0, hx=1.0, hy=1.0, hz=1.0):
@@ -60,29 +67,29 @@ class TestIsMeshConvex(unittest.TestCase):
     def test_box_is_convex(self):
         """Return True for a closed, convex box mesh."""
         verts, faces = box_mesh()
-        self.assertTrue(is_mesh_convex(verts, faces))
+        self.assertTrue(_is_mesh_convex(verts, faces))
 
     def test_box_with_inverted_winding_is_convex(self):
         """Return True for a convex box regardless of triangle winding."""
         verts, faces = box_mesh()
-        self.assertTrue(is_mesh_convex(verts, faces[:, ::-1]))
+        self.assertTrue(_is_mesh_convex(verts, faces[:, ::-1]))
 
     def test_tetrahedron_is_convex(self):
         """Return True for a minimal closed tetrahedron."""
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
-        self.assertTrue(is_mesh_convex(verts, faces))
+        self.assertTrue(_is_mesh_convex(verts, faces))
 
     def test_u_channel_is_not_convex(self):
         """Return False for a closed mesh with a cavity between its walls."""
         verts, faces = u_channel_mesh()
-        self.assertFalse(is_mesh_convex(verts, faces))
+        self.assertFalse(_is_mesh_convex(verts, faces))
 
     def test_scaled_u_channel_is_not_convex(self):
         """Return False for a non-convex mesh regardless of uniform scale."""
         # Convexity is scale-invariant; the solver relies on this for its cache.
         verts, faces = u_channel_mesh()
-        self.assertFalse(is_mesh_convex(verts * 7.5, faces))
+        self.assertFalse(_is_mesh_convex(verts * 7.5, faces))
 
     def test_downscaled_u_channel_is_not_convex(self):
         """Return False for a non-convex mesh below the epsilon floor."""
@@ -90,12 +97,12 @@ class TestIsMeshConvex(unittest.TestCase):
         # scales with extent; an unnormalized comparison would swallow a tiny
         # non-convex mesh entirely.
         verts, faces = u_channel_mesh()
-        self.assertFalse(is_mesh_convex(verts * 1e-3, faces))
+        self.assertFalse(_is_mesh_convex(verts * 1e-3, faces))
 
     def test_enlarged_box_is_convex(self):
         """Return True for a convex mesh at large scales."""
         verts, faces = box_mesh()
-        self.assertTrue(is_mesh_convex(verts * 1e5, faces))
+        self.assertTrue(_is_mesh_convex(verts * 1e5, faces))
 
     def test_flat_open_mesh_is_convex(self):
         """Return True for an open planar grid with no separating face plane."""
@@ -106,30 +113,31 @@ class TestIsMeshConvex(unittest.TestCase):
             for x in range(3):
                 i = y * 4 + x
                 faces += [i, i + 1, i + 4, i + 1, i + 5, i + 4]
-        self.assertTrue(is_mesh_convex(verts, np.array(faces, dtype=np.int32)))
+        self.assertTrue(_is_mesh_convex(verts, np.array(faces, dtype=np.int32)))
 
-    def test_none_indices_assumed_convex(self):
-        """Return True when triangle indices are missing."""
+    def test_none_indices_is_unknown(self):
+        """Return None when triangle indices are missing, instead of guessing."""
         verts, _ = u_channel_mesh()
-        self.assertTrue(is_mesh_convex(verts, None))
+        self.assertIsNone(_is_mesh_convex(verts, None))
 
-    def test_degenerate_inputs_assumed_convex(self):
-        """Return True instead of raising for empty or degenerate inputs."""
+    def test_tiny_meshes_are_convex(self):
+        """Return True for degenerate inputs too small to enclose a cavity."""
+        # A hull of these equals the mesh itself, so "convex" is exact.
         verts, faces = u_channel_mesh()
-        self.assertTrue(is_mesh_convex(verts, np.array([], dtype=np.int32).reshape(0, 3)))
-        self.assertTrue(is_mesh_convex(np.zeros((3, 3), dtype=np.float32), faces[:3]))
+        self.assertTrue(_is_mesh_convex(verts, np.array([], dtype=np.int32).reshape(0, 3)))
+        self.assertTrue(_is_mesh_convex(np.zeros((3, 3), dtype=np.float32), faces[:3]))
 
-    def test_cost_guard_returns_true(self):
-        """Return True instead of failing when the pair bound is exceeded."""
+    def test_cost_guard_returns_unknown(self):
+        """Return None instead of claiming convex when the pair bound is exceeded."""
         verts, faces = u_channel_mesh()
         # A bound below faces x vertices skips the exact test instead of failing it.
-        self.assertTrue(is_mesh_convex(verts, faces, max_face_vertex_pairs=10))
+        self.assertIsNone(_is_mesh_convex(verts, faces, max_face_vertex_pairs=10))
 
     def test_missing_faces_within_guard(self):
         """Skip zero-area triangles instead of treating them as planes."""
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         faces = np.array([[0, 1, 2], [0, 1, 1], [1, 2, 2], [0, 0, 0]], dtype=np.int32)
-        self.assertTrue(is_mesh_convex(verts, faces))
+        self.assertTrue(_is_mesh_convex(verts, faces))
 
 
 if __name__ == "__main__":
