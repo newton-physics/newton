@@ -2324,8 +2324,8 @@ def resolve_drive_limit_mode(
 ):
     """Resolve drive/limit priority and compute position error [m or rad].
 
-    Limits take precedence unless the drive target pulls the joint back into
-    range. Otherwise the drive engages with target clamped to the limit range.
+    Limits take precedence: if q is outside [lower, upper], the active limit
+    wins. Otherwise the drive engages with target clamped to the limit range.
 
     Returns:
         (mode, err_pos) -- active mode constant and signed position error.
@@ -2336,19 +2336,11 @@ def resolve_drive_limit_mode(
     if has_limits:
         drive_target = wp.clamp(target_pos, lim_lower, lim_upper)
         if q < lim_lower:
-            if has_drive and drive_target > lim_lower:
-                mode = _DRIVE_LIMIT_MODE_DRIVE
-                err_pos = q - drive_target
-            else:
-                mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
-                err_pos = q - lim_lower
+            mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
+            err_pos = q - lim_lower
         elif q > lim_upper:
-            if has_drive and drive_target < lim_upper:
-                mode = _DRIVE_LIMIT_MODE_DRIVE
-                err_pos = q - drive_target
-            else:
-                mode = _DRIVE_LIMIT_MODE_LIMIT_UPPER
-                err_pos = q - lim_upper
+            mode = _DRIVE_LIMIT_MODE_LIMIT_UPPER
+            err_pos = q - lim_upper
     if mode == _DRIVE_LIMIT_MODE_NONE and has_drive:
         mode = _DRIVE_LIMIT_MODE_DRIVE
         err_pos = q - drive_target
@@ -6918,9 +6910,12 @@ def update_rod_dahl_state(
 # =====================================================================================
 # Rigid-body Divide-and-Truncate (DAT) penetration-free truncation.
 #
+# Reference: "Divide and Truncate: A Penetration and Inversion Free Framework for Coupled
+# Multi-physics Systems" (SIGGRAPH 2026), Algorithm 1.
+#
 # Rigid bodies follow curved vertex trajectories under interpolated pose updates. Per-contact
-# division planes are enforced by sampling + bisection (paper Alg. 1, Stage 1), optionally
-# followed by interval verification of the complete prefix arc (paper Alg. 1, Stage 2).
+# division planes are enforced by sampling + bisection (Alg. 1, Stage 1), optionally
+# followed by interval verification of the complete prefix arc (Alg. 1, Stage 2).
 #
 # The kernels consume only the abstract ``Contacts`` record fields (shape ids, points,
 # normals, margins, soft feature indices + barycentrics) plus reference/candidate poses,
@@ -7385,10 +7380,10 @@ def rigid_trajectory_truncation_t(
 ):
     """Return a backed-off interpolation parameter before a rigid point crosses a plane.
 
-    Stage 1 always uses the sampling and bisection implementation from
-    ``ankac/rigid-dat-persistent-planes``. The temporary interval-arithmetic
-    option additionally runs Algorithm 1, Stage 2: certify the complete prefix
-    arc ``[0, t*]`` and shorten it by prefix bisection when needed.
+    Stage 1 always samples the trajectory and bisects the first bracketed
+    crossing. The optional interval-arithmetic path additionally runs Stage 2:
+    certify the complete prefix arc ``[0, t*]`` and shorten it by prefix
+    bisection when needed.
 
     Args:
         n: World-space plane normal away from the rigid side. The allowed rigid

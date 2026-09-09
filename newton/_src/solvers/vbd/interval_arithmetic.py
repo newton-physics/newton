@@ -62,6 +62,7 @@ def next_float_down(value: float) -> float:
 
 @wp.func
 def _expand_up(value: float, ulps: int) -> float:
+    """Move ``value`` up by ``ulps`` representable float32 steps."""
     result = value
     for _i in range(ulps):
         result = next_float_up(result)
@@ -70,6 +71,7 @@ def _expand_up(value: float, ulps: int) -> float:
 
 @wp.func
 def _expand_down(value: float, ulps: int) -> float:
+    """Move ``value`` down by ``ulps`` representable float32 steps."""
     result = value
     for _i in range(ulps):
         result = next_float_down(result)

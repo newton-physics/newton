@@ -71,6 +71,7 @@ PARAMS = {
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the pinned cloth, the projectiles, the owned collision pipeline, and the DAT-enabled solver."""
         self.viewer = viewer
         self.params = PARAMS
         self.frame_dt = 1.0 / self.params["fps"]
@@ -133,6 +134,7 @@ class Example:
     # ── model construction ──────────────────────────────────────────────
 
     def _build_cloth(self, builder):
+        """Add the four-edge-pinned cloth sheet to ``builder``."""
         p = self.params
         res = p["cloth_res"]
         size = p["cloth_size"]
@@ -157,6 +159,7 @@ class Example:
         )
 
     def _build_bodies(self, builder):
+        """Add the sphere and capsule projectiles to ``builder``."""
         p = self.params
         self._bodies = []
         palette = [(0.85, 0.3, 0.25), (0.25, 0.5, 0.85), (0.95, 0.75, 0.2)]
@@ -188,6 +191,7 @@ class Example:
     # ── simulation loop ─────────────────────────────────────────────────
 
     def simulate(self):
+        """Advance the solver by ``sim_substeps`` sub-steps."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -195,11 +199,13 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        """Advance one frame."""
         self.frame += 1
         self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
+        """Log the current state to the viewer."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
@@ -237,10 +243,12 @@ class Example:
         return deepest
 
     def test_post_step(self):
+        """Track the deepest cloth-projectile penetration observed so far."""
         pen = self._cloth_penetration()
         self.max_penetration = max(self.max_penetration, pen)
 
     def test_final(self):
+        """Assert finite state, the penetration bound, and that no projectile tunneled through the sheet."""
         q = self.state_0.particle_q.numpy()
         body_q = self.state_0.body_q.numpy()
         if not (np.isfinite(q).all() and np.isfinite(body_q).all()):
@@ -254,6 +262,7 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create the example's argument parser with the scene's default frame count."""
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
         return parser
