@@ -5974,7 +5974,6 @@ def test_soft_self_dat_truncates_complete_primitive_pairs(test, device):
         )
         expected = np.array([0.85 * (1.0 - 2.0 * epsilon) / 2.0, 1.0, 1.0, 1.0])
         np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1.0e-6)
-        # The band must be observable: strictly below the no-band value.
         test.assertLess(float(actual[0]), 0.85 * 0.5)
 
     with test.subTest(pair="moving VT triangle"):
