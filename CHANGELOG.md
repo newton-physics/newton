@@ -154,6 +154,11 @@
 - Speed up `SolverMuJoCo` initialization for replicated models by querying collision filters only for the selected MuJoCo template shapes.
 - Use supported NumPy ufunc names when building anisotropic Style3D cloth.
 
+## [1.5.2] - 2026-09-09
+
+### Added
+
+- Add `Actuator.State.assign()` for preserving actuator state across odd-length CUDA graph replays with a single captured graph. ([#4098](https://github.com/newton-physics/newton/issues/4098))
 
 ## [1.5.1] - 2026-08-27
 
