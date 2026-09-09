@@ -272,6 +272,44 @@ Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.auto_detect_contact_pairs(entries)`` can build the complete
 pair list for every distinct entry combination.
 
+Override the dimensionless ``rho``, ``gamma``, and ``baumgarte`` parameters
+where each constraint is defined: on ``ContactPair`` for contacts, in
+``add_body_particle_attachment()`` for attachments, or in a joint's
+``custom_attributes``. Contact overrides affect only contacts. Joints and
+attachments can each have their own settings, even between the same solver
+entries. Omitted parameters inherit the corresponding global ``Config`` value;
+explicit ``gamma=0.0`` or ``baumgarte=0.0`` disables that term for the constraint.
+All constraints share the global iteration count.
+
+.. code-block:: python
+
+    coupling = SolverCoupledADMM.Config(
+        contact_pairs=[
+            SolverCoupledADMM.ContactPair("rigid", "cloth", rho=0.4, gamma=0.2),
+        ],
+    )
+
+    SolverCoupledADMM.add_body_particle_attachment(
+        builder, body, particle, rho=0.6, gamma=0.1, baumgarte=0.2
+    )
+
+    SolverCoupledADMM.register_custom_attributes(builder)
+    builder.add_joint_ball(
+        parent=body_a,
+        child=body_b,
+        custom_attributes={"coupling:joint_rho": 0.6, "coupling:joint_gamma": 0.1},
+    )
+
+Joint overrides use ``coupling:joint_rho``, ``coupling:joint_gamma``, and
+``coupling:joint_baumgarte``. Attachment overrides use
+``coupling:body_particle_attachment_rho``,
+``coupling:body_particle_attachment_gamma``, and
+``coupling:body_particle_attachment_baumgarte``. These custom attributes use
+``-1`` to inherit the global value; the Python attachment helper and
+``ContactPair`` use ``None``. Overrides are read at solver construction.
+These solver settings are currently authored through Python; no USD schema
+is defined for them.
+
 For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
 shapes on bodies owned by other entries, rigid-rigid rows from cross-entry shape
