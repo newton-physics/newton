@@ -355,7 +355,9 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reads_all_attributes(self):
-        """Read authored collision-pipeline USD attributes."""
+        """Fall back to CollisionPipeline.__init__ defaults when NewtonCollisionPipelineAPI
+        is applied but unauthored, then use the authored newton:collisionPipeline:*
+        values once every attribute is set."""
         from pxr import Usd, UsdPhysics
 
         builder = newton.ModelBuilder()
@@ -464,9 +466,9 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_accepts_typed_schema_and_sentinels_and_honors_overrides(self):
-        """create_from_usd should accept the typed schema object directly, treat the
-        documented -1/-inf sentinels as "unset" (falling back to __init__ defaults),
-        and let **overrides take precedence over authored USD values."""
+        """Accept the typed UsdPhysics.Scene object directly, treat the documented
+        -1/-inf sentinels as "unset" by falling back to __init__ defaults, and let
+        **overrides take precedence over authored USD values."""
         from pxr import Usd, UsdPhysics
 
         builder = newton.ModelBuilder()
@@ -512,9 +514,9 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_soft_limits_warn_and_fall_back_to_default(self):
-        """softContactGap and speculativeMaxExtension below their minimum are a soft
-        limit: create_from_usd warns and falls back to the __init__ default instead
-        of raising, mirroring the newton:hydroelasticStiffness convention."""
+        """Warn and fall back to the __init__ default, instead of raising, when
+        softContactGap or speculativeMaxExtension is authored below its minimum,
+        mirroring the newton:hydroelasticStiffness soft-limit convention."""
         from pxr import Usd, UsdPhysics
 
         builder = newton.ModelBuilder()
@@ -542,9 +544,9 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_converts_length_attributes_to_meters(self):
-        """softContactGap, contactMatchingPosThreshold, and speculativeMaxExtension
-        are authored in stage units and must be converted to meters, matching the
-        geometry ModelBuilder.add_usd() would import from the same stage."""
+        """Convert softContactGap, contactMatchingPosThreshold, and
+        speculativeMaxExtension from stage units to meters, matching the geometry
+        ModelBuilder.add_usd() would import from the same stage."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         builder = newton.ModelBuilder()
@@ -570,7 +572,7 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reports_errors(self):
-        """create_from_usd should raise with a descriptive message for invalid input."""
+        """Raise a descriptive, path-prefixed error for each invalid create_from_usd input."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         builder = newton.ModelBuilder()
@@ -663,9 +665,10 @@ class TestCollisionPipeline(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reads_contact_reduction_hashtable_size_factor(self):
-        """Verified separately: only observable when reduce_contacts is on and the
-        model has meshes/heightfields, which conflicts with the other attribute
-        overrides exercised together in test_create_from_usd_reads_all_attributes."""
+        """Verify contactReductionHashtableSizeFactor separately, since it is only
+        observable when reduce_contacts is on and the model has meshes/heightfields,
+        which conflicts with the other attribute overrides exercised together in
+        test_create_from_usd_reads_all_attributes."""
         from pxr import Usd, UsdPhysics
 
         builder = newton.ModelBuilder()
