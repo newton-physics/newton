@@ -470,7 +470,7 @@ class TestModelMesh(unittest.TestCase):
             lower_angle_threshold_rad=0.0,
             upper_angle_threshold_rad=np.pi,
             enable_box_absorption=False,
-            enable_inward_filter=False,
+            edge_concave_filter=False,
             sign_method="normal",
             half_normal=0.0,
             half_lateral=0.0,
