@@ -1,0 +1,1 @@
+Change `SolverVBD` particle self-contact truncation to share the rigid-soft DAT division-plane placement and reserve a scale-adaptive empty band on both sides of each plane, for consistency with rigid-soft DAT. Contacts now settle a micrometer-scale gap apart instead of exactly on the plane; no migration action is required.

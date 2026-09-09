@@ -1491,6 +1491,15 @@ do not control collision detection performed inside a solver. For example,
 to the self-contact slot of ``collision_frequency`` /
 ``collision_frequency_type``.
 
+With ``rigid_soft_enable_dat=True``, :class:`~solvers.SolverVBD`
+additionally truncates rigid pose and cloth updates against the division
+planes of the rigid-soft contacts its owned :class:`~CollisionPipeline`
+reports, using the rigid slot of ``collision_frequency_type`` as the
+detection cadence that anchors those planes. That slot may not be ``NONE``
+while the option is enabled, and when particle self-contact truncation is
+also active the rigid and self-contact slots must share an equivalent
+schedule.
+
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,
 calling ``collide`` less often can reduce collision cost, especially for
