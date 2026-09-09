@@ -26,6 +26,7 @@ class TestVBDIntervalArithmetic(unittest.TestCase):
 
 @wp.kernel(enable_backward=False)
 def _next_float_kernel(values: wp.array[float], down: wp.array[float], up: wp.array[float]):
+    """Compute the next float32 below and above each input value."""
     tid = wp.tid()
     down[tid] = next_float_down(values[tid])
     up[tid] = next_float_up(values[tid])
@@ -42,6 +43,7 @@ def _basic_interval_kernel(
     mul_lower: wp.array[float],
     mul_upper: wp.array[float],
 ):
+    """Apply the interval operations to batches of operand intervals."""
     tid = wp.tid()
     a = interval(a_lower[tid], a_upper[tid])
     b = interval(b_lower[tid], b_upper[tid])
@@ -67,6 +69,7 @@ def _rigid_signed_distance_interval_kernel(
     result_lower: wp.array[float],
     result_upper: wp.array[float],
 ):
+    """Bound the rigid point-plane signed distance over parameter intervals."""
     tid = wp.tid()
     result = rigid_point_plane_signed_distance_interval(
         t_lower[tid],
@@ -95,6 +98,7 @@ def _rigid_signed_distance_derivative_interval_kernel(
     result_lower: wp.array[float],
     result_upper: wp.array[float],
 ):
+    """Bound the derivative of the rigid point-plane signed distance over parameter intervals."""
     tid = wp.tid()
     result = rigid_point_plane_signed_distance_derivative_interval(
         t_lower[tid], t_upper[tid], n[tid], dx[tid], axis[tid], angle[tid], offset0[tid]
@@ -104,10 +108,12 @@ def _rigid_signed_distance_derivative_interval_kernel(
 
 
 def _empty_outputs(count, device, number):
+    """Allocate ``number`` empty float arrays of length ``count`` on ``device``."""
     return [wp.empty(count, dtype=float, device=device) for _ in range(number)]
 
 
 def test_next_float_matches_numpy(test, device):
+    """Warp's next-float helpers match NumPy's ``nextafter`` across signs, zero, infinities, and extremes."""
     values = np.array(
         [
             -np.inf,
@@ -153,6 +159,7 @@ def test_next_float_matches_numpy(test, device):
 
 
 def test_basic_interval_operations_contain_exact_results(test, device):
+    """Interval operations contain the exact results for random operand pairs."""
     rng = np.random.default_rng(104729)
     endpoints = rng.uniform(-20.0, 20.0, size=(256, 4)).astype(np.float32)
     a_lower = np.minimum(endpoints[:, 0], endpoints[:, 1])
@@ -196,6 +203,7 @@ def test_basic_interval_operations_contain_exact_results(test, device):
 
 
 def _sample_rigid_signed_distance(t, n, d, c0, dx, axis, angle, offset0):
+    """Sample the rigid point-plane signed distance at parameters ``t`` with NumPy."""
     axis_dot_offset = axis @ offset0
     parallel = axis * axis_dot_offset
     perpendicular = offset0 - parallel
@@ -206,6 +214,7 @@ def _sample_rigid_signed_distance(t, n, d, c0, dx, axis, angle, offset0):
 
 
 def _sample_rigid_signed_distance_derivative(t, n, dx, axis, angle, offset0):
+    """Sample the derivative of the rigid point-plane signed distance at parameters ``t`` with NumPy."""
     axis_dot_offset = axis @ offset0
     perpendicular = offset0 - axis * axis_dot_offset
     cross = np.cross(axis, offset0)
@@ -215,6 +224,7 @@ def _sample_rigid_signed_distance_derivative(t, n, dx, axis, angle, offset0):
 
 
 def test_rigid_signed_distance_intervals_contain_samples(test, device):
+    """Signed-distance and derivative intervals contain dense NumPy samples over random trajectories."""
     rng = np.random.default_rng(130363)
     count = 64
     t_ranges = np.sort(rng.uniform(0.0, 1.0, size=(count, 2)).astype(np.float32), axis=1)

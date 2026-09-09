@@ -2017,6 +2017,7 @@ def apply_planar_truncation_parallel_by_collision(
     gamma: float,
     truncation_t_out: wp.array[float],
 ):
+    """Truncate particle displacements against soft self-contact division planes, one thread group per EE or VT pair."""
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 

@@ -377,6 +377,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             Particle parameters:
 
             particle_enable_self_contact: Whether to enable self-contact detection for particles.
+                Requires an active soft self-contact collision schedule: ``CollisionFrequencyType.NONE``
+                for the ``SOFT_SELF_CONTACT`` slot raises at :meth:`step`, because the self-contact
+                trajectory reference is refreshed only when detection runs.
             particle_self_contact_radius: Deprecated; use ``particle_self_contact_margin`` +
                 ``particle_self_contact_gap`` instead. When set, the legacy interpretation applies
                 exactly: radius = interaction distance and ``particle_self_contact_margin`` = detection
@@ -561,6 +564,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 (detect before and right after initialization), matching the self-contact slot;
                 raise the detection frequency (``ITERATIONS``) to widen the per-step motion budget
                 for fast bodies. Kinematic bodies move outside the solver and are not truncated.
+                The motion budget is fixed at construction from the pipeline's
+                ``soft_contact_gap`` and the model's particle radii and shape margins; later
+                changes to those values are not reflected. While enabled, the isotropic budget
+                bounds the per-detection motion of every dynamic body and particle in the
+                model, not only those near soft geometry.
 
                 Truncation acts per reported contact against its own division plane; it does not
                 attempt dense primitive-pair coverage, so it does not by itself guarantee a globally
@@ -571,10 +579,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_soft_dat_relaxation: Relaxation factor in (0, 1) applied to rigid DAT
                 truncation scalars and the conservative motion budget. Only used when
                 ``rigid_soft_enable_dat`` is ``True``.
-            rigid_soft_dat_use_interval_arithmetic: Temporary experimental selector for rigid DAT
-                trajectory truncation. ``False`` uses sampling and bisection; ``True`` uses
-                interval arithmetic to detect crossings between sample points. Only used when
-                ``rigid_soft_enable_dat`` is ``True``.
+            rigid_soft_dat_use_interval_arithmetic: Selector for rigid DAT trajectory
+                truncation. ``False`` uses sampling and bisection; ``True`` additionally
+                verifies the sampled prefix with interval arithmetic to detect crossings
+                between sample points. Only used when ``rigid_soft_enable_dat`` is ``True``.
+
+                .. experimental::
+                    The interval-arithmetic path is experimental and may change or be removed.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -593,7 +604,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 slots (before iterations k, 2k, and so on).
             collision_frequency_type: In-step detection points keyed by
                 :class:`SolverBase.CollisionSlot`; runtime-changeable via
-                :meth:`SolverBase.set_collision_frequency`.
+                :meth:`SolverBase.set_collision_frequency`. A slot whose DAT family is
+                active may not be ``NONE`` (``RIGID`` with ``rigid_soft_enable_dat``,
+                ``SOFT_SELF_CONTACT`` with ``particle_enable_self_contact``); :meth:`step`
+                raises otherwise.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body

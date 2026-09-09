@@ -1492,10 +1492,11 @@ to the self-contact slot of ``collision_frequency`` /
 ``collision_frequency_type``.
 
 With ``rigid_soft_enable_dat=True``, :class:`~solvers.SolverVBD`
-additionally truncates rigid pose and cloth updates against the division
+additionally truncates rigid pose and particle updates against the division
 planes of the rigid-soft contacts its owned :class:`~CollisionPipeline`
-reports, using the rigid slot of ``collision_frequency_type`` as the
-detection cadence that anchors those planes. That slot may not be ``NONE``
+reports, using the rigid entries of ``collision_frequency`` and
+``collision_frequency_type`` as the detection cadence that anchors those
+planes. That slot may not be ``NONE``
 while the option is enabled, and when particle self-contact truncation is
 also active the rigid and self-contact slots must share an equivalent
 schedule.

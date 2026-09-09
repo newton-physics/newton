@@ -293,6 +293,7 @@ def _eval_rigid_soft_contact_norm_kernel(
     dEdD_out: wp.array[float],
     d2E_out: wp.array[float],
 ):
+    """Evaluate the rigid-soft normal contact law and its first two distance derivatives for a batch of distances."""
     i = wp.tid()
     dEdD, d2E = _evaluate_rigid_soft_contact_force_norm(distances[i], collision_radius, k, use_log_barrier)
     dEdD_out[i] = dEdD
@@ -5706,6 +5707,7 @@ def _planar_truncation_probe(
     minimum_signed_distance: float,
     t_out: wp.array[float],
 ):
+    """Evaluate ``planar_truncation_t`` for batches of signed distances and normal displacements."""
     i = wp.tid()
     t_out[i] = planar_truncation_t(
         wp.vec3(0.0, 0.0, signed_distance[i]),
@@ -5812,6 +5814,7 @@ def test_planar_truncation_uses_endpoint_signs(test, device):
 
 @wp.kernel
 def _soft_self_dat_epsilon_probe(result: wp.array[float]):
+    """Build one VT and one EE soft-self plane and report band signed distances and truncations."""
     zero = wp.vec3(0.0)
 
     vertex = wp.vec3(0.0, 0.0, 8.0e-6)
@@ -5971,6 +5974,8 @@ def test_soft_self_dat_truncates_complete_primitive_pairs(test, device):
         )
         expected = np.array([0.85 * (1.0 - 2.0 * epsilon) / 2.0, 1.0, 1.0, 1.0])
         np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1.0e-6)
+        # The band must be observable: strictly below the no-band value.
+        test.assertLess(float(actual[0]), 0.85 * 0.5)
 
     with test.subTest(pair="moving VT triangle"):
         positions = np.array([[0.0, 0.0, 1.0], [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
@@ -5986,6 +5991,7 @@ def test_soft_self_dat_truncates_complete_primitive_pairs(test, device):
         )
         moving_t = 0.85 * (1.0 - 2.0 * epsilon) / 2.0
         np.testing.assert_allclose(actual, [1.0, moving_t, moving_t, moving_t], rtol=0.0, atol=1.0e-6)
+        test.assertLess(float(np.max(actual[1:])), 0.85 * 0.5)
 
     with test.subTest(pair="moving EE edges"):
         positions = np.array(
@@ -6016,6 +6022,7 @@ def test_soft_self_dat_truncates_complete_primitive_pairs(test, device):
             rtol=0.0,
             atol=1.0e-6,
         )
+        test.assertLess(float(np.max(actual[[0, 1, 3, 4]])), 0.85 * 0.5)
 
     with test.subTest(pair="touching VT fails closed"):
         positions = np.array([[0.0, 0.0, 0.0], [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
@@ -6056,6 +6063,7 @@ def _rigid_trajectory_truncation_probe(
     trajectory_samples: int,
     t_out: wp.array[float],
 ):
+    """Evaluate ``rigid_trajectory_truncation_t`` for one rigid trajectory against one plane."""
     t_out[0] = rigid_trajectory_truncation_t(
         n, d, c0, dx, axis, angle, offset0, gamma_r, 1.0e-3, use_interval_arithmetic, trajectory_samples
     )
@@ -6071,10 +6079,12 @@ def _rigid_point_trajectory_probe(
     offset0: wp.vec3,
     point_out: wp.array[wp.vec3],
 ):
+    """Evaluate ``rigid_point_trajectory`` at one interpolation parameter."""
     point_out[0] = rigid_point_trajectory(t, c0, dx, axis, angle, offset0)
 
 
 def _probe_rigid_point_trajectory(device, t, c0, dx, axis, angle, offset0):
+    """Launch ``_rigid_point_trajectory_probe`` on ``device`` and return the trajectory point."""
     point_out = wp.empty(1, dtype=wp.vec3, device=device)
     wp.launch(
         _rigid_point_trajectory_probe,
@@ -6099,6 +6109,7 @@ def _probe_trajectory_truncation(
     use_interval_arithmetic=False,
     trajectory_samples=8,
 ):
+    """Launch ``_rigid_trajectory_truncation_probe`` on ``device`` and return the truncation scalar."""
     t_out = wp.zeros(1, dtype=float, device=device)
     wp.launch(
         _rigid_trajectory_truncation_probe,
@@ -6362,6 +6373,7 @@ def _build_sphere_drop_on_cloth(device):
 
 
 def _run_sphere_drop(device, enable_dat, drop_speed=8.0, frames=60):
+    """Drop a rigid sphere onto pinned cloth and return the worst penetration and the final sphere height."""
     model, body = _build_sphere_drop_on_cloth(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
     solver = newton.solvers.SolverVBD(
