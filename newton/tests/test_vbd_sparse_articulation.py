@@ -1065,26 +1065,39 @@ def _make_cross_articulation_closure_model(device, single_articulation: bool):
     return builder.finalize(device=device)
 
 
-def test_sparse_handles_cross_articulation_joint_locally(test, device):
+def test_sparse_rejects_cross_articulation_joint(test, device):
     model = _make_cross_articulation_closure_model(device, single_articulation=False)
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=8,
-        rigid_compliant_alm=False,
-        rigid_articulation_solve="block_sparse_joints",
-    )
-    layout = solver.rigid_articulation_sparse_layout
-    test.assertIsNotNone(layout)
-    test.assertEqual(layout.articulation_count, 2)
-    test.assertEqual(layout.articulation_joint_count, model.joint_count - 1)
-    test.assertLess(int(layout.joint_articulation_sparse.numpy()[-1]), 0)
+    with test.assertRaisesRegex(ValueError, "outside the declared articulation ranges"):
+        newton.solvers.SolverVBD(
+            model,
+            iterations=8,
+            rigid_compliant_alm=False,
+            rigid_articulation_solve="block_sparse_joints",
+        )
 
-    state_in = model.state()
-    state_out = model.state()
-    residual_before = _joint_residual(model, state_in)
-    solver.step(state_in, state_out, None, None, 1.0 / 240.0)
-    test.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
-    test.assertLess(_joint_residual(model, state_out), residual_before)
+
+def test_sparse_rejects_omitted_articulation_closure(test, device):
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.1)
+    root = builder.add_link(mass=1.0, inertia=inertia)
+    tip = builder.add_link(xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+    root_joint = builder.add_joint_fixed(parent=-1, child=root)
+    tip_joint = builder.add_joint_revolute(parent=root, child=tip, axis=newton.Axis.Z)
+    builder.add_articulation([root_joint, tip_joint])
+    builder.add_joint_fixed(
+        parent=-1,
+        child=tip,
+        parent_xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+
+    with test.assertRaisesRegex(ValueError, "outside the declared articulation ranges"):
+        newton.solvers.SolverVBD(
+            model,
+            rigid_compliant_alm=False,
+            rigid_articulation_solve="block_sparse_joints",
+        )
 
 
 def test_sparse_factorizes_closed_loop_articulation(test, device):
@@ -1120,23 +1133,28 @@ def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
         length=0.4,
         num_segments=4,
     )
-    bodies, _joints = builder.add_rod(
-        positions=points,
-        quaternions=quaternions,
-        radius=0.02,
-        stretch_stiffness=1.0e4,
-        shear_stiffness=1.0e3,
-        bend_stiffness=1.0e2,
-        twist_stiffness=5.0e2,
-        wrap_in_articulation=True,
-        body_frame_origin="start",
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="add_rod: wrap_in_articulation=False", category=UserWarning)
+        bodies, joints = builder.add_rod(
+            positions=points,
+            quaternions=quaternions,
+            radius=0.02,
+            stretch_stiffness=1.0e4,
+            shear_stiffness=1.0e3,
+            bend_stiffness=1.0e2,
+            twist_stiffness=5.0e2,
+            wrap_in_articulation=False,
+            body_frame_origin="start",
+        )
+    joints.append(
+        builder.add_joint_fixed(
+            parent=-1,
+            child=bodies[0],
+            parent_xform=wp.transform(points[0], wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
     )
-    builder.add_joint_fixed(
-        parent=-1,
-        child=bodies[0],
-        parent_xform=wp.transform(points[0], wp.quat_identity()),
-        child_xform=wp.transform_identity(),
-    )
+    builder.add_articulation(joints, allow_closed_loops=True)
     builder.color()
     model = builder.finalize(device=device)
     state_in = model.state()
@@ -1250,8 +1268,14 @@ add_function_test(
 )
 add_function_test(
     TestVBDSparseArticulationDevices,
-    "test_sparse_handles_cross_articulation_joint_locally",
-    test_sparse_handles_cross_articulation_joint_locally,
+    "test_sparse_rejects_cross_articulation_joint",
+    test_sparse_rejects_cross_articulation_joint,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_rejects_omitted_articulation_closure",
+    test_sparse_rejects_omitted_articulation_closure,
     devices=devices,
 )
 add_function_test(

@@ -32,7 +32,6 @@ class RigidArticulationSparseLayout:
     articulation_diag_slots: wp.array[wp.int32]
     body_articulation_sparse: wp.array[wp.int32]
     body_articulation_local: wp.array[wp.int32]
-    joint_articulation_sparse: wp.array[wp.int32]
     local_body_color_groups: list[wp.array[wp.int32]]
     articulation_count: int
     articulation_body_count: int
@@ -92,8 +91,7 @@ def build_rigid_articulation_sparse_layout(
     block system, including loop-closing joints added through
     :meth:`~newton.ModelBuilder.add_articulation` with ``allow_closed_loops=True``.
     Bodies outside every articulation remain in the regular local VBD solve.
-    Joints outside articulation ranges are likewise excluded from the coupled
-    matrix and handled through per-body local contributions.
+    Joints outside articulation ranges must not touch articulation bodies.
     """
 
     if model.body_count == 0:
@@ -162,6 +160,22 @@ def build_rigid_articulation_sparse_layout(
 
     if not articulation_groups:
         return None
+
+    for joint_idx in range(model.joint_count):
+        if joint_group[joint_idx] >= 0:
+            continue
+        parent = int(joint_parent[joint_idx])
+        child = int(joint_child[joint_idx])
+        parent_group = int(body_group[parent]) if parent >= 0 else -1
+        child_group = int(body_group[child]) if child >= 0 else -1
+        if parent_group >= 0 or child_group >= 0:
+            raise ValueError(
+                f"Joint {joint_idx} lies outside the declared articulation ranges but touches an articulation body "
+                f"(parent={parent}, child={child}). The block-sparse VBD solve requires every joint touching an "
+                f"articulation body to belong to that articulation. Include the joint in one articulation, using "
+                f"ModelBuilder.add_articulation(..., allow_closed_loops=True) for a loop closure, or use "
+                f"rigid_articulation_solve='local'."
+            )
 
     local_body_color_groups: list[wp.array[wp.int32]] = []
     local_body_count = 0
@@ -280,7 +294,6 @@ def build_rigid_articulation_sparse_layout(
         articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
         body_articulation_sparse=wp.array(body_articulation_sparse_host, dtype=wp.int32, device=device),
         body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
-        joint_articulation_sparse=wp.array(joint_group, dtype=wp.int32, device=device),
         local_body_color_groups=local_body_color_groups,
         articulation_count=len(articulation_groups),
         articulation_body_count=len(articulation_bodies_host),

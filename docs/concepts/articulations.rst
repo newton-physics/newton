@@ -1035,10 +1035,12 @@ closure in the articulation's direct block solve.
 
 The sparse solve is deliberately articulation-centric: bodies outside every
 declared articulation continue through VBD's regular colored local solve.
-Joints left outside the articulation ranges contribute force and self-Hessian
-terms to their endpoint bodies, but not off-diagonal blocks between sparse
-articulations. Put a loop-closing joint inside a single articulation to include
-its full cross-body Hessian in the direct factorization.
+Joints between standalone bodies remain on that local path. A joint outside the
+articulation ranges may not touch an articulation body, so cross-articulation
+joints and omitted loop closures are rejected when the sparse solver is
+constructed. Put a loop-closing joint inside a single articulation to include
+it in the direct factorization, or use the local solve for models whose joints
+must cross articulation boundaries.
 
 .. warning::
 

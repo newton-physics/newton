@@ -70,7 +70,6 @@ from .rigid_vbd_kernels import (
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
-    accumulate_articulation_external_joints_per_body,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
     build_body_body_contact_lists,
@@ -536,12 +535,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 group covering every joint in its range, so loop closures declared through
                 :meth:`~newton.ModelBuilder.add_articulation` with ``allow_closed_loops=True``
                 are solved together with the tree joints. Bodies outside every declared
-                articulation retain the regular colored local VBD solve. Joints outside the
-                articulation ranges contribute per-body force and diagonal Hessian terms but no
-                cross-articulation blocks. A body shared by two articulations is rejected at
-                construction. The mode is intended for moderate-size articulations; the local mode
-                may be faster for very long chains because sparse factorization is sequential in
-                the elimination order.
+                articulation retain the regular colored local VBD solve. A joint outside the
+                articulation ranges may connect standalone bodies, but may not touch an
+                articulation body. Cross-articulation joints and bodies shared by two articulations
+                are rejected at construction. The mode is intended for moderate-size articulations;
+                the local mode may be faster for very long chains because sparse factorization is
+                sequential in the elimination order.
             rigid_articulation_relaxation: Under-relaxation factor for the experimental coupled
                 articulation position update. A value of ``1`` applies the full Newton update.
                 The default damps sparse articulation updates so they do not overstep stale
@@ -3848,68 +3847,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_body_contact_buffer_pre_alloc,
                     self.body_body_contact_counts,
                     self.body_body_contact_indices,
-                ],
-                outputs=[
-                    self.body_forces,
-                    self.body_torques,
-                    self.body_hessian_ll,
-                    self.body_hessian_al,
-                    self.body_hessian_aa,
-                ],
-                device=self.device,
-            )
-
-        if model.joint_count > layout.articulation_joint_count:
-            wp.launch(
-                kernel=accumulate_articulation_external_joints_per_body,
-                dim=layout.articulation_body_count,
-                inputs=[
-                    dt,
-                    layout.articulation_bodies,
-                    layout.joint_articulation_sparse,
-                    state_in.body_q,
-                    self.body_q_prev,
-                    model.body_q,
-                    model.body_com,
-                    self.rigid_adjacency,
-                    model.joint_type,
-                    model.joint_enabled,
-                    model.joint_parent,
-                    model.joint_child,
-                    model.joint_X_p,
-                    model.joint_X_c,
-                    model.joint_axis,
-                    self.joint_rod_rest_kb_local,
-                    self.joint_rod_rest_twist,
-                    model.joint_qd_start,
-                    model.joint_target_q_start,
-                    self.joint_constraint_start,
-                    self.joint_penalty_k,
-                    self.joint_rho,
-                    self.joint_material_k,
-                    self.joint_penalty_kd,
-                    self.joint_sigma_start,
-                    self.joint_C_fric,
-                    model.joint_target_ke,
-                    model.joint_target_kd,
-                    control.joint_target_q,
-                    control.joint_target_qd,
-                    model.joint_limit_lower,
-                    model.joint_limit_upper,
-                    model.joint_limit_ke,
-                    model.joint_limit_kd,
-                    self.joint_drive_limit_support,
-                    self.joint_drive_lambda,
-                    self.joint_limit_lambda,
-                    self.joint_lambda_lin,
-                    self.joint_lambda_ang,
-                    self.joint_C0_lin,
-                    self.joint_C0_ang,
-                    self.joint_is_hard,
-                    self.rigid_joint_alpha,
-                    self.rigid_compliant_alm,
-                    self.rigid_articulation_sparse_joint_dof_dim,
-                    self.joint_rest_angle,
                 ],
                 outputs=[
                     self.body_forces,
