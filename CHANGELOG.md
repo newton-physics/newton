@@ -4,6 +4,12 @@
 
 <!-- towncrier release notes start -->
 
+## [1.5.2] - 2026-09-09
+
+### Added
+
+- Add `Actuator.State.assign()` for preserving actuator state across odd-length CUDA graph replays with a single captured graph. ([#4098](https://github.com/newton-physics/newton/issues/4098))
+
 ## [1.5.1] - 2026-08-27
 
 ### Fixed

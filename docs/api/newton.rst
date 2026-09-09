@@ -74,6 +74,6 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.5.1``
+     - ``1.5.2``
    * - ``use_coord_layout_targets``
      - ``False``
