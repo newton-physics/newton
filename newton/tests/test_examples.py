@@ -655,6 +655,14 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_g1",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -1361,6 +1369,13 @@ add_example_test(
     name="controllers.example_controller_operational_space_hybrid_force_motion",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 600},
+    use_viewer=True,
+)
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_differential_ik",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 100},
     use_viewer=True,
 )
 

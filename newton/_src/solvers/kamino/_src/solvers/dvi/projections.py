@@ -12,6 +12,22 @@ vec2f = wp.vec2f
 
 
 @wp.func
+def contact_friction_normal_load(
+    lambda_n: float32,
+    bias_n: float32,
+    preconditioner_n: float32,
+    diagonal_n: float32,
+    regularization: float32,
+    omega: float32,
+) -> float32:
+    """Estimate the normal load for friction without penetration recovery."""
+    load = lambda_n
+    if diagonal_n > FLOAT32_EPS:
+        load += omega * preconditioner_n * bias_n / (diagonal_n + regularization)
+    return wp.clamp(load, float32(0.0), lambda_n)
+
+
+@wp.func
 def project_contact_normal_update(
     lambda_old: float32,
     velocity: float32,

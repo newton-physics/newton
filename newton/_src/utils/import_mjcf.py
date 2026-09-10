@@ -50,6 +50,10 @@ from .import_utils import (
 )
 from .mesh import load_meshes_from_file
 
+# Inertia helpers are evaluated at 1 kg/m³, so this is the reference mass
+# of a cube measuring 0.1 mm on each side.
+_MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
+
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     """Default path resolver - joins base_dir with file_path.
@@ -1451,7 +1455,7 @@ def parse_mjcf(
                 if geom_type == "sphere":
                     r = geom_size[0]
                     m_computed, com, inertia_tensor = compute_inertia_sphere(1.0, r)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "box":
@@ -1462,18 +1466,18 @@ def parse_mjcf(
                     inertia_computed = True
                 elif geom_type == "cylinder":
                     m_computed, com, inertia_tensor = compute_inertia_cylinder(1.0, geom_radius, geom_height)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "capsule":
                     m_computed, com, inertia_tensor = compute_inertia_capsule(1.0, geom_radius, geom_height)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "ellipsoid":
                     rx, ry, rz = geom_size[0], geom_size[1], geom_size[2]
                     m_computed, com, inertia_tensor = compute_inertia_ellipsoid(1.0, rx, ry, rz)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 else:
