@@ -1163,6 +1163,126 @@ def test_sparse_factorizes_closed_loop_articulation(test, device):
     test.assertTrue(np.isfinite(state_in.body_q.numpy()).all())
 
 
+def _make_mixed_articulations(specs, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    for body_count, closed, instance in specs:
+        positions = [wp.vec3(0.2 * i, 2.0 * instance, 1.0) for i in range(body_count)]
+        bodies = [
+            builder.add_link(
+                xform=wp.transform(position, wp.quat_identity()),
+                mass=1.0 + 0.2 * (i + instance),
+                inertia=wp.mat33(np.diag([0.1, 0.2, 0.3]).astype(np.float32)),
+            )
+            for i, position in enumerate(positions)
+        ]
+        joints = [
+            builder.add_joint_fixed(
+                parent=-1,
+                child=bodies[0],
+                parent_xform=wp.transform(positions[0], wp.quat_identity()),
+            )
+        ]
+        edges = [(i - 1, i) for i in range(1, body_count)]
+        if closed:
+            edges.append((body_count - 1, 0))
+        for parent, child in edges:
+            midpoint = 0.5 * (positions[parent] + positions[child])
+            joints.append(
+                builder.add_joint_fixed(
+                    parent=bodies[parent],
+                    child=bodies[child],
+                    parent_xform=wp.transform(midpoint - positions[parent], wp.quat_identity()),
+                    child_xform=wp.transform(midpoint - positions[child], wp.quat_identity()),
+                )
+            )
+        builder.add_articulation(joints, allow_closed_loops=closed)
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def test_sparse_mixed_articulations_match_separate_models(test, device):
+    """Solve different sizes/layouts together, including nonadjacent repeated instances."""
+    specs = [(4, True, 0), (1, False, 1), (7, False, 2), (4, False, 3), (4, True, 4)]
+    for compliant in (False, True):
+        with test.subTest(compliant=compliant):
+
+            def setup(group, compliant):
+                model = _make_mixed_articulations(group, device)
+                solver = newton.solvers.SolverVBD(
+                    model,
+                    iterations=3,
+                    rigid_compliant_alm=compliant,
+                    rigid_articulation_solve="block_sparse_joints",
+                    rigid_articulation_relaxation=1.0,
+                )
+                state_in, state_out = model.state(), model.state()
+                poses = state_in.body_q.numpy()
+                start = 0
+                for count, _, instance in group:
+                    poses[start + count - 1, 2] += 0.02 * (instance + 1)
+                    poses[start + count - 1, 3:7] = _quat_from_axis_angle(
+                        np.array([0.2, 0.5, 0.7]), 0.03 * (instance + 1)
+                    )
+                    start += count
+                state_in.body_q.assign(poses)
+                return solver, state_in, state_out
+
+            mixed = setup(specs, compliant)
+            separate = [setup([spec], compliant) for spec in specs]
+            initial = mixed[1].body_q.numpy().copy()
+
+            def advance(system):
+                solver, state_in, state_out = system
+                solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+                solver.step(state_out, state_in, None, None, 1.0 / 240.0)
+
+            # Warm up every specialization before capturing the mixed-model step.
+            advance(mixed)
+            for system in separate:
+                advance(system)
+            graph = None
+            if device.is_cuda:
+                with wp.ScopedCapture(device=device) as capture:
+                    advance(mixed)
+                graph = capture.graph
+
+            for _ in range(3):
+                if graph is None:
+                    advance(mixed)
+                else:
+                    wp.capture_launch(graph)
+                for system in separate:
+                    advance(system)
+                for attr in ("body_q", "body_qd"):
+                    expected = np.concatenate([getattr(system[1], attr).numpy() for system in separate])
+                    np.testing.assert_allclose(getattr(mixed[1], attr).numpy(), expected, atol=2.0e-5, rtol=2.0e-5)
+            test.assertGreater(np.max(np.abs(mixed[1].body_q.numpy() - initial)), 1.0e-3)
+
+
+def test_sparse_reuses_factor_topology(test, device):
+    """Share factor metadata and kernels by layout, not by body count alone."""
+    specs = [(4, True, 0), (1, False, 1), (7, False, 2), (4, False, 3), (4, True, 4)]
+    model = _make_mixed_articulations(specs, device)
+    solver = newton.solvers.SolverVBD(model, rigid_articulation_solve="block_sparse_joints", rigid_compliant_alm=False)
+    batches = solver.rigid_articulation_sparse_layout.topology_batches
+    test.assertEqual(len(batches), 4)
+    test.assertEqual([len(batch.pattern) for batch in batches], [4, 1, 7, 4])
+    np.testing.assert_array_equal(batches[0].articulation_indices.numpy(), [0, 4])
+    test.assertNotEqual(batches[0].pattern, batches[3].pattern)
+    repeated = newton.solvers.SolverVBD(
+        model,
+        rigid_articulation_solve="block_sparse_joints",
+        rigid_compliant_alm=False,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+    test.assertEqual(len(solver._rigid_articulation_sparse_solvers), 4 if device.is_cuda else 0)
+    for (_, kernel), (_, reused) in zip(
+        solver._rigid_articulation_sparse_solvers, repeated._rigid_articulation_sparse_solvers, strict=True
+    ):
+        test.assertIs(kernel, reused)
+        test.assertEqual(wp.get_module_options(module=reused.module)["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
+
+
 def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     rod = newton.Rod.create_straight(
@@ -1325,6 +1445,18 @@ add_function_test(
     TestVBDSparseArticulationDevices,
     "test_sparse_factorizes_closed_loop_articulation",
     test_sparse_factorizes_closed_loop_articulation,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_mixed_articulations_match_separate_models",
+    test_sparse_mixed_articulations_match_separate_models,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_reuses_factor_topology",
+    test_sparse_reuses_factor_topology,
     devices=devices,
 )
 add_function_test(

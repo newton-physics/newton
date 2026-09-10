@@ -12,6 +12,25 @@ import warp as wp
 
 
 @dataclass
+class RigidArticulationSparseBatch:
+    """Articulations sharing one ordered factorization pattern."""
+
+    pattern: tuple[tuple[int, ...], ...]
+    """Lower-triangular block columns, including fill, for each local row."""
+    articulation_indices: wp.array[wp.int32]
+    """Instance indices into the model-wide articulation offsets."""
+    row_offsets: wp.array[wp.int32]
+    block_cols: wp.array[wp.int32]
+    column_offsets: wp.array[wp.int32]
+    column_entries: wp.array[wp.vec2i]
+    """Strict-lower (row, block slot) pairs, using topology-local indices."""
+    factor_updates: wp.array[wp.vec3i]
+    """Shared CUDA Schur-update (destination, left, right) local block slots."""
+    factor_update_offsets: wp.array[wp.int32]
+    """Boundaries of each pivot's Schur updates."""
+
+
+@dataclass
 class RigidArticulationSparseLayout:
     """Static block-sparse articulation layout for rigid VBD solves."""
 
@@ -22,13 +41,8 @@ class RigidArticulationSparseLayout:
     articulation_joint_body_start: wp.array[wp.int32]
     articulation_block_row_offsets: wp.array[wp.int32]
     articulation_block_cols: wp.array[wp.int32]
-    articulation_block_col_offsets: wp.array[wp.int32]
-    articulation_block_col_rows: wp.array[wp.int32]
-    articulation_block_col_slots: wp.array[wp.int32]
-    articulation_factor_update_offsets: wp.array[wp.int32]
-    articulation_factor_update_dst_slots: wp.array[wp.int32]
-    articulation_factor_update_left_slots: wp.array[wp.int32]
-    articulation_factor_update_right_slots: wp.array[wp.int32]
+    topology_batches: list[RigidArticulationSparseBatch]
+    """One factorization template and instance list per ordered topology."""
     articulation_diag_slots: wp.array[wp.int32]
     body_articulation_local: wp.array[wp.int32]
     local_body_color_groups: list[wp.array[wp.int32]]
@@ -83,7 +97,9 @@ def build_rigid_articulation_sparse_layout(
 
     This host analysis runs once from :class:`SolverVBD` construction, never
     from the per-step or per-iteration path. Repeated articulation topologies,
-    such as replicated RL environments, share cached ordering and fill analysis.
+    such as replicated RL environments, share cached ordering and fill analysis,
+    and one CUDA factor-update table. Assembly and numerical buffers remain packed
+    model-wide; only the factorization schedule is shared between instances.
 
     Each articulation is one direct-factorization group: every joint in
     ``[articulation_start, articulation_end)`` is assembled into that group's
@@ -108,14 +124,8 @@ def build_rigid_articulation_sparse_layout(
     articulation_joint_offsets_host = [0]
     block_row_offsets_host = [0]
     block_cols_host: list[int] = []
-    block_col_rows_host: list[int] = []
-    block_col_slots_host: list[int] = []
-    block_col_offsets_host: list[int] = []
-    factor_update_dst_slots_host: list[int] = []
-    factor_update_left_slots_host: list[int] = []
-    factor_update_right_slots_host: list[int] = []
-    factor_update_offsets_host: list[int] = []
     diag_slots_host: list[int] = []
+    topology_instances: dict[tuple[tuple[int, ...], ...], list[int]] = {}
 
     body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
     for joint_idx in range(model.joint_count):
@@ -188,7 +198,7 @@ def build_rigid_articulation_sparse_layout(
         tuple[int, tuple[tuple[int, int], ...]],
         tuple[list[int], list[list[int]]],
     ] = {}
-    for bodies, joints in articulation_groups:
+    for articulation_id, (bodies, joints) in enumerate(articulation_groups):
         local_index = {body: i for i, body in enumerate(bodies)}
         edges: set[tuple[int, int]] = set()
         for joint_idx in joints:
@@ -210,6 +220,7 @@ def build_rigid_articulation_sparse_layout(
             symbolic = (order, pattern)
             symbolic_cache[topology_key] = symbolic
         order, pattern = symbolic
+        topology_instances.setdefault(tuple(tuple(row) for row in pattern), []).append(articulation_id)
         ordered_bodies = [bodies[old] for old in order]
 
         body_start = len(articulation_bodies_host)
@@ -228,30 +239,36 @@ def build_rigid_articulation_sparse_layout(
             diag_slots_host.append(row_start + row_cols.index(local_row))
             block_row_offsets_host.append(len(block_cols_host))
 
-        block_lookup: dict[tuple[int, int], int] = {}
-        local_row_offset_start = len(block_row_offsets_host) - len(pattern) - 1
-        for local_row, row_cols in enumerate(pattern):
-            row_start = block_row_offsets_host[local_row_offset_start + local_row]
-            for local_col_index, local_col in enumerate(row_cols):
-                block_lookup[(local_row, local_col)] = row_start + local_col_index
-
-        for local_col in range(len(ordered_bodies)):
-            block_col_offsets_host.append(len(block_col_rows_host))
-            later_rows: list[tuple[int, int]] = []
-            for local_row in range(local_col + 1, len(ordered_bodies)):
-                slot = block_lookup.get((local_row, local_col))
-                if slot is not None:
-                    later_rows.append((local_row, slot))
-                    block_col_rows_host.append(local_row)
-                    block_col_slots_host.append(slot)
-
-            factor_update_offsets_host.append(len(factor_update_dst_slots_host))
-            for left_index, (left_row, left_slot) in enumerate(later_rows):
-                for right_row, right_slot in later_rows[: left_index + 1]:
-                    dst_slot = block_lookup[(left_row, right_row)]
-                    factor_update_dst_slots_host.append(dst_slot)
-                    factor_update_left_slots_host.append(left_slot)
-                    factor_update_right_slots_host.append(right_slot)
+    topology_batches = []
+    for pattern, instances in topology_instances.items():
+        slots = {
+            (row, col): slot
+            for slot, (row, col) in enumerate((row, col) for row, cols in enumerate(pattern) for col in cols)
+        }
+        updates = []
+        update_offsets = [0]
+        column_entries = []
+        column_offsets = [0]
+        for col in range(len(pattern)):
+            later_rows = [row for row in range(col + 1, len(pattern)) if (row, col) in slots]
+            column_entries.extend((row, slots[row, col]) for row in later_rows)
+            column_offsets.append(len(column_entries))
+            for left_index, left in enumerate(later_rows):
+                for right in later_rows[: left_index + 1]:
+                    updates.append((slots[left, right], slots[left, col], slots[right, col]))
+            update_offsets.append(len(updates))
+        topology_batches.append(
+            RigidArticulationSparseBatch(
+                pattern=pattern,
+                articulation_indices=wp.array(instances, dtype=wp.int32, device=device),
+                row_offsets=wp.array(np.cumsum([0, *map(len, pattern)]), dtype=wp.int32, device=device),
+                block_cols=wp.array([col for row in pattern for col in row], dtype=wp.int32, device=device),
+                column_offsets=wp.array(column_offsets, dtype=wp.int32, device=device),
+                column_entries=wp.array(column_entries, dtype=wp.vec2i, device=device),
+                factor_updates=wp.array(updates, dtype=wp.vec3i, device=device),
+                factor_update_offsets=wp.array(update_offsets, dtype=wp.int32, device=device),
+            )
+        )
 
     articulation_bodies_np = np.asarray(articulation_bodies_host, dtype=np.int32)
     articulation_joints_np = np.asarray(articulation_joints_host, dtype=np.int32)
@@ -260,15 +277,6 @@ def build_rigid_articulation_sparse_layout(
     articulation_joint_offsets_np = np.asarray(articulation_joint_offsets_host, dtype=np.int32)
     block_row_offsets_np = np.asarray(block_row_offsets_host, dtype=np.int32)
     block_cols_np = np.asarray(block_cols_host, dtype=np.int32)
-    block_col_offsets_host.append(len(block_col_rows_host))
-    factor_update_offsets_host.append(len(factor_update_dst_slots_host))
-    block_col_offsets_np = np.asarray(block_col_offsets_host, dtype=np.int32)
-    block_col_rows_np = np.asarray(block_col_rows_host, dtype=np.int32)
-    block_col_slots_np = np.asarray(block_col_slots_host, dtype=np.int32)
-    factor_update_offsets_np = np.asarray(factor_update_offsets_host, dtype=np.int32)
-    factor_update_dst_slots_np = np.asarray(factor_update_dst_slots_host, dtype=np.int32)
-    factor_update_left_slots_np = np.asarray(factor_update_left_slots_host, dtype=np.int32)
-    factor_update_right_slots_np = np.asarray(factor_update_right_slots_host, dtype=np.int32)
     diag_slots_np = np.asarray(diag_slots_host, dtype=np.int32)
 
     return RigidArticulationSparseLayout(
@@ -279,13 +287,7 @@ def build_rigid_articulation_sparse_layout(
         articulation_joint_body_start=wp.array(articulation_joint_body_start_np, dtype=wp.int32, device=device),
         articulation_block_row_offsets=wp.array(block_row_offsets_np, dtype=wp.int32, device=device),
         articulation_block_cols=wp.array(block_cols_np, dtype=wp.int32, device=device),
-        articulation_block_col_offsets=wp.array(block_col_offsets_np, dtype=wp.int32, device=device),
-        articulation_block_col_rows=wp.array(block_col_rows_np, dtype=wp.int32, device=device),
-        articulation_block_col_slots=wp.array(block_col_slots_np, dtype=wp.int32, device=device),
-        articulation_factor_update_offsets=wp.array(factor_update_offsets_np, dtype=wp.int32, device=device),
-        articulation_factor_update_dst_slots=wp.array(factor_update_dst_slots_np, dtype=wp.int32, device=device),
-        articulation_factor_update_left_slots=wp.array(factor_update_left_slots_np, dtype=wp.int32, device=device),
-        articulation_factor_update_right_slots=wp.array(factor_update_right_slots_np, dtype=wp.int32, device=device),
+        topology_batches=topology_batches,
         articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
         body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
         local_body_color_groups=local_body_color_groups,

@@ -59,9 +59,9 @@ from .rigid_sparse_articulation_kernels import (
     apply_articulation_sparse_delta_scalar,
     assemble_articulation_body_diagonal_scalar,
     assemble_articulation_joints_scalar,
+    create_sparse_cuda_solve,
     mat66f,
     regularize_articulation_body_hessian,
-    solve_articulation_sparse_block32_scalar,
     solve_articulation_sparse_serial_scalar,
     vec6f,
 )
@@ -532,8 +532,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 per-body diagonal VBD solve. ``"block_sparse_joints"`` enables a block-sparse
                 articulation solve for joint coupling while keeping contacts on body-diagonal
                 Hessian blocks. The implementation uses a serial block solve on CPU and a
-                cooperative single-CTA solve on CUDA. Each articulation is one factorization
-                group covering every joint in its range, so loop closures declared through
+                cooperative single-CTA solve on CUDA. CUDA articulations sharing an ordered
+                factorization pattern are batched into one topology-specialized kernel launch;
+                different sizes and layouts may coexist in the same model. Each articulation is
+                one factorization group covering every joint in its range, so loop closures declared through
                 :meth:`~newton.ModelBuilder.add_articulation` with ``allow_closed_loops=True``
                 are solved together with the tree joints. Bodies outside every declared
                 articulation retain the regular colored local VBD solve. A joint outside the
@@ -541,7 +543,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 articulation body. Cross-articulation joints and bodies shared by two articulations
                 are rejected at construction. The mode is intended for moderate-size articulations;
                 the local mode may be faster for very long chains because sparse factorization is
-                sequential in the elimination order.
+                sequential in the elimination order. Models with many small, distinct topologies
+                also incur a separate CUDA factorization launch for each topology.
             rigid_articulation_relaxation: Under-relaxation factor for the experimental coupled
                 articulation position update. A value of ``1`` applies the full Newton update.
                 The default damps sparse articulation updates so they do not overstep stale
@@ -860,9 +863,18 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.rigid_articulation_sparse_rhs_scalar = None
         self.rigid_articulation_sparse_delta_scalar = None
         self.rigid_articulation_sparse_joint_dof_dim = model.joint_dof_dim
+        self._rigid_articulation_sparse_solvers = []
         if self.rigid_articulation_solve == "block_sparse_joints":
             self.rigid_articulation_sparse_layout = build_rigid_articulation_sparse_layout(model, self.device)
             if self.rigid_articulation_sparse_layout is not None:
+                batches = self.rigid_articulation_sparse_layout.topology_batches if self.device.is_cuda else ()
+                for batch in batches:
+                    kernel = create_sparse_cuda_solve(batch.pattern)
+                    self._set_module_options(
+                        {"deterministic": effective_deterministic, "deterministic_max_records": 0},
+                        module=kernel.module,
+                    )
+                    self._rigid_articulation_sparse_solvers.append((batch, kernel))
                 self._rigid_articulation_sparse_values_scalar = wp.zeros(
                     self.rigid_articulation_sparse_layout.block_count * 36, dtype=float, device=self.device
                 )
@@ -3907,28 +3919,27 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
         if use_block32:
-            wp.launch(
-                kernel=solve_articulation_sparse_block32_scalar,
-                dim=layout.articulation_count * SPARSE_ARTICULATION_CTA_THREADS,
-                inputs=[
-                    layout.articulation_body_offsets,
-                    layout.articulation_block_row_offsets,
-                    layout.articulation_block_cols,
-                    layout.articulation_block_col_offsets,
-                    layout.articulation_block_col_rows,
-                    layout.articulation_block_col_slots,
-                    layout.articulation_factor_update_offsets,
-                    layout.articulation_factor_update_dst_slots,
-                    layout.articulation_factor_update_left_slots,
-                    layout.articulation_factor_update_right_slots,
-                    layout.articulation_diag_slots,
-                    self._rigid_articulation_sparse_values_scalar,
-                    self._rigid_articulation_sparse_rhs_scalar,
-                ],
-                outputs=[self._rigid_articulation_sparse_delta_scalar],
-                device=self.device,
-                block_dim=SPARSE_ARTICULATION_CTA_THREADS,
-            )
+            for batch, kernel in self._rigid_articulation_sparse_solvers:
+                wp.launch(
+                    kernel=kernel,
+                    dim=batch.articulation_indices.size * SPARSE_ARTICULATION_CTA_THREADS,
+                    inputs=[
+                        batch.articulation_indices,
+                        layout.articulation_body_offsets,
+                        layout.articulation_block_row_offsets,
+                        batch.row_offsets,
+                        batch.block_cols,
+                        batch.column_offsets,
+                        batch.column_entries,
+                        batch.factor_updates,
+                        batch.factor_update_offsets,
+                        self._rigid_articulation_sparse_values_scalar,
+                        self._rigid_articulation_sparse_rhs_scalar,
+                    ],
+                    outputs=[self._rigid_articulation_sparse_delta_scalar],
+                    device=self.device,
+                    block_dim=SPARSE_ARTICULATION_CTA_THREADS,
+                )
 
             wp.launch(
                 kernel=apply_articulation_sparse_delta_scalar,
