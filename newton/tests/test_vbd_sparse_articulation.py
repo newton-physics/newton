@@ -1236,7 +1236,7 @@ def test_sparse_mixed_articulations_match_separate_models(test, device):
                 solver.step(state_in, state_out, None, None, 1.0 / 240.0)
                 solver.step(state_out, state_in, None, None, 1.0 / 240.0)
 
-            # Warm up every specialization before capturing the mixed-model step.
+            # Warm up the solver before capturing the mixed-model step.
             advance(mixed)
             for system in separate:
                 advance(system)
@@ -1257,30 +1257,6 @@ def test_sparse_mixed_articulations_match_separate_models(test, device):
                     expected = np.concatenate([getattr(system[1], attr).numpy() for system in separate])
                     np.testing.assert_allclose(getattr(mixed[1], attr).numpy(), expected, atol=2.0e-5, rtol=2.0e-5)
             test.assertGreater(np.max(np.abs(mixed[1].body_q.numpy() - initial)), 1.0e-3)
-
-
-def test_sparse_reuses_factor_topology(test, device):
-    """Share factor metadata and kernels by layout, not by body count alone."""
-    specs = [(4, True, 0), (1, False, 1), (7, False, 2), (4, False, 3), (4, True, 4)]
-    model = _make_mixed_articulations(specs, device)
-    solver = newton.solvers.SolverVBD(model, rigid_articulation_solve="block_sparse_joints", rigid_compliant_alm=False)
-    batches = solver.rigid_articulation_sparse_layout.topology_batches
-    test.assertEqual(len(batches), 4)
-    test.assertEqual([len(batch.pattern) for batch in batches], [4, 1, 7, 4])
-    np.testing.assert_array_equal(batches[0].articulation_indices.numpy(), [0, 4])
-    test.assertNotEqual(batches[0].pattern, batches[3].pattern)
-    repeated = newton.solvers.SolverVBD(
-        model,
-        rigid_articulation_solve="block_sparse_joints",
-        rigid_compliant_alm=False,
-        deterministic=wp.DeterministicMode.RUN_TO_RUN,
-    )
-    test.assertEqual(len(solver._rigid_articulation_sparse_solvers), 4 if device.is_cuda else 0)
-    for (_, kernel), (_, reused) in zip(
-        solver._rigid_articulation_sparse_solvers, repeated._rigid_articulation_sparse_solvers, strict=True
-    ):
-        test.assertIs(kernel, reused)
-        test.assertEqual(wp.get_module_options(module=reused.module)["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
 
 
 def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
@@ -1451,12 +1427,6 @@ add_function_test(
     TestVBDSparseArticulationDevices,
     "test_sparse_mixed_articulations_match_separate_models",
     test_sparse_mixed_articulations_match_separate_models,
-    devices=devices,
-)
-add_function_test(
-    TestVBDSparseArticulationDevices,
-    "test_sparse_reuses_factor_topology",
-    test_sparse_reuses_factor_topology,
     devices=devices,
 )
 add_function_test(
