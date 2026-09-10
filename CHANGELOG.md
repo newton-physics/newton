@@ -4,7 +4,7 @@
 
 <!-- towncrier release notes start -->
 
-## [1.6.0] - 2026-09-04
+## [1.6.0] - 2026-09-10
 
 ### Added
 
@@ -15,7 +15,7 @@
 - Import MJCF slider-crank actuator transmissions. ([#3745](https://github.com/newton-physics/newton/issues/3745))
 - Add `newton.Rod` as the public input type for prepared discrete-rod geometry, topology, frames, and optional constitutive data expressed as either isotropic elastic material properties or a complete set of section rigidities. `ModelBuilder.add_rod(rod=...)` assembles ordered chains and explicit graphs. For supported non-branching topologies, it converts constitutive data to per-joint stiffness using local dual rest lengths; direct stiffness and damping remain builder-level controls. ([#3800](https://github.com/newton-physics/newton/issues/3800))
 - Add `JointType.ROD` as the preferred rod-joint spelling and `ModelBuilder.add_joint_rod()` as the canonical builder method. For compatibility, value 7 retains `"CABLE"` as its canonical enum name during 1.6. ([#3800](https://github.com/newton-physics/newton/issues/3800))
-- Add an experimental implicit effort mode to `newton.actuators.Actuator`. Enable it with `actuator.set_effort_mode_implicit(response=oracle)`, provide the response through `newton.actuators.ResponseOracle`, and tune the solve with `newton.actuators.Actuator.ImplicitOptions`. ([#3855](https://github.com/newton-physics/newton/issues/3855))
+- Add an experimental implicit effort mode to `newton.actuators.Actuator`. `actuator.set_effort_mode_implicit(response=response)` switches on an implicit scheme for solving actuator impulses. The response comes from the new `newton.actuators.JointSpaceResponse`; tune the solve with `newton.actuators.Actuator.ImplicitOptions`. ([#3855](https://github.com/newton-physics/newton/issues/3855))
 - Expose device-resident per-world terminal solver status through `SolverKamino.status` for PADMM and DVI. ([#3933](https://github.com/newton-physics/newton/issues/3933))
 - Add an asRoBallet example with selectable policy and LQR controllers. ([#3955](https://github.com/newton-physics/newton/issues/3955))
 - Import per-mode curve damping from `NewtonCurvesDeformableMaterialAPI` and discretize each value using the rod joint's dual rest length. ([#3980](https://github.com/newton-physics/newton/issues/3980))
@@ -33,7 +33,7 @@
 - Add `total_controlled_dofs` to `ControllerJointImpedance` and `ControllerJointImpedanceModelFree` to report the size of their compact ports, and add `q_start` and `qd_start` to `ControllerJointImpedance` to expose each controlled joint's resolved coordinate and DOF indices.
 - Add broadcast or per-triangle display color and opacity to cloth and soft-body surfaces, display opacity to rigid shapes and viewer mesh instances, and preserve appearance through asset import. Use triangle coloring to add deformation and rotation cues to the cloth stretch and roller examples and distinguish individual poker cards.
 - Add opt-in circular-arc barrel profiles for cylinder collision, mass properties, and viewer geometry.
-- Add opt-in speculative rigid contacts through `CollisionPipeline.SpeculativeContactConfig`, the `speculative_config` constructor argument, and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction. Existing broad-phase and narrow-phase extension contracts remain unchanged when speculative contacts are disabled, reduced mesh-SDF contacts remain prioritized in dense scenes, and unsupported hydroelastic combinations are rejected.
+- Add opt-in speculative rigid contacts through the `CollisionPipeline(speculative_contact_gap_max=...)` constructor argument and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction, and reject unsupported hydroelastic combinations.
 - Add opt-out controls for adjacent-X SDF texture packing through `ModelBuilder.sdf_texture_paired_samples` and `Mesh.build_sdf(paired_samples=False)` to trade sampling speed for half the texture storage.
 - Add solver-owned collision pipelines with configurable rigid and soft self-contact detection schedules keyed by `SolverBase.CollisionSlot`. `SolverVBD` supports scheduled mid-solve detection, and `Contacts` can store reusable triangle-mesh self-contact results.
 - Add support for body flags (kinematic/dynamic/proxy) in Kamino.
@@ -56,7 +56,7 @@
 - Adopt margin-plus-gap collision ranges in `CollisionPipeline` and `SolverVBD`, separating interaction distance from detection slack while preserving deprecated call patterns. Migration: `SolverVBD(particle_self_contact_radius=r, particle_self_contact_margin=q)` -> `SolverVBD(particle_self_contact_margin=r, particle_self_contact_gap=q - r)`; `CollisionPipeline(soft_contact_margin=x)` -> `CollisionPipeline(soft_contact_gap=x)`; `particle_collision_detection_interval=n` -> the self-contact slot of `collision_frequency` / `collision_frequency_type` (`n < 0` -> `PRE_INIT`, `n == 0` -> `PRE_POST_INIT`, `n >= 1` -> `ITERATIONS` with frequency `n`).
 - Constrain `ControllerJointImpedance` to its selected joints instead of the whole model, allowing models with unselected free, ball, distance, or multi-axis D6 joints and articulations with no controlled joints. Invalid selections, duplicate DOFs, and writes to disabled ports now raise instead of producing incorrect torques. Remove `device` and `requires_grad` from construction; both now come from `model`.
 - Default `newton.use_coord_layout_targets` to `True`: `Model.joint_target_q` and `Control.joint_target_q` are now shaped `(joint_coord_count,)`, matching `joint_q`. Index them via `Model.joint_target_q_start`. Set the flag to `False` before building models to restore the deprecated DOF-shaped layout.
-- Filter fully inward manifold mesh edges by default when building mesh SDFs to reduce redundant contacts; pass `edge_inward_filter=False` to `Mesh.build_sdf()` to retain them.
+- Filter concave manifold mesh edges whose endpoints are both fully concave by default when building mesh SDFs to reduce redundant contacts; pass `edge_concave_filter=False` to `Mesh.build_sdf()` to retain them.
 - Improve `SolverKamino` contact allocation, warm-starting, and factorization, and add it to the `selection_cartpole` example.
 - Make experimental hydroelastic contacts respect each shape's margin and gap, including force-free speculative contacts between the margin and gap boundaries. Set both `margin=0.0` and `gap=0.0` for the closest equivalent of the earlier geometric-surface behavior. Externally supplied texture SDFs can declare their original AABB padding with `SDF.create_from_data(construction_padding=...)` for hydroelastic shape validation.
 - Refine contact visualizations in Newton viewers to show contact forces and color-coded contact modes.
@@ -120,6 +120,8 @@
 - Use authored colors for imported shapes that bind no material, rather than a debug palette color. ([#3910](https://github.com/newton-physics/newton/issues/3910))
 - Allow `ModelBuilder()` to construct successfully on Python 3.10 instead of raising `TypeError`. ([#3941](https://github.com/newton-physics/newton/issues/3941))
 - Support Warp mesh indices with non-`int32` integer dtypes in `compute_vertex_normals()`. ([#3985](https://github.com/newton-physics/newton/issues/3985))
+- Disable paired SDF texture samples on pre-SM90 CUDA devices when Warp was built with CUDA Toolkit 13.0 or earlier to avoid incorrect texture reads. ([#4147](https://github.com/newton-physics/newton/issues/4147))
+- Honor explicit `SolverMuJoCo` `nconmax` and `njmax` capacities instead of increasing them to conservative Newton contact estimates. ([#4168](https://github.com/newton-physics/newton/issues/4168))
 - Apply logged mesh color, roughness, metallic, backface culling, and opacity consistently in USD-based viewers; preserve distinct mesh color and opacity in ViewerFile recordings; and render mixed opaque/translucent ViewerGL instance batches in the correct depth, shadow, and transparency passes.
 - Cap the viewer camera's per-frame damping factor to avoid overshoot-driven oscillation at low framerates.
 - Capture initial Kamino simulation steps directly without an uncaptured warm-up step.
