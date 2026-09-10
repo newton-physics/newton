@@ -3,11 +3,11 @@
 
 """Effective inverse-mass response for articulated systems.
 
-:class:`ResponseOracle` owns the full inverse joint-space mass block for each
+:class:`JointSpaceResponse` owns the full inverse joint-space mass block for each
 articulation. There are two ways to update it:
 
-- :meth:`ResponseOracle.refresh` assembles the mass matrix itself.
-- :meth:`ResponseOracle.refresh_from_solve` reuses a solver's own inertia
+- :meth:`JointSpaceResponse.refresh` assembles the mass matrix itself.
+- :meth:`JointSpaceResponse.refresh_from_solve` reuses a solver's own inertia
   without materializing it, so factorized solvers work too.
 
 Both use preallocated buffers and device kernels, so they can be captured in a
@@ -25,7 +25,7 @@ from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..sim.model import Model
 from ..sim.state import State
 
-__all__ = ["ResponseOracle"]
+__all__ = ["JointSpaceResponse"]
 
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
@@ -136,7 +136,7 @@ def _scatter_inverse_column_kernel(
     inv_block[a, dof_local_index[ni], dof_local_index[nj]] = solution[w, i]
 
 
-class ResponseOracle:
+class JointSpaceResponse:
     """Effective inverse-mass response for each articulation.
 
     :attr:`inverse_blocks` holds ``H_a^{-1}`` for each articulation
@@ -150,13 +150,13 @@ class ResponseOracle:
     """
 
     def __init__(self, model: Model) -> None:
-        """Initialize the oracle and its scratch buffers for a model.
+        """Initialize the response and its scratch buffers for a model.
 
         Args:
             model: A finalized :class:`~newton.Model` with articulations.
         """
         if model.articulation_count == 0:
-            raise ValueError("ResponseOracle requires a model with articulations")
+            raise ValueError("JointSpaceResponse requires a model with articulations")
         self.model = model
 
         device = model.device
@@ -291,7 +291,7 @@ class ResponseOracle:
 
 
             # Simulation loop
-            oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
         Args:
             solve_inverse: Callable ``(x, y)`` writing ``x = M^-1 y``, both shaped

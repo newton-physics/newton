@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conservative removal of fully inward mesh collision edges."""
+"""Conservative removal of fully concave mesh collision edges."""
 
 from __future__ import annotations
 
@@ -15,20 +15,21 @@ if TYPE_CHECKING:
 MINVAL = 1.0e-15
 
 
-def filter_fully_inward_edges(
+def filter_fully_concave_edges(
     mesh: Mesh,
     edge_indices: np.ndarray,
     *,
     canonical_vertex_ids: np.ndarray | None = None,
     edge_slot_topology: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> np.ndarray:
-    """Drop concave edges whose endpoints have fully inward manifold one-rings.
+    """Drop concave edges whose endpoints have fully concave manifold one-rings.
 
     A removable edge is shared by exactly two non-degenerate triangles. Both
     endpoint vertices must have connected, closed, consistently oriented
-    one-rings, and every one-ring neighbor must lie on the inward side of the
-    endpoint's angle-weighted tangent plane. Boundary, non-manifold, saddle,
-    flat, and ambiguous features are preserved.
+    one-rings, and every one-ring neighbor must lie on or outward from the
+    endpoint's angle-weighted tangent plane, with at least one neighbor strictly
+    outward. Boundary, non-manifold, saddle, flat, and ambiguous features are
+    preserved.
 
     Args:
         mesh: Source mesh with consistently authored triangle winding.
@@ -37,7 +38,7 @@ def filter_fully_inward_edges(
         edge_slot_topology: Optional precomputed edge-slot topology.
 
     Returns:
-        A contiguous subset of ``edge_indices`` with fully inward edges removed.
+        A contiguous subset of ``edge_indices`` with fully concave edges removed.
     """
     if len(edge_indices) == 0 or mesh.indices.size == 0 or mesh.vertices.size == 0:
         return np.ascontiguousarray(edge_indices, dtype=np.int32)
@@ -189,12 +190,12 @@ def filter_fully_inward_edges(
     max_heights = np.maximum.reduceat(sorted_heights, vertex_group_starts)
 
     plane_tolerance = 1.0e-7 * diagonal
-    inward_mask = (
+    fully_concave_mask = (
         topology_valid & (normal_lengths > MINVAL) & (min_heights >= -plane_tolerance) & (max_heights > plane_tolerance)
     )
-    inward_vertices = set(vertex_ids[inward_mask].tolist())
+    fully_concave_vertices = set(vertex_ids[fully_concave_mask].tolist())
 
-    if len(inward_vertices) < 2:
+    if len(fully_concave_vertices) < 2:
         return np.ascontiguousarray(edge_indices, dtype=np.int32)
 
     concave_array = np.empty(0, dtype=np.int64)
@@ -232,8 +233,10 @@ def filter_fully_inward_edges(
     canonical_a = np.minimum(canonical_edges[:, 0], canonical_edges[:, 1])
     canonical_b = np.maximum(canonical_edges[:, 0], canonical_edges[:, 1])
     edge_keys = (canonical_a.astype(np.int64) << 32) | canonical_b.astype(np.int64)
-    inward_array = np.fromiter(inward_vertices, dtype=np.int32)
+    fully_concave_array = np.fromiter(fully_concave_vertices, dtype=np.int32)
     keep = ~(
-        np.isin(canonical_a, inward_array) & np.isin(canonical_b, inward_array) & np.isin(edge_keys, concave_array)
+        np.isin(canonical_a, fully_concave_array)
+        & np.isin(canonical_b, fully_concave_array)
+        & np.isin(edge_keys, concave_array)
     )
     return np.ascontiguousarray(edge_indices[keep], dtype=np.int32)
