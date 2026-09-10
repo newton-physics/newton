@@ -17,7 +17,6 @@ newton.utils
    EventTracer
    MeshAdjacency
    MeshAdjacencyData
-   RodStiffness
 
 .. rubric:: Functions
 
@@ -26,7 +25,6 @@ newton.utils
    :signatures: long
 
    bourke_color_map
-   cable_straight_points
    color_graph
    color_linear_to_srgb
    color_srgb_to_linear
@@ -38,9 +36,6 @@ newton.utils
    plot_graph
    rasterize_mesh_to_heightfield
    remesh_mesh
-   rod_parallel_transport_quaternions
-   rod_stiffness_from_elastic_moduli
-   rod_straight_points_and_quaternions
    run_benchmark
    solidify_mesh
    string_to_warp
@@ -55,12 +50,12 @@ newton.utils
    * - Name
      - Guidance
    * - ``CableStiffness``
-     - Deprecated in 1.6; use RodStiffness instead.
+     - Deprecated in 1.6; pass direct stiffness values to ``newton.ModelBuilder.add_rod()`` instead.
    * - ``create_cable_stiffness_from_elastic_moduli``
-     - Deprecated in 1.6; use rod_stiffness_from_elastic_moduli instead.
+     - Deprecated in 1.6; supply elastic material through ``newton.Rod(...)`` or pass direct stiffness values to ``newton.ModelBuilder.add_rod()`` instead.
    * - ``create_parallel_transport_cable_quaternions``
-     - Deprecated in 1.6; use rod_parallel_transport_quaternions instead.
+     - Deprecated in 1.6; construct ``rod = newton.Rod(points)`` and read ``rod.quaternions`` instead. For nonzero ``twist_total``, first call ``rod.compute_frames(twist_total=twist_total)``.
    * - ``create_straight_cable_points``
-     - Deprecated in 1.6; use cable_straight_points instead.
+     - Deprecated in 1.6; use ``newton.Rod.create_straight(...).points`` instead.
    * - ``create_straight_cable_points_and_quaternions``
-     - Deprecated in 1.6; use rod_straight_points_and_quaternions instead.
+     - Deprecated in 1.6; use ``newton.Rod.create_straight(...)`` instead.

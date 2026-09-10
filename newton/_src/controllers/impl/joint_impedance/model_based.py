@@ -19,13 +19,12 @@ import re
 import numpy as np
 import warp as wp
 
-from newton import JointType
 from newton._src.sim.articulation import eval_fk, eval_mass_matrix
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 from newton._src.sim.model import Model
 
 from ...controller import ControllerBase
-from ...joint_selection import select_joints
+from ...joint_selection import resolve_joint_selection
 from ...utils import _validate_array
 from .._common import _gather_mass_matrix_blocks_kernel, _read_port
 from .model_free import ControllerJointImpedanceModelFree
@@ -183,144 +182,33 @@ class ControllerJointImpedance(ControllerBase):
         self._coord_count = int(model.joint_coord_count)
         self._dof_count = int(model.joint_dof_count)
 
-        joint_selection = select_joints(model, articulations=articulations, joints=joints)
-        joint_q_idx = joint_selection.q_start
-        joint_qd_idx = joint_selection.qd_start
-
-        # ------------------------------------------------------------------
-        # Validation of the two model-space index arrays. Everything else the
-        # controller takes is compact and validated by the inner controller.
-        # ------------------------------------------------------------------
-        # joint_selection.q_start defines the controlled-DOF count, so it is
-        # checked against its own length; joint_selection.qd_start must then
-        # match that count exactly, which is where a length mismatch between
-        # the two is caught. Checked before ``.size`` is read below, since a
-        # non-array would otherwise fail there with an unhelpful AttributeError.
-        if not isinstance(joint_q_idx, wp.array):
-            raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
-        _validate_array(
-            array=joint_q_idx,
-            name="joint_selection.q_start",
-            dtype=wp.int32,
-            shape=(joint_q_idx.size,),
+        joints_resolved = resolve_joint_selection(
+            model,
+            articulations=articulations,
+            joints=joints,
             device=self._device,
+            controller_name="ControllerJointImpedance",
+            ownerless_joint_reason=(
+                "The controller runs forward kinematics and dynamics per robot, so such a joint has no "
+                "mass matrix, gravity, or Coriolis term."
+            ),
         )
-        total_controlled_dofs = int(joint_q_idx.size)
-        if total_controlled_dofs < 1:
-            raise ValueError("joint_selection.q_start is empty; there is nothing to control.")
-        _validate_array(
-            array=joint_qd_idx,
-            name="joint_selection.qd_start",
-            dtype=wp.int32,
-            shape=(total_controlled_dofs,),
-            device=self._device,
-        )
+        qd_idx_np = joints_resolved.qd_idx_np
+        model_robot_index_np = joints_resolved.model_robot_index_np
+        controlled_dofs_per_robot_np = joints_resolved.controlled_dofs_per_robot_np
+        controlled_robot_count = joints_resolved.controlled_robot_count
+        max_controlled_dofs = joints_resolved.max_controlled_dofs
 
-        q_idx_np = joint_q_idx.numpy()
-        qd_idx_np = joint_qd_idx.numpy()
-        for name, idx_np, limit, space in (
-            ("joint_selection.q_start", q_idx_np, self._coord_count, "coordinate"),
-            ("joint_selection.qd_start", qd_idx_np, self._dof_count, "DOF"),
-        ):
-            if idx_np.min() < 0 or idx_np.max() >= limit:
-                raise ValueError(
-                    f"{name} must index the model's {space} space [0, {limit}), got "
-                    f"range [{int(idx_np.min())}, {int(idx_np.max())}]."
-                )
-
-        # A repeated DOF would give two controlled slots the same simulation DOF,
-        # so a scatter through ``control.joint_f[selection.qd_start]`` would have
-        # them overwrite each other. Checking joint_selection.qd_start alone
-        # covers both arrays, since the pairing check below forces the two to
-        # agree.
-        if np.unique(qd_idx_np).size != qd_idx_np.size:
-            duplicate = int(np.bincount(qd_idx_np).argmax())
-            raise ValueError(
-                f"joint_selection.qd_start contains DOF {duplicate} more than once; two controlled slots "
-                f"cannot map to the same simulation DOF."
-            )
-
-        # Each pair (q_start[i], qd_start[i]) must land on the same model joint,
-        # which is what catches a joint_selection whose two arrays were built
-        # swapped or mismatched.
-        owning_joint = np.searchsorted(model.joint_q_start.numpy(), q_idx_np, side="right") - 1
-        owning_joint_qd = np.searchsorted(model.joint_qd_start.numpy(), qd_idx_np, side="right") - 1
-        if not np.array_equal(owning_joint, owning_joint_qd):
-            mismatched = int(np.flatnonzero(owning_joint != owning_joint_qd)[0])
-            raise ValueError(
-                f"joint_selection.q_start and joint_selection.qd_start disagree at entry {mismatched}: "
-                f"coordinate {int(q_idx_np[mismatched])} belongs to joint {int(owning_joint[mismatched])} "
-                f"but DOF {int(qd_idx_np[mismatched])} belongs to joint {int(owning_joint_qd[mismatched])}. "
-                f"Did you swap the two arrays?"
-            )
-
-        # A joint is controllable when ``q_des - q`` is a scalar subtraction,
-        # i.e. it spans exactly one coordinate and one DOF. Derived from the
-        # model's own spans.
-        joint_type_np = model.joint_type.numpy()
-        coord_span = np.diff(model.joint_q_start.numpy())[owning_joint]
-        dof_span = np.diff(model.joint_qd_start.numpy())[owning_joint]
-        unsupported = sorted(
-            {
-                (int(j), JointType(joint_type_np[j]).name)
-                for j, coords, dofs in zip(owning_joint, coord_span, dof_span, strict=True)
-                if coords != 1 or dofs != 1
-            }
-        )
-        if unsupported:
-            raise ValueError(
-                f"ControllerJointImpedance only supports controlling joints that span a single "
-                f"coordinate and a single DOF; joint_selection addresses unsupported joints: {unsupported}"
-            )
-
-        owning_robot = model.joint_articulation.numpy()[owning_joint]
-        loose = np.flatnonzero(owning_robot < 0)
-        if loose.size:
-            raise ValueError(
-                f"joint_selection addresses joint {int(owning_joint[loose[0]])}, which belongs to no "
-                f"robot. The controller runs forward kinematics and dynamics per robot, so such a "
-                f"joint has no mass matrix, gravity, or Coriolis term."
-            )
-
-        # Contiguous per-robot grouping is what makes every compact buffer a
-        # simple concatenation of per-robot chunks; the mass-matrix block
-        # extraction below slices on exactly that assumption.
-        if np.any(np.diff(owning_robot) < 0):
-            raise ValueError(
-                "joint_selection.q_start/qd_start must be grouped by robot (robot 0's DOFs first, "
-                f"then robot 1's, ...); got robot order {owning_robot.tolist()}."
-            )
-
-        # np.unique lists the controlled robots in ascending model order with
-        # their DOF counts, which is exactly the packed layout: every buffer the
-        # controller owns is sized to the robots it actually controls, and
-        # model_robot_index translates a packed index back to the model's.
-        model_robot_index_np, controlled_dofs_per_robot_np = np.unique(owning_robot, return_counts=True)
-        model_robot_index_np = model_robot_index_np.astype(np.int32)
-        controlled_dofs_per_robot_np = controlled_dofs_per_robot_np.astype(np.int32)
-        controlled_robot_count = int(model_robot_index_np.size)
-        controlled_dofs_per_robot = wp.array(controlled_dofs_per_robot_np, dtype=wp.int32, device=self._device)
-        max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
-        self._model_robot_index = wp.array(model_robot_index_np, dtype=wp.int32, device=self._device)
-        # FK and dynamics run per robot, and a robot with no controlled DOF
-        # contributes nothing to the ones that have them. The mask stays
-        # model-sized because that is what the eval_* entry points take.
-        mask_np = np.zeros(model_robot_count, dtype=bool)
-        mask_np[model_robot_index_np] = True
-        self._controlled_robot_mask = wp.array(mask_np, dtype=wp.bool, device=self._device)
-        # ------------------------------------------------------------------
-
+        self._model_robot_index = joints_resolved.model_robot_index
+        self._controlled_robot_mask = joints_resolved.controlled_robot_mask
         self._model_robot_count = model_robot_count
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
-        self._total_controlled_dofs = total_controlled_dofs
+        self._total_controlled_dofs = joints_resolved.total_controlled_dofs
+        controlled_dofs_per_robot = joints_resolved.controlled_dofs_per_robot
         self._controlled_dofs_per_robot = controlled_dofs_per_robot
-        # Copied rather than aliased: the robot packing, local-DOF tables, and
-        # masks above are derived once from a host snapshot of these arrays, so
-        # a caller mutating joint_selection.q_start/qd_start after construction must
-        # not change what the live indexed views below read from.
-        self._q_idx = wp.clone(joint_q_idx)
-        self._qd_idx = wp.clone(joint_qd_idx)
+        self._q_idx = joints_resolved.q_idx
+        self._qd_idx = joints_resolved.qd_idx
 
         self._model_mass_matrix: wp.array3d[wp.float32] | None = None
         self._controlled_mass_matrix: wp.array3d[wp.float32] | None = None
