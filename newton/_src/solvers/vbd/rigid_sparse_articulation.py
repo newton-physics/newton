@@ -1,0 +1,299 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Host-side sparse articulation layout for the VBD rigid solver."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import warp as wp
+
+
+@dataclass
+class RigidArticulationSparseBatch:
+    """Articulations sharing one ordered factorization pattern."""
+
+    pattern: tuple[tuple[int, ...], ...]
+    """Lower-triangular block columns, including fill, for each local row."""
+    articulation_indices: wp.array[wp.int32]
+    """Instance indices into the model-wide articulation offsets."""
+    row_offsets: wp.array[wp.int32]
+    block_cols: wp.array[wp.int32]
+    column_offsets: wp.array[wp.int32]
+    column_entries: wp.array[wp.vec2i]
+    """Strict-lower (row, block slot) pairs, using topology-local indices."""
+    factor_updates: wp.array[wp.vec3i]
+    """Shared CUDA Schur-update (destination, left, right) local block slots."""
+    factor_update_offsets: wp.array[wp.int32]
+    """Boundaries of each pivot's Schur updates."""
+
+
+@dataclass
+class RigidArticulationSparseLayout:
+    """Static block-sparse articulation layout for rigid VBD solves."""
+
+    articulation_body_offsets: wp.array[wp.int32]
+    articulation_joint_offsets: wp.array[wp.int32]
+    articulation_bodies: wp.array[wp.int32]
+    articulation_joints: wp.array[wp.int32]
+    articulation_joint_body_start: wp.array[wp.int32]
+    articulation_block_row_offsets: wp.array[wp.int32]
+    articulation_block_cols: wp.array[wp.int32]
+    topology_batches: list[RigidArticulationSparseBatch]
+    """One factorization template and instance list per ordered topology."""
+    articulation_diag_slots: wp.array[wp.int32]
+    body_articulation_local: wp.array[wp.int32]
+    local_body_color_groups: list[wp.array[wp.int32]]
+    articulation_count: int
+    articulation_body_count: int
+    articulation_joint_count: int
+    local_body_count: int
+    block_count: int
+
+
+def _symbolic_cholesky_pattern(body_count: int, edges: set[tuple[int, int]]) -> list[list[int]]:
+    rows = [{i} for i in range(body_count)]
+    for a, b in edges:
+        row = max(a, b)
+        col = min(a, b)
+        rows[row].add(col)
+
+    for k in range(body_count):
+        later = [i for i in range(k + 1, body_count) if k in rows[i]]
+        for i_index, i in enumerate(later):
+            for j in later[:i_index]:
+                rows[max(i, j)].add(min(i, j))
+
+    return [sorted(row) for row in rows]
+
+
+def _minimum_degree_order(body_count: int, edges: set[tuple[int, int]]) -> list[int]:
+    adjacency = [set() for _ in range(body_count)]
+    for a, b in edges:
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+
+    remaining = set(range(body_count))
+    order: list[int] = []
+    for _ in range(body_count):
+        pivot = min(remaining, key=lambda i: (len(adjacency[i] & remaining), i))
+        neighbors = sorted((adjacency[pivot] & remaining) - {pivot})
+        for i, a in enumerate(neighbors):
+            for b in neighbors[:i]:
+                adjacency[a].add(b)
+                adjacency[b].add(a)
+        remaining.remove(pivot)
+        order.append(pivot)
+
+    return order
+
+
+def build_rigid_articulation_sparse_layout(
+    model, device: wp.context.Devicelike
+) -> RigidArticulationSparseLayout | None:
+    """Build the static sparse layout from Newton articulation ranges.
+
+    This host analysis runs once from :class:`SolverVBD` construction, never
+    from the per-step or per-iteration path. Repeated articulation topologies,
+    such as replicated RL environments, share cached ordering and fill analysis,
+    and one CUDA factor-update table. Assembly and numerical buffers remain packed
+    model-wide; only the factorization schedule is shared between instances.
+
+    Each articulation is one direct-factorization group: every joint in
+    ``[articulation_start, articulation_end)`` is assembled into that group's
+    block system, including loop-closing joints added through
+    :meth:`~newton.ModelBuilder.add_articulation` with ``allow_closed_loops=True``.
+    Bodies outside every articulation remain in the regular local VBD solve.
+    Joints outside articulation ranges must not touch articulation bodies.
+    """
+
+    if model.body_count == 0:
+        return None
+
+    joint_parent = np.asarray(model.joint_parent.to("cpu").numpy(), dtype=np.int32)
+    joint_child = np.asarray(model.joint_child.to("cpu").numpy(), dtype=np.int32)
+    articulation_start = np.asarray(model.articulation_start.to("cpu").numpy(), dtype=np.int32)
+    articulation_end = np.asarray(model.articulation_end.to("cpu").numpy(), dtype=np.int32)
+
+    articulation_bodies_host: list[int] = []
+    articulation_joints_host: list[int] = []
+    articulation_joint_body_start_host: list[int] = []
+    articulation_body_offsets_host = [0]
+    articulation_joint_offsets_host = [0]
+    block_row_offsets_host = [0]
+    block_cols_host: list[int] = []
+    diag_slots_host: list[int] = []
+    topology_instances: dict[tuple[tuple[int, ...], ...], list[int]] = {}
+
+    body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
+    for joint_idx in range(model.joint_count):
+        parent = int(joint_parent[joint_idx])
+        child = int(joint_child[joint_idx])
+        if parent >= model.body_count or child >= model.body_count:
+            raise ValueError(
+                f"Joint {joint_idx} references an out-of-range body: parent={parent}, child={child}, "
+                f"body_count={model.body_count}."
+            )
+        if parent < 0 and child < 0:
+            raise ValueError(f"Joint {joint_idx} has no rigid-body endpoint.")
+
+    # One group per articulation. The range is authoritative, so loop-closing joints
+    # added with allow_closed_loops=True are factorized together with the tree joints.
+    joint_group = np.full((model.joint_count,), -1, dtype=np.int32)
+    body_group = np.full((model.body_count,), -1, dtype=np.int32)
+    articulation_groups: list[tuple[list[int], list[int]]] = []
+    for articulation_id in range(model.articulation_count):
+        joints = list(range(int(articulation_start[articulation_id]), int(articulation_end[articulation_id])))
+        bodies: list[int] = []
+        for joint_idx in joints:
+            for body in (int(joint_parent[joint_idx]), int(joint_child[joint_idx])):
+                if body >= 0 and body not in bodies:
+                    if body_group[body] >= 0:
+                        raise ValueError(
+                            f"Body {body} appears in articulation {articulation_id} and articulation "
+                            f"{int(body_group[body])}. The block-sparse articulation solve requires each body to "
+                            f"belong to at most one articulation."
+                        )
+                    bodies.append(body)
+        if not bodies:
+            continue
+        group = len(articulation_groups)
+        for joint_idx in joints:
+            joint_group[joint_idx] = group
+        for body in bodies:
+            body_group[body] = group
+        articulation_groups.append((bodies, joints))
+
+    if not articulation_groups:
+        return None
+
+    for joint_idx in range(model.joint_count):
+        if joint_group[joint_idx] >= 0:
+            continue
+        parent = int(joint_parent[joint_idx])
+        child = int(joint_child[joint_idx])
+        parent_group = int(body_group[parent]) if parent >= 0 else -1
+        child_group = int(body_group[child]) if child >= 0 else -1
+        if parent_group >= 0 or child_group >= 0:
+            raise ValueError(
+                f"Joint {joint_idx} lies outside the declared articulation ranges but touches an articulation body "
+                f"(parent={parent}, child={child}). The block-sparse VBD solve requires every joint touching an "
+                f"articulation body to belong to that articulation. Include the joint in one articulation, using "
+                f"ModelBuilder.add_articulation(..., allow_closed_loops=True) for a loop closure, or use "
+                f"rigid_articulation_solve='local'."
+            )
+
+    local_body_color_groups: list[wp.array[wp.int32]] = []
+    local_body_count = 0
+    for color_group in model.body_color_groups:
+        color_bodies = np.asarray(color_group.to("cpu").numpy(), dtype=np.int32)
+        local_bodies = color_bodies[body_group[color_bodies] < 0]
+        if local_bodies.size > 0:
+            local_body_color_groups.append(wp.array(local_bodies, dtype=wp.int32, device=device))
+            local_body_count += int(local_bodies.size)
+
+    symbolic_cache: dict[
+        tuple[int, tuple[tuple[int, int], ...]],
+        tuple[list[int], list[list[int]]],
+    ] = {}
+    for articulation_id, (bodies, joints) in enumerate(articulation_groups):
+        local_index = {body: i for i, body in enumerate(bodies)}
+        edges: set[tuple[int, int]] = set()
+        for joint_idx in joints:
+            parent = int(joint_parent[joint_idx])
+            child = int(joint_child[joint_idx])
+            if parent >= 0 and child >= 0 and parent in local_index and child in local_index:
+                edges.add((local_index[parent], local_index[child]))
+
+        topology_key = (
+            len(bodies),
+            tuple(sorted((min(a, b), max(a, b)) for a, b in edges)),
+        )
+        symbolic = symbolic_cache.get(topology_key)
+        if symbolic is None:
+            order = _minimum_degree_order(len(bodies), edges) if len(bodies) > 1 else [0]
+            old_to_new = {old: new for new, old in enumerate(order)}
+            ordered_edges = {(old_to_new[a], old_to_new[b]) for a, b in edges}
+            pattern = _symbolic_cholesky_pattern(len(bodies), ordered_edges)
+            symbolic = (order, pattern)
+            symbolic_cache[topology_key] = symbolic
+        order, pattern = symbolic
+        topology_instances.setdefault(tuple(tuple(row) for row in pattern), []).append(articulation_id)
+        ordered_bodies = [bodies[old] for old in order]
+
+        body_start = len(articulation_bodies_host)
+        articulation_bodies_host.extend(ordered_bodies)
+        articulation_joints_host.extend(joints)
+        articulation_joint_body_start_host.extend([body_start] * len(joints))
+        articulation_body_offsets_host.append(len(articulation_bodies_host))
+        articulation_joint_offsets_host.append(len(articulation_joints_host))
+
+        for local_body, body in enumerate(ordered_bodies):
+            body_articulation_local_host[body] = local_body
+
+        for local_row, row_cols in enumerate(pattern):
+            row_start = len(block_cols_host)
+            block_cols_host.extend(row_cols)
+            diag_slots_host.append(row_start + row_cols.index(local_row))
+            block_row_offsets_host.append(len(block_cols_host))
+
+    topology_batches = []
+    for pattern, instances in topology_instances.items():
+        slots = {
+            (row, col): slot
+            for slot, (row, col) in enumerate((row, col) for row, cols in enumerate(pattern) for col in cols)
+        }
+        updates = []
+        update_offsets = [0]
+        column_entries = []
+        column_offsets = [0]
+        for col in range(len(pattern)):
+            later_rows = [row for row in range(col + 1, len(pattern)) if (row, col) in slots]
+            column_entries.extend((row, slots[row, col]) for row in later_rows)
+            column_offsets.append(len(column_entries))
+            for left_index, left in enumerate(later_rows):
+                for right in later_rows[: left_index + 1]:
+                    updates.append((slots[left, right], slots[left, col], slots[right, col]))
+            update_offsets.append(len(updates))
+        topology_batches.append(
+            RigidArticulationSparseBatch(
+                pattern=pattern,
+                articulation_indices=wp.array(instances, dtype=wp.int32, device=device),
+                row_offsets=wp.array(np.cumsum([0, *map(len, pattern)]), dtype=wp.int32, device=device),
+                block_cols=wp.array([col for row in pattern for col in row], dtype=wp.int32, device=device),
+                column_offsets=wp.array(column_offsets, dtype=wp.int32, device=device),
+                column_entries=wp.array(column_entries, dtype=wp.vec2i, device=device),
+                factor_updates=wp.array(updates, dtype=wp.vec3i, device=device),
+                factor_update_offsets=wp.array(update_offsets, dtype=wp.int32, device=device),
+            )
+        )
+
+    articulation_bodies_np = np.asarray(articulation_bodies_host, dtype=np.int32)
+    articulation_joints_np = np.asarray(articulation_joints_host, dtype=np.int32)
+    articulation_joint_body_start_np = np.asarray(articulation_joint_body_start_host, dtype=np.int32)
+    articulation_body_offsets_np = np.asarray(articulation_body_offsets_host, dtype=np.int32)
+    articulation_joint_offsets_np = np.asarray(articulation_joint_offsets_host, dtype=np.int32)
+    block_row_offsets_np = np.asarray(block_row_offsets_host, dtype=np.int32)
+    block_cols_np = np.asarray(block_cols_host, dtype=np.int32)
+    diag_slots_np = np.asarray(diag_slots_host, dtype=np.int32)
+
+    return RigidArticulationSparseLayout(
+        articulation_body_offsets=wp.array(articulation_body_offsets_np, dtype=wp.int32, device=device),
+        articulation_joint_offsets=wp.array(articulation_joint_offsets_np, dtype=wp.int32, device=device),
+        articulation_bodies=wp.array(articulation_bodies_np, dtype=wp.int32, device=device),
+        articulation_joints=wp.array(articulation_joints_np, dtype=wp.int32, device=device),
+        articulation_joint_body_start=wp.array(articulation_joint_body_start_np, dtype=wp.int32, device=device),
+        articulation_block_row_offsets=wp.array(block_row_offsets_np, dtype=wp.int32, device=device),
+        articulation_block_cols=wp.array(block_cols_np, dtype=wp.int32, device=device),
+        topology_batches=topology_batches,
+        articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
+        body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
+        local_body_color_groups=local_body_color_groups,
+        articulation_count=len(articulation_groups),
+        articulation_body_count=len(articulation_bodies_host),
+        articulation_joint_count=len(articulation_joints_host),
+        local_body_count=local_body_count,
+        block_count=len(block_cols_host),
+    )

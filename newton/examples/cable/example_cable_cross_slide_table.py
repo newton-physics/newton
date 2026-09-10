@@ -741,7 +741,7 @@ class Example:
             friction=0.0,
             label="left_bottom_cable_fix",
         )
-        builder.add_joint_ball(
+        right_anchor_joint = builder.add_joint_ball(
             parent=self.table_body,
             child=last_cable_body,
             parent_xform=wp.transform(self.right_anchor_local, wp.quat_identity()),
@@ -751,8 +751,9 @@ class Example:
             label="right_bottom_cable_fix_loop",
         )
         builder.add_articulation(
-            [*table_articulation_joints, *cable_joints, left_anchor_joint],
+            [*table_articulation_joints, *cable_joints, left_anchor_joint, right_anchor_joint],
             label="xy_table_cable_cross_slide",
+            allow_closed_loops=True,
         )
 
         kinematic_body_indices = driven_pulley_bodies
@@ -774,6 +775,7 @@ class Example:
             rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
+            rigid_articulation_solve=getattr(args, "rigid_articulation_solve", "local"),
         )
 
         self.state_0 = self.model.state()
@@ -978,6 +980,12 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--rigid-articulation-solve",
+        choices=("local", "block_sparse_joints"),
+        default="local",
+    )
+    viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
