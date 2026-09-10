@@ -70,6 +70,7 @@ class SolverOutputs:
 
         self._solver: SolverBase | None = None
         self._contacts: Contacts | None = None
+        self._contact_capacity: tuple[int, int] | None = None
 
     def __contains__(self, flag: Enum) -> bool:
         """Return whether an output flag was allocated."""
@@ -77,7 +78,7 @@ class SolverOutputs:
 
     @property
     def contacts(self) -> Contacts | None:
-        """Contact storage associated with contact-indexed outputs, if any."""
+        """Contact storage bound on the first solver step, or ``None`` before it."""
         return self._contacts
 
 
@@ -272,6 +273,14 @@ class SolverBase:
     SUPPORTED_OUTPUT_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
     """Output flags accepted by :meth:`outputs`."""
 
+    CONTACT_OUTPUT_FLAGS: ClassVar[frozenset[Enum]] = frozenset({SolverOutputFlags.CONTACT_F})
+    """Flags requiring contact capacities and storage binding.
+
+    Custom solvers extend this set for their own contact-indexed arrays. This
+    declares a sizing dependency, not support; also add each custom flag to
+    :attr:`SUPPORTED_OUTPUT_FLAGS`.
+    """
+
     def __init__(self, model: Model):
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
@@ -286,7 +295,6 @@ class SolverBase:
         self,
         flags: Iterable[Enum],
         *,
-        contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> SolverOutputs:
         """Allocate reusable arrays for requested solver outputs.
@@ -300,9 +308,6 @@ class SolverBase:
         Args:
             flags: Set or other iterable of standard and solver-specific output
                 enum members.
-            contacts: Contact storage whose capacities determine the shape of
-                contact-indexed outputs. Required when requesting
-                :attr:`SolverOutputFlags.CONTACT_F`.
             requires_grad: Whether allocated arrays require gradients. If
                 ``None``, use the model's setting.
 
@@ -314,6 +319,13 @@ class SolverBase:
                 configured output type does not derive from
                 :class:`SolverOutputs`.
             ValueError: If this solver does not support a requested output.
+            RuntimeError: If contact-indexed outputs are requested before
+                constructing :class:`~newton.CollisionPipeline` for the model.
+
+        All requested arrays are allocated before this method returns; ``None``
+        always means unrequested. Contact arrays use the model's resolved rigid
+        and soft capacities, not the live contact count. Allocate before graph
+        capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
 
         .. experimental::
 
@@ -338,15 +350,13 @@ class SolverBase:
             raise TypeError("OUTPUTS_TYPE must derive from SolverOutputs.")
         result = self.OUTPUTS_TYPE(requested)
         result._solver = self
-        result._contacts = contacts
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        if SolverOutputFlags.CONTACT_F in requested:
-            if contacts is None:
-                raise ValueError("'contacts' is required when requesting SolverOutputFlags.CONTACT_F.")
-            if contacts.device != self.model.device:
-                raise ValueError("Solver outputs and contacts must be allocated on the solver device.")
+        if requested.intersection(self.CONTACT_OUTPUT_FLAGS):
+            result._contact_capacity = self.model._get_contact_capacity()
         self._allocate_outputs(result, requires_grad=requires_grad)
+        if result._contact_capacity is not None:
+            self.model._solver_output_contact_capacity = result._contact_capacity
         return result
 
     @staticmethod
@@ -372,11 +382,9 @@ class SolverBase:
             )
 
         if SolverOutputFlags.CONTACT_F in outputs:
-            contacts = outputs._contacts
-            if contacts is None:
-                raise ValueError("Contact storage is missing for SolverOutputFlags.CONTACT_F.")
+            rigid_max, soft_max = outputs._contact_capacity
             outputs.contact_f = wp.zeros(
-                contacts.rigid_contact_max + contacts.soft_contact_max,
+                rigid_max + soft_max,
                 dtype=wp.spatial_vector,
                 device=self.model.device,
                 requires_grad=requires_grad,
@@ -390,8 +398,18 @@ class SolverBase:
             raise TypeError(f"'outputs' must be an instance of {self.OUTPUTS_TYPE.__name__}.")
         if outputs._solver is not self:
             raise ValueError("Solver outputs must be passed to the solver instance that allocated them.")
-        if outputs.contact_f is not None and contacts is not None and outputs._contacts is not contacts:
-            raise ValueError("Contact solver outputs must be used with the Contacts instance that sized them.")
+        if outputs._contact_capacity is not None:
+            if contacts is None:
+                raise ValueError("Pass Contacts to solver.step() when using contact-indexed solver outputs.")
+            if contacts.device != self.model.device:
+                raise ValueError("Solver outputs and Contacts must be on the solver device.")
+            if (contacts.rigid_contact_max, contacts.soft_contact_max) != outputs._contact_capacity:
+                raise ValueError(f"Contacts capacities must match solver outputs: {outputs._contact_capacity}.")
+            if outputs._contacts is not None and outputs._contacts is not contacts:
+                raise ValueError(
+                    "Contact solver outputs must be used with the Contacts instance bound on the first step."
+                )
+            outputs._contacts = contacts
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)

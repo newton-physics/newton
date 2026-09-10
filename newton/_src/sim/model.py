@@ -1311,8 +1311,10 @@ class Model:
         self.soft_contact_restitution: float = 0.0
         """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
-        self.rigid_contact_max: int = 0
-        """Number of potential contact points between rigid bodies."""
+        self._rigid_contact_max: int | None = None
+        self._soft_contact_max: int | None = None
+        self._contact_capacity_initialized = False
+        self._solver_output_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1974,6 +1976,56 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    @property
+    def rigid_contact_max(self) -> int | None:
+        """Rigid contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
+        valid capacity. Contact-indexed solver outputs freeze both capacities
+        for the lifetime of this model.
+        """
+        return self._rigid_contact_max
+
+    @rigid_contact_max.setter
+    def rigid_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(value, self._soft_contact_max)
+        if value != self._rigid_contact_max:
+            self._contact_capacity_initialized = False
+        self._rigid_contact_max = value
+
+    @property
+    def soft_contact_max(self) -> int | None:
+        """Soft contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity, including
+        any enabled edge/face contact passes. Zero disables soft contacts.
+        """
+        return self._soft_contact_max
+
+    @soft_contact_max.setter
+    def soft_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(self._rigid_contact_max, value)
+        if value != self._soft_contact_max:
+            self._contact_capacity_initialized = False
+        self._soft_contact_max = value
+
+    def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
+        """Reject invalid capacities or changes that invalidate solver outputs."""
+        if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
+            raise ValueError("Contact capacities must be nonnegative or None.")
+        frozen = self._solver_output_contact_capacity
+        if frozen is not None and (rigid_max, soft_max) != frozen:
+            raise ValueError(
+                f"Contact capacities are frozen at {frozen} by allocated solver outputs; "
+                "create a new model and outputs to change capacities."
+            )
+
+    def _get_contact_capacity(self) -> tuple[int, int]:
+        """Return capacities published by a successfully initialized pipeline."""
+        if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
+            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver outputs.")
+        return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """

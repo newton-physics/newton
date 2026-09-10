@@ -5630,9 +5630,11 @@ class TestMuJoCoContactForce(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        collision_pipeline = newton.CollisionPipeline(model)
+        collision_pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+        )
         contacts = collision_pipeline.contacts()
-        outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+        outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
         dt = 0.002
@@ -11299,12 +11301,9 @@ class TestContactOutputPointPositions(unittest.TestCase):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = newton.Contacts(
-            rigid_contact_max=solver.mjw_data.naconmax,
-            soft_contact_max=0,
-            device=model.device,
-        )
-        outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
+        contacts = pipeline.contacts()
+        outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         dt = 1.0 / 200.0

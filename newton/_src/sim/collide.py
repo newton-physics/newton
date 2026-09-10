@@ -1190,7 +1190,7 @@ class CollisionPipeline:
             rigid_contact_max: Maximum number of rigid contacts to allocate.
                 Resolution order:
                 - If provided, use this value.
-                - Else if ``model.rigid_contact_max > 0``, use the model value.
+                - Else if ``model.rigid_contact_max is not None``, use the model value (including zero).
                 - Else estimate automatically from model shape and pair metadata.
             max_triangle_pairs:
                 Maximum number of triangle pairs allocated by narrow phase
@@ -1336,17 +1336,14 @@ class CollisionPipeline:
 
         # Resolve rigid contact capacity with explicit > model > estimated precedence.
         if rigid_contact_max is None:
-            model_rigid_contact_max = int(getattr(model, "rigid_contact_max", 0) or 0)
-            if model_rigid_contact_max > 0:
+            model_rigid_contact_max = model.rigid_contact_max
+            if model_rigid_contact_max is not None:
                 rigid_contact_max = model_rigid_contact_max
             else:
                 rigid_contact_max = _estimate_rigid_contact_max(model)
         self._rigid_contact_max = rigid_contact_max
         if max_triangle_pairs <= 0:
             raise ValueError("max_triangle_pairs must be > 0")
-        # Keep model-level default in sync with the resolved pipeline capacity.
-        # This avoids divergence between model- and contacts-based users (e.g. VBD init).
-        model.rigid_contact_max = rigid_contact_max
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -1718,6 +1715,7 @@ class CollisionPipeline:
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
+        model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic
@@ -1755,6 +1753,12 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
+
+        # Publish only after all construction succeeds. Outputs can now allocate
+        # from these capacities without needing a Contacts instance or a collide.
+        model.rigid_contact_max = rigid_contact_max
+        model.soft_contact_max = soft_contact_max
+        model._contact_capacity_initialized = True
 
     @property
     def rigid_contact_max(self) -> int:

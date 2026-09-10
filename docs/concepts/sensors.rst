@@ -159,17 +159,22 @@ Solver Outputs
 ``SensorIMU`` requires ``SolverOutputFlags.BODY_QDD`` and ``SensorContact``
 requires ``SolverOutputFlags.CONTACT_F``. Their ``solver_output_flags``
 properties provide these requirements without mutating the model. Union the
-sets when both sensors are present and bind contact-indexed output to the
-contacts buffer:
+sets when both sensors are present. Construct the collision pipeline before
+requesting contact-indexed outputs, then pass its contacts buffer to the solver
+step and sensor. The first step binds the output container to that storage:
 
 .. code-block:: python
 
    flags = imu.solver_output_flags | contact_sensor.solver_output_flags
-   outputs = solver.outputs(flags, contacts=contacts)
+   outputs = solver.outputs(flags)
 
    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
    imu.update(state_out, outputs=outputs)
    contact_sensor.update(state_out, contacts, outputs=outputs)
+
+Contact outputs are allocated from the model's resolved rigid and soft contact
+capacities, not the current number of contacts. See :ref:`solver_outputs` for
+pipeline setup with native collision backends and graph capture.
 
 Performance Considerations
 --------------------------

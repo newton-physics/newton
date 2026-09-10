@@ -99,11 +99,13 @@ def run_conveyor(
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
+    collision_pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
+    )
     contacts = collision_pipeline.contacts()
     solver_outputs = None
     if solver_name != "vbd":
-        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -220,11 +222,13 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    collision_pipeline = newton.CollisionPipeline(model)
+    collision_pipeline = newton.CollisionPipeline(
+        model, rigid_contact_max=solver.get_max_contact_count() if solver_name == "mujoco" else None
+    )
     contacts = collision_pipeline.contacts()
     solver_outputs = None
     if solver_name != "vbd":
-        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)

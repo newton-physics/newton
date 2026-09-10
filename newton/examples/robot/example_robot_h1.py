@@ -84,11 +84,16 @@ class Example:
 
         self.use_mujoco_contacts = use_mujoco_contacts
         if use_mujoco_contacts:
-            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
-        else:
-            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count()
+            )
+            self.contacts = self.collision_pipeline.contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((3.0, 3.0, 0.0))

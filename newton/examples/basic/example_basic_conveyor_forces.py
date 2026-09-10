@@ -829,13 +829,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit")
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase="explicit",
+            rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
+        )
         self.contacts = self.collision_pipeline.contacts()
         self.solver_outputs = None
         if self.solver_type != "vbd":
-            self.solver_outputs = self.solver.outputs(
-                {newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts
-            )
+            self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 

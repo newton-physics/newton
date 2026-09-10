@@ -1015,6 +1015,13 @@ For convex primitive pairs, multiple contact points are generated for stable sta
 resting contacts. The collision pipeline estimates buffer sizes based on the model; you
 can override this value with ``rigid_contact_max`` when instantiating the pipeline.
 
+Pipeline construction publishes the resolved rigid and soft capacities as
+``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
+setup these are ``None``; zero is a valid empty capacity. Contact-indexed
+:ref:`solver_outputs` use these capacities for eager allocation and freeze them
+once allocated. Construct the pipeline before calling ``solver.outputs()`` for
+contact diagnostics; the live contact counts are not needed during allocation.
+
 .. _Mesh Collisions:
 
 Mesh Collision Handling

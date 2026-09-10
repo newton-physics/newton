@@ -692,7 +692,7 @@ SPDX-License-Identifier: CC-BY-4.0
           <div class="diagram-scroll">
           <svg viewBox="0 0 920 560" role="img" aria-labelledby="runtime-title runtime-desc">
             <title id="runtime-title">Solver Outputs allocation and runtime data flow</title>
-            <desc id="runtime-desc">Consumers union output flags, the solver validates and allocates a concrete output container, then solver step fills it for sensors and viewers.</desc>
+            <desc id="runtime-desc">CollisionPipeline publishes capacities on Model. Consumers union output flags, the solver eagerly allocates a concrete output container from those capacities, then solver step binds contact storage and fills outputs for sensors and viewers.</desc>
             <defs>
               <marker id="runtime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
@@ -723,6 +723,8 @@ SPDX-License-Identifier: CC-BY-4.0
             <path d="M 496 99 H 565" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
             <text x="530" y="88" text-anchor="middle" class="svg-small">REQUEST</text>
 
+            <text x="28" y="171" class="svg-sub">CollisionPipeline → Model rigid/soft capacities</text>
+            <path d="M 415 165 H 727 V 151" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
             <line x1="28" y1="188" x2="878" y2="188" class="svg-edge-dashed"></line>
             <text x="28" y="222" class="svg-small">RUNTIME — PRODUCE AND CONSUME EVERY STEP</text>
 
@@ -734,7 +736,7 @@ SPDX-License-Identifier: CC-BY-4.0
             <rect x="28" y="382" width="185" height="88" rx="12" class="svg-node-orange"></rect>
             <text x="120" y="412" text-anchor="middle" class="svg-label">Contacts</text>
             <text x="120" y="434" text-anchor="middle" class="svg-sub">geometry · ordering</text>
-            <text x="120" y="452" text-anchor="middle" class="svg-sub">capacity binding</text>
+            <text x="120" y="452" text-anchor="middle" class="svg-sub">bound on first step</text>
 
             <rect x="309" y="296" width="250" height="126" rx="14" class="svg-node-accent"></rect>
             <text x="434" y="332" text-anchor="middle" class="svg-label">solver.step(..., outputs=)</text>
@@ -866,7 +868,7 @@ SPDX-License-Identifier: CC-BY-4.0
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Contact outputs bind to contact storage</h3>
-            <p><code>CONTACT_F</code> requires the exact <code>Contacts</code> instance used for sizing and stepping, preserving capacity and index alignment for sensors and viewers.</p>
+            <p>The pipeline publishes rigid and soft capacities on <code>Model</code>. Allocation needs no <code>Contacts</code> argument; the first step validates and binds the exact contact storage used by subsequent steps and consumers.</p>
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Unrequested fields stay <code>None</code></h3>
@@ -874,7 +876,7 @@ SPDX-License-Identifier: CC-BY-4.0
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Allocation is reusable and graph-friendly</h3>
-            <p>Allocate before stepping and reuse the same arrays. There is no per-step Python allocation, which keeps the design compatible with CUDA graph capture.</p>
+            <p>Allocate before graph capture and reuse the same arrays, including inside conditional graph nodes. Solver outputs need no deferred allocation; other solver scratch buffers may still need warmup.</p>
           </article>
         </div>
 
@@ -901,7 +903,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
         <ol class="workflow">
           <li><strong>Collect flags</strong><span>Union application needs with every sensor's <code>solver_output_flags</code>.</span></li>
-          <li><strong>Allocate once</strong><span>Call <code>solver.outputs(flags)</code>; pass <code>contacts=</code> when needed.</span></li>
+          <li><strong>Allocate once</strong><span>Construct <code>CollisionPipeline(model)</code> for contact requests, then call <code>solver.outputs(flags)</code>.</span></li>
           <li><strong>Populate on step</strong><span>Pass the same container to <code>solver.step(..., outputs=outputs)</code>.</span></li>
           <li><strong>Consume results</strong><span>Read arrays directly or pass the container to sensors and viewers.</span></li>
         </ol>
@@ -924,20 +926,33 @@ for _ in range(num_steps):
     parent_wrench = outputs.body_parent_f
     state_in, state_out = state_out, state_in</code></pre>
 
-        <div class="code-heading"><h3>Contact-indexed outputs</h3><span>Bind allocation to the contact container</span></div>
+        <div class="code-heading"><h3>Contact-indexed outputs</h3><span>Eager allocation from model capacities</span></div>
         <pre><code>pipeline = newton.CollisionPipeline(model)
+solver = newton.solvers.SolverXPBD(model)
+outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
 contacts = pipeline.contacts()
-
-outputs = solver.outputs(
-    {SolverOutputFlags.CONTACT_F},
-    contacts=contacts,
-)
 
 pipeline.collide(state_in, contacts)
 solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
 
 # Same ordering and capacity as `contacts`.
 contact_force = outputs.contact_f</code></pre>
+        <p>Before collision setup, model capacities are <code>None</code>; zero is a valid empty capacity.
+          Requesting contact outputs too early raises an error. When allocation returns, every requested field is an array
+          (possibly empty), while unrequested fields remain <code>None</code>. Capacities are frozen by the first
+          contact-indexed output allocation. No live contact-count readback or pending-allocation state is needed.</p>
+        <div class="code-heading"><h3>Native collision backends</h3><span>Match the backend's export budget</span></div>
+        <pre><code>solver = newton.solvers.SolverMuJoCo(model)
+pipeline = newton.CollisionPipeline(
+    model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+)
+outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
+contacts = pipeline.contacts()
+
+# Native MuJoCo fills contact geometry and forces; no pipeline.collide() here.
+solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)</code></pre>
+        <p>Construct native Kamino before the pipeline to seed its rigid-contact budget. Both backends reject a pipeline
+          that is too small for contact output export. Reconfigure capacities before output allocation, never during a step.</p>
       </section>
 
       <section id="extension">
@@ -1021,6 +1036,11 @@ outputs = solver.outputs(requested)
 solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
 
 temperature = outputs.body_temperature</code></pre>
+        <p>For a custom <em>contact-indexed</em> field, also extend <code>CONTACT_OUTPUT_FLAGS</code> with its flag.
+          The base solver then requires a completed pipeline, freezes its capacities, and binds contacts on the first step
+          even when <code>CONTACT_F</code> is not requested. Allocate the custom array in <code>_allocate_outputs()</code>
+          using <code>model.rigid_contact_max</code>, <code>model.soft_contact_max</code>, or their sum as appropriate.
+          Body- and solver-sized fields need no contact dependency.</p>
       </section>
 
       <section id="sensors">
@@ -1057,7 +1077,7 @@ temperature = outputs.body_temperature</code></pre>
             <rect x="340" y="151" width="240" height="108" rx="13" class="svg-node-accent"></rect>
             <text x="460" y="184" text-anchor="middle" class="svg-label">Union + allocation</text>
             <text x="460" y="208" text-anchor="middle" class="svg-sub">flags = imu.flags | contact.flags</text>
-            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.outputs(flags, contacts=...)</text>
+            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.outputs(flags)</text>
             <text x="460" y="248" text-anchor="middle" class="svg-sub">allocate one reusable container</text>
 
             <rect x="685" y="151" width="205" height="108" rx="13" class="svg-node-purple"></rect>
@@ -1095,7 +1115,7 @@ pipeline = newton.CollisionPipeline(model)
 contacts = pipeline.contacts()
 
 flags = imu.solver_output_flags | contact_sensor.solver_output_flags
-outputs = solver.outputs(flags, contacts=contacts)
+outputs = solver.outputs(flags)
 
 for _ in range(num_steps):
     pipeline.collide(state_in, contacts)
@@ -1126,7 +1146,7 @@ for _ in range(num_steps):
               <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Outputs.qfrc_actuator</code></td><td>Solver-specific diagnostics stay on the solver-specific container.</td></tr>
               <tr><td><code>Contacts.force</code></td><td><code>outputs.contact_f</code></td><td>Contact geometry and computed force have separate ownership.</td></tr>
               <tr><td><code>model.request_state_attributes(...)</code></td><td><code>solver.outputs({...})</code></td><td>Requests target the producer rather than the model.</td></tr>
-              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.outputs({...}, contacts=contacts)</code></td><td>Contact-indexed outputs are bound explicitly to their storage.</td></tr>
+              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.outputs({...})</code></td><td>Contact-indexed outputs are bound explicitly to their storage.</td></tr>
               <tr><td><code>solver.update_contacts(...)</code></td><td><code>solver.step(..., outputs=outputs)</code></td><td>Outputs are produced with the step, avoiding a separate update protocol.</td></tr>
             </tbody>
           </table>
@@ -1146,12 +1166,12 @@ parent_wrench = state_out.body_parent_f
 contact_force = contacts.force</code></pre>
 
         <div class="code-heading"><h3>After</h3><span>Solver-driven allocation</span></div>
-        <pre><code>outputs = solver.outputs(
+        <pre><code># CollisionPipeline has already published compatible model capacities.
+outputs = solver.outputs(
     {
         SolverOutputFlags.BODY_PARENT_F,
         SolverOutputFlags.CONTACT_F,
-    },
-    contacts=contacts,
+    }
 )
 
 solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)

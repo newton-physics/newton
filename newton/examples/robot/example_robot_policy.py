@@ -292,8 +292,11 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
-        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True

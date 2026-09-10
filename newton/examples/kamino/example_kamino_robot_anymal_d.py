@@ -76,7 +76,7 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
-        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -127,7 +127,7 @@ class Example:
                 )
             else:
                 self.solver.step(
-                    self.state_0, self.state_1, self.control, None, self.sim_dt, outputs=self.solver_outputs
+                    self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.solver_outputs
                 )
             self.state_0, self.state_1 = self.state_1, self.state_0
 

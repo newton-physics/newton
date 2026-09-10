@@ -21,7 +21,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
@@ -71,8 +70,11 @@ class Example:
         )
 
         # used for storing contact info required by contact sensor
-        self.contacts = Contacts(self.solver.get_max_contact_count(), 0)
-        self.solver_outputs = self.solver.outputs(self.plate_contact_sensor.solver_output_flags, contacts=self.contacts)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_outputs = self.solver.outputs(self.plate_contact_sensor.solver_output_flags)
 
         self.viewer.set_model(self.model)
 

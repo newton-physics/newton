@@ -72,12 +72,15 @@ class Example:
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model)
             self.use_mujoco_contacts = True
-            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

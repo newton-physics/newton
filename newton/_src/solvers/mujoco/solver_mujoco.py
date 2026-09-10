@@ -475,6 +475,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _allocate_outputs(self, outputs: Outputs, *, requires_grad: bool) -> None:
         """Allocate standard and MuJoCo-specific output arrays."""
+        if SolverOutputFlags.CONTACT_F in outputs and self.mjw_data.naconmax > self.model.rigid_contact_max:
+            raise ValueError(
+                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
+                f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
+                "rigid_contact_max=solver.get_max_contact_count() before requesting contact outputs."
+            )
         super()._allocate_outputs(outputs, requires_grad=requires_grad)
         if self.OutputFlags.QFRC_ACTUATOR in outputs:
             outputs.qfrc_actuator = wp.zeros(

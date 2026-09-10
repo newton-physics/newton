@@ -480,6 +480,24 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
+    def test_eager_contact_outputs_bind_during_step(self):
+        """Allocate from published native capacity and populate bound contacts."""
+        model = self._make_three_world_model()
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+        flags = {newton.solvers.SolverOutputFlags.CONTACT_F}
+        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+            solver.outputs(flags)
+        pipeline = newton.CollisionPipeline(model)
+        outputs = solver.outputs(flags)
+        self.assertEqual(outputs.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
+        self.assertIsNone(outputs.contacts)
+        contacts = pipeline.contacts()
+        pointer = outputs.contact_f.ptr
+        solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, outputs=outputs)
+        self.assertIs(outputs.contacts, contacts)
+        self.assertEqual(outputs.contact_f.ptr, pointer)
+        self.assertTrue(np.all(np.isfinite(outputs.contact_f.numpy())))
+
     def test_moreau_detects_midpoint_contact(self):
         """Verify Moreau-Jean detects contacts created at the midpoint."""
         # Start the sphere surface 0.3 m above the zero-gap ground plane.

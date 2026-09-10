@@ -1272,7 +1272,7 @@ class ViewerBase(ABC):
 
         contact_f = outputs.contact_f if outputs is not None else contacts.force
         if outputs is not None and outputs.contacts is not contacts:
-            raise ValueError("Contact solver outputs must be used with the Contacts instance that sized them.")
+            raise ValueError("Contact solver outputs must be used with the Contacts instance passed to solver.step().")
 
         if not self.show_contacts or self._layer_force_hidden():
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)

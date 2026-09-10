@@ -107,9 +107,12 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
         output_flags = self.imu.solver_output_flags | {newton.solvers.SolverOutputFlags.CONTACT_F}
-        self.solver_outputs = self.solver.outputs(output_flags, contacts=self.contacts)
+        self.solver_outputs = self.solver.outputs(output_flags)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)

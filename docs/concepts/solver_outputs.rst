@@ -40,22 +40,64 @@ members in a set:
    parent_wrench = outputs.body_parent_f
 
 Allocate an output container once and reuse it across steps. The container is
-owned by the solver instance that allocated it. A contact-indexed request must
-also be bound to the :class:`~newton.Contacts` storage whose capacity and
-ordering it uses:
+owned by the solver instance that allocated it. For contact-indexed outputs,
+construct a :class:`~newton.CollisionPipeline` first. It publishes the resolved
+rigid and soft contact capacities on the model; the solver allocates from those
+capacities without needing a :class:`~newton.Contacts` instance:
 
 .. code-block:: python
 
    pipeline = newton.CollisionPipeline(model)
+   solver = newton.solvers.SolverXPBD(model)
+   outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
    contacts = pipeline.contacts()
-   outputs = solver.outputs(
-       {SolverOutputFlags.CONTACT_F},
-       contacts=contacts,
-   )
 
    pipeline.collide(state_in, contacts)
    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
    contact_force = outputs.contact_f
+
+All requested arrays are allocated when ``outputs()`` returns. An unrequested
+field is ``None``; a requested field with zero capacity is an empty array.
+``Model.rigid_contact_max`` and ``Model.soft_contact_max`` use ``None`` for
+uninitialized capacities and nonnegative integers for resolved capacities.
+Requesting contact outputs before pipeline construction raises an error.
+Body-only outputs do not require a pipeline.
+
+The live contact counts do not determine allocation sizes. ``contact_f`` has
+``model.rigid_contact_max + model.soft_contact_max`` entries, with rigid slots
+followed by soft slots. Kernels use the contact counts to process valid entries.
+Allocation freezes the model's contact capacities: later changes, including a
+replacement pipeline with different capacities, are rejected. Configure or
+rebuild pipelines before requesting contact-indexed outputs.
+
+The first ``solver.step(..., contacts, ..., outputs=outputs)`` binds the output
+container to that contact storage after validating device and both capacities.
+Subsequent steps and sensors must use that same storage. Allocate outputs and
+contacts before graph capture; neither ordinary nor conditional graph execution
+needs deferred output allocation. Other solver scratch buffers may still need
+their usual warmup.
+
+Native collision backends
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With MuJoCo's internal collision detection, construct the solver first and size
+the pipeline for the backend's export capacity:
+
+.. code-block:: python
+
+   solver = newton.solvers.SolverMuJoCo(model)
+   pipeline = newton.CollisionPipeline(
+       model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+   )
+   outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
+   contacts = pipeline.contacts()
+   solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+There is no ``pipeline.collide()`` call in this mode: the solver fills contact
+geometry and forces. Native Kamino similarly seeds the model's rigid capacity
+when constructed before the pipeline. Both backends reject insufficient
+pipeline capacity during contact-output allocation instead of resizing arrays
+inside a step.
 
 A solver advertises available entries through
 :attr:`~newton.solvers.SolverBase.supported_output_flags` and rejects an
@@ -116,6 +158,36 @@ Output enums must derive directly from :class:`enum.Enum`, not
 :class:`enum.IntEnum` or a string-mixin enum. Integer and string enum members
 can compare equal across enum classes and silently collide in a set.
 
+Override ``_allocate_outputs()`` and call ``super()`` to allocate inherited
+arrays before custom arrays. Custom contact-indexed flags also belong in
+``CONTACT_OUTPUT_FLAGS`` so the base solver requires pipeline initialization,
+freezes capacities, and binds contact storage even when ``CONTACT_F`` itself is
+not requested:
+
+.. code-block:: python
+
+   class CustomSolver(newton.solvers.SolverBase):
+       OUTPUTS_TYPE = CustomOutputs
+       SUPPORTED_OUTPUT_FLAGS = frozenset({CustomOutputFlags.CONTACT_PRESSURE})
+       CONTACT_OUTPUT_FLAGS = (
+           newton.solvers.SolverBase.CONTACT_OUTPUT_FLAGS
+           | {CustomOutputFlags.CONTACT_PRESSURE}
+       )
+
+       def _allocate_outputs(self, outputs, *, requires_grad):
+           super()._allocate_outputs(outputs, requires_grad=requires_grad)
+           if CustomOutputFlags.CONTACT_PRESSURE in outputs:
+               outputs.contact_pressure = wp.zeros(
+                   self.model.rigid_contact_max,
+                   dtype=float,
+                   device=self.model.device,
+                   requires_grad=requires_grad,
+               )
+
+Here ``CustomOutputs`` derives from ``SolverOutputs`` and initializes
+``contact_pressure`` to ``None``. Custom fields sized by bodies, particles, or
+solver-owned dimensions do not need ``CONTACT_OUTPUT_FLAGS``.
+
 Sensors
 -------
 
@@ -129,7 +201,8 @@ container, and pass it through the step:
    contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
 
    flags = imu.solver_output_flags | contact_sensor.solver_output_flags
-   outputs = solver.outputs(flags, contacts=contacts)
+   # Construct a pipeline with a compatible capacity before requesting contacts.
+   outputs = solver.outputs(flags)
 
    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
    imu.update(state_out, outputs=outputs)
@@ -171,7 +244,7 @@ The following compatibility paths remain available for a deprecation period:
      - ``solver.outputs({...})``
    * - ``Model.request_contact_attributes()`` and
        ``ModelBuilder.request_contact_attributes()``
-     - ``solver.outputs({...}, contacts=contacts)``
+     - ``solver.outputs({...})``
    * - ``solver.update_contacts()``
      - Pass contact outputs to ``solver.step(..., outputs=outputs)``
 

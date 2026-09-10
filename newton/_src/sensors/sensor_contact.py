@@ -345,9 +345,11 @@ class SensorContact:
             sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
-            collision_pipeline = newton.CollisionPipeline(model)
+            collision_pipeline = newton.CollisionPipeline(
+                model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+            )
             contacts = collision_pipeline.contacts()
-            outputs = solver.outputs(sensor.solver_output_flags, contacts=contacts)
+            outputs = solver.outputs(sensor.solver_output_flags)
 
             solver.step(state, state, None, contacts, dt=1.0 / 60.0, outputs=outputs)
             sensor.update(state, contacts, outputs=outputs)
@@ -729,7 +731,7 @@ class SensorContact:
                 "SolverOutputFlags.CONTACT_F and pass the SolverOutputs to update()."
             )
         if outputs is not None and outputs.contacts is not contacts:
-            raise ValueError("Contact solver outputs must be used with the Contacts instance that sized them.")
+            raise ValueError("Contact solver outputs must be used with the Contacts instance passed to solver.step().")
         if contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
         self._eval_forces(state, contacts, contact_f)

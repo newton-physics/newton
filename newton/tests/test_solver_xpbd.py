@@ -916,7 +916,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1066,7 +1066,7 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1102,7 +1102,7 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
+    outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     state_in.clear_forces()

@@ -808,13 +808,22 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._contacts_kamino = self._collision_detector_kamino.contacts
             # Keep Newton's externally allocated contact buffer in sync with Kamino.
             # The contacts container is `None` if no contacts are possible.
-            model.rigid_contact_max = (
+            native_contact_max = (
                 self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
             )
+            if not model._contact_capacity_initialized:
+                model.rigid_contact_max = native_contact_max
+            elif native_contact_max > model.rigid_contact_max:
+                raise ValueError(
+                    f"Kamino contact capacity ({native_contact_max}) exceeds CollisionPipeline capacity "
+                    f"({model.rigid_contact_max}). Configure a compatible pipeline or construct it after SolverKamino."
+                )
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
-            if self.model.rigid_contact_max == 0:
+            if self.model.rigid_contact_max is None or (
+                self.model.rigid_contact_max == 0 and not self.model._contact_capacity_initialized
+            ):
                 estimated_contacts = _estimate_rigid_contact_max(model)
                 # Write back to the model to ensure the CollisionPipeline capacity is consistent.
                 model.rigid_contact_max = ((estimated_contacts + world_count - 1) // world_count) * world_count
@@ -975,6 +984,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             config.base_pose = config_cache
 
+    def _allocate_outputs(self, outputs: SolverOutputs, *, requires_grad: bool) -> None:
+        """Check the native detector budget before allocating contact outputs."""
+        if SolverOutputFlags.CONTACT_F in outputs and self._collision_detector_kamino is not None:
+            native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+            if native_max > self.model.rigid_contact_max:
+                raise ValueError(
+                    f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
+                    f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact outputs."
+                )
+        super()._allocate_outputs(outputs, requires_grad=requires_grad)
+
     @override
     def step(
         self,
@@ -991,7 +1011,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Contact source is selected when the solver is constructed. When
         :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
-        generates contacts on every step and ``contacts`` is ignored. Otherwise, non-``None``
+        generates contacts on every step and ``contacts`` is not used as input. Otherwise, non-``None``
         contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
         converted to Kamino's internal format and used directly.
 
@@ -1001,8 +1021,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             control: The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts: The contact information from Newton's collision pipeline. Ignored when
-                :attr:`Config.use_collision_detector` is enabled.
+            contacts: The contact information from Newton's collision pipeline. With
+                :attr:`Config.use_collision_detector` enabled, this is instead the export
+                destination for native contact geometry when contact outputs are requested.
+                Required when passing contact-indexed ``outputs``.
             dt: The time step (typically in seconds).
             outputs: Optional solver output arrays allocated by :meth:`outputs`.
         """
