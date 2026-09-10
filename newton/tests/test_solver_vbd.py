@@ -6446,6 +6446,7 @@ def _run_sphere_drop(device, enable_dat, drop_speed=8.0, frames=60):
     solver = newton.solvers.SolverVBD(
         model,
         iterations=4,
+        rigid_compliant_alm=True,
         rigid_soft_enable_dat=enable_dat,
         rigid_body_particle_contact_buffer_size=1024,
         collision_pipeline=pipeline,
@@ -6492,7 +6493,7 @@ def test_rigid_dat_requires_owned_pipeline(test, device):
     must be snapshotted at the exact detection instants the solver drives."""
     model, _body = _build_sphere_drop_on_cloth(device)
     with test.assertRaises(ValueError):
-        newton.solvers.SolverVBD(model, rigid_soft_enable_dat=True)
+        newton.solvers.SolverVBD(model, rigid_compliant_alm=True, rigid_soft_enable_dat=True)
 
 
 def test_rigid_dat_requires_positive_rigid_soft_query_radius(test, device):
@@ -6506,7 +6507,9 @@ def test_rigid_dat_requires_positive_rigid_soft_query_radius(test, device):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.0)
     with test.assertRaisesRegex(ValueError, "positive minimum rigid-soft query radius"):
-        newton.solvers.SolverVBD(model, rigid_soft_enable_dat=True, collision_pipeline=pipeline)
+        newton.solvers.SolverVBD(
+            model, rigid_compliant_alm=True, rigid_soft_enable_dat=True, collision_pipeline=pipeline
+        )
 
 
 def test_rigid_dat_motion_bound_uses_minimum_query_radius(test, device):
@@ -6538,6 +6541,7 @@ def test_rigid_dat_motion_bound_uses_minimum_query_radius(test, device):
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=soft_gap)
     solver = newton.solvers.SolverVBD(
         model,
+        rigid_compliant_alm=True,
         rigid_soft_enable_dat=True,
         dat_conservative_bound_relaxation=relaxation,
         collision_pipeline=pipeline,
@@ -6605,7 +6609,9 @@ def test_rigid_dat_rejects_missing_body_pose(test, device):
     builder.color()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01)
-    solver = newton.solvers.SolverVBD(model, rigid_soft_enable_dat=True, collision_pipeline=pipeline)
+    solver = newton.solvers.SolverVBD(
+        model, rigid_compliant_alm=True, rigid_soft_enable_dat=True, collision_pipeline=pipeline
+    )
 
     state = model.state()
     state.body_q = None
@@ -6688,7 +6694,7 @@ def _run_free_flight_distance(test, device, frequency_type, frequency, speed=6.0
     """Measure free rigid motion under the rigid-soft DAT budget for a schedule."""
     _Frequency = newton.solvers.SolverBase.CollisionFrequencyType
     radius = 0.2
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     builder.add_particle(pos=wp.vec3(100.0, 0.0, 0.0), vel=wp.vec3(0.0), mass=0.0, radius=0.0)
     inertia_val = 0.4 * 5.0 * radius * radius
     inertia = wp.mat33(inertia_val, 0.0, 0.0, 0.0, inertia_val, 0.0, 0.0, 0.0, inertia_val)
@@ -6710,6 +6716,7 @@ def _run_free_flight_distance(test, device, frequency_type, frequency, speed=6.0
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
+        rigid_compliant_alm=True,
         rigid_soft_enable_dat=True,
         collision_pipeline=pipeline,
         collision_frequency={newton.solvers.SolverBase.CollisionSlot.RIGID: frequency},
