@@ -179,8 +179,8 @@ class Contacts:
         particle_count: int = 0,
         tri_count: int = 0,
         edge_count: int = 0,
-        soft_self_contact_vertex_buffer_pre_alloc: int = 16,
-        soft_self_contact_edge_buffer_pre_alloc: int = 32,
+        soft_self_contact_vertex_buffer_pre_alloc: int = 8,
+        soft_self_contact_edge_buffer_pre_alloc: int = 16,
         soft_self_contact_record_triangle_vertices: bool = False,
     ):
         """
