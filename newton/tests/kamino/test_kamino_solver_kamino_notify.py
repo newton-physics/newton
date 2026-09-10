@@ -83,8 +83,8 @@ def _build_revolute(
         limit_lower=-1.0 if limited else None,
         limit_upper=1.0 if limited else None,
         armature=1.0 if dynamic else 0.0,
-        friction=friction,
         damping=0.0,
+        friction=friction,
         effort_limit=effort_limit,
         target_ke=target_ke,
         target_kd=target_kd,
@@ -215,6 +215,74 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         )
         self.assertEqual(warning.call_count, 2)
         _assert_model_arrays_unchanged(model, snapshot)
+
+    def test_external_contacts_default_to_newton_capacity(self):
+        """Match the automatic Newton contact capacity for external collisions."""
+        model = _build_revolute()
+        self.assertEqual(model.rigid_contact_max, 0)
+
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+        pipeline = newton.CollisionPipeline(model)
+
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
+        self.assertEqual(model.rigid_contact_max, pipeline.rigid_contact_max)
+
+    def test_lox_model_update_without_joint_friction(self):
+        """Validate LOX model values when the friction array is absent."""
+        model = _build_revolute(friction=0.0)
+        solver = SolverKamino(model, config=SolverKamino.Config(dynamics_solver="lox"))
+        model.joint_friction = None
+        solver._solver_kamino.solver_fd.validate_model_changed()
+        self.assertEqual(solver._model_kamino.size.sum_of_num_friction_joint_cts, 0)
+        model.joint_effort_limit.fill_(-1.0)
+        with self.assertRaisesRegex(ValueError, "Joint effort limits"):
+            solver._solver_kamino.solver_fd.validate_model_changed()
+
+    def test_lox_joint_friction_magnitude_updates_preserve_topology(self):
+        """Allow friction magnitude edits without changing allocated scalar rows."""
+        model = _build_revolute(friction=1.0)
+        solver = SolverKamino(model, config=SolverKamino.Config(dynamics_solver="lox"))
+
+        model.joint_friction.fill_(2.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+        model.joint_friction.zero_()
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+        zero_model = _build_revolute(friction=0.0)
+        zero_solver = SolverKamino(
+            zero_model,
+            config=SolverKamino.Config(dynamics_solver="lox"),
+        )
+        zero_model.joint_friction.fill_(1.0)
+        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
+            zero_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_lox_joint_effort_limit_updates_preserve_topology(self):
+        """Allow finite effort edits without changing bounded-row topology."""
+        config = SolverKamino.Config(dynamics_solver="lox")
+        finite_model = _build_revolute(
+            dynamic=True,
+            effort_limit=5.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        finite_solver = SolverKamino(finite_model, config=config)
+
+        finite_model.joint_effort_limit.fill_(10.0)
+        finite_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        finite_model.joint_effort_limit.fill_(float("inf"))
+        with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
+            finite_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+        unlimited_model = _build_revolute(
+            dynamic=True,
+            effort_limit=float("inf"),
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        unlimited_solver = SolverKamino(unlimited_model, config=SolverKamino.Config(dynamics_solver="lox"))
+        unlimited_model.joint_effort_limit.fill_(5.0)
+        with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
+            unlimited_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_aliased_properties_reference_newton(self):
         """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
@@ -755,12 +823,14 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_enabling_joint_friction_raises(self):
         """Reject enabling friction when no bounded rows were allocated."""
-        model = _build_revolute(friction=0.0)
-        solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
-        model.joint_friction.assign([1.0])
+        for backend in ("padmm", "lox"):
+            with self.subTest(backend=backend):
+                model = _build_revolute(friction=0.0)
+                solver = SolverKamino(model, SolverKamino.Config(dynamics_solver=backend))
+                model.joint_friction.assign([1.0])
 
-        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_enabling_friction_on_unallocated_axis_raises(self):
         """Reject friction enabled on an axis without a preallocated row."""

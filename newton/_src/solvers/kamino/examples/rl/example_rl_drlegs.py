@@ -59,6 +59,9 @@ wp.set_module_options({"enable_backward": False})
 # Walk task config
 # ---------------------------------------------------------------------------
 
+# The available policy predates the later DR Legs design update.
+_DR_LEGS_POLICY_ASSET_REF = "261cd1f429619d8ef4f546bd788ab9dea906b5e1"
+
 _DEFAULTS = {
     "action_scale": 0.4,
     "contact_duration": 0.3,
@@ -111,6 +114,7 @@ class Example:
         policy=None,
         headless: bool = False,
         max_steps: int = 10000,
+        dynamics_solver: str = "padmm",
     ):
         self.cfg = config
 
@@ -122,8 +126,13 @@ class Example:
         num_worlds = 1
 
         # USD model path
-        asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
+        asset_path = newton.utils.download_asset("disneyresearch", ref=_DR_LEGS_POLICY_ASSET_REF)
         usd_model_path = str(asset_path / config["usd_model"])
+
+        settings = RigidBodySim.default_settings(self.sim_dt)
+        settings.solver.dynamics_solver = dynamics_solver
+        if dynamics_solver == "lox":
+            settings.solver.integrator = "euler"
 
         # Create generic articulated body simulator
         self.sim_wrapper = RigidBodySim(
@@ -133,6 +142,7 @@ class Example:
             device=device,
             headless=headless,
             body_pose_offset=(0.0, 0.0, config["body_pose_offset_z"], 0.0, 0.0, 0.0, 1.0),
+            settings=settings,
             use_cuda_graph=True,
             render_config=ViewerConfig(
                 diffuse_scale=1.0,
@@ -482,6 +492,12 @@ if __name__ == "__main__":
         "--policy", type=str, default=None, help="Path to an rsl_rl checkpoint .pt file (overrides asset default)"
     )
     parser.add_argument(
+        "--dynamics-solver",
+        choices=("padmm", "lox"),
+        default="padmm",
+        help="Kamino rigid-body dynamics backend.",
+    )
+    parser.add_argument(
         "--mode",
         choices=["sync", "async"],
         default="sync",
@@ -510,7 +526,7 @@ if __name__ == "__main__":
     torch_device = "cuda" if device.is_cuda else "cpu"
 
     # Load config from YAML (with hardcoded fallback defaults)
-    asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
+    asset_path = newton.utils.download_asset("disneyresearch", ref=_DR_LEGS_POLICY_ASSET_REF)
     config = _load_drlegs_config(asset_path)
 
     # CLI overrides
@@ -538,6 +554,7 @@ if __name__ == "__main__":
         policy=policy,
         headless=args.headless,
         max_steps=args.num_steps,
+        dynamics_solver=args.dynamics_solver,
     )
 
     try:

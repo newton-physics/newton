@@ -9,11 +9,11 @@ from .core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
 )
+from .factorize.hybrid_llt_solver import HybridLLTBlockedSolver
 
-# Import the RCM-reordered semi-sparse blocked LLT solver here (rather than
-# from .linear) to avoid a circular import: .factorize.llt_blocked_rcm_solver
-# imports DirectSolver from .linear, so .linear cannot import it back.
-# At this point .linear has been fully resolved, so the downstream import is safe.
+# Import the RCM-reordered and hybrid blocked LLT solvers here (rather than
+# from .linear) to avoid a circular import: both implementations import the
+# dense solver classes from .linear.
 from .factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .linear import (
     ConjugateGradientSolver,
@@ -58,6 +58,7 @@ __all__ = [
     "DenseRectangularMultiLinearInfo",
     "DenseSquareMultiLinearInfo",
     "DirectSolver",
+    "HybridLLTBlockedSolver",
     "IterativeSolver",
     "LLTBlockedRCMSolver",
     "LLTBlockedSolver",

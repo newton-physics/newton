@@ -28,7 +28,7 @@ and configuration details. Runnable workflows are available in the
 Choosing a dynamics solver
 --------------------------
 
-Kamino provides two forward-dynamics backends:
+Kamino provides three forward-dynamics backends:
 
 * ``"padmm"`` (default): proximal ADMM, dense Jacobians/dynamics, and the Euler
   integrator. It is the slower, more robust option because it solves equality
@@ -40,6 +40,10 @@ Kamino provides two forward-dynamics backends:
   inequality constraints. As a rule of thumb, DVI solves inequality constraints
   less accurately than PADMM, particularly as the number of active inequalities
   grows. Dual preconditioning is not supported.
+* ``"lox"`` (opt-in): a primal splitting method with sparse Jacobians and
+  dense per-island dynamics. It performs one frozen-linearization solve at the
+  configuration supplied by the selected Kamino integrator. Unlike PADMM and
+  DVI, it supports singular-inertia frames. Rod joints are not supported.
 
 Select the backend when constructing the configuration so dependent defaults
 initialize consistently:
@@ -95,8 +99,14 @@ residual definitions are backend-specific:
   from the dual cone and the bilateral velocity violation [m/s or rad/s].
   ``r_c = max |lambda_k dot v_k|`` is the maximum inequality complementarity
   violation [J].
+* **LOX:** ``converged`` and ``iterations`` report LOX's native splitting
+  termination state. With ``compute_solution_metrics=True``, ``r_p``, ``r_d``,
+  and ``r_c`` are the NCP primal, dual, and complementarity residuals evaluated
+  from the final constraint reactions and velocity. Without solution metrics,
+  these three fields are NaN. LOX additionally reports ``accepted``, ``failed``,
+  and ``iteration_limit``.
 
-These are absolute maxima: neither backend divides them by a reference norm,
+These are absolute maxima: no backend divides them by a reference norm,
 constraint count, or tolerance. Additional fields are not portable between
 backends.
 

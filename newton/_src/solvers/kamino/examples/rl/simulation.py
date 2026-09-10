@@ -154,6 +154,8 @@ class SimulatorFromNewton:
             self._newton_state,
             self._newton_contacts,
             self._contacts,
+            cull_speculative_contacts=self._config.solver.dynamics_solver != "lox",
+            skip_fully_prescribed_contacts=self._config.solver.dynamics_solver == "lox",
         )
 
     def step(self):
@@ -164,6 +166,7 @@ class SimulatorFromNewton:
         only for rendering via :meth:`RigidBodySim.render`.
         """
         self._state_p.copy_from(self._state_n)
+        dt = self._config.dt if isinstance(self._config.dt, float) else None
 
         if self._use_newton_collisions:
             self._run_newton_collision(self._state_p)
@@ -173,6 +176,7 @@ class SimulatorFromNewton:
                 control=self._control,
                 contacts=self._contacts,
                 detector=None,
+                dt=dt,
             )
         else:
             self._solver.step(
@@ -181,6 +185,7 @@ class SimulatorFromNewton:
                 control=self._control,
                 contacts=self._contacts,
                 detector=self._collision_detector,
+                dt=dt,
             )
 
     def reset(self, **kwargs):

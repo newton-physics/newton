@@ -111,6 +111,9 @@ class StateKamino:
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
+    lambda_w_i: wp.array[wp.spatial_vectorf] | None = None
+    """Body consensus impulses [N·s, N·m·s], shape ``(num_bodies,)``."""
+
     lambda_kin_j: wp.array[wp.float32] | None = None
     """
     Array of generalized joint kinematic constraint forces [N or N·m].
@@ -174,6 +177,7 @@ class StateKamino:
         wp.copy(self.q_j, other.q_j)
         wp.copy(self.q_j_p, other.q_j_p)
         wp.copy(self.dq_j, other.dq_j)
+        wp.copy(self.lambda_w_i, other.lambda_w_i)
         wp.copy(self.lambda_kin_j, other.lambda_kin_j)
         wp.copy(self.lambda_dyn_j, other.lambda_dyn_j)
         wp.copy(self.lambda_f_j, other.lambda_f_j)
@@ -296,6 +300,18 @@ class StateKamino:
             joint_q_prev = wp.clone(state.joint_q)
             state.joint_q_prev = joint_q_prev
 
+        lambda_w_i = getattr(state, "body_lox_dual_impulse", None)
+        if lambda_w_i is None:
+            lambda_w_i = wp.zeros(size.sum_of_num_bodies, dtype=wp.spatial_vectorf, device=device)
+            state.body_lox_dual_impulse = lambda_w_i
+        if (
+            not isinstance(lambda_w_i, wp.array)
+            or lambda_w_i.shape != (size.sum_of_num_bodies,)
+            or lambda_w_i.dtype != wp.spatial_vectorf
+            or lambda_w_i.device != wp.get_device(device)
+        ):
+            raise ValueError("State.body_lox_dual_impulse must have one spatial vector per body on the state device.")
+
         # If the state contains the Kamino-specific `joint_lambdas` custom attribute,
         # capture a reference to it; otherwise, create a new array for it.
         # The attribute has JOINT_CONSTRAINT frequency and should therefore correspond to joint kinematic constraints.
@@ -355,6 +371,7 @@ class StateKamino:
             q_j=state.joint_q,
             q_j_p=joint_q_prev,
             dq_j=state.joint_qd,
+            lambda_w_i=lambda_w_i,
             lambda_kin_j=lambda_kin_j,
             lambda_dyn_j=lambda_dyn_j,
             lambda_f_j=lambda_f_j,
@@ -413,6 +430,7 @@ class StateKamino:
         # Add Kamino-specific custom attributes to the newton.State object
         state_newton.body_f_total = state.w_i.view(dtype=wp.spatial_vectorf)
         state_newton.joint_q_prev = state.q_j_p
+        state_newton.body_lox_dual_impulse = state.lambda_w_i
         state_newton.joint_lambdas = state.lambda_kin_j
         state_newton.joint_lambdas_dyn = state.lambda_dyn_j
         state_newton.joint_lambdas_f = state.lambda_f_j

@@ -1717,6 +1717,60 @@ class TestGeometryContactConversions(unittest.TestCase):
             err_msg="Culled contacts must not retain stale force data",
         )
 
+    def test_13_skip_fully_prescribed_contacts(self):
+        """Skip contacts whose two bodies are static or zero-mass."""
+
+        def build_scene():
+            builder = ModelBuilder()
+            static_body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.45), wp.quat_identity()))
+            builder.add_shape_box(
+                static_body,
+                hx=0.5,
+                hy=0.5,
+                hz=0.5,
+                cfg=ModelBuilder.ShapeConfig(density=0.0),
+            )
+            dynamic_body = builder.add_body(xform=wp.transform((2.0, 0.0, 0.45), wp.quat_identity()))
+            builder.add_shape_box(
+                dynamic_body,
+                hx=0.5,
+                hy=0.5,
+                hz=0.5,
+                cfg=ModelBuilder.ShapeConfig(density=1.0),
+            )
+            builder.add_ground_plane()
+            return builder
+
+        model, state, contacts = self._setup_newton_scene(builder_fn=build_scene)
+        newton_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreaterEqual(newton_count, 2)
+
+        shape_body = model.shape_body.numpy()
+        body_inv_mass = model.body_inv_mass.numpy()
+        shape0 = contacts.rigid_contact_shape0.numpy()[:newton_count]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:newton_count]
+        responsive = [
+            (shape_body[s0] >= 0 and body_inv_mass[shape_body[s0]] > 0.0)
+            or (shape_body[s1] >= 0 and body_inv_mass[shape_body[s1]] > 0.0)
+            for s0, s1 in zip(shape0, shape1, strict=True)
+        ]
+        self.assertIn(False, responsive)
+        self.assertIn(True, responsive)
+
+        kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+        convert_contacts_newton_to_kamino(
+            model,
+            state,
+            contacts,
+            kamino,
+            skip_fully_prescribed_contacts=True,
+        )
+
+        kamino_count = int(kamino.model_active_contacts.numpy()[0])
+        self.assertEqual(kamino_count, sum(responsive))
+        body_b = kamino.bid_AB.numpy()[:kamino_count, 1]
+        self.assertTrue(np.all(body_inv_mass[body_b] > 0.0))
+
 
 ###
 # Test execution

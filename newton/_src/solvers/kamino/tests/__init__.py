@@ -52,7 +52,6 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     # Warp configuration
     wp.init()
     wp.config.mode = "release"
-    wp.config.enable_backward = False
     wp.config.verify_fp = False
     wp.config.verify_cuda = False
 

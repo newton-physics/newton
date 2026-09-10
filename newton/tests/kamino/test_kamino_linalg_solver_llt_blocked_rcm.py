@@ -287,6 +287,58 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         expected = np.linalg.solve(matrix, rhs)
         np.testing.assert_allclose(result_wp.numpy(), expected, rtol=1.0e-4, atol=1.0e-5)
 
+    def test_fixed_symbolic_structure_reuses_ordering_across_numeric_changes(self):
+        """Reuse fixed symbolic analysis when structurally present values change."""
+        n = 18
+        edges = [(index, index + 1) for index in range(n - 1)]
+        edges.extend((index, index + 3) for index in range(0, n - 3, 3))
+        adjacency = [set() for _ in range(n)]
+        for first, second in edges:
+            adjacency[first].add(second)
+            adjacency[second].add(first)
+
+        def make_matrix(scale: float, zero_edge: tuple[int, int] | None) -> np.ndarray:
+            matrix = np.zeros((n, n), dtype=np.float32)
+            for edge_index, (first, second) in enumerate(edges):
+                value = np.float32(-scale * (0.1 + 0.01 * edge_index))
+                if zero_edge == (first, second):
+                    value = np.float32(0.0)
+                matrix[first, second] = value
+                matrix[second, first] = value
+            matrix[np.diag_indices(n)] = np.sum(np.abs(matrix), axis=1) + np.float32(1.0)
+            return matrix
+
+        matrix_first = make_matrix(0.8, edges[5])
+        matrix_second = make_matrix(1.3, None)
+        rhs = np.linspace(-0.75, 1.0, n, dtype=np.float32)
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=[n], dtype=wp.float32, device=self.default_device)
+        matrix_wp = wp.array(matrix_first.reshape(-1), dtype=wp.float32, device=self.default_device)
+        rhs_wp = wp.array(rhs, dtype=wp.float32, device=self.default_device)
+        result_wp = wp.zeros(n, dtype=wp.float32, device=self.default_device)
+        solver = LLTBlockedRCMSolver(
+            operator=DenseLinearOperatorData(info=info, mat=matrix_wp),
+            block_size=4,
+            parallel_factorization=True,
+            symbolic_adjacency=[[tuple(sorted(neighbors)) for neighbors in adjacency]],
+            device=self.default_device,
+        )
+
+        solver.compute(matrix_wp)
+        solver.solve(rhs_wp, result_wp)
+        np.testing.assert_allclose(result_wp.numpy(), np.linalg.solve(matrix_first, rhs), rtol=2.0e-4, atol=2.0e-5)
+        permutation = solver.P.numpy().copy()
+
+        solver.reset()
+        matrix_wp.assign(matrix_second.reshape(-1))
+        solver.compute(matrix_wp)
+        solver.solve(rhs_wp, result_wp)
+
+        np.testing.assert_array_equal(solver.P.numpy(), permutation)
+        result = result_wp.numpy()
+        np.testing.assert_allclose(result, np.linalg.solve(matrix_second, rhs), rtol=2.0e-4, atol=2.0e-5)
+        np.testing.assert_allclose(matrix_second @ result, rhs, rtol=2.0e-4, atol=2.0e-5)
+
     def test_cached_permutation_on_cpu_fallback(self):
         """Verify the CPU fallback reuses a cached permutation."""
         device = wp.get_device("cpu")
