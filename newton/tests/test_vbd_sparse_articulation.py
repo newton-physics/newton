@@ -5,6 +5,7 @@ import math
 import unittest
 import warnings
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -455,32 +456,32 @@ def _solve_coupled_revolute_armature() -> tuple[float, float, float]:
     target_angle = 1.0e-3
     dt = 1.0e-2
 
-    newton.use_coord_layout_targets = True
-    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    parent = builder.add_link(
-        xform=wp.transform(),
-        mass=1.0,
-        inertia=wp.mat33(np.diag([0.25, parent_inertia, 0.35]).astype(np.float32)),
-    )
-    child = builder.add_link(
-        xform=wp.transform(),
-        mass=1.0,
-        inertia=wp.mat33(np.diag([0.4, child_inertia, 0.5]).astype(np.float32)),
-    )
-    root_joint = builder.add_joint_free(child=parent)
-    revolute_joint = builder.add_joint_revolute(
-        parent=parent,
-        child=child,
-        axis=newton.Axis.Y,
-        target_ke=drive_ke,
-        target_kd=0.0,
-        limit_ke=0.0,
-        limit_kd=0.0,
-        armature=armature,
-    )
-    builder.add_articulation([root_joint, revolute_joint])
-    builder.color()
-    model = builder.finalize(device="cpu")
+    with mock.patch("newton.use_coord_layout_targets", True):
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        parent = builder.add_link(
+            xform=wp.transform(),
+            mass=1.0,
+            inertia=wp.mat33(np.diag([0.25, parent_inertia, 0.35]).astype(np.float32)),
+        )
+        child = builder.add_link(
+            xform=wp.transform(),
+            mass=1.0,
+            inertia=wp.mat33(np.diag([0.4, child_inertia, 0.5]).astype(np.float32)),
+        )
+        root_joint = builder.add_joint_free(child=parent)
+        revolute_joint = builder.add_joint_revolute(
+            parent=parent,
+            child=child,
+            axis=newton.Axis.Y,
+            target_ke=drive_ke,
+            target_kd=0.0,
+            limit_ke=0.0,
+            limit_kd=0.0,
+            armature=armature,
+        )
+        builder.add_articulation([root_joint, revolute_joint])
+        builder.color()
+        model = builder.finalize(device="cpu")
 
     state_in = model.state()
     state_out = model.state()
@@ -530,30 +531,26 @@ def _make_cable_rod_model(closed: bool, bend_damping: float = 0.0) -> newton.Mod
         z = 1.0
         theta = np.linspace(0.0, 2.0 * np.pi, segment_count + 1, endpoint=True)
         points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), z) for t in theta]
+        rod = newton.Rod(points, closed=True, radius=0.02)
     else:
         segment_count = 8
-        points, quats = newton.utils.rod_straight_points_and_quaternions(
+        rod = newton.Rod.create_straight(
             start=wp.vec3(-0.4, 0.0, 1.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=0.8,
-            num_segments=segment_count,
+            segment_count=segment_count,
+            radius=0.02,
         )
-
-    if closed:
-        quats = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="add_rod: wrap_in_articulation=False", category=UserWarning)
         _bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=0.02,
+            rod=rod,
             cfg=builder.default_shape_cfg.copy(),
             stretch_stiffness=1.0e6,
             stretch_damping=0.0,
             bend_stiffness=1.0e4,
             bend_damping=bend_damping,
-            closed=closed,
             wrap_in_articulation=False,
             body_frame_origin="start",
             label="sparse_cable_loop" if closed else "sparse_cable_chain",
@@ -802,6 +799,7 @@ def _solve_offset_com_single_body_q(mode: str) -> np.ndarray:
 
 class TestVBDSparseArticulation(unittest.TestCase):
     def test_builder_rejects_closed_loop_articulation(self):
+        """Reject closed-loop articulations unless the caller opts in."""
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
         inertia = wp.mat33(np.eye(3, dtype=np.float32))
         bodies = [
@@ -817,6 +815,7 @@ class TestVBDSparseArticulation(unittest.TestCase):
             builder.add_articulation(joints)
 
     def test_builder_accepts_closed_loop_articulation_opt_in(self):
+        """Include every loop joint and body when closed loops are enabled."""
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
         inertia = wp.mat33(np.eye(3, dtype=np.float32))
         bodies = [
@@ -843,6 +842,7 @@ class TestVBDSparseArticulation(unittest.TestCase):
         np.testing.assert_array_equal(np.sort(layout.articulation_bodies.numpy()), np.arange(model.body_count))
 
     def test_sparse_revolute_projector_uses_parent_frame(self):
+        """Construct the revolute angular projector in the parent frame."""
         axis = np.array([0.2, -0.4, 0.7], dtype=np.float32)
         axis /= np.linalg.norm(axis)
         parent_rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.6, 0.1, -0.3)), 1.1)
@@ -862,27 +862,32 @@ class TestVBDSparseArticulation(unittest.TestCase):
         np.testing.assert_allclose(projector.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
 
     def test_sparse_single_body_matches_local(self):
+        """Match the local solve for an unconstrained body."""
         local_q = _solve_single_body_q("local")
         sparse_q = _solve_single_body_q("block_sparse_joints")
         np.testing.assert_allclose(sparse_q, local_q, rtol=1.0e-5, atol=1.0e-5)
 
     def test_sparse_single_body_offset_com_matches_local(self):
+        """Match the local solve when the body center of mass is offset."""
         local_q = _solve_offset_com_single_body_q("local")
         sparse_q = _solve_offset_com_single_body_q("block_sparse_joints")
         np.testing.assert_allclose(sparse_q, local_q, rtol=1.0e-5, atol=1.0e-5)
 
     def test_sparse_articulation_reduces_loop_residual(self):
+        """Reduce a stiff closed-loop residual relative to the local solve."""
         local_residual = _solve_residual("local")
         sparse_residual = _solve_residual("block_sparse_joints")
         self.assertLess(sparse_residual, 0.9 * local_residual)
 
     def test_sparse_articulation_reduces_compliant_alm_loop_residual(self):
+        """Reduce a compliant-ALM loop residual relative to the local solve."""
         local_residual = _solve_residual("local", compliant_alm=True)
         sparse_residual = _solve_residual("block_sparse_joints", compliant_alm=True)
         self.assertLess(sparse_residual, 0.9 * local_residual)
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA device required")
     def test_sparse_articulation_cuda_matches_cpu_serial(self):
+        """Match the CUDA block solve to the CPU serial reference."""
         for compliant_alm in (False, True):
             with self.subTest(compliant_alm=compliant_alm):
                 cpu_q = _solve_loop_q("block_sparse_joints", "cpu", compliant_alm=compliant_alm)
@@ -890,13 +895,36 @@ class TestVBDSparseArticulation(unittest.TestCase):
                 np.testing.assert_allclose(cuda_q, cpu_q, rtol=2.0e-4, atol=2.0e-4)
 
     def test_sparse_articulation_default_relaxation_is_tuned(self):
+        """Retain the tuned sparse-articulation relaxation default."""
         model = _make_single_body_model()
         solver = newton.solvers.SolverVBD(
             model, iterations=1, rigid_compliant_alm=False, rigid_articulation_solve="block_sparse_joints"
         )
         self.assertEqual(solver.rigid_articulation_relaxation, 0.65)
 
+    def test_builder_preserves_empty_joint_dof_rank(self):
+        """Keep the joint DoF table two-dimensional when the model has no joints."""
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        builder.color()
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.joint_count, 0)
+        self.assertEqual(model.joint_dof_dim.shape, (0, 2))
+
+    def test_sparse_articulation_rejects_nonfinite_tuning(self):
+        """Reject non-finite relaxation and regularization values."""
+        model = _make_single_body_model()
+        for name, value in (
+            ("rigid_articulation_relaxation", math.nan),
+            ("rigid_articulation_diagonal_regularization", math.nan),
+            ("rigid_articulation_diagonal_regularization", math.inf),
+        ):
+            with self.subTest(name=name, value=value):
+                with self.assertRaisesRegex(ValueError, name):
+                    newton.solvers.SolverVBD(model, rigid_compliant_alm=False, **{name: value})
+
     def test_sparse_articulation_honors_deterministic_option(self):
+        """Forward the requested deterministic mode to sparse kernels."""
         original = wp.get_module_options(module=rigid_sparse_articulation_kernels)
         try:
             model = _make_single_body_model()
@@ -913,16 +941,19 @@ class TestVBDSparseArticulation(unittest.TestCase):
             wp.set_module_options(original, module=rigid_sparse_articulation_kernels)
 
     def test_sparse_articulation_couples_revolute_armature(self):
+        """Couple revolute armature inertia across both incident bodies."""
         relative_angle, expected_relative_angle, angular_momentum = _solve_coupled_revolute_armature()
         self.assertAlmostEqual(relative_angle, expected_relative_angle, delta=1.0e-6)
         self.assertAlmostEqual(angular_momentum, 0.0, delta=1.0e-7)
 
     def test_sparse_articulation_handles_joint_stiffness_ratio(self):
+        """Remain stable across a large joint-stiffness ratio."""
         local_energy = _solve_stiffness_ratio_energy("local")
         sparse_energy = _solve_stiffness_ratio_energy("block_sparse_joints")
         self.assertLess(sparse_energy, 0.05 * local_energy)
 
     def test_sparse_articulation_supports_projected_joint_types(self):
+        """Improve constrained residuals for each projected joint type."""
         for joint_kind in ("revolute", "prismatic", "d6", "cable"):
             with self.subTest(joint_kind=joint_kind):
                 local_linear, local_angular = _solve_projected_joint_split_residual(joint_kind, "local")
@@ -931,6 +962,7 @@ class TestVBDSparseArticulation(unittest.TestCase):
                 self.assertLess(sparse_angular, 0.9 * local_angular)
 
     def test_sparse_articulation_improves_cable_rods(self):
+        """Improve open and closed rod residuals over the local solve."""
         for closed in (False, True):
             with self.subTest(closed=closed):
                 local_linear, local_angular = _solve_cable_rod_split_residual(closed, "local")
@@ -942,6 +974,7 @@ class TestVBDSparseArticulation(unittest.TestCase):
                     self.assertLess(sparse_angular, 0.9 * local_angular)
 
     def test_sparse_articulation_includes_declared_xy_table_closure_joint(self):
+        """Factor the cross-slide table closure inside its articulation."""
         example = _make_xy_table_example("block_sparse_joints")
         self.assertEqual(example.model.articulation_count, 1)
         self.assertEqual(int(example.model.joint_articulation.numpy()[-1]), 0)
@@ -994,6 +1027,7 @@ def _run_unregistered_fixed_body(device, mode: str) -> np.ndarray:
 
 
 def test_sparse_falls_back_to_local_without_articulations(test, device):
+    """Fall back to the local solve when no articulation is declared."""
     local_q = _run_unregistered_fixed_body(device, "local")
     sparse_q = _run_unregistered_fixed_body(device, "block_sparse_joints")
     np.testing.assert_allclose(sparse_q, local_q, rtol=1.0e-4, atol=1.0e-4)
@@ -1001,6 +1035,7 @@ def test_sparse_falls_back_to_local_without_articulations(test, device):
 
 
 def test_sparse_uses_local_solve_for_standalone_body(test, device):
+    """Use the local solve for bodies outside sparse articulations."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.01)
     articulated_body = builder.add_link(
@@ -1066,6 +1101,7 @@ def _make_cross_articulation_closure_model(device, single_articulation: bool):
 
 
 def test_sparse_rejects_cross_articulation_joint(test, device):
+    """Reject joints that connect two declared sparse articulations."""
     model = _make_cross_articulation_closure_model(device, single_articulation=False)
     with test.assertRaisesRegex(ValueError, "outside the declared articulation ranges"):
         newton.solvers.SolverVBD(
@@ -1077,6 +1113,7 @@ def test_sparse_rejects_cross_articulation_joint(test, device):
 
 
 def test_sparse_rejects_omitted_articulation_closure(test, device):
+    """Reject a closure joint omitted from its articulation range."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     inertia = wp.mat33(np.eye(3, dtype=np.float32) * 0.1)
     root = builder.add_link(mass=1.0, inertia=inertia)
@@ -1101,6 +1138,7 @@ def test_sparse_rejects_omitted_articulation_closure(test, device):
 
 
 def test_sparse_factorizes_closed_loop_articulation(test, device):
+    """Factor every body and joint in an opted-in closed loop."""
     # Declaring the loop closure inside one articulation puts every joint and body of
     # that articulation into a single direct factorization.
     model = _make_cross_articulation_closure_model(device, single_articulation=True)
@@ -1127,18 +1165,17 @@ def test_sparse_factorizes_closed_loop_articulation(test, device):
 
 def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
-    points, quaternions = newton.utils.rod_straight_points_and_quaternions(
+    rod = newton.Rod.create_straight(
         start=wp.vec3(0.0, 0.0, 1.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=0.4,
-        num_segments=4,
+        segment_count=4,
+        radius=0.02,
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="add_rod: wrap_in_articulation=False", category=UserWarning)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=quaternions,
-            radius=0.02,
+            rod=rod,
             stretch_stiffness=1.0e4,
             shear_stiffness=1.0e3,
             bend_stiffness=1.0e2,
@@ -1150,7 +1187,7 @@ def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
         builder.add_joint_fixed(
             parent=-1,
             child=bodies[0],
-            parent_xform=wp.transform(points[0], wp.quat_identity()),
+            parent_xform=wp.transform(wp.vec3(rod.points[0]), wp.quat_identity()),
             child_xform=wp.transform_identity(),
         )
     )
@@ -1173,6 +1210,7 @@ def _run_anisotropic_rod(device, mode: str) -> np.ndarray:
 
 
 def test_sparse_anisotropic_rod_matches_local_trajectory(test, device):
+    """Match the local trajectory for an anisotropic rod."""
     local_q = _run_anisotropic_rod(device, "local")
     sparse_q = _run_anisotropic_rod(device, "block_sparse_joints")
     test.assertTrue(np.isfinite(sparse_q).all())
@@ -1180,6 +1218,7 @@ def test_sparse_anisotropic_rod_matches_local_trajectory(test, device):
 
 
 def test_sparse_default_relaxation_with_contact(test, device):
+    """Keep the tuned default stable on the sparse contact path."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     builder.add_ground_plane()
     body = builder.add_link(
@@ -1188,6 +1227,8 @@ def test_sparse_default_relaxation_with_contact(test, device):
         inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.01),
     )
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    root_joint = builder.add_joint_free(child=body)
+    builder.add_articulation([root_joint])
     builder.color()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
@@ -1201,6 +1242,7 @@ def test_sparse_default_relaxation_with_contact(test, device):
         rigid_articulation_solve="block_sparse_joints",
     )
     test.assertEqual(solver.rigid_articulation_relaxation, 0.65)
+    test.assertIsNotNone(solver.rigid_articulation_sparse_layout)
     for _ in range(20):
         pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
@@ -1211,6 +1253,7 @@ def test_sparse_default_relaxation_with_contact(test, device):
 
 
 def test_sparse_updates_soft_contact_penalty_without_rigid_capacity(test, device):
+    """Update soft-contact penalties when rigid-contact capacity is zero."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     builder.default_shape_cfg.ke = 1.0e3
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.01))

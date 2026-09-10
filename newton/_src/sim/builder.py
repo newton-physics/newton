@@ -8698,7 +8698,7 @@ class ModelBuilder:
         # Use the graph core to create bodies and internal joints.
         # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
         # - open chains are wrapped into a single articulation (tree), and
-        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        # - closed loops add one extra joint outside the automatically generated tree articulation.
         link_bodies, link_joints = self._add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -8725,14 +8725,14 @@ class ModelBuilder:
             rod_art_label = f"{label}_articulation" if label else None
             self.add_articulation(link_joints, label=rod_art_label)
 
-        # For closed loops, add one extra loop-closing rod joint that is intentionally
-        # *not* part of an articulation (articulations must be trees/forests).
+        # For closed loops, add one extra joint outside the automatically generated
+        # tree articulation. Callers may regroup it with allow_closed_loops=True.
         if closed:
             if not wrap_in_articulation:
                 warnings.warn(
                     "add_rod: wrap_in_articulation=False requires the caller to wrap joints via add_articulation() "
-                    "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
-                    "articulation.",
+                    "before finalize; closed=True also adds a loop-closing joint, which may be included only in "
+                    "an articulation created with allow_closed_loops=True.",
                     UserWarning,
                     stacklevel=self._external_warning_stacklevel(),
                 )
@@ -8895,8 +8895,8 @@ class ModelBuilder:
             ``wrap_in_articulation=False``, Newton creates no articulations.
             Before :meth:`finalize <ModelBuilder.finalize>`, callers must place
             the tree or forest joints in articulations. Loop-closing joints
-            whose child is already reachable through those articulations may
-            remain outside them.
+            may remain outside them or be grouped explicitly with
+            ``allow_closed_loops=True``.
 
         Raises:
             ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
@@ -13468,7 +13468,8 @@ class ModelBuilder:
             m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
+            joint_dof_dim = np.asarray(self.joint_dof_dim, dtype=np.int32).reshape((-1, 2))
+            m.joint_dof_dim = wp.array(joint_dof_dim, dtype=wp.int32, ndim=2)
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)

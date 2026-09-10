@@ -30,7 +30,6 @@ class RigidArticulationSparseLayout:
     articulation_factor_update_left_slots: wp.array[wp.int32]
     articulation_factor_update_right_slots: wp.array[wp.int32]
     articulation_diag_slots: wp.array[wp.int32]
-    body_articulation_sparse: wp.array[wp.int32]
     body_articulation_local: wp.array[wp.int32]
     local_body_color_groups: list[wp.array[wp.int32]]
     articulation_count: int
@@ -118,7 +117,6 @@ def build_rigid_articulation_sparse_layout(
     factor_update_offsets_host: list[int] = []
     diag_slots_host: list[int] = []
 
-    body_articulation_sparse_host = np.full((model.body_count,), -1, dtype=np.int32)
     body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
     for joint_idx in range(model.joint_count):
         parent = int(joint_parent[joint_idx])
@@ -190,7 +188,7 @@ def build_rigid_articulation_sparse_layout(
         tuple[int, tuple[tuple[int, int], ...]],
         tuple[list[int], list[list[int]]],
     ] = {}
-    for articulation_sparse, (bodies, joints) in enumerate(articulation_groups):
+    for bodies, joints in articulation_groups:
         local_index = {body: i for i, body in enumerate(bodies)}
         edges: set[tuple[int, int]] = set()
         for joint_idx in joints:
@@ -222,9 +220,6 @@ def build_rigid_articulation_sparse_layout(
         articulation_joint_offsets_host.append(len(articulation_joints_host))
 
         for local_body, body in enumerate(ordered_bodies):
-            if body_articulation_sparse_host[body] >= 0:
-                raise ValueError(f"Body {body} belongs to more than one sparse solver group.")
-            body_articulation_sparse_host[body] = articulation_sparse
             body_articulation_local_host[body] = local_body
 
         for local_row, row_cols in enumerate(pattern):
@@ -292,7 +287,6 @@ def build_rigid_articulation_sparse_layout(
         articulation_factor_update_left_slots=wp.array(factor_update_left_slots_np, dtype=wp.int32, device=device),
         articulation_factor_update_right_slots=wp.array(factor_update_right_slots_np, dtype=wp.int32, device=device),
         articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
-        body_articulation_sparse=wp.array(body_articulation_sparse_host, dtype=wp.int32, device=device),
         body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
         local_body_color_groups=local_body_color_groups,
         articulation_count=len(articulation_groups),
