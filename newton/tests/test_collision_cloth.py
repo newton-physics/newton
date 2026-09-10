@@ -1558,12 +1558,12 @@ def test_pipeline_soft_self_contact(test, device):
     detector_ref.edge_edge_collision_detection(query_radius)
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    test.assertIsNone(pipeline._soft_self_contact_detector)  # nothing eager on the pipeline itself
+    test.assertIsNone(pipeline._soft_contact_detector)  # nothing eager on the pipeline itself
     pipeline.init_soft_self_contact(margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0)
     # The explicit opt-in creates the detector, with no result buffers yet —
     # the first bound Contacts supplies them.
-    test.assertIsNotNone(pipeline._soft_self_contact_detector)
-    test.assertIsNone(pipeline._soft_self_contact_detector.collision_info)
+    test.assertIsNotNone(pipeline._soft_contact_detector)
+    test.assertIsNone(pipeline._soft_contact_detector.collision_info)
 
     state = model.state()
     contacts_a = pipeline.contacts()
@@ -1571,12 +1571,13 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertIsNotNone(contacts_a.soft_self_contact_data)
     test.assertIsNot(contacts_a.soft_self_contact_data, contacts_b.soft_self_contact_data)
 
+    pipeline.refit_soft_contact_bvh(state)  # BVH upkeep is the caller's job
     # The init-created detector carries no result buffers of its own; the first
     # collide binds the Contacts-owned struct instead of replacing anything.
-    test.assertIsNone(pipeline._soft_self_contact_detector.collision_info)
+    test.assertIsNone(pipeline._soft_contact_detector.collision_info)
     for contacts in (contacts_a, contacts_b):
         pipeline.collide(state, contacts, soft_self_contact=True)
-        test.assertIs(pipeline._soft_self_contact_detector.vertex_positions, state.particle_q)
+        test.assertIs(pipeline._soft_contact_detector.vertex_positions, state.particle_q)
         data = contacts.soft_self_contact_data
         assert_np_equal(
             data.vertex_colliding_triangles_count.numpy(),
@@ -1637,6 +1638,7 @@ def test_pipeline_soft_self_contact(test, device):
         margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0, rest_shape_exclusion_radius=1e3
     )
     contacts_e = excluding.contacts()
+    excluding.refit_soft_contact_bvh(state)
     excluding.collide(state, contacts_e, soft_self_contact=True)
     test.assertEqual(int(contacts_e.soft_self_contact_data.vertex_colliding_triangles_count.numpy().sum()), 0)
     test.assertEqual(int(contacts_e.soft_self_contact_data.edge_colliding_edges_count.numpy().sum()), 0)
@@ -1646,7 +1648,7 @@ def test_pipeline_soft_self_contact(test, device):
     with test.assertRaises(ValueError):
         unconfigured.collide(state, unconfigured.contacts(), soft_self_contact=True)
     with test.assertRaises(ValueError):
-        unconfigured.refit_soft_self_contact_bvh(state.particle_q)
+        unconfigured.refit_soft_contact_bvh(state)
     # Self-contact ranges require init_soft_self_contact(); the particle-shape
     # gap alone does not.
     with test.assertRaises(ValueError):
@@ -1657,8 +1659,8 @@ def test_pipeline_soft_self_contact(test, device):
 
 def test_soft_self_contact_buffer_validation(test, device):
     """Reject invalid self-contact mesh sizes and incompatible result buffers."""
-    for particle_count, tri_count, edge_count in ((0, 1, 1), (1, 0, 1), (1, 1, 0)):
-        with test.assertRaisesRegex(ValueError, "requires positive mesh counts"):
+    for particle_count, tri_count, edge_count in ((0, 1, 1), (1, -1, 1), (1, 1, -1)):
+        with test.assertRaisesRegex(ValueError, "requires a positive particle_count"):
             newton.Contacts(
                 0,
                 0,
@@ -1668,6 +1670,18 @@ def test_soft_self_contact_buffer_validation(test, device):
                 edge_count=edge_count,
                 device=device,
             )
+
+    for tri_count, edge_count in ((0, 1), (1, 0), (0, 0)):
+        contacts = newton.Contacts(
+            0,
+            0,
+            soft_self_contact=True,
+            particle_count=1,
+            tri_count=tri_count,
+            edge_count=edge_count,
+            device=device,
+        )
+        test.assertIsNotNone(contacts.soft_self_contact_data)
 
     info = build_tri_mesh_collision_info(3, 1, 3, device=device)
     assert_np_equal(info.vertex_colliding_triangles_count.numpy(), np.zeros(3, dtype=np.int32))
@@ -1679,7 +1693,7 @@ def test_soft_self_contact_buffer_validation(test, device):
     model, _ = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     pipeline.init_soft_self_contact(topological_filter_threshold=0)
-    detector = pipeline._soft_self_contact_detector
+    detector = pipeline._soft_contact_detector
 
     wrong_shape = newton.Contacts(
         0,
@@ -1699,7 +1713,7 @@ def test_soft_self_contact_buffer_validation(test, device):
     pipeline_with_triangle_records.init_soft_self_contact(
         record_triangle_contacting_vertices=True, topological_filter_threshold=0
     )
-    detector_with_triangle_records = pipeline_with_triangle_records._soft_self_contact_detector
+    detector_with_triangle_records = pipeline_with_triangle_records._soft_contact_detector
     missing_triangle_records = newton.Contacts(
         0,
         0,

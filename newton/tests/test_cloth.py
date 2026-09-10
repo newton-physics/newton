@@ -710,8 +710,8 @@ class ClothSim:
 
         self.renderer_scale_factor = 0.1
 
-        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=True)
         self.soft_contact_gap = particle_radius * 1.1
+        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=True)
         self.model.soft_contact_ke = stretching_stiffness
 
     def set_up_stitching_experiment(self):
@@ -831,8 +831,8 @@ class ClothSim:
 
         self.renderer_scale_factor = 0.1
 
-        self.finalize(ground=False, use_gravity=True)
         self.soft_contact_gap = particle_radius * 1.1
+        self.finalize(ground=False, use_gravity=True)
         self.model.soft_contact_ke = 1e5
 
     def finalize(self, particle_enable_self_contact=False, ground=True, use_gravity=True):

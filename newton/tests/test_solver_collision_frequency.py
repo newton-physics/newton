@@ -475,15 +475,25 @@ def test_vbd_self_contact_rebinds_owned_buffer(test, device):
         particle_enable_self_contact=True,
         collision_frequency_type={Slot.RIGID: Frequency.NONE},
     )
+    with test.assertRaisesRegex(ValueError, "owned by a solver"):
+        pipeline.init_soft_self_contact()
+    with test.assertRaisesRegex(ValueError, "already configured or owned"):
+        SolverVBD(
+            model,
+            iterations=1,
+            collision_pipeline=pipeline,
+            particle_enable_self_contact=True,
+            collision_frequency_type={Slot.RIGID: Frequency.NONE},
+        )
     state = model.state()
     other_contacts = pipeline.contacts()
 
     pipeline.collide(state, other_contacts, soft_self_contact=True)
-    test.assertIs(pipeline._soft_self_contact_detector.collision_info, other_contacts.soft_self_contact_data)
+    test.assertIs(pipeline._soft_contact_detector.collision_info, other_contacts.soft_self_contact_data)
 
     solver._collision_detection_penetration_free(state)
 
-    test.assertIs(pipeline._soft_self_contact_detector.collision_info, solver.contacts.soft_self_contact_data)
+    test.assertIs(pipeline._soft_contact_detector.collision_info, solver.contacts.soft_self_contact_data)
 
 
 def _build_cloth_model(device):
@@ -595,6 +605,19 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_radius=0.02,
             particle_self_contact_gap=0.01,
         )
+    # Both the current margin and the deprecated radius resolve to the
+    # interaction distance and must be non-negative.
+    for geometry in (
+        {"particle_self_contact_margin": -0.01, "particle_self_contact_gap": 0.0},
+        {"particle_self_contact_radius": -0.01, "particle_self_contact_margin": 0.04},
+    ):
+        with test.assertRaisesRegex(ValueError, "particle_self_contact_margin must be >= 0"):
+            SolverVBD(
+                _build_cloth_model(device),
+                iterations=1,
+                particle_enable_self_contact=True,
+                **geometry,
+            )
 
 
 devices = get_test_devices()

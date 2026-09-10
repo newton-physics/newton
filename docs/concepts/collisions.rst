@@ -1452,7 +1452,8 @@ Use ``builder.default_shape_cfg`` to set defaults for all shapes:
 
 **Soft contacts (particle-shape)**
 
-Soft contacts are generated automatically when particles are present. They use a separate margin:
+Soft contacts are generated automatically when particles are present. Their detection range uses the
+particle radius plus ``soft_contact_gap``; shape margins control contact placement separately:
 
 .. testsetup:: soft-contacts
 

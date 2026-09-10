@@ -1127,6 +1127,7 @@ def create_soft_contacts(
     soft_contact_indices: wp.array[wp.vec3i],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[int],
+    soft_contact_rigid_indices: wp.array[wp.vec3i],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
@@ -1256,6 +1257,7 @@ def create_soft_contacts(
             world_normal = wp.transform_vector(X_ws, n)
 
             soft_contact_shape[index] = shape_index
+            soft_contact_rigid_indices[index] = wp.vec3i(-1, -1, -1)
             soft_contact_body_pos[index] = body_pos
             soft_contact_body_vel[index] = body_vel
             # Unified record: a particle contact is (p, -1, -1) with barycentric (1, 0, 0), plus the

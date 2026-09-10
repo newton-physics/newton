@@ -329,6 +329,7 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertIsInstance(contacts, newton.Contacts)
 
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
+        """Verify zero capacity disables soft-contact generation."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
         builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
@@ -940,6 +941,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
     soft_contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     soft_contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_rigid_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     soft_contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
@@ -978,6 +980,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             soft_contact_indices,
             soft_contact_barycentric,
             soft_contact_shape,
+            soft_contact_rigid_indices,
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
@@ -1139,6 +1142,7 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
     contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    contact_rigid_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
@@ -1174,6 +1178,7 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
             contact_indices,
             contact_barycentric,
             contact_shape,
+            contact_rigid_indices,
             contact_body_pos,
             contact_body_vel,
             contact_normal,
@@ -1778,6 +1783,7 @@ class TestParticleShapeContacts(unittest.TestCase):
             self.assertTrue(pw[p] == sw[s] or pw[p] < 0 or sw[s] < 0, f"cross-world pair ({p}, {s})")
 
     def test_soft_rigid_pairs_multi_world_isolated(self):
+        """Verify soft-rigid candidate pairs remain world-isolated."""
         sub = newton.ModelBuilder()
         sub.add_shape_sphere(body=-1, radius=1.0)
         sub.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
@@ -1795,6 +1801,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self._assert_pairs_valid(model, pipeline)
 
     def test_soft_contacts_respect_active_and_collide_flags(self):
+        """Verify soft contacts respect particle and shape collision flags."""
         # Pairs are a world-compatible superset (flags are not baked in); create_soft_contacts applies
         # ACTIVE / COLLIDE_PARTICLES dynamically, so only the active particle x the particle-colliding
         # shape actually produces a contact.
@@ -1816,6 +1823,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
 
     def test_soft_contacts_track_runtime_flag_changes(self):
+        """Verify soft contacts track collision flags changed at runtime."""
         # Regression: pairs are precomputed once, so a particle activated *after* the pipeline is built
         # must still produce a contact (flags are filtered dynamically, not baked into the pair list).
         builder = newton.ModelBuilder()
@@ -1838,6 +1846,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
 
     def test_soft_contact_capacity_defaults_to_pair_count(self):
+        """Verify soft-contact capacity defaults to the candidate-pair count."""
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         builder.add_cloth_grid(
@@ -1859,6 +1868,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(contacts.soft_contact_max, pipeline.soft_contact_pair_count)
 
     def test_soft_contact_explicit_capacity_is_respected(self):
+        """Verify an explicit soft-contact capacity is preserved."""
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
@@ -1870,6 +1880,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(pipeline.soft_contact_max, 1)
 
     def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
+        """Verify overflow preserves the attempted soft-contact count."""
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
@@ -1885,6 +1896,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
     def test_soft_contacts_skip_cross_world_shape_particle_pairs(self):
+        """Verify soft contacts skip cross-world particle-shape pairs."""
         particle_builder = newton.ModelBuilder()
         particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
 
@@ -1904,6 +1916,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
 
     def test_global_shape_contacts_particles_in_all_worlds(self):
+        """Verify global shapes contact particles in every world."""
         particle_builder = newton.ModelBuilder()
         particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
 
@@ -4675,7 +4688,8 @@ def test_unprovisioned_mesh_raises(test, device):
 
     Mirrors SolverVBD raising on an uncolored model: provisioning an SDF (e.g. via
     ShapeConfig.configure_sdf(force_sdf=True)) is a required build step, and skipping it is an error
-    rather than a silent degrade to the per-particle path.
+    rather than a silent degrade to the per-particle path. The opt-in 'bvh' back-end needs no SDF
+    and must construct cleanly on the same model.
     """
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
@@ -4696,6 +4710,21 @@ def test_unprovisioned_mesh_raises(test, device):
         newton.CollisionPipeline(
             model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
+    # The BVH back-end (opt-in) handles the SDF-less mesh instead of raising -- and actually
+    # produces full-surface records for it at runtime (the mesh is excluded from the legacy
+    # per-particle pairs, so every record below comes from the BVH path).
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.1,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="bvh",
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.refit_soft_contact_bvh(state)
+    pipeline.collide(state, contacts)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
 
 
 add_function_test(

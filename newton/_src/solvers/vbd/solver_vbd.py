@@ -523,6 +523,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self-contact configuration from the ``particle_self_contact_*``
                 parameters, and runs rigid collision detection itself per the
                 schedule below; ``step()`` must then receive ``contacts=None``.
+                When particle self-contact is enabled, pass an unconfigured
+                pipeline dedicated to this solver.
             collision_frequency: Iteration frequencies keyed by
                 :class:`SolverBase.CollisionSlot`; only used by ``ITERATIONS``
                 slots (before iterations k, 2k, and so on).
@@ -603,6 +605,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "particle_self_contact_margin is smaller than particle_self_contact_radius, this will result in missing contacts and cause instability.\n"
                     "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
                 )
+            if _sc_margin < 0.0:
+                raise ValueError(f"particle_self_contact_margin must be >= 0, got {_sc_margin}")
             warnings.warn(
                 "particle_self_contact_radius is deprecated; use particle_self_contact_margin "
                 "(interaction distance) and particle_self_contact_gap (extra detection reach, "
@@ -636,6 +640,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             if _sc_gap < 0.0:
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
 
+        if _sc_margin < 0.0:
+            raise ValueError(f"particle_self_contact_margin must be >= 0, got {_sc_margin}")
+
         if particle_collision_detection_interval is not None:
             if (
                 collision_frequency_type is not None
@@ -664,6 +671,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         # With an owned pipeline, seed its self-contact configuration from the solver's
         # parameters before the base class allocates the owned Contacts buffer.
         if collision_pipeline is not None and particle_enable_self_contact:
+            if collision_pipeline._soft_contact_detector is not None:
+                raise ValueError(
+                    "SolverVBD cannot take ownership of a collision pipeline whose soft self-contact "
+                    "detector is already configured or owned by another solver; pass an unconfigured "
+                    "pipeline to each solver."
+                )
             collision_pipeline.init_soft_self_contact(
                 margin=_sc_margin,
                 gap=_sc_gap,
@@ -675,6 +688,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 external_vertex_filter_map=particle_external_vertex_contact_filtering_map,
                 external_edge_filter_map=particle_external_edge_contact_filtering_map,
             )
+            collision_pipeline._soft_self_contact_solver_owned = True
 
         super().__init__(
             model,
