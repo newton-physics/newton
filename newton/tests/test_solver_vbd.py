@@ -492,6 +492,7 @@ def accumulate_particle_body_contact_force_and_hessian(
     shape_margin: wp.array[float],
     # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
     contact_barycentric: wp.array[wp.vec3],
+    use_log_barrier: bool,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -539,6 +540,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 contact_normal,
                 shape_margin,
                 dt,
+                use_log_barrier,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -567,6 +569,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             contact_normal,
             shape_margin,
             dt,
+            use_log_barrier,
         )
         for i in range(3):
             ci = corners[i]
@@ -2182,6 +2185,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 data["particle_q_prev"],
                 data["particle_q"],
                 1.0,
+                False,  # rigid_body_particle_contact_use_log_barrier
                 data["particle_radius"],
                 data["contact_indices"],
                 contact_head,
@@ -2242,6 +2246,7 @@ def _particle_contact_gather_order_pinned(test, device):
                     data["particle_q_prev"],
                     data["particle_q"],
                     1.0,
+                    False,  # rigid_body_particle_contact_use_log_barrier
                     data["particle_radius"],
                     data["contact_indices"],
                     rev_head_wp,
@@ -2330,6 +2335,7 @@ def _particle_contact_gather_matches_legacy(test, device):
                         common_material_inputs[0],
                         data["contact_material_ke"],
                         *common_material_inputs[1:],
+                        False,  # use_log_barrier
                     ],
                     outputs=[legacy_forces, legacy_hessians],
                     device=device,
@@ -5493,6 +5499,7 @@ def _run_face_section2(device, shape_margin):
             state.particle_q,  # pos_anchor == pos -> no damping / friction
             state.particle_q,
             1.0,  # friction_epsilon
+            False,  # rigid_body_particle_contact_use_log_barrier
             model.particle_radius,
             contacts.soft_contact_indices,
             contact_head,

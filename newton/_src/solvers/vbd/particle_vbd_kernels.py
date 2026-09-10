@@ -2304,6 +2304,7 @@ def gather_particle_body_contact_force_and_hessian(
                 contact_normal,
                 shape_margin,
                 dt,
+                rigid_body_particle_contact_use_log_barrier,
             )
             weight = bary[corner]
             force += weight * contact_force
