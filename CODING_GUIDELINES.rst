@@ -273,8 +273,11 @@ define and leave the remaining properties at Newton's documented defaults.
 Under-importing a vendor material is the expected outcome, not a defect to be
 resolved by widening the parser.
 
-Pin the boundary with a regression test so an unsupported vocabulary cannot
-reappear one input name at a time.
+These restrictions apply prospectively. Existing vendor-shading parsing is
+frozen; removing it requires a separate behavioral change with compatibility
+review. When changing importer behavior to enforce this boundary, add
+regression tests so an unsupported vocabulary cannot reappear one input name
+at a time. Keep existing compatibility tests until that behavior changes.
 
 Python source conventions
 -------------------------
