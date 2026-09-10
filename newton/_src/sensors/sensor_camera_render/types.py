@@ -37,10 +37,10 @@ class WorldRenderFlag(enum.IntEnum):
     render for that view, or one of these negative sentinels to skip the view.
     """
 
-    DISABLE_PRESERVE = -1
+    DISABLE_PRESERVE = -101
     """Skip rendering and leave output pixels unchanged."""
 
-    DISABLE_CLEAR = -2
+    DISABLE_CLEAR = -102
     """Skip rendering and write clear values to output pixels."""
 
 

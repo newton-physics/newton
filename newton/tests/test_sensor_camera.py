@@ -135,8 +135,8 @@ class TestSensorCamera(unittest.TestCase):
 
         # Negative disable sentinels for the per-view world_indices array; no ENABLE.
         self.assertFalse(hasattr(SensorCamera.WorldRenderFlag, "ENABLE"))
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), -1)
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), -2)
+        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), -101)
+        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), -102)
 
     def test_constructor_without_model_is_inert(self) -> None:
         """Verify a model-less SensorCamera owns only render settings and rejects rendering."""
