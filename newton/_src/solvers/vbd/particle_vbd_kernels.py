@@ -24,12 +24,12 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 )
 
 from ...geometry import ParticleFlags
-from ...geometry.kernels import triangle_closest_point
-from ...geometry.tri_mesh_collision import (
-    TriMeshCollisionInfo,
-    get_edge_colliding_edges_count,
-    get_vertex_colliding_triangles_count,
+from ...geometry.kernels import (
+    EE_PAIR_CURSOR,
+    VT_PAIR_CURSOR,
+    triangle_closest_point,
 )
+from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from ...utils.mesh import (
     MeshAdjacencyData,
     get_vertex_adjacent_edge_id_order,
@@ -1452,132 +1452,117 @@ def accumulate_self_contact_force_and_hessian(
     friction_mu: float,
     friction_epsilon: float,
     edge_edge_parallel_epsilon: float,
+    stride: int,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
+    """Accumulate self-contact forces: one thread per stored contact pair.
+
+    Launched with a host-static ``stride`` threads; each thread strides the two
+    shared pair arrays, evaluates its contacts, and atomic-adds force/Hessian
+    pieces onto the involved vertices of the current color. Work is
+    proportional to the actual contact count instead of the mesh size.
+    """
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
-    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
-    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
+    # edge-edge pairs: handle the e1 side only; the reverse direction is its own record
+    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    i = t_id
+    while i < ee_count:
+        pair = collision_info.ee_pairs[i]
+        e1_idx = pair[0]
+        e2_idx = pair[1]
 
-    # process edge-edge collisions
-    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
-        e1_idx = primitive_id
+        e1_v1 = edge_indices[e1_idx, 2]
+        e1_v2 = edge_indices[e1_idx, 3]
 
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
+        c_e1_v1 = particle_colors[e1_v1]
+        c_e1_v2 = particle_colors[e1_v2]
+        if c_e1_v1 == current_color or c_e1_v2 == current_color:
+            has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
+                evaluate_edge_edge_contact_2_vertices(
+                    e1_idx,
+                    e2_idx,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    collision_radius,
+                    soft_contact_ke,
+                    soft_contact_kd,
+                    friction_mu,
+                    friction_epsilon,
+                    dt,
+                    edge_edge_parallel_epsilon,
+                )
+            )
 
-            if e1_idx != -1 and e2_idx != -1:
-                e1_v1 = edge_indices[e1_idx, 2]
-                e1_v2 = edge_indices[e1_idx, 3]
+            if has_contact:
+                if c_e1_v1 == current_color:
+                    wp.atomic_add(particle_forces, e1_v1, collision_force_0)
+                    wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
+                if c_e1_v2 == current_color:
+                    wp.atomic_add(particle_forces, e1_v2, collision_force_1)
+                    wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
+        i += stride
 
-                c_e1_v1 = particle_colors[e1_v1]
-                c_e1_v2 = particle_colors[e1_v2]
-                if c_e1_v1 == current_color or c_e1_v2 == current_color:
-                    has_contact, collision_force_0, collision_force_1, collision_hessian_0, collision_hessian_1 = (
-                        evaluate_edge_edge_contact_2_vertices(
-                            e1_idx,
-                            e2_idx,
-                            pos,
-                            pos_prev,
-                            edge_indices,
-                            collision_radius,
-                            soft_contact_ke,
-                            soft_contact_kd,
-                            friction_mu,
-                            friction_epsilon,
-                            dt,
-                            edge_edge_parallel_epsilon,
-                        )
-                    )
+    # vertex-triangle pairs
+    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    i = t_id
+    while i < vt_count:
+        pair = collision_info.vt_pairs[i]
+        particle_idx = pair[0]
+        tri_idx = pair[1]
 
-                    if has_contact:
-                        # here we only handle the e1 side, because e2 will also detection this contact and add force and hessian on its own
-                        if c_e1_v1 == current_color:
-                            wp.atomic_add(particle_forces, e1_v1, collision_force_0)
-                            wp.atomic_add(particle_hessians, e1_v1, collision_hessian_0)
-                        if c_e1_v2 == current_color:
-                            wp.atomic_add(particle_forces, e1_v2, collision_force_1)
-                            wp.atomic_add(particle_hessians, e1_v2, collision_hessian_1)
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+        tri_a = tri_indices[tri_idx, 0]
+        tri_b = tri_indices[tri_idx, 1]
+        tri_c = tri_indices[tri_idx, 2]
 
-    # process vertex-triangle collisions
-    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
-        particle_idx = primitive_id
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        collision_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            tri_idx = collision_info.vertex_colliding_triangles[
-                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
-            ]
+        c_v = particle_colors[particle_idx]
+        c_tri_a = particle_colors[tri_a]
+        c_tri_b = particle_colors[tri_b]
+        c_tri_c = particle_colors[tri_c]
 
-            if particle_idx != -1 and tri_idx != -1:
-                tri_a = tri_indices[tri_idx, 0]
-                tri_b = tri_indices[tri_idx, 1]
-                tri_c = tri_indices[tri_idx, 2]
+        if c_v == current_color or c_tri_a == current_color or c_tri_b == current_color or c_tri_c == current_color:
+            (
+                has_contact,
+                collision_force_0,
+                collision_force_1,
+                collision_force_2,
+                collision_force_3,
+                collision_hessian_0,
+                collision_hessian_1,
+                collision_hessian_2,
+                collision_hessian_3,
+            ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+                particle_idx,
+                tri_idx,
+                pos,
+                pos_prev,
+                tri_indices,
+                collision_radius,
+                soft_contact_ke,
+                soft_contact_kd,
+                friction_mu,
+                friction_epsilon,
+                dt,
+            )
 
-                c_v = particle_colors[particle_idx]
-                c_tri_a = particle_colors[tri_a]
-                c_tri_b = particle_colors[tri_b]
-                c_tri_c = particle_colors[tri_c]
-
-                if (
-                    c_v == current_color
-                    or c_tri_a == current_color
-                    or c_tri_b == current_color
-                    or c_tri_c == current_color
-                ):
-                    (
-                        has_contact,
-                        collision_force_0,
-                        collision_force_1,
-                        collision_force_2,
-                        collision_force_3,
-                        collision_hessian_0,
-                        collision_hessian_1,
-                        collision_hessian_2,
-                        collision_hessian_3,
-                    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
-                        particle_idx,
-                        tri_idx,
-                        pos,
-                        pos_prev,
-                        tri_indices,
-                        collision_radius,
-                        soft_contact_ke,
-                        soft_contact_kd,
-                        friction_mu,
-                        friction_epsilon,
-                        dt,
-                    )
-
-                    if has_contact:
-                        # particle
-                        if c_v == current_color:
-                            wp.atomic_add(particle_forces, particle_idx, collision_force_3)
-                            wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
-
-                        # tri_a
-                        if c_tri_a == current_color:
-                            wp.atomic_add(particle_forces, tri_a, collision_force_0)
-                            wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
-
-                        # tri_b
-                        if c_tri_b == current_color:
-                            wp.atomic_add(particle_forces, tri_b, collision_force_1)
-                            wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
-
-                        # tri_c
-                        if c_tri_c == current_color:
-                            wp.atomic_add(particle_forces, tri_c, collision_force_2)
-                            wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+            if has_contact:
+                if c_v == current_color:
+                    wp.atomic_add(particle_forces, particle_idx, collision_force_3)
+                    wp.atomic_add(particle_hessians, particle_idx, collision_hessian_3)
+                if c_tri_a == current_color:
+                    wp.atomic_add(particle_forces, tri_a, collision_force_0)
+                    wp.atomic_add(particle_hessians, tri_a, collision_hessian_0)
+                if c_tri_b == current_color:
+                    wp.atomic_add(particle_forces, tri_b, collision_force_1)
+                    wp.atomic_add(particle_hessians, tri_b, collision_hessian_1)
+                if c_tri_c == current_color:
+                    wp.atomic_add(particle_forces, tri_c, collision_force_2)
+                    wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
+        i += stride
 
 
 @wp.func
@@ -2003,129 +1988,116 @@ def apply_planar_truncation_parallel_by_collision(
     collision_info_array: wp.array[TriMeshCollisionInfo],
     parallel_eps: float,
     gamma: float,
+    stride: int,
     truncation_t_out: wp.array[float],
 ):
+    """Clip displacements against contact separation planes: one thread per
+    stored contact pair (both families in one launch). ``wp.atomic_min`` is
+    order-independent, so the output is identical to the historical
+    per-element scan for the same contact set."""
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
-    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
-    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
+    # edge-edge pairs (both directions are stored; each computes its own plane,
+    # matching the historical two-sided writes)
+    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    i = t_id
+    while i < ee_count:
+        pair = collision_info.ee_pairs[i]
+        e1_idx = pair[0]
+        e2_idx = pair[1]
 
-    # process edge-edge collisions
-    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
-        e1_idx = primitive_id
+        e1_v1 = edge_indices[e1_idx, 2]
+        e1_v2 = edge_indices[e1_idx, 3]
 
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
+        e1_v1_pos = pos[e1_v1]
+        e1_v2_pos = pos[e1_v2]
 
-            if e1_idx != -1 and e2_idx != -1:
-                e1_v1 = edge_indices[e1_idx, 2]
-                e1_v2 = edge_indices[e1_idx, 3]
+        delta_e1_v1 = displacement_in[e1_v1]
+        delta_e1_v2 = displacement_in[e1_v2]
 
-                e1_v1_pos = pos[e1_v1]
-                e1_v2_pos = pos[e1_v2]
+        e2_v1 = edge_indices[e2_idx, 2]
+        e2_v2 = edge_indices[e2_idx, 3]
 
-                delta_e1_v1 = displacement_in[e1_v1]
-                delta_e1_v2 = displacement_in[e1_v2]
+        e2_v1_pos = pos[e2_v1]
+        e2_v2_pos = pos[e2_v2]
 
-                e2_v1 = edge_indices[e2_idx, 2]
-                e2_v2 = edge_indices[e2_idx, 3]
+        delta_e2_v1 = displacement_in[e2_v1]
+        delta_e2_v2 = displacement_in[e2_v2]
 
-                e2_v1_pos = pos[e2_v1]
-                e2_v2_pos = pos[e2_v2]
+        # n points to the edge 1 side
+        is_dummy, n, d = create_edge_edge_division_plane_closest_pt(
+            e1_v1_pos,
+            delta_e1_v1,
+            e1_v2_pos,
+            delta_e1_v2,
+            e2_v1_pos,
+            delta_e2_v1,
+            e2_v2_pos,
+            delta_e2_v2,
+        )
 
-                delta_e2_v1 = displacement_in[e2_v1]
-                delta_e2_v2 = displacement_in[e2_v2]
+        if not is_dummy[0]:
+            t = planar_truncation_t(e1_v1_pos, delta_e1_v1, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, e1_v1, t)
+        if not is_dummy[1]:
+            t = planar_truncation_t(e1_v2_pos, delta_e1_v2, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, e1_v2, t)
+        if not is_dummy[2]:
+            t = planar_truncation_t(e2_v1_pos, delta_e2_v1, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, e2_v1, t)
+        if not is_dummy[3]:
+            t = planar_truncation_t(e2_v2_pos, delta_e2_v2, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, e2_v2, t)
+        i += stride
 
-                # n points to the edge 1 side
-                is_dummy, n, d = create_edge_edge_division_plane_closest_pt(
-                    e1_v1_pos,
-                    delta_e1_v1,
-                    e1_v2_pos,
-                    delta_e1_v2,
-                    e2_v1_pos,
-                    delta_e2_v1,
-                    e2_v2_pos,
-                    delta_e2_v2,
-                )
-
-                # For each, check the corresponding is_dummy entry in the vec4 is_dummy
-                if not is_dummy[0]:
-                    t = planar_truncation_t(e1_v1_pos, delta_e1_v1, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, e1_v1, t)
-                if not is_dummy[1]:
-                    t = planar_truncation_t(e1_v2_pos, delta_e1_v2, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, e1_v2, t)
-                if not is_dummy[2]:
-                    t = planar_truncation_t(e2_v1_pos, delta_e2_v1, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, e2_v1, t)
-                if not is_dummy[3]:
-                    t = planar_truncation_t(e2_v2_pos, delta_e2_v2, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, e2_v2, t)
-
-                # planar truncation for 2 sides
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
-
-    # process vertex-triangle collisions
-    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
-        particle_idx = primitive_id
+    # vertex-triangle pairs
+    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    i = t_id
+    while i < vt_count:
+        pair = collision_info.vt_pairs[i]
+        particle_idx = pair[0]
+        tri_idx = pair[1]
 
         colliding_particle_pos = pos[particle_idx]
         colliding_particle_displacement = displacement_in[particle_idx]
 
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        collision_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            tri_idx = collision_info.vertex_colliding_triangles[
-                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
-            ]
+        tri_a = tri_indices[tri_idx, 0]
+        tri_b = tri_indices[tri_idx, 1]
+        tri_c = tri_indices[tri_idx, 2]
 
-            if particle_idx != -1 and tri_idx != -1:
-                tri_a = tri_indices[tri_idx, 0]
-                tri_b = tri_indices[tri_idx, 1]
-                tri_c = tri_indices[tri_idx, 2]
+        t1 = pos[tri_a]
+        t2 = pos[tri_b]
+        t3 = pos[tri_c]
+        delta_t1 = displacement_in[tri_a]
+        delta_t2 = displacement_in[tri_b]
+        delta_t3 = displacement_in[tri_c]
 
-                t1 = pos[tri_a]
-                t2 = pos[tri_b]
-                t3 = pos[tri_c]
-                delta_t1 = displacement_in[tri_a]
-                delta_t2 = displacement_in[tri_b]
-                delta_t3 = displacement_in[tri_c]
+        is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
+            colliding_particle_pos,
+            colliding_particle_displacement,
+            t1,
+            delta_t1,
+            t2,
+            delta_t2,
+            t3,
+            delta_t3,
+        )
 
-                is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
-                    colliding_particle_pos,
-                    colliding_particle_displacement,
-                    t1,
-                    delta_t1,
-                    t2,
-                    delta_t2,
-                    t3,
-                    delta_t3,
-                )
+        if not is_dummy[0]:
+            t = planar_truncation_t(colliding_particle_pos, colliding_particle_displacement, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, particle_idx, t)
+        if not is_dummy[1]:
+            t = planar_truncation_t(t1, delta_t1, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, tri_a, t)
+        if not is_dummy[2]:
+            t = planar_truncation_t(t2, delta_t2, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, tri_b, t)
+        if not is_dummy[3]:
+            t = planar_truncation_t(t3, delta_t3, n, d, parallel_eps, gamma)
+            wp.atomic_min(truncation_t_out, tri_c, t)
 
-                # planar truncation for 2 sides
-                if not is_dummy[0]:
-                    t = planar_truncation_t(
-                        colliding_particle_pos, colliding_particle_displacement, n, d, parallel_eps, gamma
-                    )
-                    wp.atomic_min(truncation_t_out, particle_idx, t)
-                if not is_dummy[1]:
-                    t = planar_truncation_t(t1, delta_t1, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, tri_a, t)
-                if not is_dummy[2]:
-                    t = planar_truncation_t(t2, delta_t2, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, tri_b, t)
-                if not is_dummy[3]:
-                    t = planar_truncation_t(t3, delta_t3, n, d, parallel_eps, gamma)
-                    wp.atomic_min(truncation_t_out, tri_c, t)
-
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
-
-    # Don't forget to do the final truncation based on the maximum displacement allowance!
+        i += stride
 
 
 @wp.kernel

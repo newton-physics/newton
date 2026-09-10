@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
-
 import warp.utils
 
 from ..utils.mesh import MeshAdjacency
@@ -143,9 +143,7 @@ def get_triangle_colliding_vertices(collision_info: TriMeshCollisionInfo, triang
 @wp.func
 def get_edge_colliding_edges_count(collision_info: TriMeshCollisionInfo, edge: int):
     """Return the stored collision count for ``edge`` (exact CSR row length)."""
-    return (
-        collision_info.edge_colliding_edges_offsets[edge + 1] - collision_info.edge_colliding_edges_offsets[edge]
-    )
+    return collision_info.edge_colliding_edges_offsets[edge + 1] - collision_info.edge_colliding_edges_offsets[edge]
 
 
 @wp.func
@@ -386,14 +384,11 @@ class TriMeshCollisionDetector:
         model: Model,
         record_triangle_contacting_vertices=False,
         vertex_positions=None,
-        vertex_collision_buffer_pre_alloc=16,
-        vertex_collision_buffer_max_alloc=256,
+        vertex_collision_buffer_pre_alloc=8,
         vertex_triangle_filtering_list=None,
         vertex_triangle_filtering_list_offsets=None,
-        triangle_collision_buffer_pre_alloc=16,
-        triangle_collision_buffer_max_alloc=256,
-        edge_collision_buffer_pre_alloc=32,
-        edge_collision_buffer_max_alloc=256,
+        triangle_collision_buffer_pre_alloc=8,
+        edge_collision_buffer_pre_alloc=16,
         edge_filtering_list=None,
         edge_filtering_list_offsets=None,
         topological_contact_filter_threshold: int = 0,
@@ -411,11 +406,8 @@ class TriMeshCollisionDetector:
         self.vertex_positions = model.particle_q if vertex_positions is None else vertex_positions
         self.device = model.device
         self.vertex_collision_buffer_pre_alloc = vertex_collision_buffer_pre_alloc
-        self.vertex_collision_buffer_max_alloc = vertex_collision_buffer_max_alloc
         self.triangle_collision_buffer_pre_alloc = triangle_collision_buffer_pre_alloc
-        self.triangle_collision_buffer_max_alloc = triangle_collision_buffer_max_alloc
         self.edge_collision_buffer_pre_alloc = edge_collision_buffer_pre_alloc
-        self.edge_collision_buffer_max_alloc = edge_collision_buffer_max_alloc
         self.triangle_triangle_collision_buffer_pre_alloc = triangle_triangle_collision_buffer_pre_alloc
         self.triangle_triangle_collision_buffer_max_alloc = triangle_triangle_collision_buffer_max_alloc
 
@@ -839,7 +831,9 @@ class TriMeshCollisionDetector:
         """Return the result struct; results live in :attr:`collision_info` (D27)."""
         return self.collision_info
 
-    def _build_pair_rows(self, pairs, cursor_slot, pair_capacity, owner_component, row_counts, row_offsets, row_cursors, row_values):
+    def _build_pair_rows(
+        self, pairs, cursor_slot, pair_capacity, owner_component, row_counts, row_offsets, row_cursors, row_values
+    ):
         """Build one family's exact CSR over its shared pair array.
 
         Three graph-capturable passes: count stored pairs per owning element,
@@ -897,8 +891,6 @@ class TriMeshCollisionDetector:
         vt_demand, vt_overflow = int(counters[0]), bool(counters[1])
         ee_demand, ee_overflow = int(counters[2]), bool(counters[3])
         if warn and (vt_overflow or ee_overflow):
-            import warnings
-
             warnings.warn(
                 f"tri-mesh self-contact pair arrays overflowed "
                 f"(vertex-triangle demand {vt_demand} / capacity {self.vt_pairs.shape[0]}, "

@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.kernels import EE_PAIR_CURSOR, VT_PAIR_CURSOR
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
-    get_edge_colliding_edges_count,
-    get_vertex_colliding_triangles_count,
 )
 from ...math import quat_velocity
 from .particle_vbd_kernels import (
-    NUM_THREADS_PER_COLLISION_PRIMITIVE,
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
@@ -394,148 +392,133 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     soft_contact_mu: float,
     friction_epsilon: float,
     edge_edge_parallel_epsilon: float,
+    stride: int,
     out_particle_f: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
-    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
-    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
+    # one thread per stored contact pair, strided over both shared pair arrays
+    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    i = t_id
+    while i < ee_count:
+        pair = collision_info.ee_pairs[i]
+        e1_idx = pair[0]
+        e2_idx = pair[1]
 
-    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
-        e1_idx = primitive_id
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
+        e1_v1 = edge_indices[e1_idx, 2]
+        e1_v2 = edge_indices[e1_idx, 3]
+        e2_v1 = edge_indices[e2_idx, 2]
+        e2_v2 = edge_indices[e2_idx, 3]
 
-            if e1_idx != -1 and e2_idx != -1:
-                e1_v1 = edge_indices[e1_idx, 2]
-                e1_v2 = edge_indices[e1_idx, 3]
-                e2_v1 = edge_indices[e2_idx, 2]
-                e2_v2 = edge_indices[e2_idx, 3]
+        e1_proxy = _vbd_particle_is_mapped_proxy(
+            e1_v1, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
+        ) and _vbd_particle_is_mapped_proxy(e1_v2, particle_local_to_proxy_global, particle_flags, proxy_particle_flag)
+        e2_dynamic = _vbd_particle_is_dynamic_nonproxy(
+            e2_v1, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+        ) and _vbd_particle_is_dynamic_nonproxy(
+            e2_v2, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+        )
 
-                e1_proxy = _vbd_particle_is_mapped_proxy(
-                    e1_v1, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                ) and _vbd_particle_is_mapped_proxy(
-                    e1_v2, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
+        if e1_proxy and e2_dynamic:
+            has_contact, collision_force_0, collision_force_1, _hessian_0, _hessian_1 = (
+                evaluate_edge_edge_contact_2_vertices(
+                    e1_idx,
+                    e2_idx,
+                    particle_q,
+                    particle_q_prev,
+                    edge_indices,
+                    collision_radius,
+                    soft_contact_ke,
+                    soft_contact_kd,
+                    soft_contact_mu,
+                    friction_epsilon,
+                    dt,
+                    edge_edge_parallel_epsilon,
                 )
-                e2_dynamic = _vbd_particle_is_dynamic_nonproxy(
-                    e2_v1, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                ) and _vbd_particle_is_dynamic_nonproxy(
-                    e2_v2, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                )
+            )
 
-                if e1_proxy and e2_dynamic:
-                    has_contact, collision_force_0, collision_force_1, _hessian_0, _hessian_1 = (
-                        evaluate_edge_edge_contact_2_vertices(
-                            e1_idx,
-                            e2_idx,
-                            particle_q,
-                            particle_q_prev,
-                            edge_indices,
-                            collision_radius,
-                            soft_contact_ke,
-                            soft_contact_kd,
-                            soft_contact_mu,
-                            friction_epsilon,
-                            dt,
-                            edge_edge_parallel_epsilon,
-                        )
-                    )
+            if has_contact:
+                _vbd_add_proxy_particle_force(e1_v1, collision_force_0, particle_local_to_proxy_global, out_particle_f)
+                _vbd_add_proxy_particle_force(e1_v2, collision_force_1, particle_local_to_proxy_global, out_particle_f)
+        i += stride
 
-                    if has_contact:
-                        _vbd_add_proxy_particle_force(
-                            e1_v1, collision_force_0, particle_local_to_proxy_global, out_particle_f
-                        )
-                        _vbd_add_proxy_particle_force(
-                            e1_v2, collision_force_1, particle_local_to_proxy_global, out_particle_f
-                        )
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    i = t_id
+    while i < vt_count:
+        pair = collision_info.vt_pairs[i]
+        particle_idx = pair[0]
+        tri_idx = pair[1]
 
-    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
-        particle_idx = primitive_id
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        collision_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
-        while collision_buffer_counter < collision_count:
-            tri_idx = collision_info.vertex_colliding_triangles[
-                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
-            ]
+        tri_a = tri_indices[tri_idx, 0]
+        tri_b = tri_indices[tri_idx, 1]
+        tri_c = tri_indices[tri_idx, 2]
 
-            if particle_idx != -1 and tri_idx != -1:
-                tri_a = tri_indices[tri_idx, 0]
-                tri_b = tri_indices[tri_idx, 1]
-                tri_c = tri_indices[tri_idx, 2]
+        vertex_proxy = _vbd_particle_is_mapped_proxy(
+            particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
+        )
+        vertex_dynamic = _vbd_particle_is_dynamic_nonproxy(
+            particle_idx, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+        )
+        tri_proxy = (
+            _vbd_particle_is_mapped_proxy(tri_a, particle_local_to_proxy_global, particle_flags, proxy_particle_flag)
+            and _vbd_particle_is_mapped_proxy(
+                tri_b, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
+            )
+            and _vbd_particle_is_mapped_proxy(
+                tri_c, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
+            )
+        )
+        tri_dynamic = (
+            _vbd_particle_is_dynamic_nonproxy(
+                tri_a, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+            )
+            and _vbd_particle_is_dynamic_nonproxy(
+                tri_b, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+            )
+            and _vbd_particle_is_dynamic_nonproxy(
+                tri_c, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
+            )
+        )
 
-                vertex_proxy = _vbd_particle_is_mapped_proxy(
-                    particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                )
-                vertex_dynamic = _vbd_particle_is_dynamic_nonproxy(
-                    particle_idx, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                )
-                tri_proxy = (
-                    _vbd_particle_is_mapped_proxy(
-                        tri_a, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_mapped_proxy(
-                        tri_b, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_mapped_proxy(
-                        tri_c, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                )
-                tri_dynamic = (
-                    _vbd_particle_is_dynamic_nonproxy(
-                        tri_a, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_dynamic_nonproxy(
-                        tri_b, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_dynamic_nonproxy(
-                        tri_c, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                )
+        if (vertex_proxy and tri_dynamic) or (tri_proxy and vertex_dynamic):
+            (
+                has_contact,
+                collision_force_0,
+                collision_force_1,
+                collision_force_2,
+                collision_force_3,
+                _hessian_0,
+                _hessian_1,
+                _hessian_2,
+                _hessian_3,
+            ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+                particle_idx,
+                tri_idx,
+                particle_q,
+                particle_q_prev,
+                tri_indices,
+                collision_radius,
+                soft_contact_ke,
+                soft_contact_kd,
+                soft_contact_mu,
+                friction_epsilon,
+                dt,
+            )
 
-                if (vertex_proxy and tri_dynamic) or (tri_proxy and vertex_dynamic):
-                    (
-                        has_contact,
-                        collision_force_0,
-                        collision_force_1,
-                        collision_force_2,
-                        collision_force_3,
-                        _hessian_0,
-                        _hessian_1,
-                        _hessian_2,
-                        _hessian_3,
-                    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
-                        particle_idx,
-                        tri_idx,
-                        particle_q,
-                        particle_q_prev,
-                        tri_indices,
-                        collision_radius,
-                        soft_contact_ke,
-                        soft_contact_kd,
-                        soft_contact_mu,
-                        friction_epsilon,
-                        dt,
+            if has_contact:
+                if vertex_proxy and tri_dynamic:
+                    _vbd_add_proxy_particle_force(
+                        particle_idx, collision_force_3, particle_local_to_proxy_global, out_particle_f
                     )
-
-                    if has_contact:
-                        if vertex_proxy and tri_dynamic:
-                            _vbd_add_proxy_particle_force(
-                                particle_idx, collision_force_3, particle_local_to_proxy_global, out_particle_f
-                            )
-                        if tri_proxy and vertex_dynamic:
-                            _vbd_add_proxy_particle_force(
-                                tri_a, collision_force_0, particle_local_to_proxy_global, out_particle_f
-                            )
-                            _vbd_add_proxy_particle_force(
-                                tri_b, collision_force_1, particle_local_to_proxy_global, out_particle_f
-                            )
-                            _vbd_add_proxy_particle_force(
-                                tri_c, collision_force_2, particle_local_to_proxy_global, out_particle_f
-                            )
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
+                if tri_proxy and vertex_dynamic:
+                    _vbd_add_proxy_particle_force(
+                        tri_a, collision_force_0, particle_local_to_proxy_global, out_particle_f
+                    )
+                    _vbd_add_proxy_particle_force(
+                        tri_b, collision_force_1, particle_local_to_proxy_global, out_particle_f
+                    )
+                    _vbd_add_proxy_particle_force(
+                        tri_c, collision_force_2, particle_local_to_proxy_global, out_particle_f
+                    )
+        i += stride
