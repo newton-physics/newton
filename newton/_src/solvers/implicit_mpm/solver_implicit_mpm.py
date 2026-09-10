@@ -3528,7 +3528,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
                 has_colliders=self._mpm_model.collider.collider_mesh.shape[0] > 0,
-                local_contact_transpose=self.collider_basis == "S2" and self._use_local_contact_construction(scratch),
             )
 
             # Retain graph to avoid immediate CPU sync

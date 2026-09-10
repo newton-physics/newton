@@ -22,11 +22,8 @@ from .contact_solver_kernels import (
     apply_subgrid_impulse_warmstart,
     compute_collider_delassus_diagonal,
     compute_collider_inv_mass,
-    count_contact_transpose_rows,
-    scatter_contact_transpose,
     solve_nodal_friction,
     solve_subgrid_friction,
-    sort_contact_transpose_rows,
 )
 from .rheology_solver_kernels import (
     YieldParamVec,
@@ -412,8 +409,6 @@ class CollisionData:
         has_colliders: True when at least one collider mesh is present in the
             scene; used to reject linear-only solvers that do not support
             contact.
-        local_contact_transpose: Use row-local sorting for compact S2-to-Q1
-            contact maps, whose transposed rows have bounded local support.
     """
 
     collider_mat: sp.BsrMatrix
@@ -425,7 +420,6 @@ class CollisionData:
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix] | None
     collider_impulse: wp.array[wp.vec3]
     has_colliders: bool = False
-    local_contact_transpose: bool = False
 
 
 class _DelassusOperator:
@@ -1691,36 +1685,6 @@ class _NodalContactSolver(_ContactSolver):
         self.apply_rigidity_operator()
 
 
-def _transpose_contact_matrix(
-    dest: sp.BsrMatrix,
-    src: sp.BsrMatrix,
-    temporary_store: fem.TemporaryStore | None = None,
-):
-    """Transpose compact scalar contact weights without sorting unused capacity."""
-    sp.bsr_set_zero(dest, rows_of_blocks=src.ncol, cols_of_blocks=src.nrow)
-    dest.notify_nnz_changed(nnz=src.nnz)
-    cursors = fem.borrow_temporary(temporary_store, shape=src.ncol + 1, dtype=int, device=src.device)
-    wp.launch(
-        count_contact_transpose_rows, dim=src.nrow, inputs=[src.offsets, src.columns, dest.offsets], device=src.device
-    )
-    wp.utils.array_scan(dest.offsets, dest.offsets, inclusive=True)
-    wp.copy(cursors, dest.offsets, count=src.ncol + 1)
-    wp.launch(
-        scatter_contact_transpose,
-        dim=src.nrow,
-        inputs=[src.offsets, src.columns, src.values, cursors, dest.columns, dest.values],
-        device=src.device,
-    )
-    wp.launch(
-        sort_contact_transpose_rows,
-        dim=src.ncol,
-        inputs=[dest.offsets, dest.columns, dest.values],
-        device=src.device,
-    )
-    dest.notify_nnz_changed(nnz=src.nnz)
-    cursors.release()
-
-
 class _SubgridContactSolver(_ContactSolver):
     def __init__(
         self,
@@ -1732,10 +1696,7 @@ class _SubgridContactSolver(_ContactSolver):
 
         self.collider_delassus_diagonal = fem.borrow_temporary_like(self.collider_inv_mass, temporary_store)
 
-        if collision.local_contact_transpose and collision.collider_mat.row_counts is None:
-            _transpose_contact_matrix(collision.transposed_collider_mat, collision.collider_mat, temporary_store)
-        else:
-            sp.bsr_set_transpose(dest=collision.transposed_collider_mat, src=collision.collider_mat)
+        sp.bsr_set_transpose(dest=self.collision.transposed_collider_mat, src=self.collision.collider_mat)
 
         wp.launch(
             compute_collider_delassus_diagonal,
