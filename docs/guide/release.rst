@@ -337,9 +337,24 @@ Post-release
      - Inspect and cherry-pick, in order, every changelog-management commit
        from ``release-X.Y`` onto a changelog-only branch from ``main``: the
        initial Towncrier build, editorial cleanup, and later cherry-pick
-       additions.  Review the resulting diff before merging it in a pull
-       request with the ``release-management`` label.  Confirm that post-cut
-       fragments remain pending under ``changelog/``.
+       additions.  Treat the tagged release as the source of truth:
+
+       - Copy the released ``X.Y.Z`` section verbatim.  Do not rebuild it from
+         fragments on ``main`` or rewrite it to match APIs that changed after
+         the tag.
+       - Delete only fragments consumed by that exact release, including
+         ``.skip`` records.  For each fragment, verify that its underlying
+         change is present in ``vX.Y.Z``; trace the implementing commit or pull
+         request rather than inferring inclusion from the fragment filename,
+         and account for cherry-picked commit hashes.
+       - Keep every fragment whose change is absent from ``vX.Y.Z`` so it
+         remains pending for the next release.
+
+       Compare the resulting released section with ``vX.Y.Z`` and inventory
+       the remaining fragments before merging the pull request with the
+       ``release-management`` label.  If the published changelog itself needs
+       correction, handle that explicitly as a separate change rather than
+       folding it into the synchronization.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
