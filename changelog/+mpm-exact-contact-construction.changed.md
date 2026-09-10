@@ -1,0 +1,1 @@
+Skip empty subgrid impulse rows and accelerate large CUDA S2-to-Q1 MPM contact transposes by sorting active entries within each output row, preserving contact weights and their accumulation order. Select automatic first-sample row compression for large Q1 contact maps when supported by Warp, with the existing triplet fallback on older Warp versions.

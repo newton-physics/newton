@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from itertools import product
 
 import numpy as np
 import warp as wp
 import warp.fem as fem
+import warp.sparse as sp
 
 import newton
+from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
     Collider,
@@ -20,11 +23,90 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     _compute_environment_l2_tolerance_scales,
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
+    _transpose_contact_matrix,
     update_batched_condition,
 )
 from newton.solvers import SolverImplicitMPM, SolverXPBD
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+
+def test_contact_transpose_rebuild(test, device):
+    """Preserve transpose ordering and values as captured sparse topology changes."""
+    with wp.ScopedDevice(device):
+        src = sp.bsr_zeros(31, 19, block_type=float)
+        src.notify_nnz_changed(nnz=256)
+        dest = sp.bsr_zeros(0, 0, block_type=float)
+        reference = sp.bsr_zeros(0, 0, block_type=float)
+        store = fem.TemporaryStore()
+        _transpose_contact_matrix(dest, src, store)
+        graph = None
+        if wp.get_device(device).is_cuda:
+            with wp.ScopedCapture() as capture:
+                _transpose_contact_matrix(dest, src, store)
+            graph = capture.graph
+
+        rng = np.random.default_rng(17)
+        for count in (1, 120, 0, 73, 180):
+            # Unique positions give a canonical compact input; unused storage is poison.
+            positions = np.sort(rng.choice(src.nrow * src.ncol, count, replace=False))
+            rows, columns = np.divmod(positions, src.ncol)
+            offsets = np.concatenate(([0], np.cumsum(np.bincount(rows, minlength=src.nrow)))).astype(np.int32)
+            column_storage = np.full(src.nnz, -1, dtype=np.int32)
+            value_storage = np.full(src.nnz, np.nan, dtype=np.float32)
+            column_storage[:count] = columns
+            value_storage[:count] = rng.standard_normal(count).astype(np.float32)
+            if count:
+                value_storage[0] = -0.0
+            wp.copy(src.offsets, wp.array(offsets, dtype=int))
+            wp.copy(src.columns, wp.array(column_storage, dtype=int))
+            wp.copy(src.values, wp.array(value_storage, dtype=float))
+            sp.bsr_set_transpose(reference, src)
+            if graph is None:
+                _transpose_contact_matrix(dest, src, store)
+            else:
+                wp.capture_launch(graph)
+            test.assertEqual(dest.offsets.numpy().tobytes(), reference.offsets.numpy().tobytes())
+            test.assertEqual(dest.columns.numpy()[:count].tobytes(), reference.columns.numpy()[:count].tobytes())
+            test.assertEqual(dest.values.numpy()[:count].tobytes(), reference.values.numpy()[:count].tobytes())
+            test.assertEqual(dest.nnz_sync(), count)
+
+
+def test_sparse_contact_preserves_first_interpolation(test, device):
+    """Preserve contact weights at nodes shared by an irregular number of cells."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        for xyz in list(product((0, 1), repeat=3))[:7]:
+            builder.add_particle(tuple(0.025 + 0.1 * x for x in xyz), (0.0, 0.0, 0.0), 0.01, radius=0.01)
+        builder.add_ground_plane(height=0.05)
+        model = builder.finalize(device=device)
+        config = _make_mpm_config(grid_type="sparse")
+        config.separate_worlds = False
+        config.max_active_cell_count = 16
+        config.grid_padding = 0
+        config.velocity_basis = "Q1"
+        config.strain_basis = "P0"
+        config.collider_basis = "S3"
+        config.warmstart_mode = "particles"
+        solver, _ = _step_mpm(model, config, step_count=1)
+        scratch = solver._scratchpad
+        actual = scratch.collider_matrix
+        expected = sp.bsr_zeros(actual.nrow, actual.ncol, block_type=float)
+        fem.interpolate(
+            collision_weight_field,
+            dest=expected,
+            dest_space=scratch.collider_fraction_test.space,
+            at=scratch.collider_fraction_test.space_restriction,
+            reduction="first",
+            fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
+        )
+        count = actual.nnz_sync()
+        test.assertGreater(count, 0)
+        test.assertEqual(count, expected.nnz_sync())
+        test.assertEqual(actual.offsets.numpy().tobytes(), expected.offsets.numpy().tobytes())
+        test.assertEqual(actual.columns.numpy()[:count].tobytes(), expected.columns.numpy()[:count].tobytes())
+        test.assertEqual(actual.values.numpy()[:count].tobytes(), expected.values.numpy()[:count].tobytes())
 
 
 def _make_mpm_particle_builder(
@@ -1467,6 +1549,17 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 class TestImplicitMPM(unittest.TestCase):
     pass
+
+
+add_function_test(
+    TestImplicitMPM, "test_contact_transpose_rebuild", test_contact_transpose_rebuild, devices=basic_devices
+)
+add_function_test(
+    TestImplicitMPM,
+    "test_sparse_contact_preserves_first_interpolation",
+    test_sparse_contact_preserves_first_interpolation,
+    devices=basic_cuda_devices,
+)
 
 
 add_function_test(

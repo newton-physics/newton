@@ -8,6 +8,57 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.kernel
+def count_contact_transpose_rows(
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    transpose_offsets: wp.array[int],
+):
+    row = wp.tid()
+    for block in range(offsets[row], offsets[row + 1]):
+        wp.atomic_add(transpose_offsets, columns[block] + 1, 1)
+
+
+@wp.kernel
+def scatter_contact_transpose(
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[float],
+    cursors: wp.array[int],
+    transpose_columns: wp.array[int],
+    transpose_values: wp.array[float],
+):
+    row = wp.tid()
+    for block in range(offsets[row], offsets[row + 1]):
+        dest = wp.atomic_add(cursors, columns[block], 1)
+        transpose_columns[dest] = row
+        transpose_values[dest] = values[block]
+
+
+@wp.kernel
+def sort_contact_transpose_rows(
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[float],
+):
+    row = wp.tid()
+    begin = offsets[row]
+    end = offsets[row + 1]
+    # Restore ascending source-row order before any floating-point reduction.
+    for block in range(begin + 1, end):
+        column = columns[block]
+        value = values[block]
+        cursor = block
+        while cursor > begin:
+            if columns[cursor - 1] <= column:
+                break
+            columns[cursor] = columns[cursor - 1]
+            values[cursor] = values[cursor - 1]
+            cursor -= 1
+        columns[cursor] = column
+        values[cursor] = value
+
+
+@wp.kernel
 def compute_collider_inv_mass(
     J_mat_offsets: wp.array[int],
     J_mat_columns: wp.array[int],
@@ -185,6 +236,8 @@ def apply_subgrid_impulse(
     u_i = wp.tid()
     block_beg = tr_collider_mat_offsets[u_i]
     block_end = tr_collider_mat_offsets[u_i + 1]
+    if block_beg == block_end:
+        return
 
     delta_f = wp.vec3(0.0)
     for b in range(block_beg, block_end):
