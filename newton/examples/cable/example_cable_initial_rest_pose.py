@@ -88,13 +88,11 @@ class Example:
             radius=helix_radius,
             turns=helix_turns,
         )
-        left_initial_quaternions = newton.utils.rod_parallel_transport_quaternions(left_initial_points)
+        left_rod = newton.Rod(left_initial_points, radius=cable_radius)
         # Keep the helical initial geometry but author zero intrinsic bend and twist.
         left_bodies, _ = builder.add_rod(
-            positions=left_initial_points,
-            quaternions=left_initial_quaternions,
+            rod=left_rod,
             rest_straight=True,
-            radius=cable_radius,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,
@@ -111,21 +109,20 @@ class Example:
             radius=helix_radius,
             turns=helix_turns,
         )
-        right_rest_quaternions = newton.utils.rod_parallel_transport_quaternions(right_rest_points)
+        right_rest = newton.Rod(right_rest_points)
         segment_length = float(wp.length(right_rest_points[1] - right_rest_points[0]))
-        right_initial_points, right_initial_quaternions = newton.utils.rod_straight_points_and_quaternions(
+        right_rod = newton.Rod.create_straight(
             start=wp.vec3(-0.5 * num_segments * segment_length, right_center[1], right_center[2]),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=num_segments * segment_length,
-            num_segments=num_segments,
+            segment_count=num_segments,
+            radius=cable_radius,
         )
         # Keep the straight initial geometry but author an explicit helical rest shape.
         right_bodies, _ = builder.add_rod(
-            positions=right_initial_points,
-            quaternions=right_initial_quaternions,
-            rest_positions=right_rest_points,
-            rest_quaternions=right_rest_quaternions,
-            radius=cable_radius,
+            rod=right_rod,
+            rest_positions=right_rest.points,
+            rest_quaternions=right_rest.quaternions,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,

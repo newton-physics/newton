@@ -29,27 +29,29 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces
+from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
-    accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
     # Planar DAT (Divide and Truncate) kernels
     apply_planar_truncation_parallel_by_collision,
     apply_truncation_ts,
+    build_particle_body_contact_adjacency_active,
     # Solver kernels (particle VBD)
     forward_step,
+    gather_particle_body_contact_force_and_hessian,
+    make_solve_elasticity_tile,
     reset_particle_state,
     solve_elasticity,
-    solve_elasticity_tile,
     update_velocity,
 )
 from .rigid_vbd_kernels import (
@@ -92,6 +94,26 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+
+_PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+
+def _is_tet_only_elasticity_model(model: Model) -> bool:
+    """Return whether the model's active element materials are tetrahedral only."""
+    if model.tet_count == 0:
+        return False
+
+    if model.tri_count > 0:
+        tri_materials = model.tri_materials.numpy()
+        if np.any((tri_materials[:, 0] > 0.0) | (tri_materials[:, 1] > 0.0)):
+            return False
+
+    if model.edge_count > 0:
+        edge_bending_properties = model.edge_bending_properties.numpy()
+        if np.any(edge_bending_properties[:, 0] > 0.0):
+            return False
+
+    return True
 
 
 def _validate_compliant_alm_material_coefficient(
@@ -179,7 +201,8 @@ class SolverVBD(SolverBase, CouplingInterface):
           including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
-          :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
+          :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+        - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -221,8 +244,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         creation time (see example below).
 
         For ROD joints, SolverVBD captures structural-rest bend and twist from
-        ``model.joint_target_q`` when constructed. Construct a new solver after
-        changing these Model-owned angular rest targets.
+        ``model.joint_target_q`` when constructed. After changing these Model-owned
+        angular rest targets, call :meth:`notify_model_changed` with
+        :attr:`~newton.ModelFlags.JOINT_PROPERTIES`.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -377,6 +401,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+                The tiled kernel is specialized once at construction from the model's element
+                materials (e.g. a tetrahedra-only model compiles without triangle/edge code paths);
+                rebuild the solver after changing triangle or edge stiffness.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -800,6 +827,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_joint_angular_kd,
         )
 
+        self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
+        self._mimic_body_deltas = None
+        if self._has_joint_mimics:
+            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
+
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
         # Defaults to True and is reset to True when consumed by step().
@@ -855,7 +887,19 @@ class SolverVBD(SolverBase, CouplingInterface):
             print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
-
+        # One tiled elasticity kernel, specialized at code generation from static model data.
+        # Element materials are static solver inputs; rebuild the solver after changing triangle
+        # or edge stiffness so the specialization is recomputed.
+        self._tiled_elasticity_kernel = None
+        self._tiled_elasticity_particles_per_block = 1
+        if self.use_particle_tile_solve:
+            include_tets = model.tet_count > 0
+            include_triangles = not _is_tet_only_elasticity_model(model)
+            two_particles_per_warp = not include_tets
+            self._tiled_elasticity_kernel = make_solve_elasticity_tile(
+                include_triangles, include_tets, two_particles_per_warp
+            )
+            self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
@@ -1124,12 +1168,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
-            # Per-joint rod angular-rest invariants captured from the Model
-            # target at construction: curvature binormal and transported twist.
+            # Per-joint DER rest invariants, refreshed at init and on model change
+            # (see _refresh_rod_rest_bend_twist_cache): the parent-local rest
+            # curvature binormal (bend) and the rest transported-material twist.
             # Rod joints use local +Z as the material tangent (a SolverVBD convention).
             self.joint_rod_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_rod_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
-            self._init_rod_rest_bend_twist_cache()
+            self._refresh_rod_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -1138,6 +1183,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
+        self._particle_contact_head = wp.full(model.particle_count, -1, dtype=wp.int32, device=self.device)
+        self._particle_contact_next = wp.empty(0, dtype=wp.int32, device=self.device)
+        self._particle_contact_adjacency_initialized = False
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
@@ -1199,6 +1247,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            self._refresh_rod_rest_bend_twist_cache()
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -1559,6 +1609,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_ke = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
+        self._particle_contact_next = wp.empty(3 * soft_contact_max, dtype=wp.int32, device=self.device)
+        self._particle_contact_adjacency_initialized = False
 
     def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
         """Allocate fresh contact-history buffers."""
@@ -1578,8 +1630,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
-    def _init_rod_rest_bend_twist_cache(self) -> None:
-        """Compute static Rod bend/twist rest invariants from Model targets."""
+    def _refresh_rod_rest_bend_twist_cache(self) -> None:
+        """Recompute Rod bend/twist rest invariants from Model targets."""
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
         if not self._integrates_rigid_bodies or self.model.joint_count == 0:
@@ -1801,20 +1853,20 @@ class SolverVBD(SolverBase, CouplingInterface):
                     bend_dof = angular_dof
                     twist_dof = angular_dof + 2
 
-                    ke_stretch = jtarget_ke[stretch_dof]
-                    ke_shear = jtarget_ke[shear_dof]
-                    ke_bend = jtarget_ke[bend_dof]
-                    ke_twist = jtarget_ke[twist_dof]
+                    stretch_ke = jtarget_ke[stretch_dof]
+                    shear_ke = jtarget_ke[shear_dof]
+                    bend_ke = jtarget_ke[bend_dof]
+                    twist_ke = jtarget_ke[twist_dof]
 
-                    joint_material_k_np[stretch_slot] = ke_stretch
-                    joint_material_k_np[shear_slot] = ke_shear
-                    joint_material_k_np[bend_slot] = ke_bend
-                    joint_material_k_np[twist_slot] = ke_twist
+                    joint_material_k_np[stretch_slot] = stretch_ke
+                    joint_material_k_np[shear_slot] = shear_ke
+                    joint_material_k_np[bend_slot] = bend_ke
+                    joint_material_k_np[twist_slot] = twist_ke
 
-                    joint_k_init_np[stretch_slot] = _penalty_k_init(ke_stretch, legacy_lin_k_start)
-                    joint_k_init_np[shear_slot] = _penalty_k_init(ke_shear, legacy_lin_k_start)
-                    joint_k_init_np[bend_slot] = _penalty_k_init(ke_bend, legacy_ang_k_start)
-                    joint_k_init_np[twist_slot] = _penalty_k_init(ke_twist, legacy_ang_k_start)
+                    joint_k_init_np[stretch_slot] = _penalty_k_init(stretch_ke, legacy_lin_k_start)
+                    joint_k_init_np[shear_slot] = _penalty_k_init(shear_ke, legacy_lin_k_start)
+                    joint_k_init_np[bend_slot] = _penalty_k_init(bend_ke, legacy_ang_k_start)
+                    joint_k_init_np[twist_slot] = _penalty_k_init(twist_ke, legacy_ang_k_start)
 
                     joint_kd_np[stretch_slot] = jtarget_kd[stretch_dof]
                     joint_kd_np[shear_slot] = jtarget_kd[shear_dof]
@@ -2170,6 +2222,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         rows. For the same reason, do not change a body's solvability (mass or
         kinematic flag) while update is disabled: the per-body lists depend on
         effective inverse mass and are not rebuilt until the next refresh.
+        The per-particle contact adjacency is frozen with the same contract: its
+        node ids index the contact buffer of the previous refresh, so passing a
+        re-collided or smaller-capacity buffer while update is disabled reads
+        the wrong records (or out of bounds).
 
         Joint constraint maintenance (C0 snapshot, lambda retention/decay, and
         automatic rho refresh) runs every step regardless of this flag via
@@ -2842,7 +2898,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             and model.particle_count > 0
             and contacts is not None
             and contacts.soft_contact_max > 0
-            and self.body_particle_contact_penalty_k.shape[0] < contacts.soft_contact_max
+            and (
+                self.body_particle_contact_penalty_k.shape[0] < contacts.soft_contact_max
+                or not self._particle_contact_adjacency_initialized
+            )
         ):
             refresh = True
 
@@ -2906,6 +2965,23 @@ class SolverVBD(SolverBase, CouplingInterface):
             dim=soft_contact_launch_dim,
             device=self.device,
         )
+
+        if model.particle_count > 0:
+            self._particle_contact_head.fill_(-1)
+            if contacts.soft_contact_max > 0:
+                wp.launch(
+                    kernel=build_particle_body_contact_adjacency_active,
+                    dim=contacts.soft_contact_max,
+                    inputs=[
+                        contacts.soft_contact_indices,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
+                        self._particle_contact_head,
+                        self._particle_contact_next,
+                    ],
+                    device=self.device,
+                )
+            self._particle_contact_adjacency_initialized = True
 
     def _step_body_body_contact_frame(
         self,
@@ -3211,24 +3287,22 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
-            if contacts is not None:
+            if contacts is not None and contacts.soft_contact_max > 0:
                 wp.launch(
-                    kernel=accumulate_particle_body_contact_force_and_hessian,
-                    dim=contacts.soft_contact_max,
+                    kernel=gather_particle_body_contact_force_and_hessian,
+                    dim=self.model.particle_color_groups[color].size,
+                    block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
                     inputs=[
                         dt,
-                        color,
+                        self.model.particle_color_groups[color],
                         self.particle_q_prev,
                         state_in.particle_q,
-                        model.particle_colors,
-                        # body-particle contact
                         self.friction_epsilon,
                         model.particle_radius,
                         contacts.soft_contact_indices,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
+                        self._particle_contact_head,
+                        self._particle_contact_next,
                         self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         model.shape_body,
@@ -3296,10 +3370,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                     max_blocks=self.model.device.sm_count,
                 )
             if self.use_particle_tile_solve:
+                particle_count_in_color = self.model.particle_color_groups[color].size
+                per_block = self._tiled_elasticity_particles_per_block
+                blocks = (particle_count_in_color + per_block - 1) // per_block
                 wp.launch(
-                    kernel=solve_elasticity_tile,
-                    dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                    block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    kernel=self._tiled_elasticity_kernel,
+                    dim=blocks * per_block * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    block_dim=per_block * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                     inputs=[
                         dt,
                         self.model.particle_color_groups[color],
@@ -3579,6 +3656,17 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 dim=color_group.size,
                 device=self.device,
+            )
+
+        if self._has_joint_mimics:
+            project_joint_mimics(
+                model,
+                state_in.body_q,
+                state_in.body_qd,
+                self.body_inv_mass_effective,
+                self.body_inv_inertia_effective,
+                self._mimic_body_deltas,
+                dt,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0:

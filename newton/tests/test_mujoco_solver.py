@@ -37,6 +37,29 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
+def _add_deprecated_mimic_constraint(
+    builder: newton.ModelBuilder,
+    *,
+    joint0: int,
+    joint1: int,
+    coef0: float = 0.0,
+    coef1: float = 1.0,
+    enabled: bool = True,
+    label: str | None = None,
+) -> int:
+    """Add a sparse mimic constraint while acknowledging its deprecation."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return builder.add_constraint_mimic(
+            joint0=joint0,
+            joint1=joint1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+            label=label,
+        )
+
+
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
     direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
     direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
@@ -4452,29 +4475,63 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
         self.assertEqual(injected_contact_count, generated_contact_count)
 
-    def test_newton_contact_defaults_bound_explicit_capacities(self):
-        """Preserve Newton-derived lower bounds for explicit MuJoCo capacities."""
+    def test_newton_contact_explicit_capacities_are_preserved(self):
+        """Preserve explicit MuJoCo capacities for Newton-generated contacts."""
         model = self._build_grounded_spheres(60)
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
-        collision_pipeline.collide(state, contacts)
-        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        nconmax = 200
+        njmax = 300
 
         try:
-            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=16, njmax=16)
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                nconmax=nconmax,
+                njmax=njmax,
+            )
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
-        self.assertGreater(generated_contact_count, 48)
-        self.assertGreater(model.rigid_contact_max, 16)
-        self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
-        self.assertGreaterEqual(solver.mjw_data.njmax, model.rigid_contact_max * 4)
+        self.assertEqual(solver.mjw_data.naconmax, nconmax)
+        self.assertEqual(solver.mjw_data.njmax, njmax)
 
-        solver._convert_contacts_to_mjwarp(model, state, contacts)
-        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
-        self.assertEqual(injected_contact_count, generated_contact_count)
+    def test_explicit_nconmax_below_initial_contacts_is_increased(self):
+        """Increase an explicit contact capacity below initial MuJoCo contacts."""
+        model = self._build_grounded_spheres(60)
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for nconmax is changed from 16 to 60"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=16)
+
+        self.assertEqual(solver.mjw_data.naconmax, 60)
+
+    def test_explicit_njmax_below_initial_constraints_is_increased(self):
+        """Increase an explicit constraint capacity below initial MuJoCo constraints."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.1)
+        for _ in range(5):
+            body = builder.add_link(mass=1.0, com=wp.vec3(), inertia=inertia)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=body,
+                limit_lower=1.0,
+                limit_upper=2.0,
+            )
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for njmax is changed from 1 to 5"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1, njmax=1)
+
+        self.assertEqual(solver.mjw_data.njmax, 5)
 
     def test_newton_contact_capacity_preserves_delayed_joint_limits(self):
         """Preserve default capacity for non-contact constraints activated after initialization."""
@@ -8367,7 +8424,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = main.add_joint_revolute(-1, b0)
         j1 = main.add_joint_revolute(b0, b1)
         main.add_articulation([j0, j1])
-        main.add_constraint_mimic(joint0=j1, joint1=j0)
+        _add_deprecated_mimic_constraint(main, joint0=j1, joint1=j0)
 
         source = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(source)
@@ -8376,7 +8433,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj0 = source.add_joint_revolute(-1, s0)
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
-        sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
+        sm = _add_deprecated_mimic_constraint(source, joint0=sj1, joint1=sj0)
         _add_equality_constraint(
             source,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -9381,7 +9438,14 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        _add_deprecated_mimic_constraint(
+            builder,
+            joint0=j2,
+            joint1=j1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+        )
         return builder.finalize()
 
     def test_mimic_constraint_conversion(self):
@@ -9401,6 +9465,85 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
         mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
         self.assertEqual(mimic_map[0, 0], 0)
+
+    def test_joint_mimic_conversion_and_runtime_update(self):
+        """Verify MuJoCo lowers and updates joint-owned mimic metadata."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = builder.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = builder.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
+        self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (1.0, -3.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+
+    def test_joint_mimic_d6_conversion(self):
+        """Verify MuJoCo lowers multi-axis D6 mimic metadata componentwise."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y)]
+        reference = builder.add_joint_d6(-1, body0, linear_axes=axes)
+        follower = builder.add_joint_d6(body0, body1, linear_axes=axes)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        np.testing.assert_allclose(
+            solver.mjw_model.eq_data.numpy()[0, :, :5],
+            [[0.5, 2.0, 0.0, 0.0, 0.0], [0.5, 2.0, 0.0, 0.0, 0.0]],
+        )
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[0], [follower, follower])
+
+    def test_joint_mimic_multi_world_mapping(self):
+        """Verify dense mimic mappings and coefficients remain per world."""
+        template = newton.ModelBuilder()
+        body0 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = template.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = template.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_articulation([reference, follower])
+        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[:, 0], [1, 3])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [0.5, 2.0]])
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[3] = (-0.25, -4.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [-0.25, -4.0]])
 
     def test_mimic_constraint_runtime_update(self):
         """Test that mimic constraint properties can be updated at runtime."""
@@ -9452,7 +9595,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
             builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j1, j2])
-            mimic = builder.add_constraint_mimic(
+            mimic = _add_deprecated_mimic_constraint(
+                builder,
                 joint0=j2,
                 joint1=j1,
                 coef0=10.0 + world,
@@ -9511,7 +9655,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        mimic = builder.add_constraint_mimic(
+        mimic = _add_deprecated_mimic_constraint(
+            builder,
             joint0=j2,
             joint1=j1,
             coef0=10.0,
@@ -9589,7 +9734,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
         # Add a mimic constraint
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9648,7 +9793,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1, j2])
-        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(template_builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         world_count = 3
         builder = newton.ModelBuilder()

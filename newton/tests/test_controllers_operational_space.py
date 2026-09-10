@@ -22,16 +22,18 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.controllers.impl.operational_space._common import (
-    _apply_generalized_task_specification_matrix_kernel,
-    _apply_mass_matrix_inv_on_right_kernel,
+from newton._src.controllers.impl._common import (
     _invert_spd_block_kernel,
-    _jacobian_times_jacobian_transpose_kernel,
     _null_space_projector_kernel,
-    _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
     _task_matrix_times_jacobian_kernel,
+)
+from newton._src.controllers.impl.operational_space._common import (
+    _apply_generalized_task_specification_matrix_kernel,
+    _apply_mass_matrix_inv_on_right_kernel,
+    _jacobian_times_jacobian_transpose_kernel,
+    _operational_space_mass_matrix_inverse_kernel,
     _tool_pose_and_twist_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
@@ -1919,6 +1921,53 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_gravity_compensation=False,
+            )
+
+    def test_world_attached_site_is_ignored_and_cannot_be_selected_as_tool(self):
+        """A site attached to no body (ModelBuilder.add_site(-1, ...)) must never be mistaken for a tool site.
+
+        Regression test: such a site's body index (-1) must not alias, via
+        plain NumPy fancy indexing, onto whatever articulation the model's
+        last body happens to belong to.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+        builder.add_site(-1, label="world_ref", xform=wp.transform_identity())
+        model = builder.finalize(device=device)
+
+        # An unrelated world-attached site must not disturb normal resolution.
+        ControllerOperationalSpace(
+            model,
+            tool_sites="tip",
+            motion_stiffness=1.0,
+            motion_damping=1.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
+            use_gravity_compensation=False,
+            use_inertia_decoupling=False,
+        )
+
+        # Explicitly requesting the world-attached site must raise, not
+        # silently alias onto another articulation or reach a Jacobian
+        # index computation with a bogus body/joint index.
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model,
+                tool_sites="world_ref",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
+                use_gravity_compensation=False,
+                use_inertia_decoupling=False,
             )
 
     def test_tool_pattern_matching_multiple_sites_on_one_robot_raises(self):

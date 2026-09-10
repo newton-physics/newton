@@ -103,6 +103,7 @@ from .kernels import (
     update_jnt_connect_constraint_rel_body_poses_at_qref_kernel,
     update_jnt_properties_kernel,
     update_jnt_solref_from_invweight0_kernel,
+    update_joint_mimic_eq_data_kernel,
     update_joint_transforms_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_mocap_transforms_kernel,
@@ -392,7 +393,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
           :attr:`~newton.Model.joint_target_mode`, and :attr:`~newton.Control.joint_f` are supported.
-        - Equality constraints (CONNECT, WELD, JOINT) and mimic constraints (REVOLUTE and PRISMATIC only) are supported.
+        - Equality constraints (CONNECT, WELD, JOINT) and mimic relationships
+          between REVOLUTE, PRISMATIC, or D6 joints are supported.
         - :attr:`~newton.Model.joint_velocity_limit` and :attr:`~newton.Model.joint_enabled`
           are not supported.
 
@@ -3737,9 +3739,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            njmax: Maximum number of constraints per world. If None, a default
+                value is estimated automatically. An explicit value is preserved
+                unless it cannot hold the initial MuJoCo constraints; in that case,
+                it is increased with a warning.
             njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
-            nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            nconmax: Number of contact points per world. If None, a default value
+                is estimated automatically. An explicit value is preserved unless
+                it cannot hold the initial MuJoCo contacts; in that case, it is
+                increased with a warning.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
@@ -3916,6 +3924,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's mimic constraints.
         A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton mimic constraint.
+
+        Shape [nworld, neq], dtype int32."""
+        self.mjc_eq_to_newton_joint_mimic: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, eq] to Newton mimic follower joint index.
+
+        Corresponds to equality constraints created from joint-owned mimic
+        metadata. A value of -1 indicates an unmapped equality constraint.
 
         Shape [nworld, neq], dtype int32."""
         self.mjc_tendon_to_newton_tendon: wp.array2d[wp.int32] | None = None
@@ -5958,6 +5973,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mimic_coef1 = model.constraint_mimic_coef1.numpy()
         mimic_enabled = model.constraint_mimic_enabled.numpy()
         mimic_world = model.constraint_mimic_world.numpy()
+        joint_mimic_joint = model.joint_mimic_joint.numpy()
+        joint_mimic_coeffs = model.joint_mimic_coeffs.numpy()
 
         # mapping from joint axis to actuator index
         # axis_to_actuator[i, 0] = position actuator index
@@ -6008,6 +6025,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
+        # Store the scalar MuJoCo joint names for each Newton joint coordinate.
+        joint_axis_mapping = {}
         # Store mapping from Newton body index to MuJoCo body name
         body_name_mapping = {}
 
@@ -6043,6 +6062,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
             selected_mimic_constraints = np.arange(model.constraint_mimic_count, dtype=np.int32)
+
+        legacy_mimic_followers = {int(mimic_joint0[i]) for i in selected_mimic_constraints}
+        selected_joint_mimics = np.asarray(
+            [
+                joint
+                for joint in selected_joints
+                if joint_mimic_joint[joint] >= 0 and joint not in legacy_mimic_followers
+            ],
+            dtype=np.int32,
+        )
 
         # get the shapes for the first environment
         first_env_shapes = np.where(shape_world == first_world)[0]
@@ -6852,6 +6881,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 multi_axis_joint = lin_axis_count + ang_axis_count > 1
+                joint_axis_mapping[j] = []
                 num_dofs += lin_axis_count + ang_axis_count
                 num_qpos += lin_axis_count + ang_axis_count
 
@@ -6928,6 +6958,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         **joint_params,
                     )
                     mjc_joint_names.append(axname)
+                    joint_axis_mapping[j].append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -7040,6 +7071,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         **joint_params,
                     )
                     mjc_joint_names.append(axname)
+                    joint_axis_mapping[j].append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -7332,6 +7364,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.data[2] = 0.0
             eq.data[3] = 0.0
             eq.data[4] = 0.0
+
+        # Joint-owned mimic metadata is canonical for new models. Deprecated
+        # sparse rows take precedence above so their runtime-mutability remains
+        # compatible without creating duplicate MuJoCo equalities.
+        mjc_eq_to_newton_joint_mimic_dict = {}
+        for follower_joint in selected_joint_mimics:
+            reference_joint = int(joint_mimic_joint[follower_joint])
+            follower_names = joint_axis_mapping.get(follower_joint)
+            reference_names = joint_axis_mapping.get(reference_joint)
+            if follower_names is None or reference_names is None:
+                warnings.warn(
+                    f"Skipping mimic joint {follower_joint}: MuJoCo joint equalities only support "
+                    "joints represented by scalar slide or hinge coordinates.",
+                    stacklevel=2,
+                )
+                continue
+
+            for follower_name, reference_name in zip(follower_names, reference_names, strict=True):
+                eq = spec.add_equality()
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+                eq.active = True
+                eq.name1 = follower_name
+                eq.name2 = reference_name
+                eq.data[0] = float(joint_mimic_coeffs[follower_joint, 0])
+                eq.data[1] = float(joint_mimic_coeffs[follower_joint, 1])
+                mjc_eq_to_newton_joint_mimic_dict[eq.id] = int(follower_joint)
+                eq.data[2] = 0.0
+                eq.data[3] = 0.0
+                eq.data[4] = 0.0
 
         # Count non-colliding geoms that were kept because they are required by spatial tendons
         tendon_extra_geoms = sum(
@@ -7754,6 +7815,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjc_eq_to_newton_mimic_np[:, mjc_eq] = world_offsets * mimic_per_world + template_mimic
             self.mjc_eq_to_newton_mimic = wp.array(mjc_eq_to_newton_mimic_np, dtype=wp.int32)
 
+            mjc_eq_to_newton_joint_mimic_np = np.full((nworld, neq), -1, dtype=np.int32)
+            for mjc_eq, newton_joint in mjc_eq_to_newton_joint_mimic_dict.items():
+                template_joint = newton_joint % joints_per_world if joints_per_world > 0 else newton_joint
+                for w in range(nworld):
+                    mjc_eq_to_newton_joint_mimic_np[w, mjc_eq] = w * joints_per_world + template_joint
+            self.mjc_eq_to_newton_joint_mimic = wp.array(
+                mjc_eq_to_newton_joint_mimic_np,
+                dtype=wp.int32,
+            )
+
             # Create mjc_tendon_to_newton_tendon: MuJoCo[world, tendon] -> Newton tendon
             # selected_tendons[idx] is the Newton template tendon index
             ntendon = self.mj_model.ntendon
@@ -7781,41 +7852,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if disable_contacts:
                 nconmax = 0
             elif not self._use_mujoco_contacts:
-                # The initialization forward intentionally produces no contacts
-                # in this mode, so size MJWarp from Newton's collision budget.
-                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
-
-                newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
-                default_nconmax = (newton_contact_max + nworld - 1) // nworld
                 if nconmax is None:
-                    nconmax = default_nconmax
-                elif nconmax >= 0:
-                    nconmax = max(nconmax, default_nconmax)
+                    # The initialization forward intentionally produces no contacts
+                    # in this mode, so size MJWarp from Newton's collision budget.
+                    newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                    nconmax = (newton_contact_max + nworld - 1) // nworld
 
-                max_contact_dim = max(
-                    1,
-                    int(np.max(self.mj_model.geom_condim, initial=1)),
-                    int(np.max(self.mj_model.pair_dim, initial=1)),
-                )
-                if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
-                    constraint_rows_per_contact = max_contact_dim
-                else:
-                    constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
-
-                # MJWarp stores contacts in one heterogeneous buffer, so every
-                # contact can belong to any compatible world even though
-                # nconmax is passed as a per-world allocation. Constraint rows
-                # are strictly per-world, so size them from the busiest-world
-                # topology rather than duplicating the global capacity.
-                per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
-                default_njmax = max(
-                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
-                    self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
-                )
                 if njmax is None:
-                    njmax = default_njmax
-                elif njmax >= 0:
-                    njmax = max(njmax, default_njmax)
+                    from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
+                    max_contact_dim = max(
+                        1,
+                        int(np.max(self.mj_model.geom_condim, initial=1)),
+                        int(np.max(self.mj_model.pair_dim, initial=1)),
+                    )
+                    if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                        constraint_rows_per_contact = max_contact_dim
+                    else:
+                        constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+
+                    # MJWarp stores contacts in one heterogeneous buffer, so every
+                    # contact can belong to any compatible world even though
+                    # nconmax is passed as a per-world allocation. Constraint rows
+                    # are strictly per-world, so size them from the busiest-world
+                    # topology rather than duplicating the global capacity.
+                    per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
+                    njmax = max(
+                        estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                        self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                    )
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
@@ -9270,40 +9335,51 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _update_mimic_eq_properties(self):
-        """Update mimic constraint properties in the MuJoCo model.
+        """Update mimic properties in the MuJoCo model.
 
         Updates:
 
-        - eq_data from Newton's constraint_mimic_coef0, constraint_mimic_coef1
-        - eq_active from Newton's constraint_mimic_enabled
+        - Joint-owned equality data from :attr:`Model.joint_mimic_coeffs`.
+        - Deprecated constraint equality data and active state from the sparse
+          ``constraint_mimic_*`` arrays.
 
-        Maps mimic constraints to MuJoCo mjEQ_JOINT equality constraints
+        Maps mimic relationships to MuJoCo mjEQ_JOINT equality constraints
         using the polycoef representation: q1 = coef0 + coef1 * q2.
         """
-        if self.model.constraint_mimic_count == 0 or self.mjc_eq_to_newton_mimic is None:
-            return
-
         neq = self.mj_model.neq
         if neq == 0:
             return
 
-        world_count = self.mjc_eq_to_newton_mimic.shape[0]
+        if self.model.constraint_mimic_count > 0 and self.mjc_eq_to_newton_mimic is not None:
+            world_count = self.mjc_eq_to_newton_mimic.shape[0]
+            wp.launch(
+                update_mimic_eq_data_and_active_kernel,
+                dim=(world_count, neq),
+                inputs=[
+                    self.mjc_eq_to_newton_mimic,
+                    self.model.constraint_mimic_coef0,
+                    self.model.constraint_mimic_coef1,
+                    self.model.constraint_mimic_enabled,
+                ],
+                outputs=[
+                    self.mjw_model.eq_data,
+                    self.mjw_data.eq_active,
+                ],
+                device=self.model.device,
+            )
 
-        wp.launch(
-            update_mimic_eq_data_and_active_kernel,
-            dim=(world_count, neq),
-            inputs=[
-                self.mjc_eq_to_newton_mimic,
-                self.model.constraint_mimic_coef0,
-                self.model.constraint_mimic_coef1,
-                self.model.constraint_mimic_enabled,
-            ],
-            outputs=[
-                self.mjw_model.eq_data,
-                self.mjw_data.eq_active,
-            ],
-            device=self.model.device,
-        )
+        if self.mjc_eq_to_newton_joint_mimic is not None:
+            world_count = self.mjc_eq_to_newton_joint_mimic.shape[0]
+            wp.launch(
+                update_joint_mimic_eq_data_kernel,
+                dim=(world_count, neq),
+                inputs=[
+                    self.mjc_eq_to_newton_joint_mimic,
+                    self.model.joint_mimic_coeffs,
+                ],
+                outputs=[self.mjw_model.eq_data],
+                device=self.model.device,
+            )
 
     def _update_tendon_properties(self):
         """Update fixed tendon properties in the MuJoCo model.
@@ -9570,6 +9646,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Joint DOF counts mismatch at position {j}: world 0 has "
                     f"{dims[0].tolist()} (linear, angular) DOFs, "
                     f"but other worlds have {dims[1:].tolist()}."
+                )
+
+            joint_mimic_joint = model.joint_mimic_joint.numpy().reshape(world_count, joints_per_world)
+            world_joint_offsets = np.arange(world_count, dtype=np.int32)[:, None] * joints_per_world
+            normalized_mimic_joint = np.where(joint_mimic_joint >= 0, joint_mimic_joint - world_joint_offsets, -1)
+            mismatches = normalized_mimic_joint != normalized_mimic_joint[0]
+            if np.any(mismatches):
+                joint = int(np.argmax(np.any(mismatches, axis=0)))
+                references = normalized_mimic_joint[:, joint]
+                raise ValueError(
+                    "SolverMuJoCo requires homogeneous worlds. "
+                    f"Mimic reference mismatch at joint position {joint}: world 0 references "
+                    f"{references[0]}, but other worlds reference {references[1:].tolist()}."
                 )
 
         # Only check non-global shapes

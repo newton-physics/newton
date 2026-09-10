@@ -2951,6 +2951,29 @@ def update_mimic_eq_data_and_active_kernel(
     eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]
 
 
+@wp.kernel
+def update_joint_mimic_eq_data_kernel(
+    mjc_eq_to_newton_joint_mimic: wp.array2d[wp.int32],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    # outputs
+    eq_data_out: wp.array2d[vec11],
+):
+    """Update MuJoCo equality data from joint-owned mimic coefficients."""
+    world, mjc_eq = wp.tid()
+    follower_joint = mjc_eq_to_newton_joint_mimic[world, mjc_eq]
+    if follower_joint < 0:
+        return
+
+    coeffs = joint_mimic_coeffs[follower_joint]
+    data = eq_data_out[world, mjc_eq]
+    data[0] = coeffs[0]
+    data[1] = coeffs[1]
+    data[2] = 0.0
+    data[3] = 0.0
+    data[4] = 0.0
+    eq_data_out[world, mjc_eq] = data
+
+
 @wp.func
 def mj_body_acceleration(
     body_rootid: wp.array[int],
