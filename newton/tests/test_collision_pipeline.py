@@ -2781,7 +2781,9 @@ def test_scalar_sdf_texture_routes_to_sdf_contact(test, device):
 
     paired_channels, paired = collide(True)
     scalar_channels, scalar = collide(False)
-    test.assertEqual(paired_channels, 2)
+    toolkit_version = wp.get_cuda_toolkit_version()
+    paired_samples_supported = device.arch >= 90 or (toolkit_version is not None and toolkit_version >= (13, 1))
+    test.assertEqual(paired_channels, 2 if paired_samples_supported else 1)
     test.assertEqual(scalar_channels, 1)
     for name, paired_values, scalar_values in zip(
         ("shape0", "shape1", "point0", "point1", "normal", "penetration"), paired, scalar, strict=True
@@ -4421,6 +4423,30 @@ def _make_box_mesh_sdf_model(device):
     return model, int(model._shape_sdf_index.numpy()[0])
 
 
+def test_eval_shape_sdf_mesh_distance(test, device):
+    """Evaluate the correct distance outside a builder-generated mesh SDF."""
+    model, sdf_idx = _make_box_mesh_sdf_model(device)
+    test.assertGreaterEqual(sdf_idx, 0)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _eval_shape_sdf_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.MESH),
+            wp.vec3(1.0, 1.0, 1.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            sdf_idx,
+            model._texture_sdf_data,
+        ],
+        outputs=[out_phi, out_grad],
+        device=device,
+    )
+
+    test.assertAlmostEqual(float(out_phi.numpy()[0]), 0.5, delta=1.0e-6)
+
+
 def test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign(test, device):
     """A mirrored (negative) mesh scale must not flip the SDF sign (E3). wp.min(scale) would go
     negative and invert an outside distance; wp.min(wp.abs(scale)) keeps the magnitude positive."""
@@ -4663,6 +4689,7 @@ for _name, _fn in (
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 
 for _name, _fn in (
+    ("test_eval_shape_sdf_mesh_distance", test_eval_shape_sdf_mesh_distance),
     ("test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign", test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign),
     ("test_full_surface_empty_sdf_descriptor_rejected", test_full_surface_empty_sdf_descriptor_rejected),
     ("test_full_surface_nonuniform_mesh_accurate_distance", test_full_surface_nonuniform_mesh_accurate_distance),

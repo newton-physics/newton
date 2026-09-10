@@ -890,8 +890,11 @@ class Mesh:
             paired_samples: Store each SDF sample with its positive-X
                 neighbor for faster software interpolation. Disable to halve
                 texture memory at the cost of slower hydroelastic sampling.
-                When the mesh is added to a :class:`ModelBuilder`, this value
-                must match :attr:`ModelBuilder.sdf_texture_paired_samples`.
+                This optimization is automatically disabled on CUDA devices
+                with architectures older than SM90 when Warp was built with
+                CUDA Toolkit 13.0 or earlier. When the mesh is added to a
+                :class:`ModelBuilder`, its effective layout must match the
+                builder's effective layout.
             edge_lower_angle_threshold_rad: Drop internal edges whose
                 dihedral angle is below this value [rad]. Set to 0 to keep
                 every manifold edge. A negative value opts out of edge

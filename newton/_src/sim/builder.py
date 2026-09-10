@@ -48,6 +48,7 @@ from ..geometry import (
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -1492,15 +1493,18 @@ class ModelBuilder:
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
                 halve SDF texture memory at the cost of slower hydroelastic
-                sampling. Every prebuilt mesh SDF added to this builder must
-                use the same layout, selected by the ``paired_samples``
-                argument to :meth:`Mesh.build_sdf`.
+                sampling. This optimization is automatically disabled on CUDA
+                devices with architectures older than SM90 when Warp was built
+                with CUDA Toolkit 13.0 or earlier. Every prebuilt mesh SDF
+                added to this builder must use the same effective layout,
+                selected by the ``paired_samples`` argument to
+                :meth:`Mesh.build_sdf` and the target device.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
-        """Whether generated SDF textures store adjacent X samples together."""
+        """Whether generated SDF textures should store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -12361,11 +12365,14 @@ class ModelBuilder:
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
 
         with wp.ScopedDevice(device):
+            current_device = wp.get_device()
+            sdf_texture_paired_samples = _resolve_paired_samples_flag(self.sdf_texture_paired_samples, current_device)
+
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
-            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
+            m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -12802,7 +12809,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
@@ -12903,7 +12909,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
-                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        sdf_kwargs["paired_samples"] = sdf_texture_paired_samples
                         # Convex collision geometry is deduplicated before finalization,
                         # so build and cache its deferred SDF against that same topology.
                         sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
@@ -12929,13 +12935,13 @@ class ModelBuilder:
                     if mesh_sdf is not None:
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
-                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                            (coarse_texture.num_channels == 2) != sdf_texture_paired_samples
                         ):
-                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            mode = "paired" if sdf_texture_paired_samples else "scalar"
                             raise ValueError(
                                 f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
                                 "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
-                                f"{self.sdf_texture_paired_samples})."
+                                f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
@@ -12990,7 +12996,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
-                                    paired_samples=self.sdf_texture_paired_samples,
+                                    paired_samples=sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -13077,7 +13083,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
-                            paired_samples=self.sdf_texture_paired_samples,
+                            paired_samples=sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
