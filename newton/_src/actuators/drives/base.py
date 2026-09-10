@@ -112,7 +112,7 @@ class DriveBase:
 
     evaluate_force: ClassVar[wp.Function | None] = None
     """``@wp.func`` form of this drive's force law, called inside the
-    implicit solve kernel (see :meth:`Actuator.set_effort_mode_implicit`).
+    implicit solve kernel (see :meth:`Actuator.prepare_implicit_mode`).
     ``None`` means the drive does not support implicit actuation.
 
     Required signature (``float64``)::

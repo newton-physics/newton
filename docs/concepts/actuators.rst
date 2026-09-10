@@ -314,12 +314,12 @@ is refreshed once per step at the current pose:
    from newton.actuators import JointSpaceResponse
 
    response = JointSpaceResponse(model)
-   actuator.set_effort_mode_implicit(response=response)
+   actuator.prepare_implicit_mode(model)
 
    # Simulation loop
    response.refresh(sim_state)
    sim_control.joint_f.zero_()
-   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01, response=response)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
 
 In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
@@ -366,9 +366,14 @@ Newton solver that provides one.
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
 
-:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
-explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
-solve's iteration count and convergence tolerances.
+:meth:`~newton.actuators.Actuator.prepare_implicit_mode` performs host-side indexing,
+allocates the solve buffers and generates kernels, so call it before entering
+the simulation loop or beginning a CUDA graph capture. Each
+:meth:`Actuator.step <newton.actuators.Actuator.step>` then chooses its own
+evaluation: passing ``response`` solves implicitly, omitting it solves
+explicitly. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
+solve's iteration count and convergence tolerances, passed as the second argument to
+:meth:`~newton.actuators.Actuator.prepare_implicit_mode`.
 
 The following built-in drives support the implicit mode (neural drives require
 the ONNX backend):
@@ -381,7 +386,7 @@ The neural drives enter the solve as a per-step linearization of the
 network. Its slopes come from a Warp autodiff pass over the loaded network, so
 only the ONNX backend supports them (see :ref:`neural-network-checkpoints`);
 with a Torch checkpoint
-:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
+:meth:`~newton.actuators.Actuator.prepare_implicit_mode` raises
 ``NotImplementedError``. :class:`~newton.actuators.DriveNeuralMLP` also
 needs a single-step input history (``input_idx == [0]``).
 
@@ -520,7 +525,7 @@ evaluates the control law inside its own kernel rather than calling
 
 Returning ``None`` from :meth:`~DriveBase.bind_params` declares that this
 configuration cannot be solved implicitly.
-:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` then raises
+:meth:`~newton.actuators.Actuator.prepare_implicit_mode` then raises
 ``NotImplementedError`` rather than falling back silently, as it does for a
 Torch-backed neural checkpoint. Leaving
 :attr:`~DriveBase.evaluate_force` as ``None`` raises the same error.

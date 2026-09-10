@@ -31,6 +31,7 @@ import numpy as np
 import warp as wp
 
 from ..sim import JointType
+from ..sim.model import Model
 from .drives.base import DriveBase
 from .joint_space_response import JointSpaceResponse
 
@@ -44,7 +45,7 @@ __all__ = ["ImplicitOptions", "JointSpaceResponse"]
 
 @dataclass
 class ImplicitOptions:
-    """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`."""
+    """Configuration for implicit actuation; see :meth:`Actuator.prepare_implicit_mode`."""
 
     class WarmStart(str, Enum):
         """Initial impulse guess for the Newton solve."""
@@ -344,7 +345,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
 
 
 # ---------------------------------------------------------------------------
-# The mode object installed by Actuator.set_effort_mode_implicit
+# Prepared implicit effort evaluator, built by Actuator.prepare_implicit_mode
 # ---------------------------------------------------------------------------
 
 
@@ -364,7 +365,7 @@ class _EffortModeImplicit:
         self,
         drive,
         clamping,
-        response: JointSpaceResponse,
+        model: Model,
         options: ImplicitOptions | None,
         num_actuators: int,
         device: wp.Device,
@@ -381,12 +382,7 @@ class _EffortModeImplicit:
             raise ValueError(f"fd_epsilon must be positive, got {self._options.fd_epsilon}")
         self._num_actuators = num_actuators
         self._device = device
-        if not isinstance(response, JointSpaceResponse):
-            raise ValueError(
-                "Implicit actuation requires response to be a JointSpaceResponse; "
-                "build one with newton.actuators.JointSpaceResponse(model)."
-            )
-        self._response = response
+        self._model = model
         self._drive = drive
         # Set for drives that require per-step preparation ahead of the implicit
         # solve, such as advancing an integral term or relinearizing a network.
@@ -457,7 +453,7 @@ class _EffortModeImplicit:
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
-        model = self._response.model
+        model = self._model
         dofs = vel_indices.numpy().astype(np.int64)
         joint_qd_start = model.joint_qd_start.numpy()
         art_start = model.articulation_start.numpy()
@@ -567,6 +563,8 @@ class _EffortModeImplicit:
         applied_forces: wp.array[float],
         drive_state: Any,
         dt: float | None,
+        *,
+        response: JointSpaceResponse,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
@@ -574,6 +572,8 @@ class _EffortModeImplicit:
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
         """
+        if response.model is not self._model:
+            raise ValueError("response was built for a different model than the implicit mode was prepared for")
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
         if dt <= 0.0:
@@ -582,7 +582,7 @@ class _EffortModeImplicit:
             wp.launch(
                 _gather_slot_response_kernel,
                 dim=self._num_actuators,
-                inputs=[self._response.inverse_blocks, self._slot_art, self._slot_local],
+                inputs=[response.inverse_blocks, self._slot_art, self._slot_local],
                 outputs=[self._slot_response],
                 device=self._device,
             )
@@ -600,7 +600,7 @@ class _EffortModeImplicit:
                 self._slot_response,
                 self._device,
             )
-        inverse_blocks = self._response.inverse_blocks
+        inverse_blocks = response.inverse_blocks
 
         opts = self._options
         wp.launch(
