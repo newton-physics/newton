@@ -26,7 +26,7 @@ BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
 
-_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device .*\n?"
+_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
 _MUJOCO_LS_ITERATIONS_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations \w+ \d+\n?"
 
 
@@ -454,6 +454,7 @@ class TestConveyorForces(NewtonTestCase):
     """Scenario matrix for the force-based conveyor model."""
 
     def setUp(self):
+        """Allow the lazy module-load and MuJoCo linesearch messages these scenes emit."""
         super().setUp()
         self.allowOutputRegex(_MODULE_LOAD_OUTPUT_RE, stream="stdout")
         self.allowOutputRegex(_MUJOCO_LS_ITERATIONS_OUTPUT_RE, stream="stdout")
