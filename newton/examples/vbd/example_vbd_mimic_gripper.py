@@ -141,8 +141,6 @@ class Example:
         )
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         self.control = self.model.control()
-        self.joint_q = wp.empty_like(self.model.joint_q)
-        self.joint_qd = wp.empty_like(self.model.joint_qd)
         self.history = deque(maxlen=int(self.HISTORY_SECONDS * self.FPS))
         self.max_mimic_error = 0.0
         self.reset()
@@ -187,16 +185,14 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
-        # VBD advances body poses, so reconstruct joint coordinates for plots.
-        newton.eval_ik(self.model, self.state_0, self.joint_q, self.joint_qd)
-
     def step(self):
         if self.graph is not None:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         self.sim_time += self.frame_dt
-        self.q, self.qd = self.joint_q.numpy(), self.joint_qd.numpy()
+        # VBD publishes continuous angles; stateless IK would discard full turns.
+        self.q, self.qd = self.state_0.joint_q.numpy(), self.state_0.joint_qd.numpy()
         self.history.append(
             (
                 self.sim_time,

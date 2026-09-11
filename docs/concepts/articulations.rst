@@ -204,6 +204,46 @@ dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
 
+Multi-turn motion in VBD
+~~~~~~~~~~~~~~~~~~~~~~~
+
+VBD remembers the accumulated angle of every revolute joint and every angular
+D6 coordinate, whether or not the joint belongs to a mimic relationship.
+Drives and limits use these continuous angles, so a target of two revolutions
+means two revolutions, not zero. Friction, damping, and mimic relationships
+use the same coordinates. For example, if a prismatic follower moves 1 cm per revolution
+of a revolute reference joint, three revolutions move it 3 cm. Passing through
+a full turn does not send the follower back to its starting position. This
+also preserves fractional gear ratios between two angular joints.
+
+A body orientation alone cannot distinguish zero turns from one or more full
+turns. Before the first step, set ``state.joint_q`` to the intended initial
+coordinates, including any full turns. Use :func:`newton.eval_mimic` to set
+matching follower coordinates, then :func:`newton.eval_fk` to initialize body
+poses. VBD uses these coordinates to seed its internal turn history. After each
+step, it updates ``state.joint_q`` and ``state.joint_qd`` for revolute, prismatic,
+and D6 joints, including disabled joints. Use these outputs directly for
+continuous angle plots and feedback; a later call to :func:`newton.eval_ik`
+overwrites them with wrapped angles, without changing VBD's internal history.
+Quaternion-valued ball and free joints do not have independent scalar turn
+counts and retain their existing representation; VBD does not populate their
+joint-coordinate outputs.
+
+After teleporting or restarting a mechanism, call
+:meth:`newton.solvers.SolverVBD.reset`. The default reset restores model-default
+body poses and joint turn seeds. For a custom starting pose, use ``flags=0``,
+set ``state.joint_q`` and run forward kinematics before stepping. A masked reset
+only restarts turn tracking for the selected worlds.
+
+Turn tracking uses successive poses: each angular coordinate must move by less
+than half a revolution per solver timestep. Use more substeps for faster
+motion. This does not remove the existing Euler-coordinate singularities of
+three-axis D6 joints. This pose-based turn tracking is currently implemented
+only in VBD, not XPBD or SemiImplicit.
+
+Initializing body poses
+-----------------------
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::

@@ -6,7 +6,7 @@
 import warp as wp
 
 from ...sim import JointType, Model
-from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from .joint_coordinates import JointCoordinateData, evaluate_coordinate
 from .rigid_vbd_kernels import ldlt6_solve
 
 wp.set_module_options({"enable_backward": False})
@@ -16,16 +16,8 @@ _Mat46 = wp.types.matrix(shape=(4, 6), dtype=wp.float32)
 
 @wp.struct
 class _JointData:
-    body_com: wp.array[wp.vec3]
-    joint_type: wp.array[int]
+    coordinates: JointCoordinateData
     enabled: wp.array[bool]
-    parent: wp.array[int]
-    child: wp.array[int]
-    X_p: wp.array[wp.transform]
-    X_c: wp.array[wp.transform]
-    qd_start: wp.array[int]
-    dof_dim: wp.array2d[int]
-    axis: wp.array[wp.vec3]
     reference: wp.array[int]
     coeffs: wp.array[wp.vec2]
 
@@ -33,39 +25,16 @@ class _JointData:
 @wp.func
 def _evaluate_row(data: _JointData, follower: int, component: int, body_q: wp.array[wp.transform]):
     reference = data.reference[follower]
-    q_f, g_fp, g_fc = eval_joint_mimic_coordinate(
-        follower,
-        component,
-        body_q,
-        data.body_com,
-        data.joint_type,
-        data.parent,
-        data.child,
-        data.X_p,
-        data.X_c,
-        data.qd_start,
-        data.dof_dim,
-        data.axis,
-    )
-    q_r, g_rp, g_rc = eval_joint_mimic_coordinate(
-        reference,
-        component,
-        body_q,
-        data.body_com,
-        data.joint_type,
-        data.parent,
-        data.child,
-        data.X_p,
-        data.X_c,
-        data.qd_start,
-        data.dof_dim,
-        data.axis,
-    )
+    q_f, g_fp, g_fc = evaluate_coordinate(data.coordinates, follower, component, body_q)
+    q_r, g_rp, g_rc = evaluate_coordinate(data.coordinates, reference, component, body_q)
     offset, multiplier = data.coeffs[follower][0], data.coeffs[follower][1]
     error = q_f - offset - multiplier * q_r
-    if component >= data.dof_dim[follower, 0]:
-        error = wp.atan2(wp.sin(error), wp.cos(error))
-    bodies = wp.vec4i(data.parent[follower], data.child[follower], data.parent[reference], data.child[reference])
+    bodies = wp.vec4i(
+        data.coordinates.parent[follower],
+        data.coordinates.child[follower],
+        data.coordinates.parent[reference],
+        data.coordinates.child[reference],
+    )
     gradients = wp.matrix_from_rows(g_fp, g_fc, -multiplier * g_rp, -multiplier * g_rc)
     # Shared parents and serial joints must use the SUM of their gradients
     # before evaluating J H^-1 J^T; otherwise the cross terms are lost.
@@ -91,9 +60,9 @@ def _accumulate_reactions(
     reference = data.reference[follower]
     if reference < 0 or not data.enabled[follower] or not data.enabled[reference]:
         return
-    for component in range(data.dof_dim[follower, 0] + data.dof_dim[follower, 1]):
+    for component in range(data.coordinates.dof_dim[follower, 0] + data.coordinates.dof_dim[follower, 1]):
         _error, bodies, gradients = _evaluate_row(data, follower, component, body_q)
-        multiplier = multipliers[data.qd_start[follower] + component]
+        multiplier = multipliers[data.coordinates.qd_start[follower] + component]
         for i in range(4):
             if bodies[i] >= 0:
                 reaction = multiplier * gradients[i]
@@ -118,7 +87,7 @@ def _solve_mimics(
         return
     # Rows in a color have disjoint bodies. Components within a joint are
     # sequential, so neither multi-axis joints nor shared leaders race.
-    for component in range(data.dof_dim[follower, 0] + data.dof_dim[follower, 1]):
+    for component in range(data.coordinates.dof_dim[follower, 0] + data.coordinates.dof_dim[follower, 1]):
         error, bodies, gradients = _evaluate_row(data, follower, component, body_q)
         responses = _Mat46()
         compliance = float(0.0)
@@ -135,16 +104,18 @@ def _solve_mimics(
         if compliance <= 0.0:
             continue
         delta_lambda = -error / compliance
-        multipliers[data.qd_start[follower] + component] += delta_lambda
+        multipliers[data.coordinates.qd_start[follower] + component] += delta_lambda
         for i in range(4):
             body = bodies[i]
             if body >= 0 and body_inv_mass[body] > 0.0:
                 delta = delta_lambda * responses[i]
                 pose = body_q[body]
                 rotation = wp.transform_get_rotation(pose)
-                com = wp.transform_point(pose, data.body_com[body])
+                com = wp.transform_point(pose, data.coordinates.body_com[body])
                 rotation_new = wp.normalize(rotation + 0.5 * wp.quat(wp.spatial_bottom(delta), 0.0) * rotation)
-                position_new = com + wp.spatial_top(delta) - wp.quat_rotate(rotation_new, data.body_com[body])
+                position_new = (
+                    com + wp.spatial_top(delta) - wp.quat_rotate(rotation_new, data.coordinates.body_com[body])
+                )
                 body_q[body] = wp.transform(position_new, rotation_new)
 
 
@@ -158,24 +129,13 @@ class JointMimicSolver:
     are reset each timestep; no additional iteration setting is needed.
     """
 
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, coordinates: JointCoordinateData):
         self.model = model
         self.data = _JointData()
-        self.data.body_com = model.body_com
-        for field, source in (
-            ("joint_type", "joint_type"),
-            ("enabled", "joint_enabled"),
-            ("parent", "joint_parent"),
-            ("child", "joint_child"),
-            ("X_p", "joint_X_p"),
-            ("X_c", "joint_X_c"),
-            ("qd_start", "joint_qd_start"),
-            ("dof_dim", "joint_dof_dim"),
-            ("axis", "joint_axis"),
-            ("reference", "joint_mimic_joint"),
-            ("coeffs", "joint_mimic_coeffs"),
-        ):
-            setattr(self.data, field, getattr(model, source))
+        self.data.coordinates = coordinates
+        self.data.enabled = model.joint_enabled
+        self.data.reference = model.joint_mimic_joint
+        self.data.coeffs = model.joint_mimic_coeffs
         self.multipliers = wp.zeros_like(model.joint_qd)
         references = model.joint_mimic_joint.numpy()
         parents, children = model.joint_parent.numpy(), model.joint_child.numpy()
@@ -204,9 +164,6 @@ class JointMimicSolver:
             for body in bodies:
                 used_colors.setdefault(body, set()).add(color)
         self.colors = [wp.array(group, dtype=int, device=model.device) for group in colors]
-
-    def reset(self):
-        self.multipliers.zero_()
 
     def accumulate_reactions(self, body_q, forces, torques):
         wp.launch(

@@ -7,8 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate
-from newton._src.solvers.vbd.joint_mimic import JointMimicSolver, _JointData
+from newton._src.sim.joint_coordinates import eval_joint_coordinate
+from newton._src.solvers.vbd.joint_coordinates import JointCoordinateData, JointCoordinates
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _DT = 1.0 / 240.0
@@ -16,14 +16,14 @@ _DT = 1.0 / 240.0
 
 @wp.kernel
 def _sample_coordinates(
-    data: _JointData,
+    data: JointCoordinateData,
     joint: int,
     poses: wp.array[wp.transform],
     q: wp.array[float],
     gradients: wp.array2d[wp.spatial_vector],
 ):
     component = wp.tid()
-    coordinate, parent, child = eval_joint_mimic_coordinate(
+    coordinate, parent, child = eval_joint_coordinate(
         joint,
         component,
         poses,
@@ -58,7 +58,7 @@ def test_vbd_friction_coordinate_gradients(test, device):
     builder.add_articulation([free, joint])
     builder.joint_q[-6:] = [0.6, 0.4, -0.2, 0.3, 0.5, -0.4]
     model = builder.finalize(device=device)
-    data = JointMimicSolver(model).data
+    data = JointCoordinates(model).data
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     original = state.body_q.numpy().copy()
