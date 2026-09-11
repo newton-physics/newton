@@ -5,12 +5,78 @@ import io
 import subprocess
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
-from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult
+from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult, _enable_strict_warnings
 
 NewtonTestCase = unittest_utils.NewtonTestCase
+
+
+class TestStrictWarnings(unittest.TestCase):
+    def test_top_level_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a top-level test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit("unexpected warning", UserWarning, "test_clean.py", 1, module="test_clean")
+
+    def test_nested_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a nested test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "unexpected warning", UserWarning, "test_clean.py", 1, module="kamino.test_clean"
+                )
+
+    def test_known_warning_debt_is_not_an_error(self):
+        """Keep a narrowly matched known warning visible without failing."""
+        with warnings.catch_warnings(record=True) as caught:
+            _enable_strict_warnings()
+
+            warnings.warn_explicit(
+                "Inertia validation corrected 1 bodies. "
+                "Set validate_inertia_detailed=True for detailed per-body warnings.",
+                UserWarning,
+                "test_custom_attributes.py",
+                1,
+                module="test_custom_attributes",
+            )
+
+        self.assertEqual(len(caught), 1)
+
+    def test_nested_recorder_cast_warning_debt_is_not_an_error(self):
+        """Keep nested-module recorder warning debt visible without failing."""
+        with warnings.catch_warnings(record=True) as caught:
+            _enable_strict_warnings()
+
+            warnings.warn_explicit(
+                "invalid value encountered in cast",
+                RuntimeWarning,
+                "kamino/test_recorder.py",
+                1,
+                module="kamino.test_recorder",
+            )
+
+        self.assertEqual(len(caught), 1)
+
+    def test_known_debt_module_does_not_allow_other_warnings(self):
+        """Escalate unrelated warnings attributed to a known-debt module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "different warning",
+                    UserWarning,
+                    "test_custom_attributes.py",
+                    1,
+                    module="test_custom_attributes",
+                )
 
 
 class TestNewtonTestCaseOutputContract(unittest.TestCase):
