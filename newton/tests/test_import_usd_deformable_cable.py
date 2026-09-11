@@ -25,7 +25,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_range,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
-from newton.usd import SchemaResolverPhysx
+from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -33,14 +33,14 @@ class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
 
     @staticmethod
-    def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
+    def _author_attached_cable_pair(*, gap, stiffness=None, damping=None, collision=True):
         """Two 4-point cables separated by ``gap`` in y with a point->point attachment
         (P0 of B onto P0 of A); returns the stage."""
         stage = _deformable_stage()
         pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         pts_b = [(0.0, gap, 1.0), (0.1, gap, 1.0), (0.2, gap, 1.0), (0.3, gap, 1.0)]
-        _add_cable_curve(stage, "/World/CableA", pts_a)
-        _add_cable_curve(stage, "/World/CableB", pts_b)
+        _add_cable_curve(stage, "/World/CableA", pts_a, collision=collision)
+        _add_cable_curve(stage, "/World/CableB", pts_b, collision=collision)
         _add_physics_attachment(
             stage,
             "/World/Junction",
@@ -54,6 +54,13 @@ class TestUSDDeformableCable(unittest.TestCase):
             damping=damping,
         )
         return stage
+
+    @staticmethod
+    def _shape_pair(builder, body_a, body_b):
+        """Canonical (min, max) shape-filter pair for the first shapes of two bodies."""
+        s1 = builder.body_shapes[body_a][0]
+        s2 = builder.body_shapes[body_b][0]
+        return (min(s1, s2), max(s1, s2))
 
     def test_attachment_weld_policy_rejects_compliant_or_apart(self):
         """A curve-to-curve attachment welds only when hard AND coincident: a compliant
@@ -1520,6 +1527,229 @@ class TestUSDDeformableCable(unittest.TestCase):
                     is_colliding = bool(int(builder.shape_flags[i]) & collide)
                     self.assertEqual(is_colliding, expected_colliding, f"shape {i}")
                 builder.finalize()
+
+    def test_cable_self_collision_disabled_filters_non_adjacent_pairs(self):
+        """newton:selfCollisionEnabled=False filters non-adjacent cable segment shape pairs.
+
+        Adjacent segments are already filtered by the CABLE joints; the flag extends the
+        filtering to non-adjacent pairs, mirroring the general rigid importer. An authored value
+        beats the ``enable_self_collisions`` argument, which only applies when the cable authors
+        nothing, and a non-colliding cable emits no filter pairs at all.
+        """
+        from pxr import Sdf
+
+        # 5 points -> 4 segment bodies, so there are non-adjacent pairs to check.
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
+        for case, authored, default, collision, expect_filtered in (
+            ("authored_disabled", False, True, True, True),
+            ("unauthored", None, True, True, False),
+            ("default_disabled", None, False, True, True),
+            ("authored_beats_default", True, False, True, False),
+            ("non_colliding", False, True, False, False),
+        ):
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                curve = _add_cable_curve(stage, "/World/Cable", pts, collision=collision)
+                if authored is not None:
+                    curve.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(
+                        authored
+                    )
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, enable_self_collisions=default)
+                b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+                self.assertEqual(b1 - b0, 4)
+                # A non-adjacent segment pair (bodies b0 and b0+2).
+                pair = self._shape_pair(builder, b0, b0 + 2)
+                pairs = set(builder.shape_collision_filter_pairs)
+                if expect_filtered:
+                    self.assertIn(pair, pairs)
+                else:
+                    self.assertNotIn(pair, pairs)
+                if not collision:
+                    # Non-colliding shapes never reach the broad phase, so the filter is skipped
+                    # entirely (a colliding cable always emits the adjacent joint pairs).
+                    self.assertEqual(pairs, set())
+
+    def test_cable_self_collision_physx_fallback_needs_resolver(self):
+        """physxArticulation:enabledSelfCollisions gates a cable only with the PhysX resolver.
+
+        The default resolver list is Newton-only, so the PhysX articulation attribute is
+        silently ignored unless the caller opts in via ``schema_resolvers``.
+        """
+        from pxr import Sdf
+
+        # 5 points -> 4 segment bodies, so there is a non-adjacent pair to check.
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
+
+        def non_adjacent_pair_filtered(**add_usd_kwargs):
+            stage = _deformable_stage()
+            curve = _add_cable_curve(stage, "/World/Cable", pts)
+            curve.GetPrim().CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(
+                False
+            )
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, **add_usd_kwargs)
+            b0, _ = group_range(builder, "cable", "/World/Cable", "body")
+            return self._shape_pair(builder, b0, b0 + 2) in set(builder.shape_collision_filter_pairs)
+
+        self.assertTrue(non_adjacent_pair_filtered(schema_resolvers=[SchemaResolverPhysx()]))
+        self.assertFalse(non_adjacent_pair_filtered())
+
+    def test_cable_self_collision_newton_over_physx_precedence(self):
+        """A cable authoring both attributes resolves newton:selfCollisionEnabled over the PhysX one.
+
+        With both resolvers active, the Newton value wins regardless of the authored PhysX value, so
+        the segments are filtered iff the Newton value is False.
+        """
+        from pxr import Sdf
+
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
+
+        def non_adjacent_pair_filtered(newton_value, physx_value):
+            stage = _deformable_stage()
+            prim = _add_cable_curve(stage, "/World/Cable", pts).GetPrim()
+            prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(newton_value)
+            prim.CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(physx_value)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()])
+            b0, _ = group_range(builder, "cable", "/World/Cable", "body")
+            return self._shape_pair(builder, b0, b0 + 2) in set(builder.shape_collision_filter_pairs)
+
+        # Newton True beats PhysX False -> self-collision enabled -> not filtered.
+        self.assertFalse(non_adjacent_pair_filtered(newton_value=True, physx_value=False))
+        # Newton False beats PhysX True -> self-collision disabled -> filtered.
+        self.assertTrue(non_adjacent_pair_filtered(newton_value=False, physx_value=True))
+
+    def test_cable_schema_attrs_collect_all_resolvers(self):
+        """Cable import records schema attrs from every active resolver, even for non-colliding cables.
+
+        ``get_value`` records only the winning resolver and the welded path resolves only when the
+        graph collides, so each accepted cable prim is collected from all resolvers up front (as the
+        rigid importer does). Otherwise a non-colliding cable, or an attribute authored under a
+        non-winning resolver, would be dropped from ``result["schema_attrs"]``.
+        """
+        from pxr import Sdf
+
+        # A non-colliding welded pair plus a standalone non-colliding cable, each authoring an
+        # attribute under a different resolver's namespace, exercising both import paths.
+        stage = self._author_attached_cable_pair(gap=0.0, collision=False)
+        _add_cable_curve(stage, "/World/Solo", [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0)], collision=False)
+        for path, attr in (
+            ("/World/CableA", "newton:selfCollisionEnabled"),
+            ("/World/CableB", "physxArticulation:enabledSelfCollisions"),
+            ("/World/Solo", "physxArticulation:enabledSelfCollisions"),
+        ):
+            stage.GetPrimAtPath(path).CreateAttribute(attr, Sdf.ValueTypeNames.Bool).Set(False)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()], return_deformable_results=True
+        )
+        schema_attrs = result["schema_attrs"]
+
+        # Every cable prim appears under both resolvers, and each authored attribute is captured.
+        for name in ("newton", "physx"):
+            for path in ("/World/CableA", "/World/CableB", "/World/Solo"):
+                self.assertIn(path, schema_attrs[name])
+        self.assertIn("newton:selfCollisionEnabled", schema_attrs["newton"]["/World/CableA"])
+        self.assertIn("physxArticulation:enabledSelfCollisions", schema_attrs["physx"]["/World/CableB"])
+        self.assertIn("physxArticulation:enabledSelfCollisions", schema_attrs["physx"]["/World/Solo"])
+
+    def test_welded_graph_self_collision_disabled_filters_non_adjacent_pairs(self):
+        """A welded cable graph honors newton:selfCollisionEnabled=False on any member curve.
+
+        Disabling self-collision on one welded member filters non-adjacent segment shape pairs
+        across the whole graph articulation (both within a curve and between welded curves), and
+        the importer warns only when colliding members author disagreeing values. Only authored
+        values count, so an unauthored sibling never lets the ``enable_self_collisions`` default
+        override them, and a non-colliding graph emits no filter pairs and no warning at all.
+        """
+        from pxr import Sdf
+
+        for case, author_a, author_b, default, collision, expect_filtered in (
+            ("disabled", False, None, True, True, True),
+            ("all_disabled", False, False, True, True, True),
+            ("mixed", False, True, True, True, True),
+            ("default", None, None, True, True, False),
+            ("authored_beats_default", True, None, False, True, False),
+            ("non_colliding_mixed", False, True, True, False, False),
+        ):
+            with self.subTest(case=case):
+                # Hard, coincident junction welds CableA and CableB into one graph articulation.
+                stage = self._author_attached_cable_pair(gap=0.0, collision=collision)
+                for path, authored in (("/World/CableA", author_a), ("/World/CableB", author_b)):
+                    if authored is not None:
+                        stage.GetPrimAtPath(path).CreateAttribute(
+                            "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
+                        ).Set(authored)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage, enable_self_collisions=default)
+                # Only genuinely disagreeing authored values warn.
+                warned = any("disables self-collision" in str(w.message) for w in caught)
+                self.assertEqual(warned, case == "mixed")
+                self.assertEqual(builder.articulation_count, 1)
+                a0, _ = group_range(builder, "cable", "/World/CableA", "body")
+                b0, _ = group_range(builder, "cable", "/World/CableB", "body")
+                pairs = set(builder.shape_collision_filter_pairs)
+                # A within-curve non-adjacent pair and a cross-curve non-adjacent pair.
+                within = self._shape_pair(builder, a0, a0 + 2)
+                cross = self._shape_pair(builder, a0 + 2, b0 + 2)
+                if expect_filtered:
+                    self.assertIn(within, pairs)
+                    self.assertIn(cross, pairs)
+                else:
+                    self.assertNotIn(within, pairs)
+                    self.assertNotIn(cross, pairs)
+                if not collision:
+                    # Non-colliding shapes never reach the broad phase, so the filter is skipped
+                    # entirely (a colliding graph always emits the adjacent joint pairs).
+                    self.assertEqual(pairs, set())
+
+    def test_self_collision_disabled_does_not_filter_across_curves_in_one_prim(self):
+        """A multi-curve BasisCurves prim filters each curve's own segments, not across curves.
+
+        Every curveVertexCounts entry becomes its own articulation via add_rod, so disabling
+        self-collision must filter within a curve while leaving independent sibling curves in
+        the same prim free to collide.
+        """
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        curves = UsdGeom.BasisCurves.Define(stage, "/World/Cable")
+        curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
+        # Two independent 4-point curves (3 segment bodies each) in one prim.
+        curves.CreatePointsAttr(
+            [
+                (0.0, 0.0, 1.0),
+                (0.1, 0.0, 1.0),
+                (0.2, 0.0, 1.0),
+                (0.3, 0.0, 1.0),
+                (0.0, 1.0, 1.0),
+                (0.1, 1.0, 1.0),
+                (0.2, 1.0, 1.0),
+                (0.3, 1.0, 1.0),
+            ]
+        )
+        curves.CreateCurveVertexCountsAttr([4, 4])
+        curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+        curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+        curves.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        # Two curves -> two separate articulations.
+        self.assertEqual(builder.articulation_count, 2)
+        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+        self.assertEqual(b1 - b0, 6)
+        pairs = set(builder.shape_collision_filter_pairs)
+        # Within the first curve, the non-adjacent pair is filtered.
+        self.assertIn(self._shape_pair(builder, b0, b0 + 2), pairs)
+        # Across the two curves (separate articulations), nothing is filtered.
+        self.assertNotIn(self._shape_pair(builder, b0, b0 + 3), pairs)
 
     def test_neg_inf_junction_stiffness_does_not_weld(self):
         """-inf is the material sentinel, not the attachment one (+inf = hard): a
