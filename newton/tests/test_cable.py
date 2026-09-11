@@ -1289,7 +1289,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
 
     # Kinematic anchor body at the rod start point.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     # Anchor marker sphere.
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
@@ -1448,7 +1448,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (can't match rotation to two different cables).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1643,7 +1643,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1854,7 +1854,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -1981,7 +1981,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2119,7 +2119,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (matching ball/fixed/revolute).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -2264,7 +2264,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2391,7 +2391,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2534,7 +2534,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2690,7 +2690,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2821,7 +2821,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2986,7 +2986,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -3129,7 +3129,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -4184,7 +4184,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
 
     # Kinematic anchor sphere at height.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -4289,7 +4289,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     builder = newton.ModelBuilder()
 
     anchor_pos = wp.vec3(0.0, 0.0, 1.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=0.05)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
