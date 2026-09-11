@@ -11,6 +11,7 @@ owns the cloth-specific lowering (topology, membrane material, mass model, trans
 import math
 import unittest
 import warnings
+from unittest import mock
 
 import numpy as np
 
@@ -273,7 +274,11 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertAlmostEqual(builder_default.particle_radius[0], 0.01, places=7)
 
         builder_compat = newton.ModelBuilder()
-        builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+        builder_compat.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_registered_schema_fallbacks=True,
+        )
         compat_tri, _ = group_range(builder_compat, "cloth", "/World/Cloth", "tri")
         self.assertAlmostEqual(builder_compat.tri_materials[compat_tri][0], 77.0)
         self.assertAlmostEqual(builder_compat.particle_radius[0], 0.01, places=7)
@@ -495,6 +500,46 @@ class TestUSDDeformableCloth(unittest.TestCase):
         for i in range(p0, p1):
             self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
         self.assertNotAlmostEqual(builder.particle_radius[p0], builder.default_particle_radius, places=6)
+
+    def test_unset_cloth_shell_thickness_does_not_warn(self):
+        """Keep an unset registered shell thickness quiet for cloth import."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
+        cloth.GetPrim().AddAppliedSchema("NewtonMassAPI")
+        cloth.GetPrim().CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
+
+        policy_masses = []
+        for use_registered_schema_fallbacks in (False, True):
+            with self.subTest(use_registered_schema_fallbacks=use_registered_schema_fallbacks):
+                builder = newton.ModelBuilder()
+                with (
+                    warnings.catch_warnings(record=True) as caught,
+                    mock.patch("builtins.print") as print_mock,
+                ):
+                    warnings.simplefilter("always")
+                    builder.add_usd(
+                        stage,
+                        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                        verbose=True,
+                    )
+                p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")
+                policy_masses.append(sum(builder.particle_mass[p0:p1]))
+                self.assertFalse(
+                    any("shape:shell_thickness" in str(call) for call in print_mock.call_args_list),
+                    print_mock.call_args_list,
+                )
+                self.assertFalse(
+                    any(
+                        issubclass(item.category, DeprecationWarning) and "USD property precedence" in str(item.message)
+                        for item in caught
+                    ),
+                    [str(item.message) for item in caught],
+                )
+
+        np.testing.assert_allclose(policy_masses, [1.0, 1.0])
 
     def test_cloth_constant_geometry_thickness_controls_physics(self):
         """Apply constant simulation thickness to cloth mass, radius, and derived stiffness."""
