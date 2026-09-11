@@ -3299,6 +3299,8 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     builder.color()
     model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+    solver.set_rigid_history_update(False)
 
     for attribute in (
         "shape_material_ke",
@@ -3309,13 +3311,17 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
     ):
         array = getattr(model, attribute)
         original = array.numpy().copy()
-        for invalid in (-1.0, np.inf):
+        for invalid in (-1.0, np.inf, np.nan):
             values = original.copy()
             values[0] = invalid
             array.assign(values)
             with test.assertRaisesRegex(ValueError, f"model.{attribute}"):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+            with test.assertRaisesRegex(ValueError, f"model.{attribute}"):
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         array.assign(original)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        test.assertFalse(solver._update_rigid_history)
 
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):

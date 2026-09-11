@@ -1252,6 +1252,11 @@ class SolverVBD(SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            if self.rigid_compliant_alm:
+                self._validate_compliant_contact_materials()
+            if self._integrates_rigid_bodies:
+                self._validate_angular_contact_materials()
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
