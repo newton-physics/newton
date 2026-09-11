@@ -4,8 +4,13 @@
 """Focused interval arithmetic for VBD rigid point-plane trajectory tests.
 
 This module intentionally implements only the operations needed to enclose the
-fixed-axis rigid trajectory used by Planar-DAT. SolverVBD uses it only through
-an explicitly experimental Stage 2 option.
+fixed-axis rigid trajectory used by Planar-DAT. The default rigid DAT path depends
+on :func:`rigid_point_plane_signed_distance_derivative_interval`: a row that starts
+inside the empty band is released for the full update only when this bound
+certifies that its signed plane distance is nonincreasing over the whole
+trajectory. The complete prefix certification built on
+:func:`rigid_point_plane_signed_distance_interval` (Stage 2) runs only with the
+experimental ``rigid_soft_dat_use_interval_arithmetic`` option.
 
 Algebraic operations expand a correctly rounded float32 result by one ULP.
 Trigonometric endpoints receive a wider provisional expansion because Warp's

@@ -1969,14 +1969,15 @@ def _evaluate_rigid_soft_contact_force_norm(
     The log-barrier branch intentionally matches
     ``particle_vbd_kernels.evaluate_self_contact_force_norm``.  A zero contact
     radius cannot define its positive-distance barrier interval, so it retains
-    the quadratic penalty law.
+    the quadratic penalty law.  ``d_min`` follows ``tau`` for radii below 20 um
+    so the barrier interval never empties and the law stays C1 (C2 energy).
     """
     penetration_depth = collision_radius - distance
     if not use_log_barrier or collision_radius <= 0.0:
         return -k * penetration_depth, k
 
     tau = collision_radius * 0.5
-    d_min = 1.0e-5
+    d_min = wp.min(1.0e-5, 0.5 * tau)
     if tau > distance > d_min:
         k2 = tau * tau * k
         return -k2 / distance, k2 / (distance * distance)
@@ -7075,6 +7076,8 @@ def find_vertex_triangle_separator(
     Candidate indices are the recomputed closest-point direction, triangle face
     normal, the three in-plane edge support axes (AB, AC, BC), and ``normal_hint``.
     Both signs are tested, and every triangle vertex must lie on the negative side.
+    ``normal_hint`` is an optional caller-supplied axis (zero skips it): the SDF-row
+    callers pass ``wp.vec3(0.0)``; the slot is reserved for the BVH-query path.
     """
     vertex_primitive = wp.mat33(0.0)
     vertex_primitive[0] = vertex
@@ -7156,6 +7159,8 @@ def find_edge_edge_separator(
     edge cross product, the four endpoint-to-opposite-segment directions, the
     closest direction projected perpendicular to each edge, and ``normal_hint``.
     Every candidate is tested in both orientations against both complete edges.
+    ``normal_hint`` is an optional caller-supplied axis (zero skips it): the SDF-row
+    callers pass ``wp.vec3(0.0)``; the slot is reserved for the BVH-query path.
     """
     edge0_vertices = wp.mat33(0.0)
     edge0_vertices[0] = edge0_a
