@@ -784,14 +784,17 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
+        # The graph spans several welded curves; per-curve selection groups are recorded
+        # below instead of one group for the whole component.
         rod = Rod(node_positions, edges=edges, radius=radius)
-        body_ids, graph_joint_ids = builder.add_rod(
-            rod=rod,
-            cfg=cfg,
-            label=cid,
-            wrap_in_articulation=True,
-            body_frame_origin="com",
-        )
+        with builder._suppress_curve_group_recording():
+            body_ids, graph_joint_ids = builder.add_rod(
+                rod=rod,
+                cfg=cfg,
+                label=cid,
+                wrap_in_articulation=True,
+                body_frame_origin="com",
+            )
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
         for body, edge_radius in zip(body_ids, edge_radii, strict=True):
@@ -863,7 +866,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
                 # A welded curve owns no individual tree joints (they live in the shared graph
                 # articulation, found via articulation_label), so its joint range is empty.
-                builder._record_cable_group(
+                builder._record_curve_group(
                     key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
                 )
             segment_count = n if rec.closed else n - 1
@@ -1129,19 +1132,22 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
             # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
             # bodies are loop-closing and stay outside the articulation regardless.
+            # One group per prim is recorded below; a multi-curve prim spans several
+            # add_rod calls, so per-call recording would split it.
             rod = Rod(
                 positions,
                 quaternions=quaternions,
                 radius=curve_radii[0],
                 closed=closed,
             )
-            bodies, joints = builder.add_rod(
-                rod=rod,
-                cfg=cable_cfg,
-                label=label,
-                wrap_in_articulation=True,
-                body_frame_origin="com",
-            )
+            with builder._suppress_curve_group_recording():
+                bodies, joints = builder.add_rod(
+                    rod=rod,
+                    cfg=cable_cfg,
+                    label=label,
+                    wrap_in_articulation=True,
+                    body_frame_origin="com",
+                )
             for body, segment_radius in zip(bodies, curve_radii, strict=True):
                 _set_cable_body_radius(builder, body, segment_radius)
             curve_point_radii = point_radii[start : start + n]
@@ -1214,7 +1220,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             joint_range = (
                 (cable_joints[0], cable_joints[-1] + 1) if cable_joints else (builder.joint_count, builder.joint_count)
             )
-            builder._record_cable_group(path, body_range, joint_range)
+            builder._record_curve_group(path, body_range, joint_range)
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments
             path_cable_attrs[path] = {
