@@ -39,7 +39,11 @@ class PlotLogger:
         self._get_window = get_window
 
     def _get_gl(self):
-        self._get_window().switch_to()
+        try:
+            self._get_window().switch_to()
+        except AttributeError:
+            # The window or its context may already be destroyed during shutdown.
+            pass
         from pyglet import gl
 
         return gl

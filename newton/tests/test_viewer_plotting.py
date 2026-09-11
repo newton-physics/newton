@@ -227,6 +227,28 @@ class TestPlotLogger(unittest.TestCase):
         window.switch_to.assert_called_once()
         self.assertEqual(gl.glDeleteTextures.call_args.args[1][0], 42)
 
+    def test_clear_after_window_close(self):
+        """Release heatmaps when the window or its context is already gone."""
+        closed_window = mock.Mock()
+        closed_window.switch_to.side_effect = AttributeError("context is already destroyed")
+        for window in (closed_window, None):
+            with self.subTest(window=window):
+                gl = mock.MagicMock(GLuint=ctypes.c_uint)
+                logger = PlotLogger(3, get_window=lambda window=window: window)
+                logger.log_scalar("reward", 1, smoothing=2)
+                for index, name in enumerate(("observations", "actions"), start=42):
+                    logger.log_array(name, np.ones((2, 2)))
+                    logger._array_textures[name] = {"texture_id": index}
+                with mock.patch.dict("sys.modules", {"pyglet": SimpleNamespace(gl=gl)}):
+                    logger.clear()
+                    logger.clear()
+                self.assertFalse(logger._scalar_buffers)
+                self.assertFalse(logger._scalar_accumulators)
+                self.assertFalse(logger._array_buffers)
+                self.assertFalse(logger._array_dirty)
+                self.assertFalse(logger._array_textures)
+                self.assertEqual([call.args[1][0] for call in gl.glDeleteTextures.call_args_list], [42, 43])
+
     def test_heatmap_nonfinite_values(self):
         """Color nonfinite cells separately and compute finite heatmap bounds."""
         logger = PlotLogger(3, get_window=lambda: None)
