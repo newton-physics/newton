@@ -24,7 +24,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _reset_world_selected,
     dat_separation_epsilon,
     evaluate_body_particle_attachment_particle_force_hessian,
-    evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
     place_dat_division_plane,
