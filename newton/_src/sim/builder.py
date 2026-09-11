@@ -14130,6 +14130,7 @@ class ModelBuilder:
             if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
+                shape_body_np = np.asarray(self.shape_body, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
                     (int(shape_idx), self.shape_collision_group[shape_idx])
@@ -14160,12 +14161,19 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
+                    world_shape_bodies = shape_body_np[world_start:world_end]
+                    body_key = np.where(
+                        world_shape_bodies >= 0,
+                        world_shape_bodies - self.body_world_start[world],
+                        -1,
+                    ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
                     # tuples; re-hashing per-shape tuples per world dominates
                     # this loop at high world counts.
                     cache_key = (
                         shape_flags_np[world_start:world_end].tobytes(),
                         shape_group_np[world_start:world_end].tobytes(),
+                        body_key,
                         block_key,
                         explicit_filter_specs,
                     )
