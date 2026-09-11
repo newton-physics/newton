@@ -1630,6 +1630,33 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(model.shape_collision_filter_pairs, set())
         self.assertEqual(model.shape_contact_pair_count, 0)
 
+    def test_heterogeneous_world_contact_template_tracks_body_topology(self):
+        """Keep cached world contact pairs isolated by body attachment topology."""
+
+        same_body = ModelBuilder()
+        body = same_body.add_body()
+        same_body.add_shape_box(body=body)
+        same_body.add_shape_box(body=body)
+
+        different_bodies = ModelBuilder()
+        body_a = different_bodies.add_body()
+        body_b = different_bodies.add_body()
+        different_bodies.add_shape_box(body=body_a)
+        different_bodies.add_shape_box(body=body_b)
+
+        for worlds, expected_pairs in (
+            ((same_body, different_bodies), {(2, 3)}),
+            ((different_bodies, same_body), {(0, 1)}),
+        ):
+            with self.subTest(worlds=worlds):
+                builder = ModelBuilder()
+                for world in worlds:
+                    builder.add_world(world)
+
+                model = builder.finalize(device="cpu")
+                contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+                self.assertEqual(contact_pairs, expected_pairs)
+
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
         """Keep large replicated filters compact and read-only while preserving contacts."""
 
