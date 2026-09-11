@@ -38,6 +38,7 @@ try:
     from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
     from simulation import (
         bench_anymal,
+        bench_cloth,
         bench_contacts,
         bench_kamino,
         bench_mujoco,
@@ -201,6 +202,43 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
+        """Keep deformable-rigid collision benchmarks nightly-only."""
+        benchmark_names = (
+            "simulation.bench_cloth.DeformableRigidCollision.time_collide",
+            "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
+        )
+        inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            with self.subTest(benchmark_name=benchmark_name):
+                self.assertIn(benchmark_name, inventory)
+                self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+        self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
+        self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+
+    def test_deformable_rigid_benchmark_rejects_overflow(self):
+        """Reject each truncated contact stream but allow exactly full buffers."""
+        benchmark = bench_cloth.DeformableRigidCollision()
+        benchmark.pipeline = SimpleNamespace(broad_phase_pair_count=self._FakeArray([8]), shape_pairs_max=8)
+        benchmark.contacts = SimpleNamespace(
+            rigid_contact_count=self._FakeArray([8]),
+            rigid_contact_max=8,
+            soft_contact_count=self._FakeArray([8]),
+            soft_contact_max=8,
+        )
+        benchmark._verify_contact_capacity()
+        for label, counter in (
+            ("candidate pairs", benchmark.pipeline.broad_phase_pair_count),
+            ("rigid contacts", benchmark.contacts.rigid_contact_count),
+            ("soft contacts", benchmark.contacts.soft_contact_count),
+        ):
+            with self.subTest(counter=label):
+                counter.values[0] = 9
+                with self.assertRaisesRegex(RuntimeError, f"overflows {label}: 9 > 8"):
+                    benchmark._verify_contact_capacity()
+                counter.values[0] = 8
 
     def test_deformable_collision_benchmark_is_in_pr_gate(self):
         """Keep the large-scene deformable collision benchmark in the PR gate."""

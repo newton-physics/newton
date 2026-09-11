@@ -21,6 +21,7 @@ from newton._src.geometry.kernels import (
     resolve_mesh_sign_method,
 )
 from newton._src.geometry.sdf_texture import TextureSDFData
+from newton._src.geometry.soft_contacts_mesh import launch_soft_mesh_face_contacts
 from newton._src.geometry.soft_contacts_sdf import (
     SDF_EDGE_ITERS,
     SDF_FACE_ITERS,
@@ -965,6 +966,9 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             # Tagged watertight so the sign method resolves to parity.
             wp.array([int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(-1.0)], dtype=wp.vec3, device=device),
+            wp.array([wp.vec3(1.0)], dtype=wp.vec3, device=device),
+            wp.array([0.0], dtype=wp.float32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
             1,
@@ -1161,6 +1165,9 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
             wp.array([mesh_id], dtype=wp.uint64, device=device),
             wp.array([mesh_properties], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(-1.0)], dtype=wp.vec3, device=device),
+            wp.array([wp.vec3(1.0)], dtype=wp.vec3, device=device),
+            wp.array([0.0], dtype=wp.float32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
             1,
@@ -2545,6 +2552,39 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
                 np.allclose(normal_lengths, 1.0, atol=0.01),
                 f"Contact normals should be normalized, got lengths: {normal_lengths}",
             )
+
+
+def test_particle_contacts_below_one_sided_shapes(test, device):
+    """Deeply penetrating particles must not be rejected by surface-thin rigid AABBs."""
+    for shape_kind in ("infinite plane", "heightfield"):
+        with test.subTest(shape_kind=shape_kind):
+            builder = newton.ModelBuilder()
+            if shape_kind == "infinite plane":
+                builder.add_shape_plane(width=0.0, length=0.0)
+            else:
+                builder.add_shape_heightfield(
+                    heightfield=newton.Heightfield(
+                        data=np.zeros((3, 3), dtype=np.float32),
+                        nrow=3,
+                        ncol=3,
+                        hx=1.0,
+                        hy=1.0,
+                    )
+                )
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, -1.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+            model = builder.finalize(device=device)
+            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
+
+
+add_function_test(
+    TestParticleShapeContacts,
+    "test_particle_contacts_below_one_sided_shapes",
+    test_particle_contacts_below_one_sided_shapes,
+    devices=get_test_devices(),
+)
 
 
 # Shape types to test for particle-shape contacts
@@ -4103,6 +4143,8 @@ def test_edge_face_passes_box(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    face_fallback_tids = wp.empty(len(face_pairs), dtype=wp.int32, device=device)
+    face_fallback_count = wp.zeros(1, dtype=wp.int32, device=device)
     # Isolated launch (no particle pass), so this pass's tids start at 0.
     launch_soft_ef_contacts(
         model=model,
@@ -4112,8 +4154,12 @@ def test_edge_face_passes_box(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
+        sdf_fallback_tids=face_fallback_tids,
+        sdf_fallback_count=face_fallback_count,
         n_particle_pairs=0,
     )
+    # Small candidate sets stay fused instead of paying compaction launch overhead.
+    test.assertEqual(int(face_fallback_count.numpy()[0]), 0)
 
     total = int(contacts.soft_contact_count.numpy()[0])
     idx = contacts.soft_contact_indices.numpy()[:total]
@@ -4142,6 +4188,83 @@ def test_edge_face_passes_box(test, device):
         test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
         test.assertGreater(float(normals[i][2]), 0.99)  # +z face of the box
         test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)  # closest point on the box surface
+
+
+def test_specialized_edge_face_contacts_match_fused(test, device):
+    """Generic and geometry-specialized compact work must reproduce fused edge/face contacts."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, soft_contact_max=4096)
+    contacts = pipeline.contacts()
+    state = model.state()
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    fallback_tids = wp.empty(max(len(edge_pairs), len(face_pairs)), dtype=wp.int32, device=device)
+    fallback_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+    def run(compaction_threshold, specialize=False):
+        contacts.soft_contact_count.zero_()
+
+        def launch():
+            launch_soft_ef_contacts(
+                model=model,
+                state=state,
+                contacts=contacts,
+                margin=0.1,
+                device=device,
+                edge_pairs=edge_pairs,
+                face_pairs=face_pairs,
+                sdf_fallback_tids=fallback_tids,
+                sdf_fallback_count=fallback_count,
+                n_particle_pairs=0,
+                edge_sdf_geo_types=(int(GeoType.BOX),) if specialize else None,
+                face_sdf_geo_types=(int(GeoType.BOX),) if specialize else None,
+            )
+
+        with (
+            mock.patch("newton._src.geometry.soft_contacts_sdf._SDF_COMPACTION_MIN_PAIRS", compaction_threshold),
+            mock.patch("newton._src.geometry.soft_contacts_sdf._SDF_SPECIALIZATION_MIN_PAIRS_PER_GEO", 0),
+        ):
+            if compaction_threshold == 0:
+                with wp.ScopedCapture(device=device) as capture:
+                    launch()
+                wp.capture_launch(capture.graph)
+            else:
+                launch()
+        wp.synchronize_device(device)
+        count = int(contacts.soft_contact_count.numpy()[0])
+        indices = contacts.soft_contact_indices.numpy()[:count]
+        shapes = contacts.soft_contact_shape.numpy()[:count]
+        order = np.lexsort((indices[:, 2], indices[:, 1], indices[:, 0], shapes))
+        return (
+            int(fallback_count.numpy()[0]),
+            shapes[order].copy(),
+            indices[order].copy(),
+            contacts.soft_contact_barycentric.numpy()[:count][order].copy(),
+            contacts.soft_contact_body_pos.numpy()[:count][order].copy(),
+            contacts.soft_contact_normal.numpy()[:count][order].copy(),
+        )
+
+    fused = run(10**9)
+    compact_generic = run(0)
+    compact_specialized = run(0, specialize=True)
+    test.assertEqual(fused[0], 0)
+    test.assertGreater(compact_generic[0], 0)
+    test.assertGreater(compact_specialized[0], 0)
+    for compact in (compact_generic, compact_specialized):
+        for fused_array, compact_array in zip(fused[1:], compact[1:], strict=True):
+            np.testing.assert_array_equal(compact_array, fused_array)
 
 
 def test_edge_face_respect_shape_margin(test, device):
@@ -4179,6 +4302,8 @@ def test_edge_face_respect_shape_margin(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    face_fallback_tids = wp.empty(len(face_pairs), dtype=wp.int32, device=device)
+    face_fallback_count = wp.zeros(1, dtype=wp.int32, device=device)
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -4187,6 +4312,8 @@ def test_edge_face_respect_shape_margin(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
+        sdf_fallback_tids=face_fallback_tids,
+        sdf_fallback_count=face_fallback_count,
         n_particle_pairs=0,
     )
 
@@ -4315,6 +4442,31 @@ def test_full_surface_catches_what_particles_miss(test, device):
     test.assertGreater(total, 0)  # caught by edge/face
 
 
+def test_sphere_face_contact_is_exact(test, device):
+    """A face contact against a sphere uses the exact closest point and barycentric coordinates."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(body=-1, radius=0.2)
+    a = builder.add_particle(wp.vec3(-1.0, -1.0, 0.25), wp.vec3(0.0), 0.1, radius=0.0)
+    b = builder.add_particle(wp.vec3(1.0, -1.0, 0.25), wp.vec3(0.0), 0.1, radius=0.0)
+    c = builder.add_particle(wp.vec3(0.0, 1.0, 0.25), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(a, b, c)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    total = int(contacts.soft_contact_count.numpy()[0])
+    indices = contacts.soft_contact_indices.numpy()[:total]
+    face_rows = np.flatnonzero(indices[:, 2] >= 0)
+    test.assertEqual(len(face_rows), 1)
+    row = int(face_rows[0])
+    np.testing.assert_allclose(contacts.soft_contact_barycentric.numpy()[row], np.array((0.25, 0.25, 0.5)), atol=1.0e-6)
+    np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[row], np.array((0.0, 0.0, 0.2)), atol=1.0e-6)
+    np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[row], np.array((0.0, 0.0, 1.0)), atol=1.0e-6)
+
+
 for _name, _fn in (
     ("test_soft_feature_aabb_cull_boundary", test_soft_feature_aabb_cull_boundary),
     ("test_optimize_edge_sdf_box", test_optimize_edge_sdf_box),
@@ -4325,9 +4477,17 @@ for _name, _fn in (
     ("test_edge_face_respect_shape_margin", test_edge_face_respect_shape_margin),
     ("test_backward_compat_bit_for_bit", test_backward_compat_bit_for_bit),
     ("test_full_surface_catches_what_particles_miss", test_full_surface_catches_what_particles_miss),
+    ("test_sphere_face_contact_is_exact", test_sphere_face_contact_is_exact),
 ):
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_specialized_edge_face_contacts_match_fused",
+    test_specialized_edge_face_contacts_match_fused,
+    devices=[device for device in soft_devices if device.is_cuda],
+)
 
 # ---------------------------------------------------------------------------
 # Mesh volume-SDF provisioning at finalize. Texture SDFs are CUDA-only.
@@ -4460,9 +4620,189 @@ def test_optimize_against_mesh_texture_sdf(test, device):
     test.assertLess(abs(float(out_phi2.numpy()[0]) - phi_ref_face), tol)
 
 
+def test_mesh_face_bvh_cull_preserves_contacts(test, device):
+    """The mesh BVH path preserves SDF candidates and returns valid surface contacts."""
+    rng = np.random.default_rng(91)
+    centers = np.vstack(
+        (
+            np.zeros((1, 3)),  # wholly inside: no surface BVH overlap, but a penetrating contact
+            np.array(((0.0, 0.0, 0.62), (1.0, 0.0, 0.0), (0.0, 0.36, 0.0))),
+            rng.uniform((-1.6, -0.8, -1.2), (1.6, 0.8, 1.2), size=(60, 3)),
+        )
+    )
+    vertices = []
+    indices = []
+    for center in centers:
+        base = len(vertices)
+        points = center + rng.normal(0.0, 0.06, size=(3, 3))
+        vertices.extend(wp.vec3(*point) for point in points)
+        indices.extend((base, base + 1, base + 2))
+
+    builder = newton.ModelBuilder()
+    box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    builder.add_shape_mesh(
+        body=-1,
+        mesh=box_mesh,
+        scale=(2.0, 0.7, 1.2),
+    )
+    builder.add_shape_convex_hull(
+        body=-1,
+        mesh=box_mesh,
+        scale=(2.0, 0.7, 1.2),
+    )
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=vertices,
+        indices=indices,
+        density=0.1,
+        particle_radius=0.0,
+    )
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.08,
+        enable_rigid_soft_full_surface_contact=True,
+    )
+    test.assertEqual(len(pipeline.soft_mesh_face_pairs), 2 * model.tri_count)
+
+    state = model.state()
+    old_contacts = pipeline.contacts()
+    old_contacts.soft_contact_count.zero_()
+    empty = wp.empty(0, dtype=wp.vec2i, device=device)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=old_contacts,
+        margin=0.08,
+        device=device,
+        edge_pairs=empty,
+        face_pairs=pipeline.soft_mesh_face_pairs,
+        sdf_fallback_tids=pipeline._soft_sdf_fallback_tids,
+        sdf_fallback_count=pipeline._soft_sdf_fallback_count,
+        n_particle_pairs=0,
+    )
+
+    new_contacts = pipeline.contacts()
+    new_contacts.soft_contact_count.zero_()
+    launch_soft_mesh_face_contacts(
+        model=model,
+        state=state,
+        contacts=new_contacts,
+        margin=0.08,
+        device=device,
+        face_pairs=pipeline.soft_mesh_face_pairs,
+        fallback_tids=pipeline._soft_mesh_face_fallback_tids,
+        fallback_count=pipeline._soft_mesh_face_fallback_count,
+        tid_base=0,
+    )
+
+    fallback_count = int(pipeline._soft_mesh_face_fallback_count.numpy()[0])
+    test.assertGreater(fallback_count, 0)
+    test.assertLess(fallback_count, len(pipeline.soft_mesh_face_pairs))
+    old_count = int(old_contacts.soft_contact_count.numpy()[0])
+    new_count = int(new_contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(old_count, 0)
+    test.assertEqual(new_count, old_count)
+
+    def _sorted_records(contacts, count):
+        indices = contacts.soft_contact_indices.numpy()[:count]
+        shapes = contacts.soft_contact_shape.numpy()[:count]
+        order = np.lexsort((indices[:, 2], indices[:, 1], indices[:, 0], shapes))
+        return (
+            shapes[order],
+            indices[order],
+            contacts.soft_contact_barycentric.numpy()[:count][order],
+            contacts.soft_contact_body_pos.numpy()[:count][order],
+            contacts.soft_contact_normal.numpy()[:count][order],
+        )
+
+    old_records = _sorted_records(old_contacts, old_count)
+    new_records = _sorted_records(new_contacts, new_count)
+    test.assertTrue(np.array_equal(new_records[0], old_records[0]))
+    test.assertTrue(np.array_equal(new_records[1], old_records[1]))
+
+    # Outside contacts now use exact mesh features. Validate their geometry directly against the
+    # scaled source box rather than requiring the texture-SDF optimizer's approximate location.
+    bary = new_records[2]
+    body_pos = new_records[3]
+    normal = new_records[4]
+    tri_points = state.particle_q.numpy()[new_records[1]]
+    soft_point = np.sum(tri_points * bary[:, :, None], axis=1)
+    delta = soft_point - body_pos
+    normal_distance = np.sum(delta * normal, axis=1)
+    tangent = delta - normal_distance[:, None] * normal
+
+    # Intersecting and penetrating faces retain the signed-SDF fallback exactly.
+    sdf_fallback = normal_distance <= 1.0e-6
+    test.assertGreater(int(np.count_nonzero(sdf_fallback)), 0)
+    for new_values, old_values in zip(new_records[2:], old_records[2:], strict=True):
+        np.testing.assert_allclose(new_values[sdf_fallback], old_values[sdf_fallback], rtol=0.0, atol=1.0e-6)
+
+    np.testing.assert_allclose(np.linalg.norm(normal, axis=1), 1.0, rtol=0.0, atol=2.0e-5)
+    test.assertLess(float(np.max(np.linalg.norm(tangent, axis=1))), 5.0e-4)
+
+    half_extents = np.array((1.0, 0.35, 0.6), dtype=np.float32)
+    outside = normal_distance > 1.0e-5
+    test.assertGreater(int(np.count_nonzero(outside)), 0)
+    test.assertTrue(bool(np.all(np.abs(body_pos[outside]) <= half_extents + 2.0e-5)))
+    surface_error = np.min(np.abs(np.abs(body_pos[outside]) - half_extents), axis=1)
+    test.assertLess(float(np.max(surface_error)), 2.0e-5)
+
+
+def test_mesh_face_exact_corner_contact(test, device):
+    """A scaled mesh edge yields its exact closest point and outward normal."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(
+        body=-1,
+        mesh=newton.Mesh.create_box(0.5, 0.5, 0.5),
+        scale=(2.0, 0.7, 1.2),
+    )
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=(
+            wp.vec3(1.03, 0.40, -0.2),
+            wp.vec3(1.03, 0.40, 0.2),
+            wp.vec3(1.20, 0.60, 0.0),
+        ),
+        indices=(0, 1, 2),
+        density=0.1,
+        particle_radius=0.0,
+    )
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.08,
+        enable_rigid_soft_full_surface_contact=True,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    records = contacts.soft_contact_indices.numpy()[:count]
+    face_records = np.flatnonzero(records[:, 2] >= 0)
+    test.assertEqual(len(face_records), 1)
+    record = face_records[0]
+    body_pos = contacts.soft_contact_body_pos.numpy()[record]
+    normal = contacts.soft_contact_normal.numpy()[record]
+    np.testing.assert_allclose(body_pos[:2], (1.0, 0.35), rtol=0.0, atol=2.0e-5)
+    expected_normal = np.array((0.03, 0.05, 0.0)) / np.sqrt(0.03**2 + 0.05**2)
+    np.testing.assert_allclose(normal, expected_normal, rtol=0.0, atol=2.0e-5)
+
+
 for _name, _fn in (
     ("test_mesh_sdf_provisioned_and_emits", test_mesh_sdf_provisioned_and_emits),
     ("test_optimize_against_mesh_texture_sdf", test_optimize_against_mesh_texture_sdf),
+    ("test_mesh_face_bvh_cull_preserves_contacts", test_mesh_face_bvh_cull_preserves_contacts),
+    ("test_mesh_face_exact_corner_contact", test_mesh_face_exact_corner_contact),
 ):
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
@@ -4621,7 +4961,11 @@ def test_full_surface_replay_spans_candidate_space(test, device):
     )
     contacts = pipeline.contacts()
     candidate = (
-        pipeline.soft_contact_pair_count + len(pipeline.soft_edge_rigid_pairs) + len(pipeline.soft_face_rigid_pairs)
+        pipeline.soft_contact_pair_count
+        + len(pipeline.soft_edge_rigid_pairs)
+        + len(pipeline.soft_face_rigid_pairs)
+        + len(pipeline.soft_mesh_face_pairs)
+        + len(pipeline.soft_heightfield_face_pairs)
     )
     test.assertGreater(candidate, 1, "test needs a candidate space larger than the capacity override")
     test.assertEqual(contacts.soft_contact_max, 1, "explicit soft_contact_max capacity must be honored")
@@ -4649,30 +4993,20 @@ def test_collide_syncs_full_surface_marker(test, device):
     )
 
 
-def test_full_surface_finite_plane_falls_back(test, device):
-    """A finite plane can't do edge/face (its +Z normal is wrong off the quad), so it warns and falls
-    back to per-particle soft contact instead of failing the pipeline: construction succeeds, the
-    plane is excluded from the edge/face candidate pairs, and a capable box still keeps them (E4)."""
+def test_full_surface_supports_finite_plane(test, device):
+    """A finite plane participates in full-surface edge and face contact generation."""
     builder = newton.ModelBuilder()
-    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
-    plane = builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)  # finite
+    plane = builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)
     _add_soft_triangle(builder)
     model = builder.finalize(device=device)
-    with test.assertWarns(UserWarning):
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
-    face_shapes = (
-        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
-    )
-    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
-    test.assertNotIn(plane, face_shapes, "the finite plane is excluded from full-surface (fell back)")
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]}
+    test.assertIn(plane, face_shapes)
 
 
-def test_full_surface_heightfield_falls_back(test, device):
-    """A heightfield exposes only a per-cell local-plane distance (discontinuous across cells),
-    unsuitable for the edge/face SDF optimizers, so it warns and falls back to per-particle soft
-    contact rather than failing the pipeline; a capable box keeps full-surface (E4)."""
+def test_full_surface_supports_heightfield(test, device):
+    """A heightfield participates in exact full-surface face contact generation."""
     builder = newton.ModelBuilder()
-    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
     hf = builder.add_shape_heightfield(
         heightfield=newton.Heightfield(
             data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=0.0, max_z=0.0
@@ -4680,13 +5014,92 @@ def test_full_surface_heightfield_falls_back(test, device):
     )
     _add_soft_triangle(builder)
     model = builder.finalize(device=device)
-    with test.assertWarns(UserWarning):
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
-    face_shapes = (
-        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = {int(s) for s in pipeline.soft_heightfield_face_pairs.numpy()[:, 1]}
+    test.assertIn(hf, face_shapes)
+
+
+def test_small_finite_plane_between_deformable_vertices(test, device):
+    """A finite plane inside a large deformable triangle must not rely on its vertices."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=0.2, length=0.2)
+    a = builder.add_particle(wp.vec3(-1.0, -1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    b = builder.add_particle(wp.vec3(1.0, -1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    c = builder.add_particle(wp.vec3(0.0, 1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(a, b, c)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.05,
+        enable_rigid_soft_full_surface_contact=True,
     )
-    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
-    test.assertNotIn(hf, face_shapes, "the heightfield is excluded from full-surface (fell back)")
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(total, 0)
+    indices = contacts.soft_contact_indices.numpy()[:total]
+    test.assertGreater(int(np.sum(indices[:, 1] >= 0)), 0)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_small_finite_plane_between_deformable_vertices",
+    test_small_finite_plane_between_deformable_vertices,
+    devices=soft_devices,
+)
+
+
+def test_small_heightfield_between_deformable_vertices(test, device):
+    """A sloped heightfield inside a large deformable triangle must not rely on soft vertices."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(
+            data=np.array(((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)), dtype=np.float32),
+            nrow=3,
+            ncol=3,
+            hx=0.1,
+            hy=0.1,
+            min_z=0.0,
+            max_z=0.01,
+        )
+    )
+    a = builder.add_particle(wp.vec3(-1.0, -1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    b = builder.add_particle(wp.vec3(1.0, -1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    c = builder.add_particle(wp.vec3(0.0, 1.0, 0.02), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(a, b, c)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.05,
+        enable_rigid_soft_full_surface_contact=True,
+    )
+    state = model.state()
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(total, 0)
+    indices = contacts.soft_contact_indices.numpy()[:total]
+    test.assertGreater(int(np.sum(indices[:, 1] >= 0)), 0)
+
+    positions = state.particle_q.numpy()
+    positions[:, 2] = 0.08
+    state.particle_q.assign(positions)
+    pipeline.collide(state, contacts)
+    test.assertEqual(
+        int(contacts.soft_contact_count.numpy()[0]),
+        0,
+        "heightfield outside the gap must not create a ghost contact",
+    )
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_small_heightfield_between_deformable_vertices",
+    test_small_heightfield_between_deformable_vertices,
+    devices=soft_devices,
+)
 
 
 def test_full_surface_allows_infinite_plane(test, device):
@@ -4694,10 +5107,20 @@ def test_full_surface_allows_infinite_plane(test, device):
     everywhere), so the common ground-plane case keeps working (E4 regression guard)."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()  # infinite
-    _add_soft_triangle(builder)
+    _add_soft_triangle(builder, z=0.005)
     model = builder.finalize(device=device)
-    # Must not raise.
-    newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.01,
+        enable_rigid_soft_full_surface_contact=True,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    indices = contacts.soft_contact_indices.numpy()[:total]
+    test.assertEqual(int(np.sum(indices[:, 2] >= 0)), 1)
+    test.assertEqual(int(pipeline._soft_sdf_fallback_count.numpy()[0]), 0)
 
 
 def _nonuniform_box_mesh_gap_model(device, tri_x):
@@ -4753,8 +5176,8 @@ for _name, _fn in (
     ("test_soft_contact_tids_decoupled_from_capacity", test_soft_contact_tids_decoupled_from_capacity),
     ("test_full_surface_replay_spans_candidate_space", test_full_surface_replay_spans_candidate_space),
     ("test_collide_syncs_full_surface_marker", test_collide_syncs_full_surface_marker),
-    ("test_full_surface_finite_plane_falls_back", test_full_surface_finite_plane_falls_back),
-    ("test_full_surface_heightfield_falls_back", test_full_surface_heightfield_falls_back),
+    ("test_full_surface_supports_finite_plane", test_full_surface_supports_finite_plane),
+    ("test_full_surface_supports_heightfield", test_full_surface_supports_heightfield),
     ("test_full_surface_allows_infinite_plane", test_full_surface_allows_infinite_plane),
     ("test_eval_shape_sdf_barrel_cylinder", test_eval_shape_sdf_barrel_cylinder),
 ):
@@ -5029,6 +5452,8 @@ def _launch_soft_ef_multiset(pipeline, state, *, use_shape_aabbs: bool):
         device=pipeline.device,
         edge_pairs=pipeline.soft_edge_rigid_pairs,
         face_pairs=pipeline.soft_face_rigid_pairs,
+        sdf_fallback_tids=pipeline._soft_sdf_fallback_tids,
+        sdf_fallback_count=pipeline._soft_sdf_fallback_count,
         n_particle_pairs=0,
         shape_aabb_lower=pipeline.narrow_phase.shape_aabb_lower if use_shape_aabbs else None,
         shape_aabb_upper=pipeline.narrow_phase.shape_aabb_upper if use_shape_aabbs else None,
@@ -5096,6 +5521,8 @@ def test_end_to_end_no_false_pos_neg(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    face_fallback_tids = wp.empty(len(face_pairs), dtype=wp.int32, device=device)
+    face_fallback_count = wp.zeros(1, dtype=wp.int32, device=device)
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -5104,6 +5531,8 @@ def test_end_to_end_no_false_pos_neg(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
+        sdf_fallback_tids=face_fallback_tids,
+        sdf_fallback_count=face_fallback_count,
         n_particle_pairs=0,
     )
 
@@ -5221,6 +5650,7 @@ def test_graph_capture_stable(test, device):
     builder.add_shape_box(
         body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
     )
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
     builder.add_cloth_grid(
         pos=wp.vec3(-0.4, -0.4, 0.45),
         rot=wp.quat_identity(),
@@ -5231,6 +5661,7 @@ def test_graph_capture_stable(test, device):
         cell_y=0.2,
         mass=0.1,
     )
+    configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
         model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
@@ -5310,7 +5741,7 @@ add_function_test(
 def test_edge_face_pairs_respect_worlds(test, device):
     """Multi-world: the full-surface edge/face candidate pairs never cross worlds.
 
-    Two worlds, each a box + a triangle. The edge/face pair builders must emit exactly the
+    Two worlds, each with two rigid shapes and a triangle mesh. The edge/face pair builders emit the
     world-compatible (feature, shape) pairs (same world, or either global -1) -- matching a
     brute-force reference -- and must strictly exclude the cross-world combinations, mirroring the
     particle path's ``_build_soft_particle_rigid_contact_pairs``.
@@ -5320,6 +5751,7 @@ def test_edge_face_pairs_respect_worlds(test, device):
         # A cloth grid (not a bare triangle) so finalize builds soft-mesh edge adjacency.
         b = newton.ModelBuilder()
         b.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5)
+        b.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), radius=0.25)
         b.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
@@ -5359,11 +5791,15 @@ def test_edge_face_pairs_respect_worlds(test, device):
 
     face_world = pw[tri[:, 0]]
     expected_face = {(t, s) for t in range(n_tris) for s in range(n_shapes) if _compat(face_world[t], s)}
-    test.assertEqual({tuple(int(v) for v in p) for p in face_pairs.numpy()}, expected_face)
+    face_pairs_np = face_pairs.numpy()
+    test.assertEqual({tuple(int(v) for v in p) for p in face_pairs_np}, expected_face)
+    test.assertTrue(np.all(face_pairs_np[:-1, 1] <= face_pairs_np[1:, 1]))
 
     edge_world = pw[tri[owner, 0]]
     expected_edge = {(e, s) for e in range(n_edges) for s in range(n_shapes) if _compat(edge_world[e], s)}
-    test.assertEqual({tuple(int(v) for v in p) for p in edge_pairs.numpy()}, expected_edge)
+    edge_pairs_np = edge_pairs.numpy()
+    test.assertEqual({tuple(int(v) for v in p) for p in edge_pairs_np}, expected_edge)
+    test.assertTrue(np.all(edge_pairs_np[:-1, 1] <= edge_pairs_np[1:, 1]))
 
     # Filtering must drop the cross-world combinations (fewer than the naive full cross product).
     test.assertLess(len(face_pairs), n_tris * n_shapes)
