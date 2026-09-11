@@ -98,7 +98,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, "wp.array[wp.bool] | None"], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]
@@ -284,11 +284,19 @@ class SolverKaminoImpl(SolverBase):
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
 
-        # Create the time-integrator instance based on the config
+        # Contacts generated externally are evaluated at the start of a step, so they require
+        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
         if self._config.integrator == "euler":
             self._integrator = IntegratorEuler(model=self._model)
         elif self._config.integrator == "moreau":
-            self._integrator = IntegratorMoreauJean(model=self._model)
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(model=self._model)
+            else:
+                msg.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(model=self._model)
         else:
             raise ValueError(
                 f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
@@ -359,6 +367,11 @@ class SolverKaminoImpl(SolverBase):
         Returns the dual forward dynamics problem.
         """
         return self._problem_fd
+
+    @property
+    def solver_status(self) -> wp.array[Any]:
+        """Returns the active forward dynamics backend's per-world status array."""
+        return self._solver_fd.data.status
 
     @property
     def solver_fd(self) -> PADMMSolver | DVISolver:
@@ -517,7 +530,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Run the pre-reset callback if it has been set
-        self._run_pre_reset_callback(state_out=state)
+        self._run_pre_reset_callback(state_out=state, world_mask=world_mask)
 
         # Resolve target joint_q
         joint_q = None
@@ -692,7 +705,7 @@ class SolverKaminoImpl(SolverBase):
                 success_mask.fill_(True)
 
         # Run the post-reset callback if it has been set
-        self._run_post_reset_callback(state_out=state)
+        self._run_post_reset_callback(state_out=state, world_mask=world_mask)
 
     @override
     def step(
@@ -780,19 +793,19 @@ class SolverKaminoImpl(SolverBase):
     # Internals - Callback Operations
     ###
 
-    def _run_pre_reset_callback(self, state_out: StateKamino):
+    def _run_pre_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the pre-reset callback if it has been set.
         """
         if self._pre_reset_cb is not None:
-            self._pre_reset_cb(self, state_out)
+            self._pre_reset_cb(self, state_out, world_mask)
 
-    def _run_post_reset_callback(self, state_out: StateKamino):
+    def _run_post_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the post-reset callback if it has been set.
         """
         if self._post_reset_cb is not None:
-            self._post_reset_cb(self, state_out)
+            self._post_reset_cb(self, state_out, world_mask)
 
     def _run_prestep_callback(
         self, state_in: StateKamino, state_out: StateKamino, control: ControlKamino, contacts: ContactsKamino
@@ -843,7 +856,10 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j, state_in.q_j)
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
-        wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
+        wp.copy(self._data.joints.lambda_kin_j, state_in.lambda_kin_j)
+        wp.copy(self._data.joints.lambda_dyn_j, state_in.lambda_dyn_j)
+        wp.copy(self._data.joints.lambda_f_j, state_in.lambda_f_j)
+        wp.copy(self._data.joints.lambda_tau_j, state_in.lambda_tau_j)
         # Alias read-only control inputs
         self._data.joints.tau_j = control_in.tau_j
         self._data.joints.q_j_ref = control_in.q_j_ref
@@ -863,7 +879,10 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)
-        wp.copy(state_out.lambda_j, self._data.joints.lambda_j)
+        wp.copy(state_out.lambda_kin_j, self._data.joints.lambda_kin_j)
+        wp.copy(state_out.lambda_dyn_j, self._data.joints.lambda_dyn_j)
+        wp.copy(state_out.lambda_f_j, self._data.joints.lambda_f_j)
+        wp.copy(state_out.lambda_tau_j, self._data.joints.lambda_tau_j)
 
     ###
     # Internals - Reset Operations
@@ -1127,7 +1146,7 @@ class SolverKaminoImpl(SolverBase):
         # If a collision detector is provided, use it to generate
         # update the set of active contacts at the current state
         if detector is not None:
-            detector.collide(data=self._data, state=state_in, contacts=contacts)
+            detector.collide(data=self._data, contacts=contacts)
 
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state

@@ -1,6 +1,12 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: "en-US"
 early_access: false
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CODING_GUIDELINES.rst"
+      - "REVIEW_GUIDELINES.rst"
 reviews:
   profile: "chill"
   request_changes_workflow: false
@@ -17,6 +23,8 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
+        Apply REVIEW_GUIDELINES.rst and enforce CODING_GUIDELINES.rst.
+
         Follow changelog/README.md. For user-facing changes, suggest a
         Towncrier fragment instead of a direct CHANGELOG.md edit. Do not require
         a .skip fragment for changes without user-facing impact. When a fragment

@@ -1,0 +1,76 @@
+#usda 1.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.1
+    kilogramsPerUnit = 0.001
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene" (
+        prepend apiSchemas = ["NewtonMPMSceneAPI"]
+    )
+    {
+        # 98.1 stage-units/s^2 at metersPerUnit=0.1 is Earth gravity in SI.
+        float physics:gravityMagnitude = 98.1
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float newton:mpm:voxelSize = 0.5
+    }
+
+    def Material "SandMaterial" (
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
+    )
+    {
+        float physics:density = 2000
+        float newton:mpm:youngsModulus = 500
+        float newton:mpm:internalFriction = 0.6
+    }
+
+    def Material "SnowMaterial" (
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
+    )
+    {
+        float physics:density = 1000
+        float newton:mpm:internalFriction = 0.2
+    }
+
+    def Points "RenderOnly"
+    {
+        point3f[] points = [(99, 0, 0)]
+        float[] widths = [1]
+    }
+
+    def Xform "TranslatedAndScaled"
+    {
+        double3 xformOp:translate = (10, 0, 0)
+        float3 xformOp:scale = (2, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+        def Points "Sand" (
+            prepend apiSchemas = ["MaterialBindingAPI", "NewtonPointsDeformableSimAPI", "PhysicsDeformableBodyAPI"]
+        )
+        {
+            int64[] ids = [10, 11]
+            point3f[] points = [(1, 0, 0), (2, 0, 0)]
+            float[] physics:masses = [2000, 16000]
+            vector3f[] velocities = [(3, 0, 0), (0, 1, 0)]
+            float[] widths = [0.5, 1]
+            rel material:binding:physics = </World/SandMaterial>
+            rel physics:simulationOwner = </World/PhysicsScene>
+        }
+    }
+
+    def Points "Snow" (
+        prepend apiSchemas = ["MaterialBindingAPI", "NewtonPointsDeformableSimAPI", "PhysicsDeformableBodyAPI"]
+    )
+    {
+        int64[] ids = [20]
+        point3f[] points = [(0, 1, 0)]
+        float[] widths = [2]
+        rel material:binding:physics = </World/SnowMaterial>
+        rel physics:simulationOwner = </World/PhysicsScene>
+    }
+}

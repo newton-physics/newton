@@ -4,10 +4,11 @@
 """Generate concise API .rst files for public modules.
 
 This helper discovers Newton's top-level public modules from ``newton.__all__``,
-reads each module's ``__all__`` list (and falls back to public attributes if
-``__all__`` is missing), and writes one reStructuredText file per module with an
-``autosummary`` directive.  Modules may use ``__deprecated_symbols__`` to keep
-warning-only compatibility names documented without resolving their values.
+reads each module's ``__all__`` list, and writes one reStructuredText file per
+module with an ``autosummary`` directive. Modules without a valid ``__all__``
+are rejected so undeclared attributes cannot become documented public API.
+Modules may use ``__deprecated_symbols__`` to keep warning-only compatibility
+names documented without resolving their values.
 When Sphinx later builds the documentation (with
 ``autosummary_generate = True``), individual stub pages will be created
 automatically for every listed symbol.
@@ -66,17 +67,16 @@ _COPYRIGHT_LINES: dict[Path, str] = {}
 
 
 def public_symbols(mod: ModuleType) -> list[str]:
-    """Return the list of public names for *mod* (honours ``__all__``)."""
+    """Return the public names explicitly declared by *mod*."""
 
-    if hasattr(mod, "__all__") and isinstance(mod.__all__, list | tuple):
-        return list(mod.__all__)
+    names = getattr(mod, "__all__", None)
+    if not isinstance(names, list | tuple):
+        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple")
+    for name in names:
+        if not isinstance(name, str):
+            raise ValueError(f"{mod.__name__}.__all__ must contain only strings; got {name!r}")
 
-    def is_public(name: str) -> bool:
-        if name.startswith("_"):
-            return False
-        return not inspect.ismodule(getattr(mod, name))
-
-    return sorted(filter(is_public, dir(mod)))
+    return list(names)
 
 
 def _read_copyright_line(path: Path) -> str | None:
@@ -134,8 +134,7 @@ def api_modules() -> list[str]:
 
 def _is_solver_only_module(mod: ModuleType) -> bool:
     """Return True when the module only exposes its solver class."""
-    names = getattr(mod, "__all__", None)
-    public = list(names) if isinstance(names, (list, tuple)) else public_symbols(mod)
+    public = public_symbols(mod)
     return len(public) == 1 and public[0].startswith("Solver")
 
 

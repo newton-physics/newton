@@ -17,6 +17,7 @@ import tempfile
 import threading
 import unittest
 import uuid
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -214,9 +215,9 @@ class TestSDFDiskCachePure(unittest.TestCase):
         """A minimal but schema-correct sparse_data dict for round-trip tests."""
 
         return {
-            "coarse_sdf": np.zeros((4, 4, 4), dtype=np.float32),
+            "coarse_sdf": np.zeros((3, 3, 3), dtype=np.float32),
             "subgrid_data": np.zeros((1, 1, 1), dtype=np.float32),
-            "subgrid_start_slots": np.zeros((2, 2, 2), dtype=np.uint32),
+            "subgrid_start_slots": np.full((2, 2, 2), 0xFFFFFFFF, dtype=np.uint32),
             "subgrid_required": np.zeros(8, dtype=np.int32),
             "coarse_dims": (2, 2, 2),
             "subgrid_tex_size": 1,
@@ -229,6 +230,154 @@ class TestSDFDiskCachePure(unittest.TestCase):
             "subgrids_min_sdf_value": 0.0,
             "subgrids_sdf_value_range": 1.0,
         }
+
+    def _save_fake_sparse_data(self, sparse_data: dict | None = None) -> tuple[str, Path]:
+        """Save fake sparse data and return its hash and cache path.
+
+        Args:
+            sparse_data: Sparse data to save. Uses the default fixture when omitted.
+        """
+        if sparse_data is None:
+            sparse_data = self._fake_sparse_data()
+        cache_hash = _sdf_cache.hash_inputs(**_common_hash_kwargs(self.vertices, self.indices))
+        _sdf_cache.save_sparse_data(self.cache_dir, cache_hash, sparse_data, newton_version="test")
+        return cache_hash, _sdf_cache.cache_path(self.cache_dir, cache_hash)
+
+    @staticmethod
+    def _replace_cache_entry(npz_path: Path, **overrides: np.ndarray | None) -> None:
+        """Replace selected arrays in an existing cache entry.
+
+        Args:
+            npz_path: Path to the cache archive.
+            overrides: Cache members to replace; ``None`` removes a member.
+        """
+        with np.load(npz_path, allow_pickle=False) as npz:
+            contents = {key: npz[key] for key in npz.files}
+        for key, value in overrides.items():
+            if value is None:
+                contents.pop(key, None)
+            else:
+                contents[key] = value
+        np.savez(npz_path, **contents)
+
+    def test_cache_entry_rewrite_preserves_validity(self) -> None:
+        """Keep a cache entry loadable after an unmodified rewrite."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        self._replace_cache_entry(npz_path)
+        self.assertIsNotNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_malformed_array_schema_is_miss(self) -> None:
+        """Treat cache arrays with invalid dtypes, ranks, or shapes as misses."""
+        invalid_arrays = {
+            "missing coarse_sdf": {"coarse_sdf": None},
+            "coarse_sdf dtype": {"coarse_sdf": np.zeros((3, 3, 3), dtype=np.float64)},
+            "coarse_sdf rank": {"coarse_sdf": np.zeros((3, 9), dtype=np.float32)},
+            "coarse_sdf shape": {"coarse_sdf": np.zeros((4, 3, 3), dtype=np.float32)},
+            "empty subgrid_data dtype": {"subgrid_data": np.zeros((1, 1, 1), dtype=np.uint16)},
+            "subgrid_data rank": {"subgrid_data": np.zeros((1, 1), dtype=np.float32)},
+            "subgrid_start_slots dtype": {"subgrid_start_slots": np.full((2, 2, 2), -1, dtype=np.int32)},
+            "subgrid_required shape": {"subgrid_required": np.zeros(7, dtype=np.int32)},
+            "coarse_dims dtype": {"coarse_dims": np.array([2, 2, 2], dtype=np.int64)},
+            "integer scalar dtype": {"num_subgrids": np.array(0, dtype=np.int64)},
+            "float scalar dtype": {"subgrids_sdf_value_range": np.array(1.0, dtype=np.float64)},
+            "cell_size shape": {"cell_size": np.ones((1, 3), dtype=np.float64)},
+        }
+
+        for label, overrides in invalid_arrays.items():
+            with self.subTest(label=label):
+                cache_hash, npz_path = self._save_fake_sparse_data()
+                self._replace_cache_entry(npz_path, **overrides)
+                self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_corrupt_npz_member_is_miss(self) -> None:
+        """Treat a cache archive with a corrupt member as a miss."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        with zipfile.ZipFile(npz_path) as archive:
+            member = archive.getinfo("__cache_format_version__.npy")
+
+        # Change the stored payload without updating its central-directory CRC.
+        with npz_path.open("r+b") as stream:
+            stream.seek(member.header_offset + 26)
+            filename_length = int.from_bytes(stream.read(2), "little")
+            extra_length = int.from_bytes(stream.read(2), "little")
+            data_offset = member.header_offset + 30 + filename_length + extra_length
+            stream.seek(data_offset + member.file_size - 1)
+            original = stream.read(1)
+            stream.seek(-1, os.SEEK_CUR)
+            stream.write(bytes((original[0] ^ 0xFF,)))
+
+        self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_truncated_npz_archive_is_miss(self) -> None:
+        """Treat a truncated cache archive as a miss."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        with npz_path.open("r+b") as stream:
+            stream.seek(-16, os.SEEK_END)
+            stream.truncate()
+
+        self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_invalid_scalar_metadata_is_miss(self) -> None:
+        """Treat cache scalar metadata outside its valid range as a miss."""
+        invalid_scalars = {
+            "zero coarse dimension": {"coarse_dims": np.array([0, 2, 2], dtype=np.int32)},
+            "negative subgrid count": {"num_subgrids": np.array(-1, dtype=np.int32)},
+            "too many subgrids": {"num_subgrids": np.array(9, dtype=np.int32)},
+            "zero subgrid texture size": {
+                "subgrid_tex_size": np.array(0, dtype=np.int32),
+                "subgrid_data": np.zeros((0, 0, 0), dtype=np.float32),
+            },
+            "zero subgrid size": {"subgrid_size": np.array(0, dtype=np.int32)},
+            "unknown quantization": {"quantization_mode": np.array(99, dtype=np.int32)},
+            "nonfinite range": {"subgrids_sdf_value_range": np.array(np.inf, dtype=np.float32)},
+            "zero range": {"subgrids_sdf_value_range": np.array(0.0, dtype=np.float32)},
+            "nonpositive cell size": {"cell_size": np.array([0.25, 0.0, 0.25], dtype=np.float64)},
+            "reversed extents": {
+                "min_extents": np.array([1.0, -0.5, -0.5], dtype=np.float64),
+                "max_extents": np.array([0.5, 0.5, 0.5], dtype=np.float64),
+            },
+        }
+
+        for label, overrides in invalid_scalars.items():
+            with self.subTest(label=label):
+                cache_hash, npz_path = self._save_fake_sparse_data()
+                self._replace_cache_entry(npz_path, **overrides)
+                self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_out_of_bounds_subgrid_slot_is_miss(self) -> None:
+        """Treat subgrid slots outside the packed texture bounds as a miss."""
+        sparse_data = self._fake_sparse_data()
+        sparse_data.update(
+            {
+                "subgrid_data": np.zeros((9, 9, 9), dtype=np.uint16),
+                "subgrid_start_slots": np.full((2, 2, 2), 0xFFFFFFFF, dtype=np.uint32),
+                "subgrid_required": np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.int32),
+                "subgrid_tex_size": 9,
+                "num_subgrids": 1,
+            }
+        )
+        # X block 1 starts at texel 9, just outside a 9-wide packed texture.
+        sparse_data["subgrid_start_slots"][0, 0, 0] = np.uint32(1)
+
+        cache_hash, _ = self._save_fake_sparse_data(sparse_data)
+        self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_overprovisioned_subgrid_texture_loads(self) -> None:
+        """Load a bounded subgrid texture with unused packed-block capacity."""
+        sparse_data = self._fake_sparse_data()
+        sparse_data.update(
+            {
+                "subgrid_data": np.zeros((18, 18, 18), dtype=np.uint16),
+                "subgrid_start_slots": np.full((2, 2, 2), 0xFFFFFFFF, dtype=np.uint32),
+                "subgrid_required": np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.int32),
+                "subgrid_tex_size": 18,
+                "num_subgrids": 1,
+            }
+        )
+        sparse_data["subgrid_start_slots"][0, 0, 0] = np.uint32(0)
+
+        cache_hash, _ = self._save_fake_sparse_data(sparse_data)
+        self.assertIsNotNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
 
     def test_round_trip_save_and_load(self) -> None:
         sparse_data = self._fake_sparse_data()

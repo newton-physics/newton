@@ -11,18 +11,17 @@ from ._src.core import (
 )
 from ._version import __version__
 
-use_coord_layout_targets: bool = False
+use_coord_layout_targets: bool = True
 """Use :attr:`joint_q`-aligned layout for joint position targets.
 
 Controls the shape of :attr:`~newton.Model.joint_target_q` and
 :attr:`~newton.Control.joint_target_q`:
 
-- ``True``: shape ``(joint_coord_count,)``, matching
+- ``True`` (the default): shape ``(joint_coord_count,)``, matching
   :attr:`~newton.State.joint_q`.
-- ``False`` (the default): legacy shape ``(joint_dof_count,)``, which is
-  misaligned with :attr:`~newton.State.joint_q` whenever an articulation
-  contains a free, ball, or distance joint upstream of a position-controlled
-  DOF.
+- ``False``: legacy shape ``(joint_dof_count,)``, which is misaligned with
+  :attr:`~newton.State.joint_q` whenever an articulation contains a free,
+  ball, or distance joint upstream of a position-controlled DOF.
 
 :attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
 matching :attr:`~newton.State.joint_qd`.
@@ -34,8 +33,7 @@ it before constructing a :class:`~newton.ModelBuilder`.
     The legacy DOF-shaped layout is deprecated. In a future release the
     coordinate layout becomes the only layout and this flag is removed;
     ``finalize()`` warns when building an affected model (one whose joint
-    coordinate and DOF counts differ) under ``False``. Set the flag to
-    ``True`` now to migrate.
+    coordinate and DOF counts differ) under ``False``.
 """
 
 __all__ = [
@@ -87,6 +85,7 @@ from ._src.sim import (  # noqa: E402
     Model,
     ModelBuilder,
     ModelFlags,
+    Rod,
     State,
     StateFlags,
     eval_fk,
@@ -95,6 +94,7 @@ from ._src.sim import (  # noqa: E402
     eval_inverse_dynamics_passive,
     eval_jacobian,
     eval_mass_matrix,
+    eval_mimic,
     eval_rigid_contact_kinematics,
 )
 
@@ -109,6 +109,7 @@ __all__ += [
     "Model",
     "ModelBuilder",
     "ModelFlags",
+    "Rod",
     "State",
     "StateFlags",
     "eval_fk",
@@ -117,6 +118,7 @@ __all__ += [
     "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
+    "eval_mimic",
     "eval_rigid_contact_kinematics",
 ]
 

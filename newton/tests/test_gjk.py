@@ -5,6 +5,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 from newton import GeoType
@@ -12,6 +13,23 @@ from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 
 MAX_ITERATIONS = 30
+
+
+@wp.kernel
+def _support_map_kernel(scale: wp.vec3, direction: wp.vec3, support_out: wp.array[wp.vec3]):
+    """Evaluate one cylinder support point."""
+    shape = GenericShapeData()
+    shape.shape_type = GeoType.CYLINDER
+    shape.scale = scale
+    shape.auxiliary = wp.vec3(0.0)
+    support_out[0] = support_map(shape, direction, SupportMapDataProvider())
+
+
+def _cylinder_support(scale, direction):
+    """Return a cylinder support point for a local direction."""
+    support_out = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(_support_map_kernel, dim=1, inputs=[wp.vec3(*scale), wp.vec3(*direction)], outputs=[support_out])
+    return support_out.numpy()[0]
 
 
 @wp.kernel
@@ -106,6 +124,38 @@ def _geom_dist(
 
 class TestGJK(unittest.TestCase):
     """Tests for GJK distance computation using the new simplex solver."""
+
+    def test_cylinder_barrel_support(self):
+        """Verify cylinder support follows the symmetric circular barrel profile."""
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        equatorial_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, 0.0), (1.0, 0.0, 0.0)),
+            (radius, 0.0, 0.0),
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), (1.0, 0.0, 0.0)),
+            (equatorial_radius, 0.0, 0.0),
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), (0.0, 0.0, 1.0)),
+            (radius, 0.0, half_height),
+            atol=1.0e-6,
+        )
+
+        direction = np.array([1.0, 0.0, 0.25])
+        support_z = barrel_radius * direction[2] / np.linalg.norm(direction)
+        support_radius = radius - np.sqrt(barrel_radius**2 - half_height**2) + np.sqrt(barrel_radius**2 - support_z**2)
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), direction),
+            (support_radius, 0.0, support_z),
+            atol=1.0e-6,
+        )
 
     def test_spheres_distance(self):
         """Test distance between two separated spheres."""

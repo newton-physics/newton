@@ -18,7 +18,6 @@ import warp as wp
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
-from ...core.state import StateKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
 from .broadphase import (
@@ -162,13 +161,12 @@ class CollisionPipelinePrimitive:
             )
             self._contact_overflow_warning_emitted = wp.zeros(shape=(1,), dtype=wp.int32)
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino):
+    def collide(self, data: DataKamino, contacts: ContactsKamino):
         """
-        Runs the unified collision detection pipeline to generate discrete contacts.
+        Runs the primitive collision detection pipeline to generate discrete contacts.
 
         Args:
             data: The data container holding internal time-varying state of the solver.
-            state: The state container holding the time-varying state of the simulation.
             contacts: Output contacts container (will be cleared and populated)
         """
         # Ensure that the pipeline has been finalized
@@ -182,7 +180,7 @@ class CollisionPipelinePrimitive:
 
         # Perform the broad-phase collision detection to generate candidate pairs
         primitive_broadphase_explicit(
-            body_poses=state.q_i,
+            body_poses=data.bodies.q_i,
             geoms_model=self._model.geoms,
             geoms_data=data.geoms,
             bv_type=self._bvtype,

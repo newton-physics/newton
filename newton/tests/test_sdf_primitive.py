@@ -37,7 +37,7 @@ def _eval_sdf(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, u
     if primitive == PRIMITIVE_CAPSULE:
         return kernels.sdf_capsule(point, p0, p1, up_axis)
     if primitive == PRIMITIVE_CYLINDER:
-        return kernels.sdf_cylinder(point, p0, p1, up_axis)
+        return kernels.sdf_cylinder(point, p0, p1, up_axis, -1.0, p2)
     if primitive == PRIMITIVE_ELLIPSOID:
         return kernels.sdf_ellipsoid(point, wp.vec3(p0, p1, p2))
     if primitive == PRIMITIVE_CONE:
@@ -54,7 +54,7 @@ def _eval_grad(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, 
     if primitive == PRIMITIVE_CAPSULE:
         return kernels.sdf_capsule_grad(point, p0, p1, up_axis)
     if primitive == PRIMITIVE_CYLINDER:
-        return kernels.sdf_cylinder_grad(point, p0, p1, up_axis)
+        return kernels.sdf_cylinder_grad(point, p0, p1, up_axis, -1.0, p2)
     if primitive == PRIMITIVE_ELLIPSOID:
         return kernels.sdf_ellipsoid_grad(point, wp.vec3(p0, p1, p2))
     if primitive == PRIMITIVE_CONE:
@@ -197,6 +197,21 @@ def test_sdf_cylinder_grad_matches_finite_difference(test, device):
     _assert_gradient_matches_fd(test, device, PRIMITIVE_CYLINDER, points, 0.7, 1.0, 0.0, int(Axis.Y))
 
 
+def test_sdf_barrel_cylinder_grad_matches_finite_difference(test, device):
+    """Verify barrel-cylinder SDF gradients in every axis orientation."""
+    points = np.array(
+        [
+            [0.9, 0.2, 0.1],
+            [-0.8, -0.6, 0.3],
+            [0.2, 1.3, -0.1],
+            [0.7, 0.8, 0.4],
+        ],
+        dtype=np.float32,
+    )
+    for axis in (Axis.X, Axis.Y, Axis.Z):
+        _assert_gradient_matches_fd(test, device, PRIMITIVE_CYLINDER, points, 0.7, 1.0, 2.0, int(axis))
+
+
 def test_sdf_ellipsoid_grad_matches_finite_difference(test, device):
     points = np.array(
         [
@@ -261,6 +276,12 @@ add_function_test(
     TestSdfPrimitive,
     "test_sdf_cylinder_grad_matches_finite_difference",
     test_sdf_cylinder_grad_matches_finite_difference,
+    devices=_devices,
+)
+add_function_test(
+    TestSdfPrimitive,
+    "test_sdf_barrel_cylinder_grad_matches_finite_difference",
+    test_sdf_barrel_cylinder_grad_matches_finite_difference,
     devices=_devices,
 )
 add_function_test(

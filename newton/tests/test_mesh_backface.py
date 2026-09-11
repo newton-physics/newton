@@ -78,7 +78,7 @@ def _make_box_ground_mesh(size=5.0, thickness=0.2, z=0.0):
     return newton.Mesh(verts, mesh.indices, compute_inertia=False)
 
 
-def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_rot=None):
+def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_rot=None, reduce_contacts=True):
     """Build a scene and return (model, collision_pipeline, state).
 
     No solver needed -- tests only inspect contacts.
@@ -117,7 +117,12 @@ def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_r
         raise ValueError(f"Unsupported shape type: {shape_type}")
 
     model = builder.finalize()
-    cp = newton.CollisionPipeline(model, broad_phase="explicit", max_triangle_pairs=100_000)
+    cp = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        max_triangle_pairs=100_000,
+        reduce_contacts=reduce_contacts,
+    )
     state = model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -322,6 +327,23 @@ class TestMeshBackfaceCulling(unittest.TestCase):
 
     def test_back_face_convex_mesh(self):
         self._assert_back_face_culled(GeoType.CONVEX_MESH)
+
+    def test_near_back_face_box_matches_reduction_modes(self):
+        """Cull near-back-face box contacts with and without reduction."""
+        mesh = _make_flat_ground_mesh(z=0.0)
+        for reduce_contacts in (False, True):
+            for z_pos in (-0.08, -0.05, -0.02):
+                with self.subTest(reduce_contacts=reduce_contacts, z_pos=z_pos):
+                    model, cp, state = _build_collision_only(
+                        mesh,
+                        GeoType.BOX,
+                        shape_pos=(0.0, 0.0, z_pos),
+                        shape_scale=(0.1, 0.1, 0.1),
+                        reduce_contacts=reduce_contacts,
+                    )
+                    contacts = _collide(model, cp, state)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertEqual(count, 0)
 
     # ------------------------------------------------------------------
     # Rotated convex shapes on back side

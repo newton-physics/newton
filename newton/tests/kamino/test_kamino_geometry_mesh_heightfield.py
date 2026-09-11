@@ -181,15 +181,14 @@ def _build_multi_world_heightfield(num_worlds: int = 3) -> newton.ModelBuilder:
 
 
 def _finalize_and_get_kamino(builder, device):
-    """Finalize Newton model, create Kamino model, data, and state."""
+    """Finalize Newton model and create Kamino model data."""
     newton_model = builder.finalize(device=device)
     model = ModelKamino.from_newton(newton_model)
     data = model.data(device=device)
-    state = model.state(device=device)
-    return newton_model, model, data, state
+    return newton_model, model, data
 
 
-def _run_unified_pipeline(model, data, state, device):
+def _run_unified_pipeline(model, data, device):
     """Create unified pipeline, allocate contacts, run collision detection."""
     num_worlds = model.size.num_worlds
     pipeline = CollisionPipelineUnifiedKamino(
@@ -198,7 +197,7 @@ def _run_unified_pipeline(model, data, state, device):
     )
     contacts = ContactsKamino(capacity=[4096] * num_worlds, device=device)
     contacts.clear()
-    pipeline.collide(data, state, contacts)
+    pipeline.collide(data, contacts)
     return contacts
 
 
@@ -311,8 +310,8 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
 
     def test_01_sphere_on_flat_heightfield(self):
         """Sphere touching flat heightfield: 2 contacts (one per cell triangle), normal=(0,0,1), position at z=0."""
-        _, model, data, state = _finalize_and_get_kamino(_build_sphere_on_heightfield(), self.default_device)
-        contacts = _run_unified_pipeline(model, data, state, self.default_device)
+        _, model, data = _finalize_and_get_kamino(_build_sphere_on_heightfield(), self.default_device)
+        contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
         # A sphere centered over a heightfield cell touches both triangles in that cell,
@@ -347,8 +346,8 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
 
     def test_02_box_on_flat_heightfield(self):
         """Box resting on flat heightfield: >=4 contacts, all at z ≈ 0."""
-        _, model, data, state = _finalize_and_get_kamino(_build_box_on_heightfield(), self.default_device)
-        contacts = _run_unified_pipeline(model, data, state, self.default_device)
+        _, model, data = _finalize_and_get_kamino(_build_box_on_heightfield(), self.default_device)
+        contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
         self.assertGreaterEqual(nc, 4, f"Box face on heightfield should produce >=4 contacts, got {nc}")
@@ -376,8 +375,8 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
 
     def test_03_heightfield_terrain(self):
         """Sphere on sine-wave terrain: contacts generated, normal has upward component."""
-        _, model, data, state = _finalize_and_get_kamino(_build_heightfield_terrain(), self.default_device)
-        contacts = _run_unified_pipeline(model, data, state, self.default_device)
+        _, model, data = _finalize_and_get_kamino(_build_heightfield_terrain(), self.default_device)
+        contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
         self.assertGreaterEqual(nc, 1, "Sphere on terrain must produce contacts")
@@ -393,10 +392,8 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
     def test_04_multi_world_heightfield(self):
         """Multi-world sphere-on-heightfield: each world gets exactly 2 contacts (1 per triangle)."""
         num_worlds = 3
-        _, model, data, state = _finalize_and_get_kamino(
-            _build_multi_world_heightfield(num_worlds), self.default_device
-        )
-        contacts = _run_unified_pipeline(model, data, state, self.default_device)
+        _, model, data = _finalize_and_get_kamino(_build_multi_world_heightfield(num_worlds), self.default_device)
+        contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
         expected_total = 2 * num_worlds  # 2 contacts per sphere (one per cell triangle)
@@ -408,10 +405,10 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
 
     def test_05_no_contacts_when_separated(self):
         """Sphere far above heightfield must produce zero contacts."""
-        _, model, data, state = _finalize_and_get_kamino(
+        _, model, data = _finalize_and_get_kamino(
             _build_sphere_on_heightfield(sphere_z=SPHERE_RADIUS + 1.0), self.default_device
         )
-        contacts = _run_unified_pipeline(model, data, state, self.default_device)
+        contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
         self.assertEqual(nc, 0, f"Separated sphere should produce 0 contacts, got {nc}")

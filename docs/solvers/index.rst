@@ -202,7 +202,8 @@ operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates
 The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
-:class:`~newton.solvers.SolverVBD` supports a subset of joint types via soft constraints (AVBD).
+:class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
+constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**
@@ -268,7 +269,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |no|
-   * - CABLE
+   * - ROD
      - |no|
      - |no|
      - |no|
@@ -312,7 +313,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |no|
      - |yes|
      - |no|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
      - |yes| :sup:`2`
@@ -325,7 +326,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |yes| :sup:`4`
+     - |yes| :sup:`7`
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
@@ -333,7 +334,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |no|
      - |yes|
      - |no|
-     - |no|
+     - |yes|
    * - :attr:`~newton.Model.joint_velocity_limit`
      - |no|
      - |no|
@@ -363,7 +364,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - |yes| :sup:`4`
+     - |yes| :sup:`7`
      - |yes|
    * - :attr:`~newton.Model.joint_target_mode`
      - |no|
@@ -401,16 +402,19 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |no|
      - |no|
-   * - Mimic constraints
-     - |no|
-     - |no|
-     - |no|
+   * - Mimic joints
      - |yes| :sup:`3`
-     - |no|
+     - |yes| :sup:`4`
+     - |yes| :sup:`5`
+     - |yes| :sup:`6`
+     - |yes| :sup:`5`
      - |no|
 
-| :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
-| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
+| :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
+| :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+| :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
+| :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
 

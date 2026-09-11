@@ -70,9 +70,40 @@ Joint types
      - *(no joint)*
      - The distance constraint is dropped, but the body bookkeeping is
        handled like a free body (counted in MuJoCo's free-body slots).
-   * - :attr:`~newton.JointType.CABLE`
+   * - :attr:`~newton.JointType.ROD`
      - *unsupported*
      - Not forwarded to MuJoCo.
+
+Joint reference values (``ref``)
+--------------------------------
+
+MuJoCo scalar joints (hinge and slide) may carry a reference value
+(MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
+authored body poses correspond to ``qpos = ref``, and MuJoCo interprets
+limits, position-actuator controls, and keyframes as absolute ``qpos``
+values. Newton has no reference concept — its scalar joint coordinates
+are relative to the authored pose — so the two conventions are reconciled
+at the solver boundary:
+
+* In Newton, ``joint_q``, joint limits
+  (``joint_limit_lower`` / ``joint_limit_upper``), and position targets
+  (``Control.joint_target_q``) are relative to the authored pose. The MJCF
+  importer and MuJoCo-converter USD importer shift authored joint ranges by
+  ``-ref`` accordingly. ``joint_qd`` is unaffected because ``ref`` changes
+  position coordinates only.
+* MuJoCo-side quantities keep MuJoCo's absolute convention: the solver
+  adds ``ref`` back when it writes ``qpos``, ``jnt_range``, and
+  position-actuator ``ctrl``, so the compiled MuJoCo model and its
+  runtime observables (``qpos``, sensors) match the authored MJCF and
+  native MuJoCo exactly.
+* Attributes in the ``mujoco.*`` custom-attribute namespace (for example
+  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
+  data and remain in MuJoCo's absolute units.
+
+Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
+``qpos0``, ``jnt_range``, and position controls with the new reference.
+Native MuJoCo attributes remain absolute and are not shifted.
 
 
 Geometry types
@@ -176,11 +207,17 @@ solver restores MuJoCo's default ``solreflimit`` value ``(0.02, 1.0)``.
 
 MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
 parameters, so they are preserved verbatim through the
-``model.mujoco.solreflimit`` custom attribute and are not rescaled. Imported
-MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit default
-``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
-values are changed, at which point the Newton force-space scaling above is
-used.
+``model.mujoco.solreflimit`` custom attribute and are not rescaled. Neither
+MJCF import nor USD import through the MuJoCo schema derives generic
+``joint_limit_ke`` or ``joint_limit_kd`` values from ``solreflimit``; those
+gains retain Newton builder defaults or values supplied by a generic schema.
+An authored native value wins in :class:`~newton.solvers.SolverMuJoCo`, while
+the generic gains remain available to other solvers. Imported joints that did
+not author ``solreflimit`` keep MuJoCo's implicit default ``(0.02, 1.0)`` until
+either generic gain is configured or edited, including edits made before
+constructing the solver, at which point the Newton force-space scaling above is
+used. ``model.mujoco.solreflimit_gain_baseline`` records the generic gains seen
+at import time so that edits made before construction can be detected.
 
 ``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
 interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
@@ -375,10 +412,11 @@ array; slot layout depends on the constraint type.
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
      - ``mjEQ_JOINT``
-     - Added via :meth:`~newton.ModelBuilder.add_constraint_mimic`. Maps
-       ``coef0`` / ``coef1`` to polynomial coefficients. Only
-       :attr:`~newton.JointType.REVOLUTE` and
-       :attr:`~newton.JointType.PRISMATIC` joints are supported.
+     - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
+       offset / multiplier in :attr:`~newton.Model.joint_mimic_coeffs` to
+       polynomial coefficients. Revolute, prismatic, and D6 joints are
+       supported. Multi-axis D6 relationships produce one equality per
+       matching pair of scalar axes.
 
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them through the MuJoCo
@@ -427,7 +465,7 @@ the relative motion of the two bodies according to the joint type:
 
 Other joint types used as loop closures
 (:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
-:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.ROD`) emit a
 warning and are silently skipped — the loop is *not* closed. A
 :attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
 angular axis behaves as a revolute closure and three as a ball closure;
@@ -604,7 +642,7 @@ all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic constraints cannot have
+Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
 raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.
@@ -783,15 +821,26 @@ custom-attribute system works in general.
 
 **Direct mapping to Newton built-ins.** Some MuJoCo-specific
 attributes are mapped onto Newton's built-in properties during import
-(rather than the ``mujoco`` namespace) — for example, joint-limit
-stiffness and damping derived from ``solreflimit``. The MJCF parser
-handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
-goes through :class:`~newton.usd.SchemaResolverMjc`
-(:github:`newton/_src/usd/schemas.py`).
+(rather than the ``mujoco`` namespace). The MJCF parser handles these
+inline (:github:`newton/_src/utils/import_mjcf.py`); USD goes through
+:class:`~newton.usd.SchemaResolverMjc`
+(:github:`newton/_src/usd/schemas.py`). Native MuJoCo solver parameters
+such as MJCF ``solreflimit`` or USD ``mjc:solreflimit`` remain in the
+``mujoco`` namespace and do not overwrite Newton's generic force-space
+joint-limit gains.
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
-The old ``model.mujoco.dof_passive_damping`` custom attribute remains
-a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+When importing MuJoCo-authored USD, opt into that mapping explicitly::
+
+    from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+    builder.add_usd(
+        stage,
+        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+    )
+
+Registering MuJoCo custom attributes alone enables the ``model.mujoco``
+namespace but does not map ``mjc:damping`` to the built-in property.
 
 
 Unsupported MuJoCo features
@@ -820,11 +869,9 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
-  ``body`` transmissions are supported (see
-  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
-  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
-  actuators using them are skipped at construction with a warning.
+- **Actuator transmissions** — ``joint``, ``jointinparent``, ``tendon``,
+  ``site``, ``body``, and ``slidercrank`` transmissions are supported (see
+  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum).
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and

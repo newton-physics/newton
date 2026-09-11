@@ -108,7 +108,7 @@ PARAMS = {
     # collision
     "rigid_body_contact_buffer_size": 512,
     "collision_broad_phase": "nxn",
-    "soft_contact_margin": 0.01,
+    "soft_contact_gap": 0.01,
     # camera (fixed; framed to cover the standing triangle through the grab -> lift range)
     "camera_pos": (0.62, -1.05, 0.50),
     "camera_fov": 34.0,
@@ -150,13 +150,14 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
+            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase=self.params["collision_broad_phase"],
-            soft_contact_margin=self.params["soft_contact_margin"],
+            soft_contact_gap=self.params["soft_contact_gap"],
             enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 

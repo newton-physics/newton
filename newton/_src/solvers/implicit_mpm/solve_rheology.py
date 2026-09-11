@@ -1380,8 +1380,11 @@ class _JacobiSolver(_RheologySolver):
 
 _ITERATIVE_LINEAR_SOLVERS = {
     "cg": cg,
+    "conjugate-gradient": cg,
     "cr": cr,
+    "conjugate-residual": cr,
     "gmres": gmres,
+    "generalized-minimal-residual": gmres,
 }
 
 _RHEOLOGY_SOLVERS = {
@@ -1918,7 +1921,9 @@ def solve_rheology(
             Base solvers: ``"gauss-seidel"`` (or ``"gs"``),
             ``"gauss-seidel-soa"`` (or ``"gs-soa"``),
             ``"gauss-seidel-batched"`` (or ``"gs-batched"``),
-            ``"jacobi"``, ``"cg"``, ``"cr"``, ``"gmres"``.
+            ``"jacobi"``, ``"conjugate-gradient"`` (or ``"cg"``),
+            ``"conjugate-residual"`` (or ``"cr"``), and
+            ``"generalized-minimal-residual"`` (or ``"gmres"``).
             Chained solvers run left-to-right as warmstarts for the
             final solver, e.g. ``("cr", "gs")`` runs CR then Gauss-Seidel,
             ``("cg", "jacobi", "gs-batched")`` runs CG, then a Jacobi smoother,
@@ -1928,7 +1933,9 @@ def solve_rheology(
             ``"gauss-seidel-batched"`` additionally merges colors into
             batches with Jacobi-style mass splitting within each
             batch. Good for wide velocity stencils (B2/B3).
-            The iterative linear solvers (``"cg"``, ``"cr"``, ``"gmres"``)
+            The iterative linear solvers (``"conjugate-gradient"``,
+            ``"conjugate-residual"``, ``"generalized-minimal-residual"``, or
+            their abbreviated aliases ``"cg"``, ``"cr"``, and ``"gmres"``)
             only support solid materials without contacts.
         max_iterations: Maximum number of nonlinear iterations.
         tolerance: Solver tolerance for the stress residual (L2 norm).

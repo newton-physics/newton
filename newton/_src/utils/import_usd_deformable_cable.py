@@ -4,7 +4,7 @@
 """USD cable / curve-deformable import passes.
 
 Imports linear ``UsdGeom.BasisCurves`` deformables as rods (chains of capsule bodies joined
-by cable joints, usable by any solver that supports them), welding curve-to-curve
+by rod joints, usable by any solver that supports them), welding curve-to-curve
 ``PhysicsAttachment`` junctions into shared rod graphs first, then importing remaining single
 curves. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -15,21 +15,31 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
+
+if TYPE_CHECKING:
+    from ..sim.builder import ModelBuilder
+
 from .import_usd_deformable_utils import (
-    _DEFAULT_CABLE_RADIUS,
+    _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_THICKNESS,
+    _AOUSD_DEFAULT_YOUNGS_MODULUS,
     _apply_cable_masses,
     _bake_world_points,
     _cable_segment_quaternions,
+    _CableMassRun,
     _CurveDeformableRecord,
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
-    _mass_weight_density,
+    _read_deformable_element_array,
     _resolve_deformable_density,
+    _set_cable_body_radius,
     _skip_for_deformable_body_owner,
     _UnionFind,
     _validate_attachment_index_pairs,
@@ -40,13 +50,93 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
 )
 
+# Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
+_POST_RENAME_CURVE_MATERIAL_ATTRS = (
+    "curvesThickness",
+    "youngsModulus",
+    "poissonsRatio",
+    "curvesStretchStiffness",
+    "curvesShearStiffness",
+    "curvesBendStiffness",
+    "curvesTwistStiffness",
+)
+_LEGACY_CURVE_MATERIAL_ATTRS = (
+    "thickness",
+    "stretchStiffness",
+    "shearStiffness",
+    "bendStiffness",
+    "twistStiffness",
+)
+# Removed family-prefixed thickness first, then the earlier unprefixed compatibility name.
+_CABLE_THICKNESS_ATTRS = ("curvesThickness", "thickness")
+_NEWTON_CURVE_DAMPING_ATTRS = (
+    "curvesStretchDamping",
+    "curvesShearDamping",
+    "curvesBendDamping",
+    "curvesTwistDamping",
+)
+
+
+def _curve_thickness_samples(
+    authored, vertex_counts: list[int], closed: bool, fallback: float
+) -> tuple[list[float], list[float]]:
+    """Resolve curve thicknesses at flattened segments and points."""
+    segment_counts = [count if closed else max(0, count - 1) for count in vertex_counts]
+    if authored is None:
+        return [fallback] * sum(segment_counts), [fallback] * sum(vertex_counts)
+    if authored.element_type == "constant":
+        return [authored.values[0]] * sum(segment_counts), [authored.values[0]] * sum(vertex_counts)
+    if authored.element_type == "curve":
+        segment_thicknesses = [
+            authored.values[curve]
+            for curve, segment_count in enumerate(segment_counts)
+            for _segment in range(segment_count)
+        ]
+        point_thicknesses = [
+            authored.values[curve] for curve, point_count in enumerate(vertex_counts) for _point in range(point_count)
+        ]
+        return segment_thicknesses, point_thicknesses
+    if authored.element_type == "segment":
+        point_thicknesses: list[float] = []
+        segment_offset = 0
+        for point_count, segment_count in zip(vertex_counts, segment_counts, strict=True):
+            values = authored.values[segment_offset : segment_offset + segment_count]
+            if point_count == 0:
+                pass
+            elif segment_count == 0:
+                point_thicknesses.extend([fallback] * point_count)
+            elif closed:
+                point_thicknesses.extend(
+                    0.5 * (values[(point - 1) % segment_count] + values[point]) for point in range(point_count)
+                )
+            else:
+                point_thicknesses.append(values[0])
+                point_thicknesses.extend(
+                    0.5 * (values[point - 1] + values[point]) for point in range(1, point_count - 1)
+                )
+                point_thicknesses.append(values[-1])
+            segment_offset += segment_count
+        return list(authored.values), point_thicknesses
+
+    segment_thicknesses: list[float] = []
+    point_offset = 0
+    for count in vertex_counts:
+        values = authored.values[point_offset : point_offset + count]
+        if count == 0:
+            continue
+        segment_thicknesses.extend((values[index] + values[index + 1]) * 0.5 for index in range(count - 1))
+        if closed:
+            segment_thicknesses.append((values[-1] + values[0]) * 0.5)
+        point_offset += count
+    return segment_thicknesses, list(authored.values)
+
 
 def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
     """Read a cable prim's ``points`` / ``curveVertexCounts`` after validating the partition.
 
     Counts must be non-negative and sum to exactly ``len(points)``: Python slicing is
     forgiving, so a mismatch would otherwise corrupt every later curve's point offset or
-    reach ``add_rod`` with fewer positions than declared (which raises out of the import).
+    produce fewer positions than declared (which :class:`Rod` rejects).
     Shared by the graph prepass and the per-curve pass so the two cannot diverge. Returns
     ``(points, counts)`` with counts as Python ints, or ``None`` for a prim that must be
     skipped whole (warned unless ``warn=False``; the prepass passes ``False`` because an
@@ -80,43 +170,288 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
     return points, counts
 
 
-def _cable_stiffnesses_from_material(
-    material: dict[str, float], radius: float, segment_length: float
-) -> tuple[float | None, float | None, float | None, float | None]:
-    """Convert USD cable moduli to per-joint stretch, shear, bend, and twist stiffnesses."""
-    from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
+def _read_cable_rest_shape_points(prim, path: str, point_count: int, deformable_read):
+    """Read count-matched cable ``restShapePoints``."""
+    rest_shape_points = deformable_read(prim, "restShapePoints")
+    if rest_shape_points is None:
+        return None
+    if len(rest_shape_points) != point_count:
+        warnings.warn(
+            f"{path}: restShapePoints length {len(rest_shape_points)} != points {point_count}; "
+            f"ignoring rest shape (rest length taken from the imported points).",
+            stacklevel=2,
+        )
+        return None
+    return rest_shape_points
 
-    stretch = shear = bend = twist = None
-    if "stretchStiffness" in material:
-        stretch = create_cable_stiffness_from_elastic_moduli(material["stretchStiffness"], radius, segment_length)[0]
-    if "shearStiffness" in material:
-        shear = material["shearStiffness"] * math.pi * radius**2 / segment_length
-    if "bendStiffness" in material:
-        bend = create_cable_stiffness_from_elastic_moduli(material["bendStiffness"], radius, segment_length)[1]
-    if "twistStiffness" in material:
-        twist = material["twistStiffness"] * 0.5 * math.pi * radius**4 / segment_length
-    return stretch, shear, bend, twist
+
+def _cable_rest_segment_lengths(rest_points, world_mat, path: str, *, closed: bool) -> list[float] | None:
+    """World-space rest segment lengths, or ``None`` (with a warning) if any segment is invalid.
+
+    Applies the full affine so lengths stay exact under reflection / shear (translation cancels in
+    the segment differences). Rejecting the whole curve, rather than the offending segment, keeps
+    an invalid rest shape from mixing rest and current lengths along one cable.
+    """
+    points = _bake_world_points(rest_points, world_mat)
+    if closed:
+        points = [*points, points[0]]
+    lengths = [float(wp.length(points[i + 1] - points[i])) for i in range(len(points) - 1)]
+    if not lengths or any(not math.isfinite(length) or length <= 1.0e-8 for length in lengths):
+        warnings.warn(
+            f"{path}: restShapePoints has a non-finite or zero-length segment; ignoring rest shape "
+            f"(rest length taken from the imported points).",
+            stacklevel=2,
+        )
+        return None
+    return lengths
+
+
+def _warn_cable_rest_shape_effect(path: str) -> None:
+    """Report the intentionally limited effect of a valid cable rest shape."""
+    warnings.warn(
+        f"{path}: restShapePoints does not establish the simulated rest state; it is used only for "
+        f"material-gain discretization when stiffness or damping is available.",
+        stacklevel=2,
+    )
+
+
+def _warn_geometry_authored_newton_curve_damping_attrs(prim, path: str) -> None:
+    """Warn for Newton curve damping attributes misplaced on curve geometry.
+
+    Args:
+        prim: Curve geometry prim to inspect.
+        path: Prim path to use in diagnostics.
+    """
+    for name in _NEWTON_CURVE_DAMPING_ATTRS:
+        attr = prim.GetAttribute(f"newton:{name}")
+        if attr and attr.HasAuthoredValue():
+            warnings.warn(
+                f"{path}: deformable material attribute 'newton:{name}' is authored on the geometry; "
+                "it belongs on the bound material (NewtonCurvesDeformableMaterialAPI) and is ignored.",
+                stacklevel=2,
+            )
+
+
+def _has_legacy_curve_material(material: dict[str, float]) -> bool:
+    """Whether attributes from the earlier AOUSD curve-material revision are authored."""
+    return any(name in material for name in _LEGACY_CURVE_MATERIAL_ATTRS)
+
+
+def _is_legacy_only_curve_material(material: dict[str, float]) -> bool:
+    """Whether legacy attributes are authored without any current-revision attributes."""
+    return _has_legacy_curve_material(material) and not any(
+        name in material for name in _POST_RENAME_CURVE_MATERIAL_ATTRS
+    )
+
+
+def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) -> None:
+    """Warn when an earlier curve-material attribute is authored."""
+    if material is not None and "curvesThickness" in material:
+        warnings.warn(
+            f"{path}: physics:curvesThickness on the curve material was removed from the AOUSD "
+            "proposal and is deprecated; move diameter d to physics:thicknesses = [d] on the "
+            "simulation geometry and set physics:thicknesses:elementType = 'constant'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if material is not None and _has_legacy_curve_material(material):
+        warnings.warn(
+            f"{path}: unprefixed curve material attributes follow an earlier AOUSD proposal revision "
+            f"and are deprecated; migrate physics:thickness to physics:thicknesses on the simulation "
+            f"geometry with physics:thicknesses:elementType, and convert "
+            f"all four resolved legacy modes, including the stretch-to-shear and bend-to-twist "
+            f"fallbacks, to structural values before authoring physics:curves*Stiffness.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
+def _cable_radius_from_material(material: dict[str, float] | None, linear_unit: float) -> float:
+    """Resolve radius from an authored thickness, else the revision-appropriate assumed value.
+
+    Removed material thickness attributes remain compatibility fallbacks; otherwise the proposal's
+    one-millimeter diameter default applies in stage units.
+    """
+    if material is not None:
+        for name in _CABLE_THICKNESS_ATTRS:
+            if name in material:
+                return 0.5 * material[name]
+    return 0.5 * _AOUSD_DEFAULT_THICKNESS / linear_unit
+
+
+def _resolve_cable_structural_stiffnesses(
+    material: dict[str, float], radius: float, linear_unit: float
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Resolve material-level stretch, shear, bend, and twist structural stiffnesses.
+
+    Per mode, an authored ``physics:curves*Stiffness`` wins, then the deprecated unprefixed
+    modulus times its cross-section factor, then the AOUSD derivation from ``E`` and ``nu``.
+    A material authoring *only* deprecated attributes keeps its former behavior instead: it
+    converts what it authored, inherits shear from stretch and twist from bend, and leaves an
+    unresolved mode ``None`` so that the rod-builder default stands.
+    """
+    area = math.pi * radius**2
+    area_moment = 0.25 * math.pi * radius**4
+    polar_moment = 0.5 * math.pi * radius**4
+
+    if _is_legacy_only_curve_material(material):
+        stretch = material.get("stretchStiffness")
+        shear = material.get("shearStiffness")
+        bend = material.get("bendStiffness")
+        twist = material.get("twistStiffness")
+        stretch = stretch * area if stretch is not None else None
+        shear = shear * area if shear is not None else stretch
+        bend = bend * area_moment if bend is not None else None
+        twist = twist * polar_moment if twist is not None else bend
+        return stretch, shear, bend, twist
+
+    # Positions and radius use stage distance units. With the supported unit-mass stages, an SI
+    # pressure is multiplied by meters-per-unit in stage units; an SI length is divided by it.
+    youngs = material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit)
+    poissons = material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
+    shear_modulus = youngs / (2.0 * (1.0 + poissons))
+
+    def resolve(name: str, legacy_name: str, geometric_factor: float, modulus: float) -> float:
+        # A deprecated modulus and the AOUSD derivation both scale the same cross-section factor.
+        if name in material:
+            return material[name]
+        return material.get(legacy_name, modulus) * geometric_factor
+
+    return (
+        resolve("curvesStretchStiffness", "stretchStiffness", area, youngs),
+        resolve(
+            "curvesShearStiffness",
+            "shearStiffness",
+            area,
+            _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION * shear_modulus,
+        ),
+        resolve("curvesBendStiffness", "bendStiffness", area_moment, youngs),
+        resolve("curvesTwistStiffness", "twistStiffness", polar_moment, shear_modulus),
+    )
+
+
+def _resolve_cable_structural_dampings(
+    material: dict[str, float],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Resolve independently authored Newton stretch, shear, bend, and twist structural damping.
+
+    Args:
+        material: Validated curve-material values.
+    """
+    return tuple(material.get(name) for name in _NEWTON_CURVE_DAMPING_ATTRS)
+
+
+def _apply_local_rod_material_gains(
+    builder: ModelBuilder,
+    bodies: list[int],
+    joints: list[int],
+    segment_rest_lengths: list[float],
+    material: dict[str, float] | None,
+    segment_radii: list[float],
+    joint_radii: list[float],
+    linear_unit: float,
+) -> None:
+    """Discretize cable structural stiffness and damping using each joint's dual rest length.
+
+    A joint spans half of each adjacent segment, so its length is ``0.5 * (L_parent + L_child)``.
+    ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. A curve
+    material resolves every current AOUSD stiffness independently. Newton damping is independently
+    optional per mode, so an unauthored mode leaves the rod-builder default unchanged.
+
+    Args:
+        builder: Model builder containing the imported rod joints.
+        bodies: Segment body indices corresponding to ``segment_rest_lengths``.
+        joints: Rod joint indices to update.
+        segment_rest_lengths: Rest length of each segment body.
+        material: Validated curve-material values, or ``None`` when no supported material applies.
+        segment_radii: Radius of each segment body in stage distance units.
+        joint_radii: Radius sampled at each rod joint in stage distance units.
+        linear_unit: Meters per stage distance unit.
+    """
+    if material is None:
+        return
+
+    body_rest_lengths = dict(zip(bodies, segment_rest_lengths, strict=True))
+    structural_dampings = _resolve_cable_structural_dampings(material)
+    if segment_radii and all(radius == segment_radii[0] for radius in segment_radii[1:]):
+        uniform_segment_values = _resolve_cable_structural_stiffnesses(material, segment_radii[0], linear_unit)
+        body_structural_values = dict.fromkeys(bodies, uniform_segment_values)
+    else:
+        body_structural_values = {
+            body: _resolve_cable_structural_stiffnesses(material, radius, linear_unit)
+            for body, radius in zip(bodies, segment_radii, strict=True)
+        }
+    uniform_joint_values = None
+    if joint_radii and all(radius == joint_radii[0] for radius in joint_radii[1:]):
+        uniform_joint_values = _resolve_cable_structural_stiffnesses(material, joint_radii[0], linear_unit)
+
+    def series_stiffness(
+        parent_value: float | None,
+        child_value: float | None,
+        parent_segment_length: float,
+        child_segment_length: float,
+    ) -> float | None:
+        if parent_value is None or child_value is None:
+            return None
+        if parent_value == 0.0 or child_value == 0.0:
+            return 0.0
+        return 1.0 / (0.5 * parent_segment_length / parent_value + 0.5 * child_segment_length / child_value)
+
+    for joint, joint_radius in zip(joints, joint_radii, strict=True):
+        parent = builder.joint_parent[joint]
+        child = builder.joint_child[joint]
+        parent_length = body_rest_lengths[parent]
+        child_length = body_rest_lengths[child]
+        parent_values = body_structural_values[parent]
+        child_values = body_structural_values[child]
+
+        stretch = series_stiffness(parent_values[0], child_values[0], parent_length, child_length)
+        shear = series_stiffness(parent_values[1], child_values[1], parent_length, child_length)
+        joint_rest_length = 0.5 * (parent_length + child_length)
+        joint_values = (
+            uniform_joint_values
+            if uniform_joint_values is not None
+            else _resolve_cable_structural_stiffnesses(material, joint_radius, linear_unit)
+        )
+        bend = None if joint_values[2] is None else joint_values[2] / joint_rest_length
+        twist = None if joint_values[3] is None else joint_values[3] / joint_rest_length
+        stretch_damping, shear_damping, bend_damping, twist_damping = (
+            None if damping is None else damping / joint_rest_length for damping in structural_dampings
+        )
+
+        builder._set_joint_rod_material_gains(
+            joint,
+            stretch_stiffness=stretch,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear,
+            shear_damping=shear_damping,
+            bend_stiffness=bend,
+            bend_damping=bend_damping,
+            twist_stiffness=twist,
+            twist_damping=twist_damping,
+        )
 
 
 def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[str], set[str]]:
     """Weld curve deformables joined by curve-to-curve ``PhysicsAttachment`` prims into
-    rod graphs via :meth:`ModelBuilder.add_rod_graph`.
+    explicit-topology :class:`Rod` objects.
 
     A hard (unauthored / infinite stiffness) ``point``->``point`` attachment whose
     ``src0``/``src1`` are both imported curve deformables and whose sites are coincident is
     topology, not a runtime constraint: the two referenced control points are the same junction
     node. Curves transitively joined this way form one graph component, built with a single
-    ``add_rod_graph`` call (one capsule body per segment, junction nodes shared). Compliant or
+    ``ModelBuilder.add_rod(rod=...)`` call (one capsule body per segment, junction nodes shared). Compliant or
     non-coincident curve-to-curve attachments are NOT welded; they warn here and are preserved
     as unsupported in ``path_attachment_attrs`` by the attachment post-pass.
     Returns the curve prim paths and the junction attachment prim paths consumed here so the
     per-curve cable pass and the attachment post-pass skip them. Single curves and
     curve-to-xform attachments are left to those passes.
 
-    :meth:`ModelBuilder.add_rod_graph` applies one scalar radius/density/stiffness to a whole
-    component, so a welded graph uses the first curve's material as the representative for every
-    segment (heterogeneous welds warn). Each curve's own authored material is still reported in
-    ``path_cable_attrs``.
+    A welded graph uses the first curve's stiffness and damping material as representative
+    (heterogeneous gains warn), while density and simulation-geometry thickness stay local to each
+    segment. Each joint's gains are discretized using its own two adjacent rest lengths, taken per
+    curve from ``restShapePoints`` when authored. Each curve's authored material is still reported
+    in ``path_cable_attrs``.
     """
     from pxr import UsdGeom
 
@@ -167,16 +502,34 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         wmat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
         positions = _bake_world_points(pts, wmat)
-        mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
-        radius = 0.5 * mat["thickness"] if "thickness" in mat else _DEFAULT_CABLE_RADIUS / linear_unit
-        density = _resolve_deformable_density(prim, mat.get("density"), deformable_read)
+        mat = usd._get_curve_deformable_material(prim, deformable_read)
+        radius = _cable_radius_from_material(mat, linear_unit)
+        closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
+        segment_count = len(pts) if closed else len(pts) - 1
+        thicknesses = _read_deformable_element_array(
+            prim,
+            "thicknesses",
+            {"constant": 1, "curve": 1, "segment": segment_count, "point": len(pts)},
+            deformable_read,
+        )
+        segment_thicknesses, point_thicknesses = _curve_thickness_samples(thicknesses, [len(pts)], closed, 2.0 * radius)
+        segment_radii = [0.5 * thickness for thickness in segment_thicknesses]
+        density = _resolve_deformable_density(
+            prim,
+            None if mat is None else mat.get("density"),
+            deformable_read,
+            linear_unit,
+            read_base_material=mat is None,
+        )
         curve_recs[path] = _CurveDeformableRecord(
             prim=prim,
             positions=positions,
-            closed=curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic,
+            closed=closed,
             material=mat,
-            radius=radius,
-            density=density if density is not None else builder.default_shape_cfg.density,
+            segment_radii=segment_radii,
+            point_radii=[0.5 * thickness for thickness in point_thicknesses],
+            density=density,
+            thicknesses=thicknesses,
         )
 
     if not curve_recs:
@@ -215,10 +568,22 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # the attachment post-pass, which preserves it in path_attachment_attrs as
         # unsupported instead of silently snapping the geometry together.
         stiffness_val = deformable_read(prim, "stiffness")
+        damping_val = deformable_read(prim, "damping")
+        stiffness, damping = usd._resolve_attachment_gains(prim, stiffness_val, damping_val)
+        # Invalid gains must reach the attachment pass instead of being consumed as topology.
+        # That pass records one detailed warning and preserves the authored metadata.
+        if (
+            stiffness is None
+            or damping is None
+            or math.isnan(stiffness)
+            or stiffness < 0.0
+            or not (math.isfinite(damping) and damping >= 0.0)
+        ):
+            continue
         # Hard means the proposal's +inf stiffness sentinel exactly; NaN, -inf, or finite
         # values (compliant or nonconforming) must not weld curves into shared topology.
-        # Damping does not affect hardness: it only applies when the constraint is not hard.
-        hard = stiffness_val is None or float(stiffness_val) == math.inf
+        # Valid damping does not affect hardness: it only applies when the constraint is not hard.
+        hard = stiffness == math.inf
         if not hard:
             warnings.warn(
                 f"{prim.GetPath()}: curve-to-curve attachment does not author a hard "
@@ -226,11 +591,12 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 stacklevel=2,
             )
             continue
-        # A tenth of the thinner cable's radius: welding then moves geometry by well under the
-        # junction bodies' own overlap, so the weld is equivalent to the authored constraint.
-        coincidence_tol = 0.1 * min(curve_recs[src0].radius, curve_recs[src1].radius)
+        # A tenth of the thinner attached point's radius: welding then moves geometry by well
+        # under the junction bodies' own overlap, so the weld is equivalent to the authored
+        # constraint even when thickness varies along either cable.
         if any(
-            float(wp.length(curve_recs[src0].positions[a] - curve_recs[src1].positions[b])) > coincidence_tol
+            float(wp.length(curve_recs[src0].positions[a] - curve_recs[src1].positions[b]))
+            > 0.1 * min(curve_recs[src0].point_radii[a], curve_recs[src1].point_radii[b])
             for a, b in zip(idx0, idx1, strict=True)
         ):
             warnings.warn(
@@ -302,9 +668,14 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 
         if len(node_positions) < 2 or not edges:
             return False
+        node_radius_samples: list[list[float]] = [[] for _ in node_positions]
+        for key in comp_paths:
+            for point, point_radius in enumerate(curve_recs[key].point_radii):
+                node_radius_samples[global_node((key, point))].append(point_radius)
+        node_radii = [sum(samples) / len(samples) for samples in node_radius_samples]
 
         # A connected component with as many edges as merged nodes contains a cycle (e.g. a
-        # welded periodic curve). add_rod_graph builds a spanning tree and cannot close the
+        # welded periodic curve). Wrapped rod graph assembly builds a spanning tree and cannot close the
         # loop, which would silently change the authored topology; reject the weld instead so
         # the curves import individually (a periodic curve keeps its loop-closing joint) and
         # the junction reaches the attachment pass.
@@ -316,10 +687,11 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             )
             return False
 
-        # A welded graph would abort inside add_rod_graph on a degenerate (near-zero-length) edge from
+        # A welded graph would abort during assembly on a degenerate (near-zero-length) edge from
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
         # to the per-curve pass (which warns and skips any individually-degenerate curve).
-        if min((float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges), default=0.0) <= 1.0e-8:
+        edge_lengths = [float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges]
+        if min(edge_lengths, default=0.0) <= 1.0e-8:
             warnings.warn(
                 f"cable graph '{cid}': a welded curve has a zero-length segment (duplicate or collapsed "
                 f"points); skipping the welded component so its curves import individually.",
@@ -327,54 +699,62 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             )
             return False
 
-        # add_rod_graph applies one scalar stiffness per component and auto-orients its segments, so a
-        # welded curve's authored rest shape and per-point normals cannot be honored. Warn rather than
-        # changing the curve's behavior silently (a single, unwelded curve does honor both).
+        # Rest lengths drive material-gain discretization; edge_lengths stays current for the anchor map below.
+        material_edge_lengths = edge_lengths.copy()
+        rest_lengths_by_curve: dict[str, list[float]] = {}
+        for key in comp_paths:
+            rec = curve_recs[key]
+            rest_shape_points = _read_cable_rest_shape_points(rec.prim, key, len(rec.positions), deformable_read)
+            if rest_shape_points is None:
+                continue
+            wmat = get_prim_world_mat(rec.prim, None, incoming_world_xform)
+            rest_lengths = _cable_rest_segment_lengths(rest_shape_points, wmat, key, closed=rec.closed)
+            if rest_lengths is not None:
+                rest_lengths_by_curve[key] = rest_lengths
+        for edge_index, (key, segment_index) in enumerate(edge_owner):
+            if key in rest_lengths_by_curve:
+                material_edge_lengths[edge_index] = rest_lengths_by_curve[key][segment_index]
+
+        # Rod graph construction auto-orients segments, so authored cross-section frames cannot be honored.
         for key in comp_paths:
             kprim = curve_recs[key].prim
-            if deformable_read(kprim, "restShapePoints") is not None:
-                warnings.warn(
-                    f"{key}: restShapePoints is dropped for a welded cable graph; its stiffness uses the "
-                    f"current segment lengths (add_rod_graph's scalar stiffness cannot express per-segment "
-                    f"rest lengths).",
-                    stacklevel=2,
-                )
             normals_attr = UsdGeom.BasisCurves(kprim).GetNormalsAttr()
             if UsdGeom.PrimvarsAPI(kprim).GetPrimvar("normals").HasValue() or (
                 normals_attr and normals_attr.Get() is not None
             ):
                 warnings.warn(
-                    f"{key}: per-point normals are dropped for a welded cable graph; its segments use "
-                    f"add_rod_graph's auto-orientation instead of the authored cross-section frame.",
+                    f"{key}: per-point normals are dropped for a welded cable graph; its Rod segments use "
+                    "auto-oriented frames instead of the authored cross-section frame.",
                     stacklevel=2,
                 )
 
         rep = curve_recs[comp_paths[0]]
-        # add_rod_graph applies one scalar radius/density/stiffness to the whole component, so a
-        # welded graph necessarily flattens its curves to a single representative material. Warn
-        # when the welded curves disagree so the flattening is explicit rather than silent.
+        for key in comp_paths:
+            rec = curve_recs[key]
+            _warn_geometry_authored_material_attrs(rec.prim, key, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
+            _warn_geometry_authored_newton_curve_damping_attrs(rec.prim, key)
+            _warn_legacy_curve_material(key, rec.material)
+        # A welded graph necessarily flattens stiffness and damping to one representative
+        # material. Density and geometry thickness remain per segment.
         if len(comp_paths) > 1:
             sigs = {
                 (
-                    curve_recs[p].radius,
-                    curve_recs[p].density,
-                    curve_recs[p].material.get("stretchStiffness"),
-                    curve_recs[p].material.get("shearStiffness"),
-                    curve_recs[p].material.get("bendStiffness"),
-                    curve_recs[p].material.get("twistStiffness"),
+                    curve_recs[p].material is not None,
+                    frozenset(
+                        (name, value) for name, value in (curve_recs[p].material or {}).items() if name != "density"
+                    ),
                 )
                 for p in comp_paths
             }
             if len(sigs) > 1:
                 warnings.warn(
-                    f"cable graph '{cid}': welded curves have differing radius/density/stiffness; "
-                    f"using '{comp_paths[0]}' as the representative material for the whole component.",
+                    f"cable graph '{cid}': welded curves have differing stiffness/damping; using "
+                    f"'{comp_paths[0]}' as the representative material gains for the whole component. "
+                    "Density remains local to each curve.",
                     stacklevel=2,
                 )
-        radius = rep.radius
-        seg_len = sum(float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges) / len(edges)
+        radius = rep.segment_radii[0]
         mat = rep.material
-        stretch, shear, bend, twist = _cable_stiffnesses_from_material(mat, radius, seg_len)
         # One rod graph has one shape config, so collision is resolved per component:
         # any collision-enabled member curve makes the whole graph collide.
         collision_states = {p: _deformable_collision_enabled(curve_recs[p].prim, ctx.ignore_paths) for p in comp_paths}
@@ -404,27 +784,47 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
-        body_ids, _graph_joint_ids = builder.add_rod_graph(
-            node_positions=node_positions,
-            edges=edges,
-            radius=radius,
+        rod = Rod(node_positions, edges=edges, radius=radius)
+        body_ids, graph_joint_ids = builder.add_rod(
+            rod=rod,
             cfg=cfg,
-            stretch_stiffness=stretch,
-            shear_stiffness=shear,
-            bend_stiffness=bend,
-            twist_stiffness=twist,
             label=cid,
             wrap_in_articulation=True,
             body_frame_origin="com",
         )
+        edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
+        body_radii = dict(zip(body_ids, edge_radii, strict=True))
+        for body, edge_radius in zip(body_ids, edge_radii, strict=True):
+            _set_cable_body_radius(builder, body, edge_radius)
+        body_nodes = dict(zip(body_ids, edges, strict=True))
+        graph_joint_radii = []
+        for joint in graph_joint_ids:
+            parent = builder.joint_parent[joint]
+            child = builder.joint_child[joint]
+            shared_nodes = set(body_nodes[parent]).intersection(body_nodes[child])
+            if len(shared_nodes) == 1:
+                graph_joint_radii.append(node_radii[shared_nodes.pop()])
+            else:
+                graph_joint_radii.append(0.5 * (body_radii[parent] + body_radii[child]))
+        _apply_local_rod_material_gains(
+            builder,
+            body_ids,
+            graph_joint_ids,
+            material_edge_lengths,
+            mat,
+            edge_radii,
+            graph_joint_radii,
+            linear_unit,
+        )
+        for key in rest_lengths_by_curve:
+            _warn_cable_rest_shape_effect(key)
 
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
         per_prim_segments: dict[str, dict[int, tuple[int, float]]] = {}
         per_prim_bodies: dict[str, list[int]] = {}
         for ge, (key, seg) in enumerate(edge_owner):
-            u, v = edges[ge]
-            length = float(wp.length(node_positions[v] - node_positions[u]))
+            length = edge_lengths[ge]
             per_prim_segments.setdefault(key, {})[seg] = (body_ids[ge], length)
             per_prim_bodies.setdefault(key, []).append(body_ids[ge])
 
@@ -449,14 +849,12 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                         anchors.setdefault(pi, []).append((body, wp.vec3(0.0, 0.0, z)))
             path_cable_point_anchors[key] = anchors
             path_cable_segments[key] = segs
-            # Graph cables are returned pre-wrapped (see add_rod_graph call above), so joints are
+            # Graph cables are returned pre-wrapped (see the add_rod call above), so joints are
             # empty: callers using the "if joints: add_articulation(joints)" pattern skip them.
             path_cable_map[key] = (per_prim_bodies.get(key, []), [])
             path_cable_attrs[key] = {
-                "material": dict(rec.material),
-                # The representative's density built every welded segment; the curve's own
-                # authored density stays available in "material".
-                "resolved_density": rep.density,
+                "material": dict(rec.material or {}),
+                "resolved_density": rec.density,
                 "closed": rec.closed,
                 "graph_component": cid,
             }
@@ -468,7 +866,41 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 builder._record_cable_group(
                     key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
                 )
-            _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read, n)
+            segment_count = n if rec.closed else n - 1
+            run = _CableMassRun(
+                curve_index=0,
+                point_offset=0,
+                point_count=n,
+                segment_offset=0,
+                body_ids=tuple(key_bodies),
+                element_volumes=tuple(
+                    math.pi * rec.segment_radii[index] ** 2 * segs[index][1] for index in range(segment_count)
+                ),
+                closed=rec.closed,
+            )
+            authored_masses = _apply_cable_masses(
+                builder,
+                rec.prim,
+                [run],
+                deformable_read,
+                n,
+                1,
+                segment_count,
+                rec.density,
+            )
+            if rec.thicknesses is not None or authored_masses is not None:
+                path_cable_attrs[key]["simulation"] = {}
+                if rec.thicknesses is not None:
+                    path_cable_attrs[key]["simulation"]["thicknesses"] = {
+                        "values": list(rec.thicknesses.values),
+                        "element_type": rec.thicknesses.element_type,
+                    }
+                if authored_masses is not None:
+                    path_cable_attrs[key]["simulation"]["masses"] = {
+                        "values": list(authored_masses.values),
+                        "element_type": authored_masses.element_type,
+                        "legacy_implicit_type": authored_masses.legacy_implicit_type,
+                    }
             consumed_curves.add(key)
         if verbose:
             print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
@@ -541,23 +973,11 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
         # Rest centerline used for the rest length below (one point per vertex); restNormals
         # and rest bend angles are not imported yet.
-        rest_shape_points = deformable_read(prim, "restShapePoints")
-        if rest_shape_points is not None and len(rest_shape_points) != len(points):
-            warnings.warn(
-                f"{path}: restShapePoints length {len(rest_shape_points)} != points {len(points)}; "
-                f"ignoring rest shape (rest length taken from the imported points).",
-                stacklevel=2,
-            )
-            rest_shape_points = None
-        if rest_shape_points is not None:
-            warnings.warn(
-                f"{path}: restShapePoints only sets the rest length for stiffness; the cable is built at "
-                f"the current points, so it does not establish an initial strain / rest bend state.",
-                stacklevel=2,
-            )
+        rest_shape_points = _read_cable_rest_shape_points(prim, path, len(points), deformable_read)
         _warn_unsupported_rest_fields(prim, path, ("restNormals",), deformable_read)
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
+        _warn_geometry_authored_newton_curve_damping_attrs(prim, path)
         _warn_subset_material_bindings(prim, path)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
@@ -597,33 +1017,45 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             )
             normals = None
 
-        # The proposal authors curve "stretchStiffness" / "bendStiffness" in force/area, i.e.
-        # elastic moduli E. create_cable_stiffness_from_elastic_moduli() converts each to the
-        # per-joint stiffness add_rod expects via the circular cross-section and segment rest
-        # length L (stretch = E*A/L, bend = E*I/L); applied per curve below.
-        cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
-        if "thickness" in cable_mat:
-            radius = 0.5 * cable_mat["thickness"]
-        else:
-            # No authored thickness: assume a default radius. Express it via the stage's linear
-            # unit (meters per unit) so the assumed size is a fixed physical wire-like radius
-            # regardless of cm / mm / m authoring, rather than a meters-flavored literal in
-            # stage units.
-            radius = _DEFAULT_CABLE_RADIUS / linear_unit
-            warnings.warn(
-                f"{path}: no cable thickness authored (physics:thickness); assuming a default "
-                f"radius of {radius:g} stage units (~{_DEFAULT_CABLE_RADIUS:g} m). Author "
-                f"physics:thickness on the bound material to set it.",
-                stacklevel=2,
-            )
+        # The current proposal authors structural stiffnesses (EA, kGA, EI, GJ); missing modes
+        # derive from E, nu, and the physical curve thickness. Newton damping stays independently
+        # optional per mode. Each resolved gain is divided by the joint-local dual rest length
+        # after rod construction.
+        cable_mat = usd._get_curve_deformable_material(prim, deformable_read)
+        _warn_legacy_curve_material(path, cable_mat)
+        fallback_radius = _cable_radius_from_material(cable_mat, linear_unit)
+        vertex_counts_int = [int(count) for count in vertex_counts]
+        authored_segment_count = sum(count if closed else max(0, count - 1) for count in vertex_counts_int)
+        authored_thicknesses = _read_deformable_element_array(
+            prim,
+            "thicknesses",
+            {
+                "constant": 1,
+                "curve": len(vertex_counts_int),
+                "segment": authored_segment_count,
+                "point": len(points),
+            },
+            deformable_read,
+        )
+        segment_thicknesses, point_thicknesses = _curve_thickness_samples(
+            authored_thicknesses, vertex_counts_int, closed, 2.0 * fallback_radius
+        )
+        segment_radii = [0.5 * thickness for thickness in segment_thicknesses]
+        point_radii = [0.5 * thickness for thickness in point_thicknesses]
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
-        cable_density = _resolve_deformable_density(prim, cable_mat.get("density"), deformable_read)
-        resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
+        cable_density = _resolve_deformable_density(
+            prim,
+            None if cable_mat is None else cable_mat.get("density"),
+            deformable_read,
+            linear_unit,
+            read_base_material=cable_mat is None,
+        )
+        resolved_cable_density = cable_density
         collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,
-            density=_mass_weight_density(prim, resolved_cable_density, deformable_read),
+            density=resolved_cable_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
@@ -634,9 +1066,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         cable_point_anchors: dict[int, list[tuple[int, wp.vec3]]] = {}
         # flat segment index -> (segment body, segment length)
         cable_segments: dict[int, tuple[int, float]] = {}
-        # Per built curve: (point offset in the prim's masses array, point count, segment bodies),
-        # so per-point masses can be lumped onto each curve's segments.
-        cable_point_runs: list[tuple[int, int, list[int]]] = []
+        cable_mass_runs: list[_CableMassRun] = []
+        has_valid_rest_shape = False
         offset = 0
         flat_segment_index = 0
         for ci, vertex_count in enumerate(vertex_counts):
@@ -657,8 +1088,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 continue
             positions = _bake_world_points(local_pts, world_mat)
             # For a periodic curve the closing segment (v[-1] -> v[0]) is a real
-            # segment: close the polyline so add_rod builds a body for it (add_rod
-            # makes len(positions) - 1 bodies; closed=True then adds the loop joint).
+            # segment: repeat the first point so Rod includes a body for it;
+            # closed=True then adds the loop joint.
             if closed:
                 positions = [*positions, positions[0]]
             num_seg = len(positions) - 1
@@ -683,45 +1114,65 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                     for nv in normals[start : start + n]
                 ]
                 quaternions = _cable_segment_quaternions(positions, seg_normals)
-            # Per-joint stiffness needs a per-segment rest length: the mean of the
-            # actual segment lengths (the straight-line endpoint distance would
-            # underestimate it for curved cables and inflate the stiffness).
-            seg_len = sum(seg_lengths) / max(1, num_seg)
-            # Use the rest centerline for the rest length when authored (else the imported points), so
-            # the cable is not pre-stressed. Apply the full affine so the rest lengths are exact under
-            # reflection / shear (translation cancels in the segment differences).
+            # Use the rest centerline when authored (else the imported points), so each joint's dual
+            # length follows the authored rest geometry.
+            material_seg_lengths = seg_lengths
+            rest_seg_lengths = None
             if rest_shape_points is not None:
-                rest_pts = _bake_world_points(rest_shape_points[start : start + n], world_mat)
-                if closed:
-                    rest_pts = [*rest_pts, rest_pts[0]]
-                rest_seg_lengths = [float(wp.length(rest_pts[i + 1] - rest_pts[i])) for i in range(num_seg)]
-                if min(rest_seg_lengths, default=0.0) > 1.0e-8:
-                    seg_len = sum(rest_seg_lengths) / max(1, num_seg)
-            # An absent modulus stays None so the builder default applies.
-            stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness = _cable_stiffnesses_from_material(
-                cable_mat, radius, seg_len
-            )
+                rest_seg_lengths = _cable_rest_segment_lengths(
+                    rest_shape_points[start : start + n], world_mat, path, closed=closed
+                )
+                if rest_seg_lengths is not None:
+                    material_seg_lengths = rest_seg_lengths
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
+            curve_radii = segment_radii[flat_segment_index : flat_segment_index + num_seg]
             # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
             # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
             # bodies are loop-closing and stay outside the articulation regardless.
-            bodies, joints = builder.add_rod(
-                positions=positions,
+            rod = Rod(
+                positions,
                 quaternions=quaternions,
-                radius=radius,
-                cfg=cable_cfg,
-                stretch_stiffness=stretch_stiffness,
-                shear_stiffness=shear_stiffness,
-                bend_stiffness=bend_stiffness,
-                twist_stiffness=twist_stiffness,
+                radius=curve_radii[0],
                 closed=closed,
+            )
+            bodies, joints = builder.add_rod(
+                rod=rod,
+                cfg=cable_cfg,
                 label=label,
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
+            for body, segment_radius in zip(bodies, curve_radii, strict=True):
+                _set_cable_body_radius(builder, body, segment_radius)
+            curve_point_radii = point_radii[start : start + n]
+            curve_joint_radii = [*curve_point_radii[1:], curve_point_radii[0]] if closed else curve_point_radii[1:-1]
+            _apply_local_rod_material_gains(
+                builder,
+                bodies,
+                joints,
+                material_seg_lengths,
+                cable_mat,
+                curve_radii,
+                curve_joint_radii,
+                linear_unit,
+            )
+            has_valid_rest_shape |= rest_seg_lengths is not None
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
-            cable_point_runs.append((start, n, bodies))
+            cable_mass_runs.append(
+                _CableMassRun(
+                    curve_index=ci,
+                    point_offset=start,
+                    point_count=n,
+                    segment_offset=flat_segment_index,
+                    body_ids=tuple(bodies),
+                    element_volumes=tuple(
+                        math.pi * segment_radius**2 * segment_length
+                        for segment_radius, segment_length in zip(curve_radii, seg_lengths, strict=True)
+                    ),
+                    closed=closed,
+                )
+            )
 
             for si, body in enumerate(bodies):
                 seg_index = flat_segment_index + si
@@ -745,7 +1196,18 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             flat_segment_index += curve_segment_count
 
         if cable_bodies:
-            _apply_cable_masses(builder, prim, cable_bodies, cable_point_runs, closed, deformable_read, len(points))
+            if has_valid_rest_shape:
+                _warn_cable_rest_shape_effect(path)
+            authored_masses = _apply_cable_masses(
+                builder,
+                prim,
+                cable_mass_runs,
+                deformable_read,
+                len(points),
+                len(vertex_counts_int),
+                authored_segment_count,
+                resolved_cable_density,
+            )
             path_cable_map[path] = (cable_bodies, cable_joints)
             # Bodies/joints for a cable prim are built back-to-back, so the index lists are contiguous.
             body_range = (cable_bodies[0], cable_bodies[-1] + 1)
@@ -756,9 +1218,22 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments
             path_cable_attrs[path] = {
-                "material": dict(cable_mat),
+                "material": dict(cable_mat or {}),
                 "resolved_density": resolved_cable_density,
                 "closed": closed,
             }
+            if authored_thicknesses is not None or authored_masses is not None:
+                path_cable_attrs[path]["simulation"] = {}
+                if authored_thicknesses is not None:
+                    path_cable_attrs[path]["simulation"]["thicknesses"] = {
+                        "values": list(authored_thicknesses.values),
+                        "element_type": authored_thicknesses.element_type,
+                    }
+                if authored_masses is not None:
+                    path_cable_attrs[path]["simulation"]["masses"] = {
+                        "values": list(authored_masses.values),
+                        "element_type": authored_masses.element_type,
+                        "legacy_implicit_type": authored_masses.legacy_implicit_type,
+                    }
             if verbose:
                 print(f"Added cable {path} with {len(cable_bodies)} segments.")

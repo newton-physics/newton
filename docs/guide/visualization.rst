@@ -188,6 +188,30 @@ Warp array on the viewer device:
     # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
     frame = viewer.get_frame()
 
+.. note::
+
+    On a machine without a display, pyglet must also be put in headless mode. pyglet binds its
+    display backend the first time that backend is imported, and Newton imports pyglet's window
+    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
+    option has to be set before that point. Otherwise the snippet above fails with
+    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
+    pyglet defaults to Xlib. Either set the environment variable::
+
+        PYGLET_HEADLESS=1 python your_script.py
+
+    or set the option in Python before creating the viewer::
+
+        import newton
+        import pyglet
+
+        pyglet.options["headless"] = True
+
+        viewer = newton.viewer.ViewerGL(headless=True)
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
+
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
@@ -673,6 +697,12 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 .. code-block:: python
 
     viewer.log_contacts(contacts, state)
+
+Contact normals, mode disks, and force arrows are sized relative to the smaller
+shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
+all contact glyphs while preserving their proportions across differently sized
+contacts. Contact mode coloring and force arrows require the ``"force"``
+extended contact attribute.
 
 **Transform gizmos:**
 

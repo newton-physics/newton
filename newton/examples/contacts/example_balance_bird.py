@@ -38,7 +38,6 @@ NATIVE_CONTACT_SOLVERS = {"mujoco", "kamino"}
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_name = str(getattr(args, "solver", "xpbd")).lower()
 
@@ -138,9 +137,13 @@ class Example:
             self.contacts = self.collision_pipeline.contacts()
 
         if self.solver_name == "xpbd":
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=False)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
         elif self.solver_name == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=10, rigid_contact_hard=False)
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=10,
+                rigid_compliant_alm=True,
+            )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")
         elif self.solver_name == "featherstone":

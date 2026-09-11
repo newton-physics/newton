@@ -163,6 +163,54 @@ def test_ray_intersect_cylinder(test: TestRaycast, device: str):
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
 
 
+def test_ray_intersect_barrel_cylinder(test: TestRaycast, device: str):
+    """Intersect barrel-cylinder sides, caps, and interior rays."""
+    out_t = wp.zeros(1, dtype=float, device=device)
+    out_n = wp.zeros(1, dtype=wp.vec3, device=device)
+    geom_to_world = wp.transform_identity()
+    radius = 0.5
+    half_height = 1.0
+    barrel_radius = 2.0
+    equator_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+    off_equator_z = 0.5
+    off_equator_radius = (
+        radius + np.sqrt(barrel_radius**2 - off_equator_z**2) - np.sqrt(barrel_radius**2 - half_height**2)
+    )
+    oblique_z = 0.35
+    oblique_radius = radius + np.sqrt(barrel_radius**2 - oblique_z**2) - np.sqrt(barrel_radius**2 - half_height**2)
+    size = wp.vec3(radius, half_height, barrel_radius)
+
+    cases = [
+        ("side", wp.vec3(-2.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), 2.0 - equator_radius),
+        (
+            "off_equator_side",
+            wp.vec3(-2.0, 0.0, off_equator_z),
+            wp.vec3(1.0, 0.0, 0.0),
+            2.0 - off_equator_radius,
+        ),
+        (
+            "oblique_side",
+            wp.vec3(-oblique_radius - 0.75, 0.0, oblique_z + 0.15),
+            wp.vec3(1.0, 0.0, -0.2),
+            0.75,
+        ),
+        ("cap", wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0), 1.0),
+        ("cap_before_side", wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.2, 0.0, 1.0), 1.0),
+        ("inside", wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), equator_radius),
+        ("miss", wp.vec3(-2.0, 2.0, 0.0), wp.vec3(1.0, 0.0, 0.0), -1.0),
+    ]
+
+    for name, origin, direction, expected in cases:
+        with test.subTest(name):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[out_t, out_n, geom_to_world, size, GeoType.CYLINDER, origin, direction, 0],
+                device=device,
+            )
+            test.assertAlmostEqual(out_t.numpy()[0], expected, delta=2.0e-4)
+
+
 def test_ray_intersect_cone(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
@@ -826,6 +874,9 @@ add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_s
 add_function_test(TestRaycast, "test_ray_intersect_box", test_ray_intersect_box, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_capsule, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
+add_function_test(
+    TestRaycast, "test_ray_intersect_barrel_cylinder", test_ray_intersect_barrel_cylinder, devices=devices
+)
 add_function_test(TestRaycast, "test_ray_intersect_cone", test_ray_intersect_cone, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_ellipsoid", test_ray_intersect_ellipsoid, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_mesh", test_ray_intersect_mesh, devices=devices)

@@ -22,7 +22,6 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 import newton.usd
-import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
@@ -46,6 +45,7 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
+SOCKET_OPACITY = 0.35
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_MU = 2.0
@@ -252,6 +252,7 @@ class Example:
             mesh=socket_mesh,
             xform=wp.transform(sc, wp.quat_identity()),
             cfg=SHAPE_CFG,
+            opacity=SOCKET_OPACITY,
             label="socket",
         )
 
@@ -315,13 +316,12 @@ class Example:
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        rod = newton.Rod(cable_points, radius=CABLE_RADIUS)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in rod.quaternions]
         bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
-            positions=cable_points,
-            quaternions=cable_quats,
-            radius=CABLE_RADIUS,
+            rod=rod,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
                 ke=CONTACT_KE,
@@ -399,7 +399,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_contact_hard=False,
+            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 
@@ -477,7 +477,8 @@ class Example:
     def step(self):
         gp = wp.transform_get_translation(self.gizmo_tf)
 
-        picked_body = int(self.viewer.picking.pick_body.numpy()[0])
+        picking = getattr(self.viewer, "picking", None)
+        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])
@@ -498,7 +499,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = self.viewer.gizmo_is_using
+        gizmo_active = bool(getattr(self.viewer, "gizmo_is_using", False))
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:

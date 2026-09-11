@@ -61,7 +61,7 @@ one sub-solver:
 
    entry = SolverCoupled.Entry(
        name="soft",
-       solver=lambda view: SolverVBD(model=view, iterations=20),
+       solver=lambda view: SolverVBD(model=view, iterations=20, rigid_compliant_alm=True),
        bodies=soft_body_ids,
        particles=cloth_particle_ids,
        shapes=cloth_shape_ids,

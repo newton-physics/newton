@@ -14,11 +14,13 @@ import itertools
 import math
 import unittest
 from collections import Counter
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.edge_concave_filter import filter_fully_concave_edges
 
 # ``Mesh.build_sdf`` requires CUDA because the SDF cook only runs on GPU.
 _cuda_available = wp.is_cuda_available()
@@ -404,6 +406,42 @@ class TestBuildCollisionEdges(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-negative"):
             self._build(mesh, half_lateral_rel=-1.0)
 
+    def test_default_reuses_edge_topology(self):
+        """Reuse canonical IDs and edge-slot topology across default filters."""
+        mesh = _dimpled_box_mesh()
+
+        with (
+            mock.patch.object(mesh, "_canonical_vertex_ids", wraps=mesh._canonical_vertex_ids) as canonical,
+            mock.patch.object(mesh, "_build_edge_slot_topology", wraps=mesh._build_edge_slot_topology) as topology,
+        ):
+            self._build(mesh)
+
+        self.assertEqual(canonical.call_count, 1)
+        self.assertEqual(topology.call_count, 1)
+
+    def test_without_absorption_skips_dihedral_diagnostics(self):
+        """Skip dihedral diagnostic arrays when box absorption is disabled."""
+        mesh = _dimpled_box_mesh()
+
+        with mock.patch.object(
+            mesh, "_filter_edges_by_dihedral_angle", wraps=mesh._filter_edges_by_dihedral_angle
+        ) as edge_filter:
+            self._build(mesh, edge_concave_filter=False)
+
+        self.assertFalse(edge_filter.call_args.kwargs.get("return_diagnostics", False))
+
+    def test_reused_topology_preserves_filter_output(self):
+        """Preserve exact default output when reusing topology between filters."""
+        mesh = _dimpled_box_mesh()
+        expected = filter_fully_concave_edges(
+            mesh,
+            mesh._filter_edges_by_dihedral_angle(math.radians(0.1)),
+        )
+
+        actual = self._build(mesh)
+
+        np.testing.assert_array_equal(actual, expected)
+
     def test_boundary_edges_preserved_without_absorption(self):
         # Open-top box has 4 boundary edges that must survive the build_sdf
         # path; the fallback (no _collision_edges) keeps them too.
@@ -432,18 +470,18 @@ class TestBuildCollisionEdges(unittest.TestCase):
         self.assertLess(len(kept), 18)
         self.assertGreaterEqual(len(kept), 12)
 
-    def test_inward_filter_removes_dimple_edges_by_default(self):
-        """Remove only edges joining fully inward manifold vertices."""
+    def test_concave_filter_removes_dimple_edges_by_default(self):
+        """Remove only edges joining fully concave manifold vertices."""
         mesh = _dimpled_box_mesh()
-        unfiltered = self._build(mesh, enable_inward_filter=False)
+        unfiltered = self._build(mesh, edge_concave_filter=False)
         filtered = self._build(mesh)
 
         self.assertEqual(len(unfiltered), 60)
         self.assertEqual(len(filtered), 48)
         self.assertTrue(_edge_set(filtered).issubset(_edge_set(unfiltered)))
 
-    def test_inward_filter_handles_inverted_winding(self):
-        """Classify the same inward features after global winding inversion."""
+    def test_concave_filter_handles_inverted_winding(self):
+        """Classify the same concave features after global winding inversion."""
         mesh = _dimpled_box_mesh()
         triangles = mesh.indices.reshape(-1, 3)[:, ::-1].copy()
         inverted = newton.Mesh(mesh.vertices.copy(), triangles.ravel(), compute_inertia=False)
@@ -452,8 +490,8 @@ class TestBuildCollisionEdges(unittest.TestCase):
 
         self.assertEqual(len(filtered), 48)
 
-    def test_inward_filter_handles_translated_mesh(self):
-        """Classify the same inward features far from the local origin."""
+    def test_concave_filter_handles_translated_mesh(self):
+        """Classify the same concave features far from the local origin."""
         mesh = _dimpled_box_mesh()
         translated = newton.Mesh(mesh.vertices + 1.0e6, mesh.indices.copy(), compute_inertia=False)
 
@@ -461,7 +499,7 @@ class TestBuildCollisionEdges(unittest.TestCase):
 
         self.assertEqual(len(filtered), 48)
 
-    def test_inward_filter_preserves_convex_edges(self):
+    def test_concave_filter_preserves_convex_edges(self):
         """Preserve every non-coplanar edge of a convex closed mesh."""
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
         self.assertEqual(len(self._build(mesh)), 12)
@@ -532,6 +570,14 @@ class TestCollisionEdgesLifecycle(unittest.TestCase):
         self.assertIsNot(copy._collision_edges, mesh._collision_edges)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
+    def test_build_sdf_disables_concave_filter(self):
+        mesh = _dimpled_box_mesh()
+
+        mesh.build_sdf(max_resolution=8, edge_concave_filter=False)
+
+        self.assertEqual(len(mesh._collision_edges), 60)
+
+    @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_build_sdf_rolls_back_sdf_on_edge_option_failure(self):
         # Negative ``edge_lower_angle_threshold_rad`` combined with box
         # absorption is rejected by the edge-option validation that runs
@@ -563,13 +609,19 @@ class TestCollisionEdgesLifecycle(unittest.TestCase):
         mesh.sdf = object()
         self._seed_collision_edges(mesh)
 
-        # New topology (a single triangle) -- old cached edges are bogus.
-        new_verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        new_inds = np.array([0, 1, 2], dtype=np.int32)
-        copy_verts = mesh.copy(vertices=new_verts)
+        # A vertices-only copy retains the current topology, so keep the
+        # vertex count compatible while still changing the geometry.
+        replacement_verts = mesh.vertices.copy()
+        replacement_verts[0] += np.array([0.1, 0.0, 0.0], dtype=np.float32)
+        copy_verts = mesh.copy(vertices=replacement_verts)
+        np.testing.assert_array_equal(copy_verts.vertices, replacement_verts)
+        np.testing.assert_array_equal(copy_verts.indices, mesh.indices)
         self.assertIsNone(copy_verts._collision_edges)
         self.assertIsNone(copy_verts.sdf)
 
+        # New topology (a single triangle) -- old cached edges are bogus.
+        new_verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        new_inds = np.array([0, 1, 2], dtype=np.int32)
         copy_inds = mesh.copy(indices=new_inds)
         self.assertIsNone(copy_inds._collision_edges)
         self.assertIsNone(copy_inds.sdf)

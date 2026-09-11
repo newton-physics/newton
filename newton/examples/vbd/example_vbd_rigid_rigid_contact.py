@@ -26,6 +26,7 @@ PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.042,
     "shape_margin": 0.005,
+    "rigid_gap": 0.01,
     "box_width_scale": 10.0,
     "box_depth_scale": 10.0,
     "box_height_scale": 5.0,
@@ -68,6 +69,7 @@ def _load_bear_mesh(target_size):
 
 def build_model(builder, params, seed=42):
     rng = np.random.default_rng(seed)
+    builder.rigid_gap = params["rigid_gap"]
 
     r = params["shape_size"]
     hx = r * params["box_width_scale"] / 2
@@ -85,7 +87,7 @@ def build_model(builder, params, seed=42):
     # Floor
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, 0.0, elev - t / 2), wp.quat_identity()),
         hx=hx + t,
         hy=hy + t,
         hz=t / 2,
@@ -94,7 +96,7 @@ def build_model(builder, params, seed=42):
     # Front wall (-Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, -(hy + t / 2), elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -103,7 +105,7 @@ def build_model(builder, params, seed=42):
     # Back wall (+Y)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, hy + t / 2, elev + hz / 2), wp.quat_identity()),
         hx=hx + t,
         hy=t / 2,
         hz=hz / 2,
@@ -112,7 +114,7 @@ def build_model(builder, params, seed=42):
     # Left wall (-X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(-(hx + t / 2), 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,
@@ -121,7 +123,7 @@ def build_model(builder, params, seed=42):
     # Right wall (+X)
     builder.add_shape_box(
         -1,
-        wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(hx + t / 2, 0.0, elev + hz / 2), wp.quat_identity()),
         hx=t / 2,
         hy=hy,
         hz=hz / 2,
@@ -196,8 +198,8 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_compliant_alm=True,
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
-        # rigid_contact_hard=False,
     )
 
     return model, solver

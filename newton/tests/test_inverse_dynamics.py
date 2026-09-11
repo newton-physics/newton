@@ -1919,7 +1919,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         FREE), so its outputs are defined. Correctness is not asserted here, but
         a NaN regression on the outputs would go uncaught otherwise.
 
-        CABLE is intentionally excluded: it is not implemented by
+        ROD is intentionally excluded: it is not implemented by
         ``jcalc_motion`` / ``jcalc_motion_subspace`` and is not reconstructed by
         ``eval_fk``, so the pipeline reads unreconstructed state for it and the
         outputs are undefined (observed as intermittently non-finite). Asserting
@@ -1966,8 +1966,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
-    def test_inverse_dynamics_rejects_cable_joint(self):
-        """Both inverse-dynamics entrypoints reject CABLE joints eagerly."""
+    def test_inverse_dynamics_rejects_rod_joint(self):
+        """Verify both inverse-dynamics entrypoints reject rod joints eagerly."""
         identity_xform = wp.transform_identity()
         builder = newton.ModelBuilder()
         link = builder.add_link(
@@ -1976,7 +1976,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             inertia=self.I_UNIT,
             com=wp.vec3(0.0),
         )
-        joint = builder.add_joint_cable(
+        joint = builder.add_joint_rod(
             parent=-1,
             child=link,
             parent_xform=identity_xform,
@@ -1987,10 +1987,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         state = model.state()
         arrays = _InverseDynamicsArrays(model)
 
-        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.eval_inverse_dynamics_passive(model, state, mass_matrix=arrays.mass_matrix)
 
-        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
             newton.eval_inverse_dynamics_force(
                 model,
                 state,

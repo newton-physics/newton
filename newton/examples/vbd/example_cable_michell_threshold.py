@@ -97,17 +97,20 @@ class Example:
             factor = self.TOTAL_TWIST / case_critical_twist
             label = f"{factor:.2f}x"
             points, quats = self._ring_points_and_quats(x_offset)
-            bodies, _joints = builder.add_rod(
-                positions=points,
+            rod = newton.Rod(
+                points,
                 quaternions=quats,
                 radius=self.CABLE_RADIUS,
+                closed=True,
+            )
+            bodies, _joints = builder.add_rod(
+                rod=rod,
                 stretch_stiffness=self.STRETCH_STIFFNESS,
                 stretch_damping=0.0,
                 bend_stiffness=self.BEND_STIFFNESS,
                 bend_damping=0.0,
                 twist_stiffness=twist_stiffness,
                 twist_damping=0.0,
-                closed=True,
                 label=f"michell_threshold_{label}",
                 wrap_in_articulation=True,
                 body_frame_origin="com",
@@ -131,7 +134,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()

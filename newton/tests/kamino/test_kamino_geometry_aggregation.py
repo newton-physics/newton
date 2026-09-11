@@ -8,11 +8,12 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton import ModelBuilder
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry import CollisionDetector, ContactAggregation, ContactMode
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.utils import basics
 
 ###
 # Tests
@@ -48,10 +49,10 @@ class TestContactAggregation(unittest.TestCase):
         on multiple worlds containing boxes_nunchaku model.
         """
         # Create and set up a model builder
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
-        model = builder.finalize(self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=self.build_func(), world_count=3)
+        model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
-        state = model.state()
 
         # Create a collision detector with primitive pipeline
         config = CollisionDetector.Config(
@@ -66,7 +67,7 @@ class TestContactAggregation(unittest.TestCase):
         aggregator = ContactAggregation(model=model, contacts=detector.contacts)
 
         # Run collision detection and aggregate per-body and per-geom contacts
-        detector.collide(data, state)
+        detector.collide(data)
 
         # Set contact reactions to known values for testing aggregation results
         model_active_nc = int(detector.contacts.model_active_contacts.numpy()[0])

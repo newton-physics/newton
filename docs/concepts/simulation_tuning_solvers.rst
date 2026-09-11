@@ -39,7 +39,7 @@ before reaching for solver-specific keyword arguments:
   ``default_shape_cfg.mu``, ``ShapeConfig`` material arguments,
   ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``, contact
   ``margin`` and ``gap``, and collision pipeline options such as
-  ``broad_phase``, ``soft_contact_margin``, ``reduce_contacts``, and
+  ``broad_phase``, ``soft_contact_gap``, ``reduce_contacts``, and
   ``contact_matching``.
 - Drives and articulated models: ``joint_target_ke``, ``joint_target_kd``,
   ``joint_armature``, and ``joint_effort_limit`` where the active solver
@@ -140,7 +140,8 @@ repository examples spend tuning effort, not a shared solver API.
        use armature, joint friction, effort limits, or velocity limits.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
-     - ``iterations``, ``friction_epsilon``, ``rigid_avbd_alpha``,
+     - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+       ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
        ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
@@ -152,16 +153,31 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_joint_linear_k_start``, ``rigid_joint_angular_k_start``,
        ``rigid_joint_linear_kd``, ``rigid_joint_angular_kd``,
        ``integrate_with_external_rigid_solver``,
-       ``particle_enable_self_contact``, ``particle_self_contact_radius``,
-       ``particle_self_contact_margin``,
+       ``particle_enable_self_contact``, ``particle_self_contact_margin``,
+       ``particle_self_contact_gap``,
        ``particle_conservative_bound_relaxation``,
        ``particle_vertex_contact_buffer_size``,
        ``particle_edge_contact_buffer_size``,
-       ``particle_collision_detection_interval``,
+       ``collision_frequency``, ``collision_frequency_type``,
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - Contact history requires matched contacts, for example
+     - ``rigid_compliant_alm=True`` enables the recommended unified
+       finite-material compliant ALM formulation for rigid contacts, structural
+       joints, drives, and limits. Authored stiffness determines physical
+       compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
+       conditioning parameters internally. Omitting the option is deprecated
+       because its default will change to ``True``. Pass ``False`` to retain the
+       legacy AVBD path during the migration window. ``rigid_contact_hard``
+       selects contact behavior only on that legacy path.
+
+       ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.
+       Simulations relying on those controls or on legacy hard constraints may
+       require stiffness retuning when enabling compliant ALM. Alpha remains an
+       advanced stabilization override.
+
+       Optional numeric contact warm-starting with
+       ``rigid_contact_history=True`` requires
        ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
        SolverVBD uses match indices only for numeric warm-starting; contact
        geometry remains owned by the collision pipeline. Contact history is
@@ -175,11 +191,13 @@ repository examples spend tuning effort, not a shared solver API.
        pool requires that they also be pre-allocated. Buffer sizes that are
        too small can drop contacts; sizes that are too large cost memory and
        performance. Examples commonly tune
-       ``iterations``, particle self-contact radius and margin, particle
-       contact buffers and filters, ``particle_collision_detection_interval``,
+       ``iterations``, particle self-contact margin and gap, particle
+       contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
-       ``rigid_body_particle_contact_buffer_size``, ``rigid_contact_hard``,
-       ``rigid_contact_history``, and ``rigid_avbd_contact_alpha``.
+       ``rigid_body_particle_contact_buffer_size``, and
+       ``rigid_contact_history``. On the legacy path, examples also tune
+       ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
+       under compliant ALM as an advanced stabilization override.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.

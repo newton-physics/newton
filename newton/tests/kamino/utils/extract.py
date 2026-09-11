@@ -96,7 +96,8 @@ def extract_cts_jacobians(
     has_limits = limits is not None and limits.model_max_limits_host > 0
     has_contacts = contacts is not None and contacts.model_max_contacts_host > 0
     num_bdofs = model.info.num_body_dofs.numpy().tolist()
-    num_jcts = model.info.num_joint_cts.numpy().tolist()
+    num_jcts = model.info.num_joint_bilateral_cts.numpy().tolist()
+    num_nbc = model.info.num_joint_bounded_cts.numpy().tolist()
     maxnl = limits.world_max_limits_host if has_limits else [0] * num_worlds
     maxnc = contacts.world_max_contacts_host if has_contacts else [0] * num_worlds
     nlact = limits.world_active_limits.numpy().tolist() if has_limits else [0] * num_worlds
@@ -107,7 +108,7 @@ def extract_cts_jacobians(
     # Extract each Jacobian as a matrix
     J_cts_mat: list[np.ndarray] = []
     for w in range(num_worlds):
-        ncts = num_jcts[w] + nl[w] + 3 * nc[w]
+        ncts = num_jcts[w] + num_nbc[w] + nl[w] + 3 * nc[w]
         J_cts_size = ncts * num_bdofs[w]
         if J_cts_size > J_cts_flat_sizes[w]:
             raise ValueError(f"Jacobian size {J_cts_size} exceeds flat size {J_cts_flat_sizes[w]} for world {w}")

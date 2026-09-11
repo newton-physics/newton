@@ -17,12 +17,26 @@ env:
 
 on:
   workflow_call:
+    inputs:
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: true
+        type: string
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
       CODECOV_TOKEN:
         required: true
   workflow_dispatch:
+    inputs:
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: false
+        type: choice
+        options:
+          - manual
+          - scheduled-nightly
+        default: 'manual'
 
 jobs:
   start-runner:
@@ -81,7 +95,11 @@ jobs:
             [
               {"Key": "Name", "Value": "ec2-github-runner"},
               {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
+              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
+              {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
+              {"Key": "Newton-Workload", "Value": "minimum-deps-tests"},
+              {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
+              {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
             ]
 
   minimum-deps-tests:

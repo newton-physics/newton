@@ -150,7 +150,6 @@ class Example:
         return positions
 
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
@@ -190,7 +189,7 @@ class Example:
 
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e5  # Contact stiffness
-        builder.default_shape_cfg.kd = 0.0
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
@@ -210,18 +209,17 @@ class Example:
             off_y, off_z = bundle_positions[i]
             cable_start = wp.vec3(start_x, start_y + off_y, start_z + off_z)
 
-            points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+            rod = newton.Rod.create_straight(
                 start=cable_start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=float(self.cable_length),
-                num_segments=int(self.num_elements),
+                segment_count=int(self.num_elements),
                 twist_total=0.0,
+                radius=self.cable_radius,
             )
 
             rod_bodies, _rod_joints = builder.add_rod(
-                positions=points,
-                quaternions=quats,
-                radius=self.cable_radius,
+                rod=rod,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
@@ -295,6 +293,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
         )
 
         # Initialize states and contacts

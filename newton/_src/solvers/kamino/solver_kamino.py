@@ -113,10 +113,16 @@ class SolverKamino(SolverBase, CouplingInterface):
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
 
     Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
-    over bilateral kinematic joint constraints and unilateral joint-limit and
-    contact constraints. The default PADMM backend solves this problem with
+    over bilateral kinematic joint constraints, bounded-multiplier constraints, and unilateral joint-limit
+    and contact constraints. The default PADMM backend solves this problem with
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
+
+    When requested, the solver populates :attr:`~newton.State.body_qdd` with the
+    discrete step-average center-of-mass acceleration in the world frame
+    [m/s², rad/s²]. The value is computed from the input and output body twists
+    over each step, so impacts include their velocity impulse divided by the
+    step duration.
 
     This solver is currently in Beta.
 
@@ -141,6 +147,22 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     After constructing :class:`ModelKamino`, :class:`StateKamino`, :class:`ControlKamino` and :class:`ContactsKamino`
     objects, this physics solver may be used to advance the simulation state forward in time.
+
+    Body flags
+    ----------
+    Kamino treats a rigid body as *immovable* when either its Newton inertia is
+    zero (``body_inv_mass == 0`` and ``body_inv_inertia == 0``) or its
+    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC` or
+    :attr:`~newton.BodyFlags.PROXY`. This decision is baked once at construction,
+    and flipping a body's immovability at runtime (whether by toggling its
+    KINEMATIC/PROXY flag, by making a massive body massless, or by giving a
+    massless body finite inertia) will raise a :class:`RuntimeError` from
+    :meth:`notify_model_changed`.
+
+    Kamino's integrator does not advance a kinematic/proxy body's pose from its
+    velocity. To animate such a body along a trajectory, write the target
+    pose into ``state_in.body_q`` (and optionally ``state_in.body_qd``)
+    externally between steps.
 
     Example
     -------
@@ -249,7 +271,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         integrator: Literal["euler", "moreau"] = "euler"
         """
-        The time-integrator to use for state integration.\n
+        The time-integrator to use for state integration. The ``"moreau"`` option requires
+        ``use_collision_detector=True``.\n
+
         See available options in the `integrators` module.\n
         Defaults to `"euler"`.
         """
@@ -270,8 +294,10 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         collect_solver_info: bool = False
         """
-        Enables/disables collection of solver convergence and performance info at each simulation step.\n
-        Enabling this option as it will significantly increase the runtime of the solver.\n
+        Enables additional collection of solver convergence and performance information.\n
+        Per-world terminal status remains available through :attr:`SolverKamino.status`
+        when this option is disabled. Enabling detailed collection adds runtime and memory
+        overhead.\n
         Defaults to `False`.
         """
 
@@ -752,15 +778,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
-        built_massless_np = (model.body_inv_mass.numpy() == 0.0) | np.all(
-            model.body_inv_inertia.numpy() == 0.0, axis=(1, 2)
-        )
-        self._built_massless = wp.array(
-            built_massless_np.astype(np.int32),
-            dtype=wp.int32,
-            device=model.device,
-        )
-
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
             len(self._kamino.StructuralUpdateViolation),
@@ -796,7 +813,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
             # Keep Newton's externally allocated contact buffer in sync with Kamino.
-            model.rigid_contact_max = self._contacts_kamino.model_max_contacts_host
+            # The contacts container is `None` if no contacts are possible.
+            model.rigid_contact_max = (
+                self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+            )
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
@@ -832,6 +852,39 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
+
+    @property
+    def status(self) -> wp.array[Any]:
+        """Per-world terminal solver status on the simulation device.
+
+        The active backend defines the array's Warp struct type. Both PADMM and
+        DVI provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
+        fields. Backend-specific fields may also be present.
+
+        Residuals are absolute maxima, not relative or dimensionless values.
+        For PADMM, ``x`` and ``y`` are the current preconditioned impulse
+        iterates, ``x_prev`` and ``y_prev`` are their previous values, ``P`` is
+        the diagonal dual preconditioner, and ``eta`` and ``rho`` are the
+        proximal and penalty parameters. PADMM reports
+        ``r_p = ||P (x - y)||_inf`` [N·s or N·m·s],
+        ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf``
+        [m/s or rad/s], and the maximum inequality impulse-velocity inner
+        product ``r_c`` [J]. The ``P`` factors convert the first two residuals
+        back from solver scaling to physical constraint units.
+
+        DVI uses physical impulse ``lambda`` and augmented constraint velocity
+        ``v`` without normalization. Its ``r_p`` [N·s or N·m·s] is the maximum
+        infinity-norm distance of unilateral impulses from their limit or
+        Coulomb cone; ``r_d`` [m/s or rad/s] is the maximum of the analogous
+        velocity distance from the dual cone and the bilateral velocity
+        violation; and ``r_c = max |lambda_k dot v_k|`` [J] is the maximum
+        inequality complementarity violation.
+
+        The returned array aliases the solver's device-resident storage; reading
+        it does not synchronize or copy data to the host. Terminal status is
+        available regardless of :attr:`Config.collect_solver_info`.
+        """
+        return self._solver_kamino.solver_status
 
     @override
     def reset(
@@ -944,6 +997,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             success_mask=success_mask,
         )
 
+        if state.body_qdd is not None:
+            self._kamino.reset_body_acceleration(
+                body_wid=self._model_kamino.bodies.wid,
+                body_qdd=state.body_qdd,
+                world_mask=local_world_mask,
+            )
+
         # Restore fields excluded from the reset op
         for array, snapshot in restore_after_reset:
             wp.copy(array, snapshot)
@@ -966,10 +1026,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. populated by :meth:`~newton.CollisionPipeline.collide`),
-        those contacts are converted to Kamino's internal format and used directly,
-        bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
-        Kamino's internal collision pipeline runs as a fallback.
+        Contact source is selected when the solver is constructed. When
+        :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
+        generates contacts on every step and ``contacts`` is ignored. Otherwise, non-``None``
+        contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
+        converted to Kamino's internal format and used directly.
 
         Args:
             state_in: The input state.
@@ -977,8 +1038,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             control: The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts: The contact information from Newton's collision
-                pipeline, or ``None`` to use Kamino's internal collision detector.
+            contacts: The contact information from Newton's collision pipeline. Ignored when
+                :attr:`Config.use_collision_detector` is enabled.
             dt: The time step (typically in seconds).
         """
         # Interface the input state containers to Kamino's equivalents
@@ -993,21 +1054,27 @@ class SolverKamino(SolverBase, CouplingInterface):
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control, self._model_kamino)
 
-        # If contacts are provided, use them directly, bypassing Kamino's collision detector
-        if contacts is not None:
-            self._detector = None
-            self._kamino.convert_contacts_newton_to_kamino(
-                model=self.model,
-                state=state_in,
-                contacts_in=contacts,
-                contacts_out=self._contacts_kamino,
-                convert_forces=False,
-                friction_mix_mode=self._config.materials.friction_mix_mode,
-                restitution_mix_mode=self._config.materials.restitution_mix_mode,
-            )
-        # Otherwise, use Kamino's internal collision detector to generate contacts
-        else:
+        # Internal detection is authoritative when enabled for this solver.
+        if self._config.use_collision_detector:
             self._detector = self._collision_detector_kamino
+        elif contacts is not None:
+            self._detector = None
+            # The contacts container is `None` when the model admits no possible contacts.
+            if self._contacts_kamino is not None:
+                self._kamino.convert_contacts_newton_to_kamino(
+                    model=self.model,
+                    state=state_in,
+                    contacts_in=contacts,
+                    contacts_out=self._contacts_kamino,
+                    convert_forces=False,
+                    friction_mix_mode=self._config.materials.friction_mix_mode,
+                    restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
+                )
+        else:
+            self._detector = None
+            # Clear the internal contacts container to avoid using stale contacts from previous steps.
+            self._contacts_kamino.clear()
 
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
@@ -1015,6 +1082,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q=state_in_kamino.q_i,
             body_q_com=state_in_kamino.q_i,
         )
+
+        if state_out.body_qdd is not None:
+            # The output acceleration buffer is preallocated and can safely hold
+            # the input twist until integration completes, including in-place steps.
+            wp.copy(state_out.body_qdd, state_in.body_qd)
 
         # Step the physics solver
         self._solver_kamino.step(
@@ -1025,6 +1097,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             detector=self._detector,
             dt=dt,
         )
+
+        if state_out.body_qdd is not None:
+            self._kamino.compute_body_acceleration(
+                body_qd_in=state_out.body_qdd,
+                body_qd_out=state_out.body_qd,
+                body_qdd=state_out.body_qdd,
+                dt=dt,
+            )
 
         # Convert back from Kamino CoM-frame to Newton body-frame poses
         self._kamino.convert_body_com_to_origin(
@@ -1059,6 +1139,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             # q_i_0 is derived from both model.body_q and model.body_com.
             self._update_body_initial_pose()
+            # Kamino-owned masked inv-mass/inertia must track Newton's values.
+            # BODY_PROPERTIES is included because Newton's body_flags aren't
+            # allowed to flip KINEMATIC/PROXY (rejected in the structural check
+            # above), but other body properties may change alongside inertia
+            # and callers commonly bundle these flags together.
+            self._refresh_masked_inertia()
 
         if flags & (
             ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES
@@ -1237,7 +1323,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or cable joints
+        - distance or rod joints
         - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
@@ -1273,8 +1359,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 # Check for explicitly unsupported joint types
                 if joint_type == JointType.DISTANCE:
                     unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.CABLE:
-                    unsupported_joint_types["CABLE"] = unsupported_joint_types.get("CABLE", 0) + 1
+                elif joint_type == JointType.ROD:
+                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1379,20 +1465,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
         check_axes = check_dof
-        check_inertial = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
-        if not check_dof and not check_actuation and not check_axes and not check_inertial:
+        check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
+        if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
 
         sentinel = self._kamino.validate_model_structural_updates(
             self.model,
             self._model_kamino.joints,
             self._built_limit_finite,
-            self._built_massless,
+            self._model_kamino.bodies.is_immovable,
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
             check_axes=check_axes,
-            check_inertial=check_inertial,
+            check_body_immovability=check_body_immovability,
         )
         violations = self._notify_violations.numpy()
         dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
@@ -1401,15 +1487,16 @@ class SolverKamino(SolverBase, CouplingInterface):
         invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
-        massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
+        immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
+        friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
+        effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
             raise RuntimeError(
-                f"Changing dynamic constraint topology for joint {joint} "
+                f"Changing joint dynamics allocation for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
-                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
+                "This occurs when armature, damping, or unbounded implicit-PD gains cross zero on a DoF."
             )
 
         if limit_dof != sentinel:
@@ -1417,6 +1504,22 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing the existence of a joint limit for DoF {dof} "
                 f"is not supported; recreate SolverKamino to apply the change."
+            )
+
+        if friction_joint != sentinel:
+            joint = int(friction_joint)
+            raise RuntimeError(
+                f"Changing joint friction allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Enabling or disabling friction on a DoF requires recreation."
+            )
+
+        if effort_joint != sentinel:
+            joint = int(effort_joint)
+            raise RuntimeError(
+                f"Changing effort-limit allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Adding or removing bounded implicit PD on a DoF requires recreation."
             )
 
         if actuation_joint != sentinel:
@@ -1446,11 +1549,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "gimbal axes must preserve the solver's original handedness"
             )
 
-        if massless_body != sentinel:
-            body = int(massless_body)
+        if immovability_flip_body != sentinel:
+            body = int(immovability_flip_body)
             label = self.model.body_label[body] if self.model.body_label else f"body {body}"
             raise RuntimeError(
-                f"Making body {body} ({label!r}) massless is not supported; recreate SolverKamino to apply the change."
+                f"Changing the immovability status of body {body} ({label!r}) is not supported; "
+                "recreate SolverKamino to apply the change. More specifically, toggling the "
+                "KINEMATIC/PROXY flag of a body, making a massive body massless or giving a "
+                "massless body finite inertia are not supported."
             )
 
     def _update_actuation_types(self) -> None:
@@ -1463,6 +1569,17 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q=self.model.body_q,
             body_q_com=self._model_kamino.bodies.q_i_0,
+        )
+
+    def _refresh_masked_inertia(self):
+        """Refresh Kamino's inverse mass/inertia from Newton's arrays."""
+        self._kamino.refresh_masked_body_inertia(
+            newton_body_inv_mass=self.model.body_inv_mass,
+            newton_body_inv_inertia=self.model.body_inv_inertia,
+            kamino_body_is_immovable=self._model_kamino.bodies.is_immovable,
+            kamino_body_inv_mass=self._model_kamino.bodies.inv_m_i,
+            kamino_body_inv_inertia=self._model_kamino.bodies.inv_i_I_i,
+            device=self.model.device,
         )
 
     def _update_geom_offsets(self):

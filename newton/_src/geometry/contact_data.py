@@ -13,6 +13,17 @@ import warp as wp
 SHAPE_PAIR_HFIELD_BIT = wp.int32(1 << 30)
 SHAPE_PAIR_INDEX_MASK = wp.int32((1 << 30) - 1)
 
+CONTACT_SORT_SUB_KEY_BITS = 23
+# Primitive contacts use sub-keys 0..3 and generic convex manifolds use 0..4.
+CONTACT_SORT_CONVEX_SUB_KEY_BITS = 3
+CONTACT_SORT_MAX_SHAPE_INDEX_BITS = 20
+
+
+def contact_sort_shape_index_bits(shape_count: int) -> int:
+    """Return the bounded bit width needed for a contact shape index."""
+    required_bits = max(max(int(shape_count) - 1, 0).bit_length(), 1)
+    return min(required_bits, CONTACT_SORT_MAX_SHAPE_INDEX_BITS)
+
 
 @wp.struct
 class ContactData:
@@ -57,16 +68,43 @@ class ContactData:
 
 
 @wp.func
-def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.int64:
+def make_contact_sort_key_with_bits(
+    shape_a: int,
+    shape_b: int,
+    sort_sub_key: int,
+    shape_index_bits: int,
+    sub_key_bit_count: int,
+) -> wp.int64:
+    """Build a lexicographic contact key using explicit field widths.
+
+    Values exceeding either field width are masked. Callers must therefore
+    select widths that cover every sub-key emitted by their contact paths.
+    """
+    shape_bits = wp.int64(shape_index_bits)
+    sub_key_bits = wp.int64(sub_key_bit_count)
+    shape_mask = (wp.int64(1) << shape_bits) - wp.int64(1)
+    sub_key_mask = (wp.int64(1) << sub_key_bits) - wp.int64(1)
+    return (
+        ((wp.int64(shape_a) & shape_mask) << (sub_key_bits + shape_bits))
+        | ((wp.int64(shape_b) & shape_mask) << sub_key_bits)
+        | (wp.int64(sort_sub_key) & sub_key_mask)
+    )
+
+
+@wp.func
+def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int, shape_index_bits: int) -> wp.int64:
     """Build a 64-bit sort key for deterministic contact ordering.
 
-    Layout (bit 63 kept zero so int64 order matches uint64 order)::
+    The shape fields use the bit width required by the model, while the
+    23-bit contact sub-key remains unchanged. Bit 63 stays zero so int64 order
+    matches uint64 order::
 
-        [62:43] shape_a      (20 bits, max 1,048,575 shapes)
-        [42:23] shape_b      (20 bits, max 1,048,575 shapes)
-        [22:0]  sort_sub_key (23 bits, max 8,388,607)
+        [22 + 2b:23 + b] shape_a      (b bits)
+        [22 + b:23]      shape_b      (b bits)
+        [22:0]           sort_sub_key (23 bits, max 8,388,607)
 
-    Values exceeding these bit widths are silently masked.  The effective
+    ``b`` is at most 20, retaining the existing limit of 1,048,575 shape
+    indices. Values exceeding these bit widths are silently masked. The effective
     limits depend on upstream bit consumption in each contact path:
 
     - Mesh-triangle contacts: ``(tri_idx << 1) | 1`` — 22 effective bits
@@ -80,11 +118,82 @@ def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.i
       reserved for reduction anchors — 21 effective fingerprint bits (~419K
       iso voxels).
     """
-    return (
-        ((wp.int64(shape_a) & wp.int64(0xFFFFF)) << wp.int64(43))
-        | ((wp.int64(shape_b) & wp.int64(0xFFFFF)) << wp.int64(23))
-        | (wp.int64(sort_sub_key) & wp.int64(0x7FFFFF))
+    return make_contact_sort_key_with_bits(
+        shape_a,
+        shape_b,
+        sort_sub_key,
+        shape_index_bits,
+        CONTACT_SORT_SUB_KEY_BITS,
     )
+
+
+@wp.func
+def compute_contact_approach_speed(
+    shape_a: int,
+    shape_b: int,
+    point_a: wp.vec3,
+    point_b: wp.vec3,
+    normal_a_to_b: wp.vec3,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+) -> float:
+    """Return the closing speed of two shape points along a contact normal."""
+    origin_a = wp.transform_get_translation(shape_transform[shape_a])
+    origin_b = wp.transform_get_translation(shape_transform[shape_b])
+    velocity_a = shape_linear_velocity[shape_a] + wp.cross(shape_angular_velocity[shape_a], point_a - origin_a)
+    velocity_b = shape_linear_velocity[shape_b] + wp.cross(shape_angular_velocity[shape_b], point_b - origin_b)
+    return wp.max(-wp.dot(velocity_b - velocity_a, normal_a_to_b), 0.0)
+
+
+@wp.func
+def compute_contact_predictive_score(
+    shape_a: int,
+    shape_b: int,
+    point_a: wp.vec3,
+    point_b: wp.vec3,
+    normal_a_to_b: wp.vec3,
+    physical_separation: float,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+) -> float:
+    """Return predicted penetration after one collision-update horizon [m]."""
+    approach_speed = compute_contact_approach_speed(
+        shape_a,
+        shape_b,
+        point_a,
+        point_b,
+        normal_a_to_b,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+    )
+    extension = wp.min(approach_speed * collision_update_dt, max_speculative_extension)
+    return extension - physical_separation
+
+
+@wp.func
+def _contact_passes_gap_check_precomputed(
+    contact_data: ContactData,
+    contact_normal_a_to_b: wp.vec3,
+    total_separation_needed: float,
+) -> bool:
+    """Check a contact gap using manifold-invariant precomputed values."""
+    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+
+    diff = b_contact_world - a_contact_world
+    distance = wp.dot(diff, contact_normal_a_to_b)
+    d = distance - total_separation_needed
+
+    return d <= contact_data.gap_sum
 
 
 @wp.func
@@ -107,15 +216,56 @@ def contact_passes_gap_check(
     # Distance calculation matching box_plane_collision
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
+    return _contact_passes_gap_check_precomputed(
+        contact_data,
+        contact_normal_a_to_b,
+        total_separation_needed,
+    )
+
+
+@wp.func
+def prepare_speculative_contact(contact_data: ContactData) -> tuple[wp.vec3, wp.vec3, wp.vec3, float]:
+    """Return the normalized contact geometry used for speculative admission and storage."""
+    normal = wp.normalize(contact_data.contact_normal_a_to_b)
+    point_a = contact_data.contact_point_center - normal * (
         0.5 * contact_data.contact_distance + contact_data.radius_eff_a
     )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
+    point_b = contact_data.contact_point_center + normal * (
         0.5 * contact_data.contact_distance + contact_data.radius_eff_b
     )
+    total_separation_needed = (
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
+    )
+    separation = wp.dot(point_b - point_a, normal) - total_separation_needed
+    return normal, point_a, point_b, separation
 
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
 
-    return d <= contact_data.gap_sum
+@wp.func
+def contact_passes_speculative_gap_check(
+    contact_data: ContactData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+) -> bool:
+    """Return whether a contact is present now or predicted before the next collision pass."""
+    normal, point_a, point_b, physical_separation = prepare_speculative_contact(contact_data)
+    if physical_separation <= contact_data.gap_sum:
+        return True
+    return (
+        compute_contact_predictive_score(
+            contact_data.shape_a,
+            contact_data.shape_b,
+            point_a,
+            point_b,
+            normal,
+            physical_separation,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            collision_update_dt,
+            max_speculative_extension,
+        )
+        >= 0.0
+    )

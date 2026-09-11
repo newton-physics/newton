@@ -90,16 +90,16 @@ jobs:
 
       - name: Dispatch and wait for GPU tests
         id: gpu-tests
-        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge"
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge" -f "inputs[trigger-category]=scheduled-nightly"
 
       - name: Dispatch and wait for Minimum Deps tests
         id: minimum-deps-tests
-        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py minimum_deps_tests.yml
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py minimum_deps_tests.yml -f "inputs[trigger-category]=scheduled-nightly"
 
       - name: Dispatch and wait for Warp Nightly tests
         id: warp-nightly-tests
         if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
-        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml -f "inputs[trigger-category]=scheduled-nightly"
 
   notify-on-failure:
     name: Notify on failure

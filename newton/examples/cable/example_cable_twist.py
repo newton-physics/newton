@@ -8,7 +8,7 @@
 # Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through cable joints and across bends.
+# is transported through rod joints and across bends.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_twist
@@ -54,8 +54,13 @@ def spin_first_capsules_kernel(
 
 class Example:
     def create_cable_geometry_with_turns(
-        self, pos: wp.vec3 | None = None, num_elements=16, length=6.4, twisting_angle=0.0
-    ):
+        self,
+        pos: wp.vec3 | None = None,
+        num_elements=16,
+        length=6.4,
+        twisting_angle=0.0,
+        radius: float | None = None,
+    ) -> newton.Rod:
         """Create a zigzag cable route with parallel-transported quaternions.
 
         Generates a cable path with three sharp 90-degree turns lying on the XY-plane.
@@ -67,11 +72,11 @@ class Example:
             num_elements: Number of cable segments (num_points = num_elements + 1).
             length: Total cable length.
             twisting_angle: Total twist in radians around capsule axis (0 = no twist).
+            radius: Capsule radius.
 
         Returns:
-            Tuple of (points, quaternions):
-            - points: List of polyline points in world space (num_elements + 1).
-            - quaternions: Per-segment orientations using parallel transport (num_elements).
+            Rod containing the polyline points and
+            parallel-transported segment frames.
         """
         if pos is None:
             pos = wp.vec3()
@@ -109,8 +114,9 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
-        return points, edge_q
+        rod = newton.Rod(points, radius=radius)
+        rod.compute_frames(twist_total=float(twisting_angle))
+        return rod
 
     def __init__(self, viewer, args):
         # Store viewer and arguments
@@ -144,9 +150,9 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Set default material properties before adding any shapes
-        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
+        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 0.0
-        builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
+        builder.default_shape_cfg.mu = 5.0e-1  # Friction coefficient
 
         kinematic_body_indices = []
         self.cable_bodies_list = []
@@ -163,17 +169,16 @@ class Example:
             # Cables start at ground level (z=0) to lay flat on ground
             start_pos = wp.vec3(-self.cable_length * 0.25, y_pos, cable_radius)
 
-            cable_points, cable_edge_q = self.create_cable_geometry_with_turns(
+            rod = self.create_cable_geometry_with_turns(
                 pos=start_pos,
                 num_elements=self.num_elements,
                 length=self.cable_length,
                 twisting_angle=0.0,
+                radius=cable_radius,
             )
 
             rod_bodies, _rod_joints = builder.add_rod(
-                positions=cable_points,
-                quaternions=cable_edge_q,
-                radius=cable_radius,
+                rod=rod,
                 stretch_stiffness=stretch_stiffness,
                 bend_stiffness=angular_stiffness,
                 twist_stiffness=angular_stiffness,
@@ -207,9 +212,12 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

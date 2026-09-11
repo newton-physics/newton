@@ -122,25 +122,31 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
     if num_inside == 0:
         return 0.0
 
-    # Find the vertex with different inside/outside status
-    # With standard convention: negative depth = inside (penetrating)
-    idx = wp.int32(0)
+    # Rotate the distinct vertex into d0 without dynamic vector indexing. The
+    # latter forces this three-float value into thread-local memory on CUDA.
+    d0 = vert_depths[0]
+    d1 = vert_depths[1]
+    d2 = vert_depths[2]
     if num_inside == 1:
         # Find the one vertex that IS inside (negative depth)
         if vert_depths[1] < 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] < 0.0:
-            idx = 2
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
     else:  # num_inside == 2
         # Find the one vertex that is NOT inside (non-negative depth)
         if vert_depths[1] >= 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] >= 0.0:
-            idx = 2
-
-    d0 = vert_depths[idx]
-    d1 = vert_depths[(idx + 1) % 3]
-    d2 = vert_depths[(idx + 2) % 3]
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
 
     denom = (d0 - d1) * (d0 - d2)
     eps = wp.float32(1e-8)

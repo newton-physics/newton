@@ -14,6 +14,21 @@ import numpy as np
 _texture_url_cache: dict[str, bytes] = {}
 
 
+def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
+    return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * np.power(linear, 1.0 / 2.4) - 0.055)
+
+
+def _make_linear_to_srgb_uint8_lut() -> np.ndarray:
+    linear = np.arange(256, dtype=np.float32) / 255.0
+    srgb = _linear_to_srgb(linear)
+    lut = np.clip(np.round(srgb * 255.0), 0.0, 255.0).astype(np.uint8)
+    lut.setflags(write=False)
+    return lut
+
+
+_LINEAR_TO_SRGB_UINT8_LUT = _make_linear_to_srgb_uint8_lut()
+
+
 def _is_http_url(path: str) -> bool:
     parsed = urlparse(path)
     return parsed.scheme in ("http", "https")
@@ -146,16 +161,22 @@ def linear_texture_to_srgb(texture_image: np.ndarray | None) -> np.ndarray | Non
         return np.ascontiguousarray(image)
 
     out = image.copy()
+    if out.dtype == np.uint8:
+        # One channel at a time: a 3-channel fancy index triples the gathered temporary.
+        for channel in range(3):
+            out[..., channel] = _LINEAR_TO_SRGB_UINT8_LUT[out[..., channel]]
+        return np.ascontiguousarray(out)
+
     if np.issubdtype(out.dtype, np.integer):
         scale = float(np.iinfo(out.dtype).max)
         rgb = np.clip(out[..., :3].astype(np.float32) / scale, 0.0, 1.0)
-        srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+        srgb = _linear_to_srgb(rgb)
         out[..., :3] = np.clip(np.round(srgb * scale), 0.0, scale).astype(out.dtype)
         return np.ascontiguousarray(out)
 
     out = out.astype(np.float32, copy=False)
     rgb = np.clip(out[..., :3], 0.0, 1.0)
-    out[..., :3] = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    out[..., :3] = _linear_to_srgb(rgb)
     return np.ascontiguousarray(out.astype(image.dtype, copy=False))
 
 
