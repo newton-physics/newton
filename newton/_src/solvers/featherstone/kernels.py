@@ -2392,7 +2392,7 @@ def compute_body_parent_f(
     inbound joint, expressed in Featherstone's internal solve frame. For
     floating-root articulations this frame is translated to the root COM; for
     other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverOutputs.body_parent_f``
+    COM (matching :class:`SolverMuJoCo` and the ``SolverObservables.body_parent_f``
     convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
     both in world frame).
 

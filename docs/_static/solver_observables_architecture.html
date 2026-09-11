@@ -9,7 +9,7 @@ SPDX-License-Identifier: CC-BY-4.0
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <link rel="icon" href="data:,">
-  <title>Solver Outputs Architecture — Newton</title>
+  <title>Solver Observables Architecture — Newton</title>
   <style>
     :root {
       --page: #f5f7f9;
@@ -610,13 +610,13 @@ SPDX-License-Identifier: CC-BY-4.0
         <li><a href="#migration">Migration map</a></li>
         <li><a href="#benefits">Benefits</a></li>
       </ul>
-      <a class="toc-back" href="../concepts/solver_outputs.html">← Solver Outputs reference</a>
+      <a class="toc-back" href="../concepts/solver_observables.html">← Solver Observables reference</a>
     </nav>
 
     <main>
       <header class="hero" id="summary">
         <p class="eyebrow">Architecture proposal</p>
-        <h1>Solver Outputs</h1>
+        <h1>Solver Observables</h1>
         <p class="lede">
           A separate, extensible data plane for optional diagnostics produced by a solver—requested by consumers,
           allocated by the solver, populated during <code>step()</code>, and consumed by sensors, viewers, and applications.
@@ -632,7 +632,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
       <div class="callout">
         <strong>Core rule:</strong> simulation state stores the data needed to advance the simulation. Optional data that a
-        solver can report—but the simulation does not need to continue—belongs in <code>SolverOutputs</code>.
+        solver can report—but the simulation does not need to continue—belongs in <code>SolverObservables</code>.
       </div>
 
       <section id="motivation">
@@ -656,20 +656,20 @@ SPDX-License-Identifier: CC-BY-4.0
             <ul>
               <li>The model appears to own solver capabilities.</li>
               <li>Optional diagnostics are mixed into persistent simulation data.</li>
-              <li>Custom solver outputs need global model/state plumbing.</li>
+              <li>Custom solver observables need global model/state plumbing.</li>
               <li>Allocation intent is implicit and can happen far from the solver.</li>
             </ul>
           </article>
 
           <article class="panel after">
-            <span class="panel-label">After — solver outputs</span>
+            <span class="panel-label">After — solver observables</span>
             <h3>Consumers declare needs; solver owns allocation</h3>
             <div class="mini-flow" role="group" aria-label="New request flow">
               <div class="mini-node">Sensors / viewer / application</div>
-              <div class="mini-arrow">↓ union solver_output_flags</div>
-              <div class="mini-node">solver.outputs(flags)</div>
+              <div class="mini-arrow">↓ union solver_observable_flags</div>
+              <div class="mini-node">solver.observables(flags)</div>
               <div class="mini-arrow">↓ validates + allocates concrete type</div>
-              <div class="mini-node">SolverOutputs</div>
+              <div class="mini-node">SolverObservables</div>
             </div>
             <ul>
               <li>The request is made against the component that produces the data.</li>
@@ -691,8 +691,8 @@ SPDX-License-Identifier: CC-BY-4.0
         <figure class="diagram">
           <div class="diagram-scroll">
           <svg viewBox="0 0 920 560" role="img" aria-labelledby="runtime-title runtime-desc">
-            <title id="runtime-title">Solver Outputs allocation and runtime data flow</title>
-            <desc id="runtime-desc">CollisionPipeline publishes capacities on Model. Consumers union output flags, the solver eagerly allocates a concrete output container from those capacities, then solver step binds contact storage and fills outputs for sensors and viewers.</desc>
+            <title id="runtime-title">Solver Observables allocation and runtime data flow</title>
+            <desc id="runtime-desc">CollisionPipeline publishes capacities on Model. Consumers union observable flags, the solver eagerly allocates a concrete observable container from those capacities, then solver step binds contact storage and fills observables for sensors and viewers.</desc>
             <defs>
               <marker id="runtime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
@@ -714,9 +714,9 @@ SPDX-License-Identifier: CC-BY-4.0
             <text x="397" y="127" text-anchor="middle" class="svg-sub">union removes duplicates</text>
 
             <rect x="576" y="50" width="302" height="98" rx="12" class="svg-node-accent"></rect>
-            <text x="727" y="82" text-anchor="middle" class="svg-label">solver.outputs(flags)</text>
+            <text x="727" y="82" text-anchor="middle" class="svg-label">solver.observables(flags)</text>
             <text x="727" y="105" text-anchor="middle" class="svg-sub">validate support and ownership</text>
-            <text x="727" y="123" text-anchor="middle" class="svg-sub">instantiate OUTPUTS_TYPE · allocate arrays</text>
+            <text x="727" y="123" text-anchor="middle" class="svg-sub">instantiate OBSERVABLES_TYPE · allocate arrays</text>
 
             <path d="M 218 99 H 287" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
             <text x="252" y="88" text-anchor="middle" class="svg-small">UNION</text>
@@ -739,19 +739,19 @@ SPDX-License-Identifier: CC-BY-4.0
             <text x="120" y="452" text-anchor="middle" class="svg-sub">bound on first step</text>
 
             <rect x="309" y="296" width="250" height="126" rx="14" class="svg-node-accent"></rect>
-            <text x="434" y="332" text-anchor="middle" class="svg-label">solver.step(..., outputs=)</text>
+            <text x="434" y="332" text-anchor="middle" class="svg-label">solver.step(..., observables=)</text>
             <text x="434" y="357" text-anchor="middle" class="svg-sub">advance State</text>
-            <text x="434" y="378" text-anchor="middle" class="svg-sub">populate only allocated output arrays</text>
+            <text x="434" y="378" text-anchor="middle" class="svg-sub">populate only allocated observable arrays</text>
             <text x="434" y="399" text-anchor="middle" class="svg-sub">preserve contact index alignment</text>
 
             <rect x="655" y="253" width="223" height="88" rx="12" class="svg-node-purple"></rect>
-            <text x="766" y="283" text-anchor="middle" class="svg-label">SolverOutputs</text>
+            <text x="766" y="283" text-anchor="middle" class="svg-label">SolverObservables</text>
             <text x="766" y="305" text-anchor="middle" class="svg-sub">body_qdd · body_parent_f</text>
             <text x="766" y="323" text-anchor="middle" class="svg-sub">contact_f · custom fields</text>
 
             <rect x="655" y="382" width="223" height="88" rx="12" class="svg-node-blue"></rect>
             <text x="766" y="412" text-anchor="middle" class="svg-label">Consumers</text>
-            <text x="766" y="434" text-anchor="middle" class="svg-sub">sensor.update(..., outputs=)</text>
+            <text x="766" y="434" text-anchor="middle" class="svg-sub">sensor.update(…)</text>
             <text x="766" y="452" text-anchor="middle" class="svg-sub">viewer · logging · application</text>
 
             <path d="M 213 297 H 298" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
@@ -759,10 +759,10 @@ SPDX-License-Identifier: CC-BY-4.0
             <path d="M 559 338 H 644" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
             <path d="M 766 341 V 371" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
             <path d="M 559 390 H 615 Q 633 390 646 405" class="svg-edge-dashed" marker-end="url(#runtime-arrow)"></path>
-            <text x="603" y="378" text-anchor="middle" class="svg-small">STATE + OUTPUTS</text>
+            <text x="603" y="378" text-anchor="middle" class="svg-small">STATE</text>
 
             <text x="28" y="526" class="svg-sub">Solid green: optional diagnostic data plane</text>
-            <text x="298" y="526" class="svg-sub">Gray: persistent simulation inputs/outputs</text>
+            <text x="298" y="526" class="svg-sub">Gray: persistent simulation data</text>
             <text x="605" y="526" class="svg-sub">Dashed: additional consumer context</text>
           </svg>
           </div>
@@ -776,8 +776,8 @@ SPDX-License-Identifier: CC-BY-4.0
         <figure class="diagram">
           <div class="diagram-scroll">
           <svg viewBox="0 0 920 430" role="img" aria-labelledby="inherit-title inherit-desc">
-            <title id="inherit-title">Inheritance and extension model for solver outputs</title>
-            <desc id="inherit-desc">A standard flag enum and base output class are extended by custom flag enums and custom output containers, selected by each solver.</desc>
+            <title id="inherit-title">Inheritance and extension model for solver observables</title>
+            <desc id="inherit-desc">A standard flag enum and base observable class are extended by custom flag enums and custom observable containers, selected by each solver.</desc>
             <defs>
               <marker id="inherit-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
@@ -788,14 +788,14 @@ SPDX-License-Identifier: CC-BY-4.0
             </defs>
 
             <rect x="34" y="42" width="230" height="130" rx="12" class="svg-node"></rect>
-            <text x="149" y="73" text-anchor="middle" class="svg-label">SolverOutputFlags</text>
+            <text x="149" y="73" text-anchor="middle" class="svg-label">SolverObservableFlags</text>
             <text x="149" y="98" text-anchor="middle" class="svg-sub">plain enum.Enum</text>
             <text x="149" y="121" text-anchor="middle" class="svg-sub">BODY_QDD</text>
             <text x="149" y="139" text-anchor="middle" class="svg-sub">BODY_PARENT_F</text>
             <text x="149" y="157" text-anchor="middle" class="svg-sub">CONTACT_F</text>
 
             <rect x="347" y="42" width="230" height="130" rx="12" class="svg-node-accent"></rect>
-            <text x="462" y="73" text-anchor="middle" class="svg-label">SolverOutputs</text>
+            <text x="462" y="73" text-anchor="middle" class="svg-label">SolverObservables</text>
             <text x="462" y="98" text-anchor="middle" class="svg-sub">flags: frozenset[Enum]</text>
             <text x="462" y="121" text-anchor="middle" class="svg-sub">body_qdd: array | None</text>
             <text x="462" y="139" text-anchor="middle" class="svg-sub">body_parent_f: array | None</text>
@@ -803,26 +803,27 @@ SPDX-License-Identifier: CC-BY-4.0
 
             <rect x="660" y="42" width="226" height="130" rx="12" class="svg-node-blue"></rect>
             <text x="773" y="73" text-anchor="middle" class="svg-label">SolverBase</text>
-            <text x="773" y="98" text-anchor="middle" class="svg-sub">SUPPORTED_OUTPUT_FLAGS</text>
-            <text x="773" y="121" text-anchor="middle" class="svg-sub">OUTPUTS_TYPE</text>
-            <text x="773" y="139" text-anchor="middle" class="svg-sub">outputs(...)</text>
-            <text x="773" y="157" text-anchor="middle" class="svg-sub">_allocate/_validate_outputs(...)</text>
+            <text x="773" y="98" text-anchor="middle" class="svg-sub">SUPPORTED_OBSERVABLE_FLAGS</text>
+            <text x="773" y="121" text-anchor="middle" class="svg-sub">OBSERVABLES_TYPE</text>
+            <text x="773" y="139" text-anchor="middle" class="svg-sub">observables(...)</text>
+            <text x="773" y="157" text-anchor="middle" class="svg-sub">_allocate/_validate_observables(...)</text>
 
             <rect x="34" y="282" width="230" height="104" rx="12" class="svg-node-orange"></rect>
-            <text x="149" y="315" text-anchor="middle" class="svg-label">ThermalOutputFlags</text>
+            <text x="149" y="315" text-anchor="middle" class="svg-label">ThermalObservableFlags</text>
             <text x="149" y="340" text-anchor="middle" class="svg-sub">BODY_TEMPERATURE</text>
             <text x="149" y="360" text-anchor="middle" class="svg-sub">separate plain Enum</text>
 
             <rect x="347" y="270" width="230" height="128" rx="12" class="svg-node-purple"></rect>
-            <text x="462" y="304" text-anchor="middle" class="svg-label">ThermalSolverOutputs</text>
-            <text x="462" y="329" text-anchor="middle" class="svg-sub">extends SolverOutputs</text>
+            <text x="462" y="304" text-anchor="middle" class="svg-label">ThermalSolverObservables</text>
+            <text x="462" y="329" text-anchor="middle" class="svg-sub">extends SolverObservables</text>
             <text x="462" y="352" text-anchor="middle" class="svg-sub">body_temperature: array | None</text>
             <text x="462" y="375" text-anchor="middle" class="svg-sub">inherits all standard fields</text>
 
             <rect x="660" y="270" width="226" height="128" rx="12" class="svg-node-blue"></rect>
             <text x="773" y="304" text-anchor="middle" class="svg-label">ThermalSolver</text>
-            <text x="773" y="329" text-anchor="middle" class="svg-sub">OUTPUTS_TYPE = ThermalSolverOutputs</text>
-            <text x="773" y="352" text-anchor="middle" class="svg-sub">supports standard + custom flags</text>
+            <text x="773" y="325" text-anchor="middle" class="svg-sub">OBSERVABLES_TYPE =</text>
+            <text x="773" y="342" text-anchor="middle" class="svg-sub">ThermalSolverObservables</text>
+            <text x="773" y="359" text-anchor="middle" class="svg-sub">supports standard + custom flags</text>
             <text x="773" y="375" text-anchor="middle" class="svg-sub">allocates and fills custom arrays</text>
 
             <path d="M 462 270 V 184" class="svg-edge" marker-end="url(#inherit-triangle)"></path>
@@ -832,7 +833,7 @@ SPDX-License-Identifier: CC-BY-4.0
             <path d="M 264 334 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
             <text x="300" y="323" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
             <path d="M 577 334 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
-            <text x="613" y="323" text-anchor="middle" class="svg-small">OUTPUTS_TYPE</text>
+            <text x="613" y="323" text-anchor="middle" class="svg-small">TYPE</text>
             <path d="M 264 108 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
             <text x="300" y="96" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
             <path d="M 577 108 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
@@ -840,7 +841,7 @@ SPDX-License-Identifier: CC-BY-4.0
           </svg>
           </div>
           <figcaption>
-            Custom solvers inherit the common container, add a separate flag enum, and select a derived concrete output type.
+            Custom solvers inherit the common container, add a separate flag enum, and select a derived concrete observable type.
             <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
           </figcaption>
         </figure>
@@ -860,14 +861,14 @@ SPDX-License-Identifier: CC-BY-4.0
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Unsupported requests fail at allocation</h3>
-            <p>Every solver advertises <code>supported_output_flags</code>. A request outside that set raises immediately, before a simulation loop or graph capture begins.</p>
+            <p>Every solver advertises <code>supported_observable_flags</code>. A request outside that set raises immediately, before a simulation loop or graph capture begins.</p>
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Containers belong to one solver instance</h3>
             <p>The allocator records solver ownership. Passing the container to another solver is rejected, preventing compatible-looking arrays from being filled with the wrong semantics.</p>
           </article>
           <article class="decision">
-            <h3><span class="decision-dot"></span>Contact outputs bind to contact storage</h3>
+            <h3><span class="decision-dot"></span>Contact observables bind to contact storage</h3>
             <p>The pipeline publishes rigid and soft capacities on <code>Model</code>. Allocation needs no <code>Contacts</code> argument; the first step validates and binds the exact contact storage used by subsequent steps and consumers.</p>
           </article>
           <article class="decision">
@@ -876,14 +877,14 @@ SPDX-License-Identifier: CC-BY-4.0
           </article>
           <article class="decision">
             <h3><span class="decision-dot"></span>Allocation is reusable and graph-friendly</h3>
-            <p>Allocate before graph capture and reuse the same arrays, including inside conditional graph nodes. Solver outputs need no deferred allocation; other solver scratch buffers may still need warmup.</p>
+            <p>Allocate before graph capture and reuse the same arrays, including inside conditional graph nodes. Solver observables need no deferred allocation; other solver scratch buffers may still need warmup.</p>
           </article>
         </div>
 
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Standard flag</th><th>Output field</th><th>Meaning</th><th>Shape / binding</th></tr>
+              <tr><th>Standard flag</th><th>Observable field</th><th>Meaning</th><th>Shape / binding</th></tr>
             </thead>
             <tbody>
               <tr><td><code>BODY_QDD</code></td><td><code>body_qdd</code></td><td>Rigid-body spatial acceleration</td><td><code>(body_count,)</code></td></tr>
@@ -902,57 +903,57 @@ SPDX-License-Identifier: CC-BY-4.0
         </p>
 
         <ol class="workflow">
-          <li><strong>Collect flags</strong><span>Union application needs with every sensor's <code>solver_output_flags</code>.</span></li>
-          <li><strong>Allocate once</strong><span>Construct <code>CollisionPipeline(model)</code> for contact requests, then call <code>solver.outputs(flags)</code>.</span></li>
-          <li><strong>Populate on step</strong><span>Pass the same container to <code>solver.step(..., outputs=outputs)</code>.</span></li>
-          <li><strong>Consume results</strong><span>Read arrays directly or pass the container to sensors and viewers.</span></li>
+          <li><strong>Collect flags</strong><span>Union application needs with every sensor's <code>solver_observable_flags</code>.</span></li>
+          <li><strong>Allocate once</strong><span>Construct <code>CollisionPipeline(model)</code> for contact requests, then call <code>solver.observables(flags)</code>.</span></li>
+          <li><strong>Populate on step</strong><span>Pass the same container to <code>solver.step(..., observables=observables)</code>.</span></li>
+          <li><strong>Consume observables</strong><span>Read arrays directly or pass the container to sensors and viewers.</span></li>
         </ol>
 
-        <div class="code-heading"><h3>Body-level outputs</h3><span>Allocate once during setup</span></div>
-        <pre><code>from newton.solvers import SolverMuJoCo, SolverOutputFlags
+        <div class="code-heading"><h3>Body-level observables</h3><span>Allocate once during setup</span></div>
+        <pre><code>from newton.solvers import SolverMuJoCo, SolverObservableFlags
 
 solver = SolverMuJoCo(model)
-outputs = solver.outputs(
+observables = solver.observables(
     {
-        SolverOutputFlags.BODY_QDD,
-        SolverOutputFlags.BODY_PARENT_F,
+        SolverObservableFlags.BODY_QDD,
+        SolverObservableFlags.BODY_PARENT_F,
     }
 )
 
 for _ in range(num_steps):
-    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-    acceleration = outputs.body_qdd
-    parent_wrench = outputs.body_parent_f
+    acceleration = observables.body_qdd
+    parent_wrench = observables.body_parent_f
     state_in, state_out = state_out, state_in</code></pre>
 
-        <div class="code-heading"><h3>Contact-indexed outputs</h3><span>Eager allocation from model capacities</span></div>
+        <div class="code-heading"><h3>Contact-indexed observables</h3><span>Eager allocation from model capacities</span></div>
         <pre><code>pipeline = newton.CollisionPipeline(model)
 solver = newton.solvers.SolverXPBD(model)
-outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
+observables = solver.observables({SolverObservableFlags.CONTACT_F})
 contacts = pipeline.contacts()
 
 pipeline.collide(state_in, contacts)
-solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
 # Same ordering and capacity as `contacts`.
-contact_force = outputs.contact_f</code></pre>
+contact_force = observables.contact_f</code></pre>
         <p>Before collision setup, model capacities are <code>None</code>; zero is a valid empty capacity.
-          Requesting contact outputs too early raises an error. When allocation returns, every requested field is an array
+          Requesting contact observables too early raises an error. When allocation returns, every requested field is an array
           (possibly empty), while unrequested fields remain <code>None</code>. Capacities are frozen by the first
-          contact-indexed output allocation. No live contact-count readback or pending-allocation state is needed.</p>
+          contact-indexed observable allocation. No live contact-count readback or pending-allocation state is needed.</p>
         <div class="code-heading"><h3>Native collision backends</h3><span>Match the backend's export budget</span></div>
         <pre><code>solver = newton.solvers.SolverMuJoCo(model)
 pipeline = newton.CollisionPipeline(
     model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
 )
-outputs = solver.outputs({SolverOutputFlags.CONTACT_F})
+observables = solver.observables({SolverObservableFlags.CONTACT_F})
 contacts = pipeline.contacts()
 
 # Native MuJoCo fills contact geometry and forces; no pipeline.collide() here.
-solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)</code></pre>
+solver.step(state_in, state_out, control, contacts, dt, observables=observables)</code></pre>
         <p>Construct native Kamino before the pipeline to seed its rigid-contact budget. Both backends reject a pipeline
-          that is too small for contact output export. Reconfigure capacities before output allocation, never during a step.</p>
+          that is too small for contact observable export. Reconfigure capacities before observable allocation, never during a step.</p>
       </section>
 
       <section id="extension">
@@ -966,36 +967,36 @@ solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)</code><
         <pre><code>from enum import Enum
 import warp as wp
 
-from newton.solvers import SolverOutputs
+from newton.solvers import SolverObservables
 
 
-class ThermalOutputFlags(Enum):
+class ThermalObservableFlags(Enum):
     BODY_TEMPERATURE = "body_temperature"
 
 
-class ThermalSolverOutputs(SolverOutputs):
+class ThermalSolverObservables(SolverObservables):
     def __init__(self, flags=()):
         super().__init__(flags)
         self.body_temperature: wp.array[wp.float32] | None = None</code></pre>
 
         <div class="code-heading"><h3>2. Select the type and allocate custom fields</h3><span>Call <code>super()</code> for standard arrays</span></div>
-        <pre><code>from newton.solvers import SolverBase, SolverOutputFlags
+        <pre><code>from newton.solvers import SolverBase, SolverObservableFlags
 
 
 class ThermalSolver(SolverBase):
-    OUTPUTS_TYPE = ThermalSolverOutputs
-    SUPPORTED_OUTPUT_FLAGS = frozenset(
+    OBSERVABLES_TYPE = ThermalSolverObservables
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
         {
-            SolverOutputFlags.BODY_QDD,
-            ThermalOutputFlags.BODY_TEMPERATURE,
+            SolverObservableFlags.BODY_QDD,
+            ThermalObservableFlags.BODY_TEMPERATURE,
         }
     )
 
-    def _allocate_outputs(self, outputs, *, requires_grad):
-        super()._allocate_outputs(outputs, requires_grad=requires_grad)
+    def _allocate_observables(self, observables, *, requires_grad):
+        super()._allocate_observables(observables, requires_grad=requires_grad)
 
-        if ThermalOutputFlags.BODY_TEMPERATURE in outputs:
-            outputs.body_temperature = wp.zeros(
+        if ThermalObservableFlags.BODY_TEMPERATURE in observables:
+            observables.body_temperature = wp.zeros(
                 self.model.body_count,
                 dtype=wp.float32,
                 device=self.model.device,
@@ -1011,40 +1012,40 @@ class ThermalSolver(SolverBase):
         contacts,
         dt,
         *,
-        outputs=None,
+        observables=None,
     ):
-        self._validate_outputs(outputs, contacts)
+        self._validate_observables(observables, contacts)
 
-        # ...advance simulation and populate standard outputs...
+        # ...advance simulation and populate standard observables...
 
-        if outputs is not None and outputs.body_temperature is not None:
+        if observables is not None and observables.body_temperature is not None:
             wp.launch(
                 compute_body_temperature,
                 dim=self.model.body_count,
                 inputs=[state_out.body_qd],
-                outputs=[outputs.body_temperature],
+                outputs=[observables.body_temperature],
                 device=self.model.device,
             )</code></pre>
 
         <div class="code-heading"><h3>4. Compose standard and custom requests</h3><span>The caller treats both enums uniformly</span></div>
         <pre><code>requested = {
-    SolverOutputFlags.BODY_QDD,
-    ThermalOutputFlags.BODY_TEMPERATURE,
+    SolverObservableFlags.BODY_QDD,
+    ThermalObservableFlags.BODY_TEMPERATURE,
 }
 
-outputs = solver.outputs(requested)
-solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+observables = solver.observables(requested)
+solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-temperature = outputs.body_temperature</code></pre>
-        <p>For a custom <em>contact-indexed</em> field, also extend <code>CONTACT_OUTPUT_FLAGS</code> with its flag.
+temperature = observables.body_temperature</code></pre>
+        <p>For a custom <em>contact-indexed</em> field, also extend <code>CONTACT_OBSERVABLE_FLAGS</code> with its flag.
           The base solver then requires a completed pipeline, freezes its capacities, and binds contacts on the first step
-          even when <code>CONTACT_F</code> is not requested. Allocate the custom array in <code>_allocate_outputs()</code>
+          even when <code>CONTACT_F</code> is not requested. Allocate the custom array in <code>_allocate_observables()</code>
           using <code>model.rigid_contact_max</code>, <code>model.soft_contact_max</code>, or their sum as appropriate.
           Body- and solver-sized fields need no contact dependency.</p>
       </section>
 
       <section id="sensors">
-        <h2>How sensors consume outputs</h2>
+        <h2>How sensors consume observables</h2>
         <p class="section-lede">
           Sensors declare requirements without mutating the model. The application remains the orchestrator: it unions all
           consumer requirements, verifies that the selected solver supports them, and shares one populated container.
@@ -1054,7 +1055,7 @@ temperature = outputs.body_temperature</code></pre>
           <div class="diagram-scroll">
           <svg viewBox="0 0 920 410" role="img" aria-labelledby="sensor-title sensor-desc">
             <title id="sensor-title">Sensor requirements and consumption flow</title>
-            <desc id="sensor-desc">IMU and contact sensor output flag sets are combined, allocated by the solver, populated during step, and routed back to each sensor.</desc>
+            <desc id="sensor-desc">IMU and contact sensor solver-observable flag sets are combined, allocated by the solver, populated during step, and routed back to each sensor.</desc>
             <defs>
               <marker id="sensor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
@@ -1066,40 +1067,40 @@ temperature = outputs.body_temperature</code></pre>
 
             <rect x="30" y="42" width="205" height="92" rx="12" class="svg-node-blue"></rect>
             <text x="132" y="74" text-anchor="middle" class="svg-label">SensorIMU</text>
-            <text x="132" y="99" text-anchor="middle" class="svg-sub">solver_output_flags</text>
+            <text x="132" y="99" text-anchor="middle" class="svg-sub">solver_observable_flags</text>
             <text x="132" y="118" text-anchor="middle" class="svg-sub">{ BODY_QDD }</text>
 
             <rect x="30" y="274" width="205" height="92" rx="12" class="svg-node-orange"></rect>
             <text x="132" y="306" text-anchor="middle" class="svg-label">SensorContact</text>
-            <text x="132" y="331" text-anchor="middle" class="svg-sub">solver_output_flags</text>
+            <text x="132" y="331" text-anchor="middle" class="svg-sub">solver_observable_flags</text>
             <text x="132" y="350" text-anchor="middle" class="svg-sub">{ CONTACT_F }</text>
 
             <rect x="340" y="151" width="240" height="108" rx="13" class="svg-node-accent"></rect>
             <text x="460" y="184" text-anchor="middle" class="svg-label">Union + allocation</text>
             <text x="460" y="208" text-anchor="middle" class="svg-sub">flags = imu.flags | contact.flags</text>
-            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.outputs(flags)</text>
+            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.observables(flags)</text>
             <text x="460" y="248" text-anchor="middle" class="svg-sub">allocate one reusable container</text>
 
             <rect x="685" y="151" width="205" height="108" rx="13" class="svg-node-purple"></rect>
             <text x="787" y="184" text-anchor="middle" class="svg-label">solver.step()</text>
             <text x="787" y="208" text-anchor="middle" class="svg-sub">fills body_qdd</text>
             <text x="787" y="229" text-anchor="middle" class="svg-sub">fills contact_f</text>
-            <text x="787" y="248" text-anchor="middle" class="svg-sub">same output identity</text>
+            <text x="787" y="248" text-anchor="middle" class="svg-sub">same observable identity</text>
 
             <path d="M 235 88 H 280 Q 300 88 312 105 L 365 161" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
             <path d="M 235 320 H 280 Q 300 320 312 303 L 365 249" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
             <path d="M 580 205 H 674" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
 
             <path d="M 787 151 V 107 Q 787 88 768 88 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
-            <text x="560" y="77" text-anchor="middle" class="svg-small">imu.update(state, outputs=outputs)</text>
+            <text x="560" y="77" text-anchor="middle" class="svg-small">imu.update(state, solver_observables=observables)</text>
             <path d="M 787 259 V 303 Q 787 320 768 320 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
-            <text x="560" y="349" text-anchor="middle" class="svg-small">contact_sensor.update(state, contacts, outputs=outputs)</text>
+            <text x="560" y="349" text-anchor="middle" class="svg-small">contact_sensor.update(state, contacts, solver_observables=observables)</text>
 
             <text x="30" y="399" class="svg-sub">A sensor declares what it needs; it does not decide how the solver computes it.</text>
           </svg>
           </div>
           <figcaption>
-            Multiple consumers share one output allocation, with each sensor reading only the fields it declared.
+            Multiple consumers share one observable allocation, with each sensor reading only the fields it declared.
             <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
           </figcaption>
         </figure>
@@ -1114,16 +1115,16 @@ contact_sensor = newton.sensors.SensorContact(
 pipeline = newton.CollisionPipeline(model)
 contacts = pipeline.contacts()
 
-flags = imu.solver_output_flags | contact_sensor.solver_output_flags
-outputs = solver.outputs(flags)
+flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
+observables = solver.observables(flags)
 
 for _ in range(num_steps):
     pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-    imu.update(state_out, outputs=outputs)
-    contact_sensor.update(state_out, contacts, outputs=outputs)
-    viewer.log_contacts(contacts, state_out, outputs=outputs)
+    imu.update(state_out, solver_observables=observables)
+    contact_sensor.update(state_out, contacts, solver_observables=observables)
+    viewer.log_contacts(contacts, state_out, solver_observables=observables)
 
     state_in, state_out = state_out, state_in</code></pre>
       </section>
@@ -1132,7 +1133,7 @@ for _ in range(num_steps):
         <h2>What changes for existing code?</h2>
         <p class="section-lede">
           Legacy extended-attribute paths remain available for a deprecation window, but new code requests the equivalent
-          output from the solver and passes the container explicitly.
+          observable from the solver and passes the container explicitly.
         </p>
 
         <div class="table-wrap">
@@ -1141,13 +1142,13 @@ for _ in range(num_steps):
               <tr><th>Deprecated path</th><th>Replacement</th><th>Reason</th></tr>
             </thead>
             <tbody>
-              <tr><td><code>State.body_qdd</code></td><td><code>outputs.body_qdd</code></td><td>Acceleration is solver-produced diagnostic data.</td></tr>
-              <tr><td><code>State.body_parent_f</code></td><td><code>outputs.body_parent_f</code></td><td>Joint reaction reporting varies by solver capability.</td></tr>
-              <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Outputs.qfrc_actuator</code></td><td>Solver-specific diagnostics stay on the solver-specific container.</td></tr>
-              <tr><td><code>Contacts.force</code></td><td><code>outputs.contact_f</code></td><td>Contact geometry and computed force have separate ownership.</td></tr>
-              <tr><td><code>model.request_state_attributes(...)</code></td><td><code>solver.outputs({...})</code></td><td>Requests target the producer rather than the model.</td></tr>
-              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.outputs({...})</code></td><td>Contact-indexed outputs are bound explicitly to their storage.</td></tr>
-              <tr><td><code>solver.update_contacts(...)</code></td><td><code>solver.step(..., outputs=outputs)</code></td><td>Outputs are produced with the step, avoiding a separate update protocol.</td></tr>
+              <tr><td><code>State.body_qdd</code></td><td><code>observables.body_qdd</code></td><td>Acceleration is solver-produced diagnostic data.</td></tr>
+              <tr><td><code>State.body_parent_f</code></td><td><code>observables.body_parent_f</code></td><td>Joint reaction reporting varies by solver capability.</td></tr>
+              <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Observables.qfrc_actuator</code></td><td>Solver-specific diagnostics stay on the solver-specific container.</td></tr>
+              <tr><td><code>Contacts.force</code></td><td><code>observables.contact_f</code></td><td>Contact geometry and computed force have separate ownership.</td></tr>
+              <tr><td><code>model.request_state_attributes(...)</code></td><td><code>solver.observables({...})</code></td><td>Requests target the producer rather than the model.</td></tr>
+              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.observables({...})</code></td><td>Contact-indexed observables are bound explicitly to their storage.</td></tr>
+              <tr><td><code>solver.update_contacts(...)</code></td><td><code>solver.step(..., observables=observables)</code></td><td>Observables are produced with the step, avoiding a separate update protocol.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1167,17 +1168,17 @@ contact_force = contacts.force</code></pre>
 
         <div class="code-heading"><h3>After</h3><span>Solver-driven allocation</span></div>
         <pre><code># CollisionPipeline has already published compatible model capacities.
-outputs = solver.outputs(
+observables = solver.observables(
     {
-        SolverOutputFlags.BODY_PARENT_F,
-        SolverOutputFlags.CONTACT_F,
+        SolverObservableFlags.BODY_PARENT_F,
+        SolverObservableFlags.CONTACT_F,
     }
 )
 
-solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+solver.step(state_in, state_out, control, contacts, dt, observables=observables)
 
-parent_wrench = outputs.body_parent_f
-contact_force = outputs.contact_f</code></pre>
+parent_wrench = observables.body_parent_f
+contact_force = observables.contact_f</code></pre>
       </section>
 
       <section id="benefits">
@@ -1188,12 +1189,12 @@ contact_force = outputs.contact_f</code></pre>
         </p>
 
         <div class="benefits">
-          <article class="benefit"><div class="benefit-index">01</div><h3>Clear ownership</h3><p>Users ask the solver for solver outputs. The API location matches the component with the capability and implementation.</p></article>
+          <article class="benefit"><div class="benefit-index">01</div><h3>Clear ownership</h3><p>Users ask the solver for solver observables. The API location matches the component with the capability and implementation.</p></article>
           <article class="benefit"><div class="benefit-index">02</div><h3>Pay only for what is used</h3><p>Optional arrays are absent until requested, reducing memory and avoiding unnecessary diagnostic computation.</p></article>
           <article class="benefit"><div class="benefit-index">03</div><h3>Independent extension</h3><p>Custom solvers add flags and fields without editing Newton's global state schema or coordinating enum bit assignments.</p></article>
           <article class="benefit"><div class="benefit-index">04</div><h3>Composable consumers</h3><p>Sensors, viewers, loggers, and applications publish requirements as sets that can be unioned into one allocation.</p></article>
           <article class="benefit"><div class="benefit-index">05</div><h3>Stronger validation</h3><p>Unsupported flags, wrong concrete types, solver mismatches, and contact-buffer mismatches fail close to allocation or step.</p></article>
-          <article class="benefit"><div class="benefit-index">06</div><h3>Room to evolve</h3><p>Future output families—iterations, residuals, thermal fields, stresses, actuator diagnostics—can follow the same contract.</p></article>
+          <article class="benefit"><div class="benefit-index">06</div><h3>Room to evolve</h3><p>Future observable families—iterations, residuals, thermal fields, stresses, actuator diagnostics—can follow the same contract.</p></article>
         </div>
 
         <div class="callout">
@@ -1203,7 +1204,7 @@ contact_force = outputs.contact_f</code></pre>
       </section>
 
       <footer class="footer">
-        <p>Newton architecture note · Solver Outputs proposal · Experimental API subject to refinement as more solvers and consumers migrate.</p>
+        <p>Newton architecture note · Solver Observables proposal · Experimental API subject to refinement as more solvers and consumers migrate.</p>
       </footer>
     </main>
   </div>

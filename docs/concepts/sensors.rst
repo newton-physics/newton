@@ -18,8 +18,8 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Solver-dependent sensors expose ``solver_output_flags``. Combine these sets,
-   allocate :doc:`solver outputs <solver_outputs>` once, and pass the
+   Solver-dependent sensors expose ``solver_observable_flags``. Combine these sets,
+   allocate :doc:`solver observables <solver_observables>` once, and pass the
    container to the solver and sensor updates.
 
    ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
@@ -44,16 +44,16 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
-   outputs = solver.outputs(imu.solver_output_flags)
+   observables = solver.observables(imu.solver_observable_flags)
    state = model.state()
 
    # Simulation loop
    for _ in range(100):
        state.clear_forces()
-       solver.step(state, state, None, None, dt=1.0 / 60.0, outputs=outputs)
+       solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
 
        # 2. Compute measurements from the current state
-       imu.update(state, outputs=outputs)
+       imu.update(state, solver_observables=observables)
 
        # 3. Results stored on sensor attributes
        acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
@@ -153,27 +153,27 @@ For fisheye cameras, extract the calibration values from your chosen USD attribu
 :meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
 rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
-Solver Outputs
---------------
+Solver Observables
+------------------
 
-``SensorIMU`` requires ``SolverOutputFlags.BODY_QDD`` and ``SensorContact``
-requires ``SolverOutputFlags.CONTACT_F``. Their ``solver_output_flags``
+``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
+requires ``SolverObservableFlags.CONTACT_F``. Their ``solver_observable_flags``
 properties provide these requirements without mutating the model. Union the
 sets when both sensors are present. Construct the collision pipeline before
-requesting contact-indexed outputs, then pass its contacts buffer to the solver
-step and sensor. The first step binds the output container to that storage:
+requesting contact-indexed observables, then pass its contacts buffer to the solver
+step and sensor. The first step binds the observable container to that storage:
 
 .. code-block:: python
 
-   flags = imu.solver_output_flags | contact_sensor.solver_output_flags
-   outputs = solver.outputs(flags)
+   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
+   observables = solver.observables(flags)
 
-   solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
-   imu.update(state_out, outputs=outputs)
-   contact_sensor.update(state_out, contacts, outputs=outputs)
+   solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+   imu.update(state_out, solver_observables=observables)
+   contact_sensor.update(state_out, contacts, solver_observables=observables)
 
-Contact outputs are allocated from the model's resolved rigid and soft contact
-capacities, not the current number of contacts. See :ref:`solver_outputs` for
+Contact observables are allocated from the model's resolved rigid and soft contact
+capacities, not the current number of contacts. See :ref:`solver_observables` for
 pipeline setup with native collision backends and graph capture.
 
 Performance Considerations
@@ -184,7 +184,7 @@ parallel where possible. Create each sensor once during setup and reuse it
 every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
-Requested solver outputs may add nontrivial cost to the solver step itself.
+Requested solver observables may add nontrivial cost to the solver step itself.
 Request only the flags consumed by the application and reuse the allocation.
 
 See Also
@@ -192,7 +192,7 @@ See Also
 
 * :doc:`sites` -- using sites as sensor attachment points and reference frames
 * :doc:`../api/newton_sensors` -- full sensor API reference
-* :doc:`solver_outputs` -- optional arrays produced by solvers
+* :doc:`solver_observables` -- optional arrays produced by solvers
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example

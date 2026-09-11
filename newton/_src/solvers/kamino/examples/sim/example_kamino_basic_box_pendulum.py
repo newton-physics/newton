@@ -107,7 +107,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
+        self.observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         # Apply constant velocity as animation target
         if self.actuated:
@@ -140,7 +140,9 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.outputs)
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, observables=self.observables
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -157,7 +159,7 @@ class Example:
         # so contacts are rendered with self.state_1 to match the body positions at the
         # time of contact generation.
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1, outputs=self.outputs)
+        self.viewer.log_contacts(self.contacts, self.state_1, solver_observables=self.observables)
         self.viewer.end_frame()
 
     def test_final(self):

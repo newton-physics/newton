@@ -1599,7 +1599,7 @@ def convert_contacts_kamino_to_newton(
             using Newton's wrench convention. Required when ``clear_output=False``;
             with ``clear_output=False`` and ``convert_forces=False`` the call is a no-op.
         contact_f:
-            Optional solver-output destination for converted contact wrenches.
+            Optional solver-observable destination for converted contact wrenches.
             When omitted, the legacy ``contacts_out.force`` array is used.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.

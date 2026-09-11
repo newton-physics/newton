@@ -484,13 +484,13 @@ class ConveyorForceModel:
             threshold,
         )
 
-    def finalize(self, contacts, solver_outputs: newton.solvers.SolverOutputs | None = None) -> None:
+    def finalize(self, contacts, solver_observables: newton.solvers.SolverObservables | None = None) -> None:
         """Allocate device buffers. Call once after registering all belts.
 
         Args:
             contacts: The :class:`~newton.Contacts` the step loop will populate; used to size the
                 per-contact force buffer.
-            solver_outputs: Contact-force output requested from the solver. Not required for VBD,
+            solver_observables: Contact-force output requested from the solver. Not required for VBD,
                 which exposes contact forces through its existing collection API.
         """
         if self._finalized:
@@ -499,8 +499,8 @@ class ConveyorForceModel:
             raise RuntimeError("Register at least one belt before finalize().")
         if contacts.rigid_contact_max <= 0:
             raise ValueError("Contacts must have nonzero rigid-contact capacity.")
-        if self.solver_type != "vbd" and (solver_outputs is None or solver_outputs.contact_f is None):
-            raise ValueError("Request SolverOutputFlags.CONTACT_F before finalizing the conveyor force model.")
+        if self.solver_type != "vbd" and (solver_observables is None or solver_observables.contact_f is None):
+            raise ValueError("Request SolverObservableFlags.CONTACT_F before finalizing the conveyor force model.")
 
         d = self.device
         self.conv_field_type = wp.array(self._field_type, dtype=wp.int32, device=d)
@@ -544,7 +544,7 @@ class ConveyorForceModel:
         if self.solver_type == "vbd":
             wp.copy(self.body_q_prev, solver.body_q_prev)
 
-    def _report_contact_forces(self, solver, contacts, solver_outputs, state_post, dt: float) -> None:
+    def _report_contact_forces(self, solver, contacts, solver_observables, state_post, dt: float) -> None:
         """Copy solver-specific contact forces into a common linear-force buffer."""
         if self.solver_type == "vbd":
             solver.collect_rigid_contact_forces(state_post.body_q, self.body_q_prev, contacts, dt)
@@ -553,13 +553,13 @@ class ConveyorForceModel:
             wp.launch(
                 extract_linear,
                 dim=contacts.rigid_contact_max,
-                inputs=[solver_outputs.contact_f, self.contact_force_vec],
+                inputs=[solver_observables.contact_f, self.contact_force_vec],
                 device=self.device,
             )
 
-    def update(self, solver, contacts, solver_outputs, state_post: newton.State, dt: float) -> None:
+    def update(self, solver, contacts, solver_observables, state_post: newton.State, dt: float) -> None:
         """Read the solver's per-contact forces and recompute the per-body conveyor wrench."""
-        self._report_contact_forces(solver, contacts, solver_outputs, state_post, dt)
+        self._report_contact_forces(solver, contacts, solver_observables, state_post, dt)
         self.conveyor_body_f.zero_()
         self.body_contact_count.zero_()
         wp.launch(
@@ -835,9 +835,9 @@ class Example:
             rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_outputs = None
+        self.solver_observables = None
         if self.solver_type != "vbd":
-            self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
+            self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -858,7 +858,7 @@ class Example:
                 friction=BELT_DRIVE_FRICTION,
                 threshold=CONTACT_PROCESSING_THRESHOLD,
             )
-        self.conveyor.finalize(self.contacts, self.solver_outputs)
+        self.conveyor.finalize(self.contacts, self.solver_observables)
 
         self.tracked_start_pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3].copy()
         self.max_travel = np.zeros(len(self.tracked_bodies))
@@ -991,10 +991,10 @@ class Example:
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                outputs=self.solver_outputs,
+                observables=self.solver_observables,
             )
 
-            self.conveyor.update(self.solver, self.contacts, self.solver_outputs, self.state_1, self.sim_dt)
+            self.conveyor.update(self.solver, self.contacts, self.solver_observables, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -1006,7 +1006,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
+        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_post_step(self):

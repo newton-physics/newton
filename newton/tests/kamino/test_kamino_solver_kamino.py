@@ -484,19 +484,19 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         """Allocate from published native capacity and populate bound contacts."""
         model = self._make_three_world_model()
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
-        flags = {newton.solvers.SolverOutputFlags.CONTACT_F}
+        flags = {newton.solvers.SolverObservableFlags.CONTACT_F}
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.outputs(flags)
+            solver.observables(flags)
         pipeline = newton.CollisionPipeline(model)
-        outputs = solver.outputs(flags)
-        self.assertEqual(outputs.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
-        self.assertIsNone(outputs.contacts)
+        observables = solver.observables(flags)
+        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
+        self.assertIsNone(observables.contacts)
         contacts = pipeline.contacts()
-        pointer = outputs.contact_f.ptr
-        solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, outputs=outputs)
-        self.assertIs(outputs.contacts, contacts)
-        self.assertEqual(outputs.contact_f.ptr, pointer)
-        self.assertTrue(np.all(np.isfinite(outputs.contact_f.numpy())))
+        pointer = observables.contact_f.ptr
+        solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.ptr, pointer)
+        self.assertTrue(np.all(np.isfinite(observables.contact_f.numpy())))
 
     def test_moreau_detects_midpoint_contact(self):
         """Verify Moreau-Jean detects contacts created at the midpoint."""

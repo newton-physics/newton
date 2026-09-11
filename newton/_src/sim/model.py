@@ -1314,7 +1314,7 @@ class Model:
         self._rigid_contact_max: int | None = None
         self._soft_contact_max: int | None = None
         self._contact_capacity_initialized = False
-        self._solver_output_contact_capacity: tuple[int, int] | None = None
+        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1982,7 +1982,7 @@ class Model:
         """Rigid contact buffer capacity, or ``None`` before collision setup.
 
         :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
-        valid capacity. Contact-indexed solver outputs freeze both capacities
+        valid capacity. Contact-indexed solver observables freeze both capacities
         for the lifetime of this model.
         """
         return self._rigid_contact_max
@@ -2011,20 +2011,20 @@ class Model:
         self._soft_contact_max = value
 
     def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
-        """Reject invalid capacities or changes that invalidate solver outputs."""
+        """Reject invalid capacities or changes that invalidate solver observables."""
         if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
             raise ValueError("Contact capacities must be nonnegative or None.")
-        frozen = self._solver_output_contact_capacity
+        frozen = self._solver_observable_contact_capacity
         if frozen is not None and (rigid_max, soft_max) != frozen:
             raise ValueError(
-                f"Contact capacities are frozen at {frozen} by allocated solver outputs; "
-                "create a new model and outputs to change capacities."
+                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
+                "create a new model and results to change capacities."
             )
 
     def _get_contact_capacity(self) -> tuple[int, int]:
         """Return capacities published by a successfully initialized pipeline."""
         if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
-            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver outputs.")
+            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver observables.")
         return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
@@ -2147,16 +2147,16 @@ class Model:
 
         .. deprecated:: 1.6
 
-            Request :class:`newton.solvers.SolverOutputs` from the solver
+            Request :class:`newton.solvers.SolverObservables` from the solver
             instead.
 
-        See :doc:`Solver Outputs </concepts/solver_outputs>` for migration details.
+        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
         warnings.warn(
-            "Model.request_state_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            "Model.request_state_attributes() is deprecated; request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2168,14 +2168,14 @@ class Model:
 
         .. deprecated:: 1.6
 
-            Request :attr:`newton.solvers.SolverOutputFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
             the solver instead.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
         warnings.warn(
-            "Model.request_contact_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            "Model.request_contact_attributes() is deprecated; request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2356,7 +2356,7 @@ class Model:
         """
         Get the list of requested state attribute names that have been requested on the model.
 
-        See :doc:`Solver Outputs </concepts/solver_outputs>` for details.
+        See :doc:`Solver Observables </concepts/solver_observables>` for details.
 
         Returns:
             The list of requested state attributes.

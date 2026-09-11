@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Tests for parent-force solver outputs.
+Tests for parent-force solver observables.
 
 This module tests the `body_parent_f` attribute which stores incoming joint
 wrenches (forces from the parent body through the joint) in world frame,
@@ -68,20 +68,20 @@ def test_parent_force_static_pendulum(test, device, solver_fn):
                 parent_xform=xform,
             )
             solver = solver_fn(model)
-            outputs = solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+            observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
             state_0, state_1 = model.state(), model.state()
 
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-            solver.step(state_0, state_1, None, None, dt, outputs=outputs)
+            solver.step(state_0, state_1, None, None, dt, observables=observables)
 
-            parent_f = outputs.body_parent_f.numpy()[0]
+            parent_f = observables.body_parent_f.numpy()[0]
             weight = model.body_mass.numpy()[0] * 9.81
 
             np.testing.assert_allclose(parent_f[:3], [0, 0, weight], rtol=1e-4)
             np.testing.assert_allclose(parent_f[3:6], [0, 0, 0], atol=1e-2)
 
 
-def test_parent_force_solver_outputs(test, device, solver_fn):
+def test_parent_force_solver_observables(test, device, solver_fn):
     """Populate parent force without allocating an extended State attribute."""
     model = _setup_pendulum(
         device,
@@ -89,20 +89,20 @@ def test_parent_force_solver_outputs(test, device, solver_fn):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = solver_fn(model)
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     test.assertIsNone(state_1.body_parent_f)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    solver.step(state_0, state_1, None, None, 5e-3, outputs=outputs)
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables)
 
-    parent_f = outputs.body_parent_f.numpy()[0]
+    parent_f = observables.body_parent_f.numpy()[0]
     weight = model.body_mass.numpy()[0] * 9.81
     np.testing.assert_allclose(parent_f[:3], [0, 0, weight], rtol=1e-4)
     np.testing.assert_allclose(parent_f[3:6], [0, 0, 0], atol=1e-2)
 
 
-def test_parent_force_solver_outputs_xpbd(test, device):
+def test_parent_force_solver_observables_xpbd(test, device):
     """Write XPBD parent forces without allocating an extended State attribute."""
     model = _setup_pendulum(
         device,
@@ -110,14 +110,14 @@ def test_parent_force_solver_outputs_xpbd(test, device):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    solver.step(state_0, state_1, None, None, 5e-3, outputs=outputs)
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables)
 
     test.assertIsNone(state_1.body_parent_f)
-    parent_f = outputs.body_parent_f.numpy()[0]
+    parent_f = observables.body_parent_f.numpy()[0]
     test.assertTrue(np.all(np.isfinite(parent_f)))
     test.assertGreater(np.linalg.norm(parent_f), 0.0)
 
@@ -133,16 +133,16 @@ def test_parent_force_centrifugal(test, device, solver_fn):
         child_offset=wp.vec3(-r, 0, 0),
     )
     solver = solver_fn(model)
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     omega = 5.0
     state_0.joint_qd[:1].assign([omega])
 
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    solver.step(state_0, state_1, None, None, dt, outputs=outputs)
+    solver.step(state_0, state_1, None, None, dt, observables=observables)
 
-    parent_f = outputs.body_parent_f.numpy()[0]
+    parent_f = observables.body_parent_f.numpy()[0]
     mass = model.body_mass.numpy()[0]
 
     # Weight (m*g in +Z) + Centripetal (m*omega^2*r toward -X)
@@ -188,7 +188,7 @@ def test_apply_body_f(test, device, solver_fn):
     builder.add_articulation([joint0, joint1])
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    outputs = solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
 
     masses = model.body_mass.numpy()
     total_weight = (masses[0] + masses[1]) * 9.81
@@ -204,9 +204,9 @@ def test_apply_body_f(test, device, solver_fn):
         body_f[1, 1] = F_y
         state_0.body_f.assign(body_f.flatten())
 
-        solver.step(state_0, state_1, None, None, dt, outputs=outputs)
+        solver.step(state_0, state_1, None, None, dt, observables=observables)
 
-        parent_f = outputs.body_parent_f.numpy()[0]
+        parent_f = observables.body_parent_f.numpy()[0]
         # Linear: joint counters external force (-F_y) and supports weight (+Z)
         np.testing.assert_allclose(parent_f[:3], [0, -F_y, total_weight], rtol=1e-4)
         # Torque about X from force at link1 (2 units below link0 COM)
@@ -222,9 +222,9 @@ def test_apply_body_f(test, device, solver_fn):
         body_f[1, 3] = T_x
         state_0.body_f.assign(body_f.flatten())
 
-        solver.step(state_0, state_1, None, None, dt, outputs=outputs)
+        solver.step(state_0, state_1, None, None, dt, observables=observables)
 
-        parent_f = outputs.body_parent_f.numpy()[0]
+        parent_f = observables.body_parent_f.numpy()[0]
         # Linear: just weight (no external linear force)
         np.testing.assert_allclose(parent_f[:3], [0, 0, total_weight], rtol=1e-4)
         # Torque: joint counters external torque
@@ -257,8 +257,8 @@ for device in devices:
     )
     add_function_test(
         TestParentForce,
-        "test_parent_force_solver_outputs_mjwarp",
-        test_parent_force_solver_outputs,
+        "test_parent_force_solver_observables_mjwarp",
+        test_parent_force_solver_observables,
         devices=[device],
         solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     )
@@ -288,15 +288,15 @@ for device in devices:
     )
     add_function_test(
         TestParentForce,
-        "test_parent_force_solver_outputs_featherstone",
-        test_parent_force_solver_outputs,
+        "test_parent_force_solver_observables_featherstone",
+        test_parent_force_solver_observables,
         devices=[device],
         solver_fn=newton.solvers.SolverFeatherstone,
     )
     add_function_test(
         TestParentForce,
-        "test_parent_force_solver_outputs_xpbd",
-        test_parent_force_solver_outputs_xpbd,
+        "test_parent_force_solver_observables_xpbd",
+        test_parent_force_solver_observables_xpbd,
         devices=[device],
     )
 

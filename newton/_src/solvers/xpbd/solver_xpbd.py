@@ -9,7 +9,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase, SolverOutputFlags, SolverOutputs
+from ..solver import SolverBase, SolverObservableFlags, SolverObservables
 from . import kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -50,13 +50,13 @@ class SolverXPBD(SolverBase, CouplingInterface):
         its number of active contacts.  This improves convergence for stacking
         scenarios but means the solver does not conserve momentum at contacts.
         Reported per-contact forces (request
-        :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F`) are
+        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F`) are
         approximate: for contacts between two dynamic bodies the force is
         computed using the harmonic mean of the two bodies' contact counts,
         which is symmetric but not exact.
 
         **Reported parent-joint forces** (request
-        :attr:`~newton.solvers.SolverOutputFlags.BODY_PARENT_F`) are
+        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F`) are
         approximate.  XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
@@ -99,10 +99,10 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     """
 
-    SUPPORTED_OUTPUT_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
         {
-            SolverOutputFlags.BODY_PARENT_F,
-            SolverOutputFlags.CONTACT_F,
+            SolverObservableFlags.BODY_PARENT_F,
+            SolverObservableFlags.CONTACT_F,
         }
     )
 
@@ -345,7 +345,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        outputs: SolverOutputs | None = None,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Advance the simulation state by one time step using XPBD.
 
@@ -357,19 +357,21 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 :meth:`~newton.CollisionPipeline.contacts`. If ``None``, rigid and particle-shape contact handling
                 is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
-            outputs: Optional solver output arrays allocated by :meth:`outputs`.
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
         """
         self._apply_module_options()
-        self._validate_outputs(outputs, contacts)
+        self._validate_observables(observables, contacts)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
         model = self.model
-        body_parent_f = outputs.body_parent_f if outputs is not None and outputs.body_parent_f is not None else None
+        body_parent_f = (
+            observables.body_parent_f if observables is not None and observables.body_parent_f is not None else None
+        )
         if body_parent_f is None:
             body_parent_f = state_out.body_parent_f
-        contact_f = outputs.contact_f if outputs is not None else None
+        contact_f = observables.contact_f if observables is not None else None
 
         particle_q = None
         particle_qd = None
@@ -903,8 +905,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
         """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
 
         .. deprecated:: 1.6
-            Request :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F` and
-            pass the resulting outputs to :meth:`step` instead.
+            Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
+            pass the resulting container to :meth:`step` instead.
 
         Both force [N] and torque [N·m] components are written.  The torque
         includes torsional and rolling friction contributions that cannot be
@@ -932,8 +934,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
         warnings.warn(
-            "SolverXPBD.update_contacts() is deprecated; request SolverOutputFlags.CONTACT_F and pass "
-            "SolverOutputs to step().",
+            "SolverXPBD.update_contacts() is deprecated; request SolverObservableFlags.CONTACT_F and pass "
+            "SolverObservables to step().",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -941,7 +943,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         if contacts.force is None:
             raise ValueError(
                 "The deprecated contacts.force compatibility buffer is not allocated. "
-                "Prefer SolverOutputFlags.CONTACT_F; legacy callers must request 'force' before creating Contacts."
+                "Prefer SolverObservableFlags.CONTACT_F; legacy callers must request 'force' before creating Contacts."
             )
         if not hasattr(self, "_contact_impulse") or self._contact_impulse is None:
             raise ValueError("No contact impulse data available. Call step() before update_contacts().")

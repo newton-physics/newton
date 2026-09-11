@@ -601,8 +601,8 @@ class ViewerBase(ABC):
         layer.show_particles = False
         layer.show_contacts = False
         layer.show_contact_normals = True
-        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver output when available.
-        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver output.
+        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver observable when available.
+        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
         layer.show_gaussians = False
@@ -1239,7 +1239,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        outputs: newton.solvers.SolverOutputs | None = None,
+        solver_observables: newton.solvers.SolverObservables | None = None,
     ):
         """Render contact visualizations.
 
@@ -1266,13 +1266,15 @@ class ViewerBase(ABC):
             state: The current state of the simulation.  Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
-            outputs: Optional solver outputs containing ``contact_f``. If
+            solver_observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
         """
 
-        contact_f = outputs.contact_f if outputs is not None else contacts.force
-        if outputs is not None and outputs.contacts is not contacts:
-            raise ValueError("Contact solver outputs must be used with the Contacts instance passed to solver.step().")
+        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
+        if solver_observables is not None and solver_observables.contacts is not contacts:
+            raise ValueError(
+                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
+            )
 
         if not self.show_contacts or self._layer_force_hidden():
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
@@ -2888,7 +2890,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Results are written into *target* (keyed by shape index).
+        Observables are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return

@@ -10844,7 +10844,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.6
 
-            Request :attr:`newton.solvers.SolverOutputFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
             the solver instead.
 
         Args:
@@ -10854,7 +10854,7 @@ class ModelBuilder:
         from .contacts import Contacts  # noqa: PLC0415
 
         warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            "ModelBuilder.request_contact_attributes() is deprecated; request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -10866,10 +10866,10 @@ class ModelBuilder:
 
         .. deprecated:: 1.6
 
-            Request :class:`newton.solvers.SolverOutputs` from the solver
+            Request :class:`newton.solvers.SolverObservables` from the solver
             instead.
 
-        See :doc:`Solver Outputs </concepts/solver_outputs>` for migration details.
+        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
@@ -10878,7 +10878,7 @@ class ModelBuilder:
         from .state import State  # noqa: PLC0415
 
         warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            "ModelBuilder.request_state_attributes() is deprecated; request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )

@@ -85,7 +85,7 @@ class State:
 
     .. deprecated:: 1.6
 
-        Request :class:`newton.solvers.SolverOutputs` from the solver instead.
+        Request :class:`newton.solvers.SolverObservables` from the solver instead.
     """
 
     @classmethod
@@ -141,8 +141,8 @@ class State:
         last three: angular acceleration [rad/s²] in world frame.
 
         .. deprecated:: 1.6
-            Request :attr:`newton.solvers.SolverOutputFlags.BODY_QDD` from the solver and read
-            :attr:`newton.solvers.SolverOutputs.body_qdd` instead.
+            Request :attr:`newton.solvers.SolverObservableFlags.BODY_QDD` from the solver and read
+            :attr:`newton.solvers.SolverObservables.body_qdd` instead.
         """
 
         self.body_f: wp.array | None = None
@@ -159,8 +159,8 @@ class State:
         First three entries: linear force [N]; last three: torque [N·m].
 
         .. deprecated:: 1.6
-            Request :attr:`newton.solvers.SolverOutputFlags.BODY_PARENT_F` from the solver and read
-            :attr:`newton.solvers.SolverOutputs.body_parent_f` instead.
+            Request :attr:`newton.solvers.SolverObservableFlags.BODY_PARENT_F` from the solver and read
+            :attr:`newton.solvers.SolverObservables.body_parent_f` instead.
 
         .. note::
             :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).

@@ -14,8 +14,8 @@ from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
 
-class SolverOutputFlags(Enum):
-    """Standard output quantities that may be requested from a solver.
+class SolverObservableFlags(Enum):
+    """Standard observable quantities that may be requested from a solver.
 
     Requests are composed as a :class:`set` rather than a bit mask so that
     solver-specific enums can add entries without coordinating integer bits
@@ -23,7 +23,7 @@ class SolverOutputFlags(Enum):
 
     .. experimental::
 
-        The solver output API may change while additional solvers and output
+        The solver observable API may change while additional solvers and observable
         categories are migrated to it.
     """
 
@@ -37,27 +37,27 @@ class SolverOutputFlags(Enum):
     """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
 
 
-class SolverOutputs:
+class SolverObservables:
     """Arrays populated by a solver in addition to the simulation state.
 
-    Instances are allocated by :meth:`SolverBase.outputs` and may be reused
+    Instances are allocated by :meth:`SolverBase.observables` and may be reused
     across steps. Solver implementations can derive from this class to add
-    solver-specific arrays while retaining the standard Newton outputs.
+    solver-specific arrays while retaining the standard Newton observables.
 
     .. experimental::
 
-        The solver output API may change while additional solvers and output
+        The solver observable API may change while additional solvers and observable
         categories are migrated to it.
     """
 
     def __init__(self, flags: Iterable[Enum] = ()) -> None:
-        """Initialize an unallocated output container.
+        """Initialize an unallocated observable container.
 
         Args:
-            flags: Output flags represented by this container.
+            flags: Observable flags represented by this container.
         """
         self.flags: frozenset[Enum] = frozenset(flags)
-        """Output flags allocated in this container."""
+        """Observable flags allocated in this container."""
 
         self.body_qdd: wp.array[wp.spatial_vector] | None = None
         """Rigid-body accelerations [m/s², rad/s²], shape ``(body_count,)``."""
@@ -73,7 +73,7 @@ class SolverOutputs:
         self._contact_capacity: tuple[int, int] | None = None
 
     def __contains__(self, flag: Enum) -> bool:
-        """Return whether an output flag was allocated."""
+        """Return whether an observable flag was allocated."""
         return flag in self.flags
 
     @property
@@ -267,18 +267,18 @@ class SolverBase:
     """
 
     _module_options_revision = 0
-    OUTPUTS_TYPE: ClassVar[type[SolverOutputs]] = SolverOutputs
-    """Container type returned by :meth:`outputs`."""
+    OBSERVABLES_TYPE: ClassVar[type[SolverObservables]] = SolverObservables
+    """Container type returned by :meth:`observables`."""
 
-    SUPPORTED_OUTPUT_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
-    """Output flags accepted by :meth:`outputs`."""
+    SUPPORTED_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
+    """Observable flags accepted by :meth:`observables`."""
 
-    CONTACT_OUTPUT_FLAGS: ClassVar[frozenset[Enum]] = frozenset({SolverOutputFlags.CONTACT_F})
+    CONTACT_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset({SolverObservableFlags.CONTACT_F})
     """Flags requiring contact capacities and storage binding.
 
     Custom solvers extend this set for their own contact-indexed arrays. This
     declares a sizing dependency, not support; also add each custom flag to
-    :attr:`SUPPORTED_OUTPUT_FLAGS`.
+    :attr:`SUPPORTED_OBSERVABLE_FLAGS`.
     """
 
     def __init__(self, model: Model):
@@ -287,39 +287,39 @@ class SolverBase:
         self._applied_module_options_revision = -1
 
     @property
-    def supported_output_flags(self) -> frozenset[Enum]:
-        """Output flags supported by this solver instance."""
-        return self.SUPPORTED_OUTPUT_FLAGS
+    def supported_observable_flags(self) -> frozenset[Enum]:
+        """Observable flags supported by this solver instance."""
+        return self.SUPPORTED_OBSERVABLE_FLAGS
 
-    def outputs(
+    def observables(
         self,
         flags: Iterable[Enum],
         *,
         requires_grad: bool | None = None,
-    ) -> SolverOutputs:
-        """Allocate reusable arrays for requested solver outputs.
+    ) -> SolverObservables:
+        """Allocate reusable arrays for requested solver observables.
 
         A container is owned by the solver that allocates it and can be passed
         to that solver's :meth:`step` method on every time step. Derived
-        solvers add custom flags to :attr:`SUPPORTED_OUTPUT_FLAGS`, derive a
-        container from :class:`SolverOutputs`, and override
-        :meth:`_allocate_outputs` for their custom arrays.
+        solvers add custom flags to :attr:`SUPPORTED_OBSERVABLE_FLAGS`, derive a
+        container from :class:`SolverObservables`, and override
+        :meth:`_allocate_observables` for their custom arrays.
 
         Args:
-            flags: Set or other iterable of standard and solver-specific output
+            flags: Set or other iterable of standard and solver-specific observable
                 enum members.
             requires_grad: Whether allocated arrays require gradients. If
                 ``None``, use the model's setting.
 
         Returns:
-            A solver-owned output container with requested arrays allocated.
+            A solver-owned observable container with requested arrays allocated.
 
         Raises:
             TypeError: If a request is not a plain enum member or the
-                configured output type does not derive from
-                :class:`SolverOutputs`.
-            ValueError: If this solver does not support a requested output.
-            RuntimeError: If contact-indexed outputs are requested before
+                configured observable type does not derive from
+                :class:`SolverObservables`.
+            ValueError: If this solver does not support a requested observable.
+            RuntimeError: If contact-indexed observables are requested before
                 constructing :class:`~newton.CollisionPipeline` for the model.
 
         All requested arrays are allocated before this method returns; ``None``
@@ -329,87 +329,87 @@ class SolverBase:
 
         .. experimental::
 
-            The solver output API may change while additional solvers and
-            output categories are migrated to it.
+            The solver observable API may change while additional solvers and
+            observable categories are migrated to it.
         """
         requested = frozenset(flags)
         invalid = [flag for flag in requested if not isinstance(flag, Enum) or isinstance(flag, (int, str))]
         if invalid:
             values = ", ".join(repr(flag) for flag in invalid)
             raise TypeError(
-                "Solver output flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
+                "Solver observable flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
                 f"or string-mixin enum members; got: {values}."
             )
 
-        unsupported = requested.difference(self.supported_output_flags)
+        unsupported = requested.difference(self.supported_observable_flags)
         if unsupported:
-            names = ", ".join(self._format_output_flag(flag) for flag in unsupported)
-            raise ValueError(f"{type(self).__name__} does not support solver output(s): {names}.")
+            names = ", ".join(self._format_observable_flag(flag) for flag in unsupported)
+            raise ValueError(f"{type(self).__name__} does not support solver observable(s): {names}.")
 
-        if not issubclass(self.OUTPUTS_TYPE, SolverOutputs):
-            raise TypeError("OUTPUTS_TYPE must derive from SolverOutputs.")
-        result = self.OUTPUTS_TYPE(requested)
-        result._solver = self
+        if not issubclass(self.OBSERVABLES_TYPE, SolverObservables):
+            raise TypeError("OBSERVABLES_TYPE must derive from SolverObservables.")
+        observables = self.OBSERVABLES_TYPE(requested)
+        observables._solver = self
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        if requested.intersection(self.CONTACT_OUTPUT_FLAGS):
-            result._contact_capacity = self.model._get_contact_capacity()
-        self._allocate_outputs(result, requires_grad=requires_grad)
-        if result._contact_capacity is not None:
-            self.model._solver_output_contact_capacity = result._contact_capacity
-        return result
+        if requested.intersection(self.CONTACT_OBSERVABLE_FLAGS):
+            observables._contact_capacity = self.model._get_contact_capacity()
+        self._allocate_observables(observables, requires_grad=requires_grad)
+        if observables._contact_capacity is not None:
+            self.model._solver_observable_contact_capacity = observables._contact_capacity
+        return observables
 
     @staticmethod
-    def _format_output_flag(flag: Enum) -> str:
-        """Format an output flag for diagnostics."""
+    def _format_observable_flag(flag: Enum) -> str:
+        """Format an observable flag for diagnostics."""
         return f"{type(flag).__name__}.{flag.name}"
 
-    def _allocate_outputs(self, outputs: SolverOutputs, *, requires_grad: bool) -> None:
-        """Allocate standard arrays requested in an output container."""
-        if SolverOutputFlags.BODY_QDD in outputs:
-            outputs.body_qdd = wp.zeros(
+    def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
+        """Allocate standard arrays requested in an observable container."""
+        if SolverObservableFlags.BODY_QDD in observables:
+            observables.body_qdd = wp.zeros(
                 self.model.body_count,
                 dtype=wp.spatial_vector,
                 device=self.model.device,
                 requires_grad=requires_grad,
             )
-        if SolverOutputFlags.BODY_PARENT_F in outputs:
-            outputs.body_parent_f = wp.zeros(
+        if SolverObservableFlags.BODY_PARENT_F in observables:
+            observables.body_parent_f = wp.zeros(
                 self.model.body_count,
                 dtype=wp.spatial_vector,
                 device=self.model.device,
                 requires_grad=requires_grad,
             )
 
-        if SolverOutputFlags.CONTACT_F in outputs:
-            rigid_max, soft_max = outputs._contact_capacity
-            outputs.contact_f = wp.zeros(
+        if SolverObservableFlags.CONTACT_F in observables:
+            rigid_max, soft_max = observables._contact_capacity
+            observables.contact_f = wp.zeros(
                 rigid_max + soft_max,
                 dtype=wp.spatial_vector,
                 device=self.model.device,
                 requires_grad=requires_grad,
             )
 
-    def _validate_outputs(self, outputs: SolverOutputs | None, contacts: Contacts | None = None) -> None:
-        """Validate that an output container belongs to this solver."""
-        if outputs is None:
+    def _validate_observables(self, observables: SolverObservables | None, contacts: Contacts | None = None) -> None:
+        """Validate that an observable container belongs to this solver."""
+        if observables is None:
             return
-        if not isinstance(outputs, self.OUTPUTS_TYPE):
-            raise TypeError(f"'outputs' must be an instance of {self.OUTPUTS_TYPE.__name__}.")
-        if outputs._solver is not self:
-            raise ValueError("Solver outputs must be passed to the solver instance that allocated them.")
-        if outputs._contact_capacity is not None:
+        if not isinstance(observables, self.OBSERVABLES_TYPE):
+            raise TypeError(f"'observables' must be an instance of {self.OBSERVABLES_TYPE.__name__}.")
+        if observables._solver is not self:
+            raise ValueError("Solver observables must be passed to the solver instance that allocated them.")
+        if observables._contact_capacity is not None:
             if contacts is None:
-                raise ValueError("Pass Contacts to solver.step() when using contact-indexed solver outputs.")
+                raise ValueError("Pass Contacts to solver.step() when using contact-indexed solver observables.")
             if contacts.device != self.model.device:
-                raise ValueError("Solver outputs and Contacts must be on the solver device.")
-            if (contacts.rigid_contact_max, contacts.soft_contact_max) != outputs._contact_capacity:
-                raise ValueError(f"Contacts capacities must match solver outputs: {outputs._contact_capacity}.")
-            if outputs._contacts is not None and outputs._contacts is not contacts:
+                raise ValueError("Solver observables and Contacts must be on the solver device.")
+            if (contacts.rigid_contact_max, contacts.soft_contact_max) != observables._contact_capacity:
+                raise ValueError(f"Contacts capacities must match solver observables: {observables._contact_capacity}.")
+            if observables._contacts is not None and observables._contacts is not contacts:
                 raise ValueError(
-                    "Contact solver outputs must be used with the Contacts instance bound on the first step."
+                    "Contact solver observables must be used with the Contacts instance bound on the first step."
                 )
-            outputs._contacts = contacts
+            observables._contacts = contacts
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)
@@ -590,7 +590,7 @@ class SolverBase:
         contacts: Contacts | None,
         dt: float,
         *,
-        outputs: SolverOutputs | None = None,
+        observables: SolverObservables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -603,7 +603,7 @@ class SolverBase:
                 :class:`Model` are used.
             contacts: The contact information.
             dt: The time step (typically in seconds).
-            outputs: Optional solver output arrays allocated by :meth:`outputs`.
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
         """
         raise NotImplementedError()
 
@@ -649,7 +649,7 @@ class SolverBase:
 
         .. deprecated:: 1.6
 
-            Request :attr:`SolverOutputFlags.CONTACT_F` using :meth:`outputs`
+            Request :attr:`SolverObservableFlags.CONTACT_F` using :meth:`observables`
             and pass the resulting container to :meth:`step` instead.
 
         Args:

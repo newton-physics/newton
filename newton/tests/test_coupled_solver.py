@@ -351,24 +351,24 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
-class _BodyOutputCopySolver(_StepCountingCopySolver):
-    """Copy solver that fills body-indexed solver outputs."""
+class _BodyObservableCopySolver(_StepCountingCopySolver):
+    """Copy solver that fills body-indexed solver observables."""
 
-    SUPPORTED_OUTPUT_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
         {
-            newton.solvers.SolverOutputFlags.BODY_QDD,
-            newton.solvers.SolverOutputFlags.BODY_PARENT_F,
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
         }
     )
 
-    def step(self, state_in, state_out, control, contacts, dt, *, outputs=None):
-        self._validate_outputs(outputs, contacts)
+    def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
+        self._validate_observables(observables, contacts)
         super().step(state_in, state_out, control, contacts, dt)
-        if outputs is None:
+        if observables is None:
             return
         value = 1.0 if self.model.name == "left" else 2.0
-        outputs.body_qdd.fill_(value)
-        outputs.body_parent_f.fill_(value + 10.0)
+        observables.body_qdd.fill_(value)
+        observables.body_parent_f.fill_(value + 10.0)
 
 
 class _ResetRecordingCopySolver(_StepCountingCopySolver):
@@ -1137,27 +1137,27 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.model = builder.finalize(device="cpu")
 
-    def test_routes_body_solver_outputs(self):
-        """Gather entry-local body outputs into parent-model order."""
+    def test_routes_body_solver_observables(self):
+        """Gather entry-local body observables into parent-model order."""
         coupled = SolverCoupled(
             self.model,
             [
-                SolverCoupled.Entry("left", _BodyOutputCopySolver, bodies=[0]),
-                SolverCoupled.Entry("right", _BodyOutputCopySolver, bodies=[1]),
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
+                SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
             ],
         )
         flags = {
-            newton.solvers.SolverOutputFlags.BODY_QDD,
-            newton.solvers.SolverOutputFlags.BODY_PARENT_F,
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
         }
-        outputs = coupled.outputs(flags)
+        observables = coupled.observables(flags)
         state_in, state_out = self.model.state(), self.model.state()
 
-        coupled.step(state_in, state_out, None, None, 0.01, outputs=outputs)
+        coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
 
-        np.testing.assert_array_equal(outputs.body_qdd.numpy()[:, 0], (1.0, 2.0))
-        np.testing.assert_array_equal(outputs.body_parent_f.numpy()[:, 0], (11.0, 12.0))
-        self.assertEqual(set(outputs.entry_outputs), {"left", "right"})
+        np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
+        np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
+        self.assertEqual(set(observables.entry_observables), {"left", "right"})
 
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):

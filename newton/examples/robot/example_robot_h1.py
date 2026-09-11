@@ -93,7 +93,7 @@ class Example:
                 self.model, rigid_contact_max=self.solver.get_max_contact_count()
             )
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((3.0, 3.0, 0.0))
@@ -116,7 +116,12 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             self.solver.step(
-                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.solver_outputs
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
             )
 
             # swap states
@@ -133,7 +138,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
+        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

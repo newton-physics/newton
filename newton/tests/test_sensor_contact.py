@@ -737,7 +737,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor = SensorContact(model, sensing_bodies=["a", "b"], counterpart_shapes="*")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        outputs = solver.outputs(sensor.solver_output_flags)
+        observables = solver.observables(sensor.solver_observable_flags)
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -748,11 +748,11 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
-            solver.step(state_out, state_in, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             with wp.ScopedCapture(device) as capture:
-                solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
-                solver.step(state_out, state_in, control, contacts, sim_dt, outputs=outputs)
+                solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+                solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
@@ -761,17 +761,17 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             if use_graph:
                 wp.capture_launch(graph)
             else:
-                solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+                solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
                 state_in, state_out = state_out, state_in
         if use_graph and remaining % 2 == 1:
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         forces_acc = np.zeros((2, 3))
         for _ in range(avg_steps):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
-            sensor.update(state_in, contacts, outputs=outputs)
+            sensor.update(state_in, contacts, solver_observables=observables)
             forces_acc += sensor.total_force.numpy()
         total = forces_acc / avg_steps
 
@@ -819,22 +819,22 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor = SensorContact(model, sensing_bodies=["a"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        outputs = solver.outputs(sensor.solver_output_flags)
+        observables = solver.observables(sensor.solver_observable_flags)
 
         state_in, state_out, control = model.state(), model.state(), model.control()
         sim_dt = 1.0 / 240.0
         num_steps = 240 * 2
         avg_steps = 10  # average forces over last few steps for stability
         for _ in range(num_steps - avg_steps):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         total_acc = np.zeros((1, 3))
         friction_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
-            sensor.update(state_in, contacts, outputs=outputs)
+            sensor.update(state_in, contacts, solver_observables=observables)
             total_acc += sensor.total_force.numpy()
             friction_acc += sensor.total_force_friction.numpy()
         total = total_acc / avg_steps
@@ -873,7 +873,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor_base = SensorContact(model, sensing_shapes=["base"])
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0)
         contacts = pipeline.contacts()
-        outputs = solver.outputs(sensor_abc.solver_output_flags)
+        observables = solver.observables(sensor_abc.solver_observable_flags)
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -884,11 +884,11 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
-            solver.step(state_out, state_in, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+            solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             with wp.ScopedCapture(device) as capture:
-                solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
-                solver.step(state_out, state_in, control, contacts, sim_dt, outputs=outputs)
+                solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
+                solver.step(state_out, state_in, control, contacts, sim_dt, observables=observables)
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
@@ -897,19 +897,19 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             if use_graph:
                 wp.capture_launch(graph)
             else:
-                solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+                solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
                 state_in, state_out = state_out, state_in
         if use_graph and remaining % 2 == 1:
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         forces_acc = np.zeros((3, 3))
         base_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
-            sensor_abc.update(state_in, contacts, outputs=outputs)
-            sensor_base.update(state_in, contacts, outputs=outputs)
+            sensor_abc.update(state_in, contacts, solver_observables=observables)
+            sensor_base.update(state_in, contacts, solver_observables=observables)
             forces_acc += sensor_abc.total_force.numpy()
             base_acc += sensor_base.total_force.numpy()
         forces = forces_acc / avg_steps
@@ -949,8 +949,8 @@ class TestSensorContactKamino(unittest.TestCase):
         sensor = SensorContact(model, sensing_bodies=["box"])
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
-        outputs = solver.outputs(sensor.solver_output_flags)
-        self.assertIsNotNone(outputs.contact_f)
+        observables = solver.observables(sensor.solver_observable_flags)
+        self.assertIsNotNone(observables.contact_f)
 
         # Kamino's per-body aggregation reads the same internal contacts the conversion does.
         aggregation = ContactAggregation(solver._model_kamino, solver._contacts_kamino)
@@ -960,7 +960,7 @@ class TestSensorContactKamino(unittest.TestCase):
 
         # Settle the box on the plane.
         for _ in range(120):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
 
         # Average over a few steps for stability.
@@ -968,9 +968,9 @@ class TestSensorContactKamino(unittest.TestCase):
         sensor_acc = np.zeros((1, 3))
         agg_acc = np.zeros((1, 3))
         for _ in range(avg_steps):
-            solver.step(state_in, state_out, control, contacts, sim_dt, outputs=outputs)
+            solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
-            sensor.update(state_in, contacts, outputs=outputs)
+            sensor.update(state_in, contacts, solver_observables=observables)
             aggregation.compute(skip_if_no_contacts=False)
             sensor_acc += sensor.total_force.numpy()
             # The box is body 0 of world 0.

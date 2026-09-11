@@ -1018,8 +1018,8 @@ can override this value with ``rigid_contact_max`` when instantiating the pipeli
 Pipeline construction publishes the resolved rigid and soft capacities as
 ``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
 setup these are ``None``; zero is a valid empty capacity. Contact-indexed
-:ref:`solver_outputs` use these capacities for eager allocation and freeze them
-once allocated. Construct the pipeline before calling ``solver.outputs()`` for
+:ref:`solver_observables` use these capacities for eager allocation and freeze them
+once allocated. Construct the pipeline before calling ``solver.observables()`` for
 contact diagnostics; the live contact counts are not needed during allocation.
 
 .. _Mesh Collisions:
@@ -1621,24 +1621,24 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``soft_contact_normal``
      - Contact normal.
 
-**Contact-force solver output** (see :ref:`solver_outputs`):
+**Contact-force solver observable** (see :ref:`solver_observables`):
 
 .. list-table::
    :header-rows: 1
    :widths: 22 78
 
-   * - Output
+   * - Observable
      - Description
-   * - ``SolverOutputFlags.CONTACT_F`` / ``SolverOutputs.contact_f``
+   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Bind the output allocation to the contacts buffer and pass it to the
+       Bind the observable allocation to the contacts buffer and pass it to the
        solver step.
 
 .. note::
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written to ``SolverOutputs.contact_f`` are
+   forces written to ``SolverObservables.contact_f`` are
    approximate -- see that method's documentation for details.
 
 Example usage:

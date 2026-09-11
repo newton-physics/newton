@@ -135,7 +135,7 @@ class Contacts:
 
     .. deprecated:: 1.6
 
-        Request :attr:`newton.solvers.SolverOutputFlags.CONTACT_F` from the
+        Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from the
         solver instead.
     """
 
@@ -406,8 +406,8 @@ class Contacts:
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
 
             .. deprecated:: 1.6
-                Request :attr:`newton.solvers.SolverOutputFlags.CONTACT_F` and read
-                :attr:`newton.solvers.SolverOutputs.contact_f` instead.
+                Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` and read
+                :attr:`newton.solvers.SolverObservables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max

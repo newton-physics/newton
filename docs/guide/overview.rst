@@ -100,13 +100,13 @@ Core Concepts
   integrating physics, handling contacts, and enforcing constraints.
   Newton provides multiple solver backends, including XPBD, VBD,
   MuJoCo, Featherstone, SemiImplicit, Kamino, ImplicitMPM, and Style3D.
-  Optional :doc:`solver outputs <../concepts/solver_outputs>` store
+  Optional :doc:`solver observables <../concepts/solver_observables>` store
   requested diagnostics such as acceleration and contact force separately
   from simulation state.
 - :doc:`Sensors <../concepts/sensors>`: Compute observations from
   :class:`~newton.State`, :class:`~newton.Contacts`, sites, and shapes.
-  Solver-dependent sensors declare the optional :doc:`solver outputs
-  <../concepts/solver_outputs>` they consume.
+  Solver-dependent sensors declare the optional :doc:`solver observables
+  <../concepts/solver_observables>` they consume.
 - **Importer**: Loads models from external formats via
   :meth:`~newton.ModelBuilder.add_urdf`,
   :meth:`~newton.ModelBuilder.add_mjcf`, and

@@ -23,7 +23,7 @@ from ..semi_implicit.kernels_particle import (
     eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..solver import SolverBase, SolverOutputFlags, SolverOutputs
+from ..solver import SolverBase, SolverObservableFlags, SolverObservables
 from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
@@ -100,10 +100,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
-    Solver outputs:
-        :attr:`~newton.solvers.SolverOutputs.body_parent_f` is populated when
-        :attr:`~newton.solvers.SolverOutputFlags.BODY_PARENT_F` is requested
-        from :meth:`~newton.solvers.SolverBase.outputs`. The reported wrench is
+    Solver observables:
+        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested
+        from :meth:`~newton.solvers.SolverBase.observables`. The reported wrench is
         the per-body net spatial force from the RNEA backward pass
         translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
         in world frame at the COM), matching the wrench-transmitted-through-
@@ -133,7 +133,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     """
 
-    SUPPORTED_OUTPUT_FLAGS = frozenset({SolverOutputFlags.BODY_PARENT_F})
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
 
     @deprecate_nonkeyword_arguments
     def __init__(
@@ -470,10 +470,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
         *,
-        outputs: SolverOutputs | None = None,
+        observables: SolverObservables | None = None,
     ) -> None:
         self._apply_module_options()
-        self._validate_outputs(outputs)
+        self._validate_observables(observables)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 
@@ -484,7 +484,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             state_aug = self
 
         model = self.model
-        body_parent_f = outputs.body_parent_f if outputs is not None and outputs.body_parent_f is not None else None
+        body_parent_f = (
+            observables.body_parent_f if observables is not None and observables.body_parent_f is not None else None
+        )
         if body_parent_f is None:
             body_parent_f = state_out.body_parent_f
         descendant_body_q_prev = state_in.body_q

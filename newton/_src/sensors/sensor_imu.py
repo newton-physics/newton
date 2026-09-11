@@ -10,7 +10,7 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
-from ..solvers.solver import SolverOutputFlags, SolverOutputs
+from ..solvers.solver import SolverObservableFlags, SolverObservables
 from ..utils.selection import match_labels
 
 
@@ -77,15 +77,15 @@ class SensorIMU:
     given sites. Each site defines an IMU frame; outputs are expressed in that
     frame.
 
-    This sensor requires the :attr:`~newton.solvers.SolverOutputFlags.BODY_QDD`
-    solver output. The solver must support computing ``body_qdd``
+    This sensor requires the :attr:`~newton.solvers.SolverObservableFlags.BODY_QDD`
+    solver observable. The solver must support computing ``body_qdd``
     (e.g. :class:`~newton.solvers.SolverMuJoCo`). The extended
     :attr:`newton.State.body_qdd` attribute remains supported during migration.
 
     .. experimental::
 
-        The :attr:`solver_output_flags` attribute and the ``outputs`` argument
-        to :meth:`update` may change with the solver output API.
+        The :attr:`solver_observable_flags` attribute and the ``solver_observables`` argument
+        to :meth:`update` may change with the solver observable API.
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
@@ -106,12 +106,12 @@ class SensorIMU:
 
             imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
             solver = newton.solvers.SolverMuJoCo(model)
-            outputs = solver.outputs(imu.solver_output_flags)
+            observables = solver.observables(imu.solver_observable_flags)
             state = model.state()
 
             # after solver step
-            solver.step(state, state, None, None, dt=1.0 / 60.0, outputs=outputs)
-            imu.update(state, outputs=outputs)
+            solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
+            imu.update(state, solver_observables=observables)
             acc = imu.accelerometer.numpy()
             gyro = imu.gyroscope.numpy()
     """
@@ -122,8 +122,8 @@ class SensorIMU:
     gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
-    solver_output_flags = frozenset({SolverOutputFlags.BODY_QDD})
-    """Solver outputs required to update this sensor."""
+    solver_observable_flags = frozenset({SolverObservableFlags.BODY_QDD})
+    """Solver observables required to update this sensor."""
 
     def __init__(
         self,
@@ -137,7 +137,7 @@ class SensorIMU:
 
         Set ``request_state_attributes=True`` to retain the deprecated
         ``State.body_qdd`` allocation path. By default, allocate
-        :attr:`solver_output_flags` through the solver.
+        :attr:`solver_observable_flags` through the solver.
 
         Args:
             model: The model to use.
@@ -148,7 +148,7 @@ class SensorIMU:
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True, request the deprecated extended
                 state attribute ``body_qdd`` from the model. Defaults to False;
-                :meth:`update` must receive solver outputs containing ``body_qdd``.
+                :meth:`update` must receive solver observables containing ``body_qdd``.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -188,19 +188,19 @@ class SensorIMU:
             if not (shape_flags[site_idx] & ShapeFlags.SITE):
                 raise ValueError(f"sensor site index {site_idx} is not a site")
 
-    def update(self, state: State, *, outputs: SolverOutputs | None = None):
+    def update(self, state: State, *, solver_observables: SolverObservables | None = None):
         """Update the IMU sensor.
 
         Args:
             state: The state to update the sensor from.
-            outputs: Solver outputs containing rigid-body accelerations. If
+            solver_observables: Solver observables containing rigid-body accelerations. If
                 ``None``, use the legacy ``state.body_qdd`` attribute.
         """
-        body_qdd = outputs.body_qdd if outputs is not None else state.body_qdd
+        body_qdd = solver_observables.body_qdd if solver_observables is not None else state.body_qdd
         if body_qdd is None:
             raise ValueError(
-                "SensorIMU requires SolverOutputs with BODY_QDD allocated. "
-                "Call solver.outputs(sensor.solver_output_flags) and pass the result to solver.step() and sensor.update()."
+                "SensorIMU requires SolverObservables with BODY_QDD allocated. "
+                "Call solver.observables(sensor.solver_observable_flags) and pass the result to solver.step() and sensor.update()."
             )
 
         wp.launch(

@@ -12,7 +12,7 @@ import warp as wp
 
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
-from ..solvers.solver import SolverOutputFlags, SolverOutputs
+from ..solvers.solver import SolverObservableFlags, SolverObservables
 from ..utils.selection import match_labels
 
 _UNSET = object()
@@ -321,9 +321,10 @@ class SensorContact:
 
     .. rubric:: Construction and update order
 
-    Request :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F` from the solver, passing the
-    :class:`~newton.Contacts` buffer that will be used for stepping. Pass the resulting
-    :class:`~newton.solvers.SolverOutputs` to both the solver and :meth:`update`.
+    Construct a :class:`~newton.CollisionPipeline` before requesting
+    :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` from the solver. Pass the resulting
+    :class:`~newton.solvers.SolverObservables` and the pipeline's :class:`~newton.Contacts`
+    buffer to both the solver step and :meth:`update`.
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
@@ -349,22 +350,22 @@ class SensorContact:
                 model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
             )
             contacts = collision_pipeline.contacts()
-            outputs = solver.outputs(sensor.solver_output_flags)
+            observables = solver.observables(sensor.solver_observable_flags)
 
-            solver.step(state, state, None, contacts, dt=1.0 / 60.0, outputs=outputs)
-            sensor.update(state, contacts, outputs=outputs)
+            solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
+            sensor.update(state, contacts, solver_observables=observables)
             force = sensor.total_force.numpy()  # (n_sensing, 3)
 
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
-    solver_output_flags = frozenset({SolverOutputFlags.CONTACT_F})
-    """Solver outputs required by :meth:`update`.
+    solver_observable_flags = frozenset({SolverObservableFlags.CONTACT_F})
+    """Solver observables required by :meth:`update`.
 
     .. experimental::
 
-        The solver output API may change while additional outputs are migrated to it.
+        The solver observable API may change while additional observables are migrated to it.
     """
 
     sensing_indices: list[int]
@@ -491,7 +492,7 @@ class SensorContact:
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
-                for compatibility. Defaults to False; pass solver outputs to :meth:`update` instead.
+                for compatibility. Defaults to False; pass solver observables to :meth:`update` instead.
         """
         deprecated_sensing_bodies = kwargs.pop("sensing_obj_bodies", _UNSET)
         if deprecated_sensing_bodies is not _UNSET:
@@ -688,7 +689,7 @@ class SensorContact:
         self._sensing_kinds = wp.full(n_rows, sensing_kind, dtype=wp.int32, device=self.device)
         self.sensing_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
 
-    def update(self, state: State | None, contacts: Contacts, *, outputs: SolverOutputs | None = None):
+    def update(self, state: State | None, contacts: Contacts, *, solver_observables: SolverObservables | None = None):
         """Update the contact sensor readings based on the provided state and contacts.
 
         Computes world-frame transforms for all sensing objects and evaluates contact forces and their friction
@@ -700,7 +701,7 @@ class SensorContact:
                 :attr:`sensing_transforms` is left unchanged and :attr:`position_matrix` is reset to zero.
                 Contact-force outputs are updated in either case.
             contacts: The contact data to evaluate.
-            outputs: Solver output arrays containing :attr:`~newton.solvers.SolverOutputs.contact_f`.
+            solver_observables: Solver observable arrays containing :attr:`~newton.solvers.SolverObservables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
 
         Raises:
@@ -724,14 +725,16 @@ class SensorContact:
                 device=self.device,
             )
 
-        contact_f = outputs.contact_f if outputs is not None else contacts.force
+        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
         if contact_f is None:
             raise ValueError(
-                "SensorContact requires contact-force solver output. Request "
-                "SolverOutputFlags.CONTACT_F and pass the SolverOutputs to update()."
+                "SensorContact requires contact-force solver observables. Request "
+                "SolverObservableFlags.CONTACT_F and pass the SolverObservables to update()."
             )
-        if outputs is not None and outputs.contacts is not contacts:
-            raise ValueError("Contact solver outputs must be used with the Contacts instance passed to solver.step().")
+        if solver_observables is not None and solver_observables.contacts is not contacts:
+            raise ValueError(
+                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
+            )
         if contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
         self._eval_forces(state, contacts, contact_f)

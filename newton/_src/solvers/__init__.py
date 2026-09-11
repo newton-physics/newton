@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from .kamino import SolverKamino
     from .mujoco import SolverMuJoCo
     from .semi_implicit import SolverSemiImplicit
-    from .solver import SolverBase, SolverOutputFlags, SolverOutputs
+    from .solver import SolverBase, SolverObservableFlags, SolverObservables
     from .style3d.solver_style3d import SolverStyle3D
     from .vbd import SolverVBD
     from .xpbd import SolverXPBD
@@ -22,8 +22,8 @@ __all__ = [
     "SolverImplicitMPM",
     "SolverKamino",
     "SolverMuJoCo",
-    "SolverOutputFlags",
-    "SolverOutputs",
+    "SolverObservableFlags",
+    "SolverObservables",
     "SolverSemiImplicit",
     "SolverStyle3D",
     "SolverVBD",
@@ -41,8 +41,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "SolverImplicitMPM": (".implicit_mpm", "SolverImplicitMPM"),
     "SolverKamino": (".kamino", "SolverKamino"),
     "SolverMuJoCo": (".mujoco", "SolverMuJoCo"),
-    "SolverOutputFlags": (".solver", "SolverOutputFlags"),
-    "SolverOutputs": (".solver", "SolverOutputs"),
+    "SolverObservableFlags": (".solver", "SolverObservableFlags"),
+    "SolverObservables": (".solver", "SolverObservables"),
     "SolverSemiImplicit": (".semi_implicit", "SolverSemiImplicit"),
     "SolverStyle3D": (".style3d.solver_style3d", "SolverStyle3D"),
     "SolverVBD": (".vbd", "SolverVBD"),
