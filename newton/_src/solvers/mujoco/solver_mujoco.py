@@ -7487,6 +7487,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if ctrl_source == int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
                 is_position = newton_idx >= 0
                 dof = newton_idx if is_position else -(newton_idx + 2)
+                ball_joint = mjc_actuator_to_newton_ball_jnt_list[actuator]
+                if ball_joint >= 0:
+                    dof = int(joint_qd_start[ball_joint])
                 info = joint_target_ranges.get((dof, is_position))
                 if info is not None:
                     actuator_custom_attr_idx[actuator] = info["actuator_idx"]
