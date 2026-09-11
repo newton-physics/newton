@@ -176,6 +176,11 @@ Contact observables are allocated from the model's resolved rigid and soft conta
 capacities, not the current number of contacts. See :ref:`solver_observables` for
 pipeline setup with native collision backends and graph capture.
 
+Both :class:`~newton.solvers.SolverKamino` and
+:class:`~newton.solvers.SolverMuJoCo` populate ``body_qdd``. Kamino reports
+the discrete step-average center-of-mass acceleration in the world frame;
+impact steps therefore include the velocity impulse divided by the step duration.
+
 Performance Considerations
 --------------------------
 

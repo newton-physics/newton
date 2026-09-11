@@ -116,8 +116,9 @@ Standard observables
      - Description
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
-     - Rigid-body spatial accelerations
-     - :class:`~newton.solvers.SolverMuJoCo`
+     - Rigid-body center-of-mass spatial accelerations in the world frame
+     - :class:`~newton.solvers.SolverMuJoCo` and
+       :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
      - :class:`~newton.solvers.SolverMuJoCo`,
@@ -128,6 +129,12 @@ Standard observables
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
        :class:`~newton.solvers.SolverXPBD`, and
        :class:`~newton.solvers.SolverKamino`
+
+:class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
+step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
+the velocity impulse divided by ``dt``. MuJoCo Warp requires sensors to remain
+enabled when requesting ``BODY_QDD`` or ``BODY_PARENT_F``; stepping with
+``disable_sensors=True`` and either observable raises an error.
 
 :class:`~newton.solvers.experimental.coupled.SolverCoupled` exposes a body
 observable when every entry that owns bodies supports that flag. It allocates an

@@ -3,13 +3,14 @@
 
 import gc
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
-from newton.actuators import ControllerPD
+from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
@@ -63,7 +64,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_shape_box(body=fixed, hx=0.1, hy=0.1, hz=0.1, label="fixed_shape")
         builder.add_shape_collision_filter_pair(root_shape, child_shape)
-        builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
 
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
         builder.add_custom_attribute(
@@ -88,7 +91,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_custom_values(**{"test:ref_body": child, "test:world": -1})
         builder.add_actuator(
-            ControllerPD,
+            DrivePD,
             index=builder.joint_qd_start[child_joint],
             pos_index=builder.joint_q_start[child_joint],
             kp=100.0,
@@ -152,7 +155,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(set(expected.actuator_entries), set(actual.actuator_entries))
         for key, expected_entry in expected.actuator_entries.items():
             actual_entry = actual.actuator_entries[key]
-            for field in ("indices", "pos_indices", "controller_args", "delay_args", "clamping_args"):
+            for field in ("indices", "pos_indices", "drive_args", "delay_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
@@ -186,6 +189,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual.replicate(source, len(xforms), xforms=xforms)
 
         self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_remaps_joint_mimic_references(self):
+        """Verify replication remaps dense mimic references per world."""
+        source = ModelBuilder()
+        body0 = source.add_link()
+        body1 = source.add_link()
+        reference = source.add_joint_revolute(-1, body0)
+        follower = source.add_joint_revolute(body0, body1)
+        source.add_articulation([reference, follower])
+        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+
+        builder = ModelBuilder()
+        builder.replicate(source, 3)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, 0, -1, 2, -1, 4])
+        np.testing.assert_allclose(
+            model.joint_mimic_coeffs.numpy(),
+            [(0.0, 1.0), (0.25, -2.0)] * 3,
+        )
 
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):

@@ -79,7 +79,8 @@ class SensorIMU:
 
     This sensor requires the :attr:`~newton.solvers.SolverObservableFlags.BODY_QDD`
     solver observable. The solver must support computing ``body_qdd``
-    (e.g. :class:`~newton.solvers.SolverMuJoCo`). The extended
+    (e.g. :class:`~newton.solvers.SolverKamino` or
+    :class:`~newton.solvers.SolverMuJoCo`). The extended
     :attr:`newton.State.body_qdd` attribute remains supported during migration.
 
     .. experimental::

@@ -30,6 +30,7 @@ from ..core.types import (
     Mat33,
     Quat,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     Vec6,
@@ -48,6 +49,7 @@ from ..geometry import (
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -68,12 +70,13 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .model import Model, _pack_shape_pair_codes
+from .rod import Rod
 
 if TYPE_CHECKING:
     from pxr import Usd
 
-    from ..actuators.clamping.base import Clamping
-    from ..actuators.controllers.base import Controller
+    from ..actuators.clamping.base import ClampingBase
+    from ..actuators.drives.base import DriveBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -137,6 +140,18 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
     "Scalar gravity will be removed in a future release."
+)
+_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
+_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
+)
+_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
+    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
+    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
+)
+_ADD_ROD_GRAPH_DEPRECATION_MSG = (
+    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
+    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
 )
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
@@ -321,6 +336,95 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
         neighbors.extend(sorted(values))
         offsets[vertex + 1] = len(neighbors)
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
+def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
+    joint_indices = np.arange(len(joint_parents), dtype=np.int32)
+    max_child = int(np.max(joint_children, initial=-1))
+
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    valid_child = joint_children >= 0
+    body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+
+    parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
+    has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
+    parent_joint[has_parent] = body_joint[joint_parents[has_parent]]
+    return parent_joint
+
+
+def _build_fk_level_topology(
+    articulation_count: int,
+    joint_articulation: Sequence[int],
+    joint_parent: Sequence[int],
+    joint_child: Sequence[int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    if articulation_count == 0:
+        return None
+
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
+    articulation_joints = np.flatnonzero(joint_articulations >= 0).astype(np.int32)
+    articulation_ids = joint_articulations[articulation_joints]
+    if np.any(articulation_ids >= articulation_count):
+        raise ValueError("Joint references an invalid articulation")
+
+    articulation_children = joint_children[articulation_joints]
+    max_child = int(np.max(articulation_children, initial=-1))
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    body_joint[articulation_children] = articulation_joints
+    if np.count_nonzero(body_joint >= 0) != len(articulation_children):
+        return None
+
+    parent_joint = np.full(len(joint_articulations), -1, dtype=np.int32)
+    has_parent_body = (joint_parents[articulation_joints] >= 0) & (joint_parents[articulation_joints] <= max_child)
+    parent_joint[articulation_joints[has_parent_body]] = body_joint[joint_parents[articulation_joints[has_parent_body]]]
+    has_parent_joint = parent_joint[articulation_joints] >= 0
+    parent_articulation = np.full(len(articulation_joints), -1, dtype=np.int32)
+    parent_articulation[has_parent_joint] = joint_articulations[parent_joint[articulation_joints[has_parent_joint]]]
+    parent_joint[articulation_joints[parent_articulation != articulation_ids]] = -1
+
+    depth = np.full(len(joint_articulations), -1, dtype=np.int32)
+    roots = articulation_joints[parent_joint[articulation_joints] < 0]
+    depth[roots] = 0
+    unresolved = articulation_joints[depth[articulation_joints] < 0]
+    while len(unresolved):
+        parents = parent_joint[unresolved]
+        ready = depth[parents] >= 0
+        if not np.any(ready):
+            return None
+        ready_joints = unresolved[ready]
+        depth[ready_joints] = depth[parents[ready]] + 1
+        unresolved = unresolved[~ready]
+
+    joint_depths = depth[articulation_joints]
+    depth_stride = int(np.max(joint_depths, initial=0)) + 1
+    level_key = articulation_ids.astype(np.int64) * depth_stride + joint_depths
+    order = np.argsort(level_key, kind="stable")
+    level_joints = articulation_joints[order]
+    sorted_articulations = articulation_ids[order]
+    sorted_depths = joint_depths[order]
+
+    new_level = np.ones(len(level_joints), dtype=bool)
+    new_level[1:] = (sorted_articulations[1:] != sorted_articulations[:-1]) | (sorted_depths[1:] != sorted_depths[:-1])
+    level_joint_start = np.append(np.flatnonzero(new_level), len(level_joints)).astype(np.int32)
+    articulation_level_count = np.bincount(sorted_articulations[new_level], minlength=articulation_count)
+    articulation_level_start = np.concatenate(([0], np.cumsum(articulation_level_count))).astype(np.int32)
+
+    # Position of each scheduled joint's parent within the previous level.
+    pos_in_level = np.arange(len(level_joints), dtype=np.int32) - np.repeat(
+        level_joint_start[:-1], np.diff(level_joint_start)
+    )
+    joint_pos = np.full(len(joint_articulations), -1, dtype=np.int32)
+    joint_pos[level_joints] = pos_in_level
+    scheduled_parents = parent_joint[level_joints]
+    level_parent_pos = np.where(scheduled_parents >= 0, joint_pos[np.maximum(scheduled_parents, 0)], -1).astype(
+        np.int32
+    )
+
+    return articulation_level_start, level_joint_start, level_joints, level_parent_pos
 
 
 @dataclass(frozen=True)
@@ -629,19 +733,19 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
+        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Delay step values
         are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
-        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        drive_class: type  # DriveBase subclass (e.g. DrivePD)
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
-        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
+        drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
-        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        drive_args: list[dict[str, Any]]  # Per-actuator drive array params
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
@@ -951,7 +1055,6 @@ class ModelBuilder:
         Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
         """
 
-        @deprecate_nonkeyword_arguments
         def __init__(
             self,
             *,
@@ -1391,15 +1494,18 @@ class ModelBuilder:
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
                 halve SDF texture memory at the cost of slower hydroelastic
-                sampling. Every prebuilt mesh SDF added to this builder must
-                use the same layout, selected by the ``paired_samples``
-                argument to :meth:`Mesh.build_sdf`.
+                sampling. This optimization is automatically disabled on CUDA
+                devices with architectures older than SM90 when Warp was built
+                with CUDA Toolkit 13.0 or earlier. Every prebuilt mesh SDF
+                added to this builder must use the same effective layout,
+                selected by the ``paired_samples`` argument to
+                :meth:`Mesh.build_sdf` and the target device.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
-        """Whether generated SDF textures store adjacent X samples together."""
+        """Whether generated SDF textures should store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -1754,6 +1860,10 @@ class ModelBuilder:
         """World indices accumulated for :attr:`Model.joint_world`."""
         self.joint_articulation: list[int] = []
         """Articulation indices accumulated for :attr:`Model.joint_articulation`."""
+        self.joint_mimic_joint: list[int] = []
+        """Reference joint indices accumulated for :attr:`Model.joint_mimic_joint`."""
+        self.joint_mimic_coeffs: list[Vec2] = []
+        """Mimic offset and multiplier pairs accumulated for :attr:`Model.joint_mimic_coeffs`."""
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
@@ -1840,7 +1950,7 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # mimic constraints
+        # deprecated sparse mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
         self.constraint_mimic_joint1: list[int] = []
@@ -1892,9 +2002,9 @@ class ModelBuilder:
         """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
+        # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
 
         # Equality constraints are canonical MuJoCo custom attributes and must be available
         # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
@@ -2592,17 +2702,19 @@ class ModelBuilder:
 
     def add_actuator(
         self,
-        controller_class: type[Controller] | None = None,
+        drive_class: type[DriveBase] | None = None,
         index: int | None = None,
-        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
+        *,
+        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *controller_class*, *clamping*
+        Multiple calls with the same *drive_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Different delay
@@ -2610,38 +2722,44 @@ class ModelBuilder:
         sized to ``max(delay_step_values)``.
 
         Args:
-            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+            drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
-                post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+                post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
             delay_steps: Optional number of timesteps [timesteps] to delay inputs.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
+            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
+            **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
-        if controller_class is None:
-            raise TypeError("add_actuator() requires 'controller_class'")
+        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
+            if drive_class is not None:
+                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            drive_class = controller_class
+        if drive_class is None:
+            raise TypeError("add_actuator() requires 'drive_class'")
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
 
         clamping = clamping or []
 
-        # --- Resolve controller kwargs and separate shared from per-DOF ---
-        resolved_ctrl = controller_class.resolve_arguments(kwargs)
-        unrecognized = set(kwargs) - set(resolved_ctrl)
+        # --- Resolve drive kwargs and separate shared from per-DOF ---
+        resolved_drive = drive_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(
-                f"add_actuator: {controller_class.__name__} ignoring "
+                f"add_actuator: {drive_class.__name__} ignoring "
                 f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
                 stacklevel=2,
             )
-        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
-        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
-        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
+        drive_shared_names = getattr(drive_class, "SHARED_PARAMS", set())
+        drive_shared = {k: resolved_drive[k] for k in drive_shared_names if k in resolved_drive}
+        drive_array_params = {k: v for k, v in resolved_drive.items() if k not in drive_shared_names}
 
         # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
         clamping_classes = tuple(cc for cc, _ in clamping)
@@ -2658,31 +2776,31 @@ class ModelBuilder:
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when controller class, presence of delay, clamping
-        # types/shared-params, or controller shared params differ.
+        # Groups differ when drive class, presence of delay, clamping
+        # types/shared-params, or drive shared params differ.
         # Delay values are per-DOF; the buffer is sized to max(delays).
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
             return v
 
-        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        drive_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in drive_shared.items()))
         clamping_key = tuple(
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
+        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
             ModelBuilder.ActuatorEntry(
-                controller_class=controller_class,
+                drive_class=drive_class,
                 clamping_classes=clamping_classes,
                 clamping_shared_kwargs=clamping_shared_kwargs,
-                controller_shared_kwargs=ctrl_shared,
+                drive_shared_kwargs=drive_shared,
                 indices=[],
                 pos_indices=[],
-                controller_args=[],
+                drive_args=[],
                 delay_args=[],
                 clamping_args=[],
             ),
@@ -2690,7 +2808,7 @@ class ModelBuilder:
 
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
-        entry.controller_args.append(ctrl_array_params)
+        entry.drive_args.append(drive_array_params)
         if delay_steps is not None:
             entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
@@ -4662,20 +4780,20 @@ class ModelBuilder:
             entry = self.actuator_entries.setdefault(
                 entry_key,
                 ModelBuilder.ActuatorEntry(
-                    controller_class=sub_entry.controller_class,
+                    drive_class=sub_entry.drive_class,
                     clamping_classes=sub_entry.clamping_classes,
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
-                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    drive_shared_kwargs=sub_entry.drive_shared_kwargs,
                     indices=[],
                     pos_indices=[],
-                    controller_args=[],
+                    drive_args=[],
                     delay_args=[],
                     clamping_args=[],
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
-            entry.controller_args.extend(sub_entry.controller_args)
+            entry.drive_args.extend(sub_entry.drive_args)
             entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
 
@@ -4757,7 +4875,6 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @deprecate_nonkeyword_arguments
     def add_link(
         self,
         *,
@@ -4843,7 +4960,6 @@ class ModelBuilder:
 
         return body_id
 
-    @deprecate_nonkeyword_arguments
     def add_body(
         self,
         *,
@@ -4910,7 +5026,6 @@ class ModelBuilder:
 
     # region joints
 
-    @deprecate_nonkeyword_arguments
     def add_joint(
         self,
         joint_type: JointType,
@@ -5042,6 +5157,8 @@ class ModelBuilder:
         self.joint_collision_filter_parent.append(collision_filter_parent)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
+        self.joint_mimic_joint.append(-1)
+        self.joint_mimic_coeffs.append((0.0, 1.0))
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -5158,7 +5275,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_revolute(
         self,
         parent: int,
@@ -5256,7 +5372,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_prismatic(
         self,
         parent: int,
@@ -5352,7 +5467,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_ball(
         self,
         parent: int,
@@ -5434,7 +5548,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_fixed(
         self,
         parent: int,
@@ -5482,7 +5595,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
@@ -5543,7 +5655,6 @@ class ModelBuilder:
         self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
-    @deprecate_nonkeyword_arguments
     def add_joint_distance(
         self,
         parent: int,
@@ -5607,7 +5718,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_d6(
         self,
         parent: int,
@@ -5662,7 +5772,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_rod(
         self,
         parent: int,
@@ -5895,6 +6004,183 @@ class ModelBuilder:
                     )
                 )
 
+    @staticmethod
+    def _validate_rod_stiffness_inputs(
+        method_name: str,
+        *,
+        stretch_stiffness: float | None,
+        shear_stiffness: float | None,
+        bend_stiffness: float | None,
+        twist_stiffness: float | None,
+    ) -> None:
+        """Validate direct per-joint rod stiffness inputs."""
+        stiffnesses = (
+            ("stretch_stiffness", stretch_stiffness),
+            ("shear_stiffness", shear_stiffness),
+            ("bend_stiffness", bend_stiffness),
+            ("twist_stiffness", twist_stiffness),
+        )
+        for name, stiffness in stiffnesses:
+            if stiffness is not None and (not math.isfinite(stiffness) or stiffness < 0.0):
+                raise ValueError(f"{method_name}: {name} must be finite and >= 0")
+
+    @staticmethod
+    def _validate_rod_rigidity_topology(
+        point_count: int,
+        edges: np.ndarray,
+        *,
+        wrap_in_articulation: bool,
+    ) -> None:
+        """Validate topology for automatic section-rigidity discretization."""
+        if len(edges) >= 2 and Rod._is_ordered_chain_topology(point_count, edges):
+            return
+
+        degrees = np.bincount(edges.reshape(-1), minlength=point_count)
+        if np.any(degrees > 2):
+            raise ValueError(
+                "add_rod: automatic section-rigidity discretization requires at most 2 incident segments per point; "
+                "provide explicit builder stiffnesses for a branched graph"
+            )
+        if not wrap_in_articulation:
+            return
+
+        parents = list(range(point_count))
+
+        def find(point: int) -> int:
+            while parents[point] != point:
+                parents[point] = parents[parents[point]]
+                point = parents[point]
+            return point
+
+        for start, end in edges:
+            start_root = find(int(start))
+            end_root = find(int(end))
+            if start_root == end_root:
+                raise ValueError(
+                    "add_rod: automatic section-rigidity discretization for a cyclic graph requires "
+                    "wrap_in_articulation=False so every adjacency joint is retained; otherwise provide "
+                    "explicit builder stiffnesses"
+                )
+            parents[end_root] = start_root
+
+    def _set_joint_rod_stiffnesses_from_rigidities(
+        self,
+        segment_lengths: Sequence[float],
+        body_indices: list[int],
+        joint_indices: list[int],
+        *,
+        stretch_rigidity: float | None,
+        shear_rigidity: float | None,
+        bend_rigidity: float | None,
+        twist_rigidity: float | None,
+    ) -> None:
+        """Convert section rigidities into joint stiffnesses using local dual lengths."""
+        if stretch_rigidity is None and shear_rigidity is None and bend_rigidity is None and twist_rigidity is None:
+            return
+
+        segment_length_by_body = dict(zip(body_indices, segment_lengths, strict=True))
+        for joint in joint_indices:
+            dual_length = float(
+                0.5
+                * (segment_length_by_body[self.joint_parent[joint]] + segment_length_by_body[self.joint_child[joint]])
+            )
+            self._set_joint_rod_material_gains(
+                joint,
+                stretch_stiffness=None if stretch_rigidity is None else stretch_rigidity / dual_length,
+                shear_stiffness=None if shear_rigidity is None else shear_rigidity / dual_length,
+                bend_stiffness=None if bend_rigidity is None else bend_rigidity / dual_length,
+                twist_stiffness=None if twist_rigidity is None else twist_rigidity / dual_length,
+            )
+
+    def set_joint_mimic(
+        self,
+        joint: int,
+        reference_joint: int | None,
+        coeffs: Vec2 = (0.0, 1.0),
+    ) -> None:
+        """Configure a joint to mimic another joint with matching dimensions.
+
+        The relationship is applied componentwise to every position and
+        velocity coordinate. The follower coordinates are defined by
+        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
+        ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
+        ``reference_joint`` clears the relationship.
+
+        Mimic chains are not supported: the reference joint must be independent,
+        and a joint referenced by another mimic joint cannot become a follower.
+
+        Args:
+            joint: Index of the follower joint.
+            reference_joint: Index of the reference joint, or ``None`` to make
+                ``joint`` independent.
+            coeffs: Offset and multiplier applied componentwise to the reference
+                coordinates [m or rad, dimensionless].
+
+        Raises:
+            ValueError: If an index is invalid, the joint dimensions differ, the
+                joints belong to different worlds or articulations, the
+                coefficients are not finite, or the relationship creates a mimic
+                chain.
+        """
+        joint_count = self.joint_count
+        if joint < 0 or joint >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint}; expected 0..{joint_count - 1}")
+
+        if reference_joint is None:
+            self.joint_mimic_joint[joint] = -1
+            self.joint_mimic_coeffs[joint] = (0.0, 1.0)
+            return
+
+        if reference_joint < 0 or reference_joint >= joint_count:
+            raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
+        if joint == reference_joint:
+            raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
+        reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
+        if follower_dimensions != reference_dimensions:
+            follower_qd_dim, follower_q_dim = follower_dimensions
+            reference_qd_dim, reference_q_dim = reference_dimensions
+            raise ValueError(
+                "Mimic joints must have matching position and velocity dimensions. "
+                f"Follower joint {joint} has (q={follower_q_dim}, qd={follower_qd_dim}); "
+                f"reference joint {reference_joint} has (q={reference_q_dim}, qd={reference_qd_dim})."
+            )
+
+        follower_world = self.joint_world[joint]
+        reference_world = self.joint_world[reference_joint]
+        if follower_world != reference_world:
+            raise ValueError(
+                "Mimic joints must belong to the same world. "
+                f"follower_world={follower_world}, reference_world={reference_world}."
+            )
+
+        follower_articulation = self.joint_articulation[joint]
+        reference_articulation = self.joint_articulation[reference_joint]
+        if (
+            follower_articulation >= 0
+            and reference_articulation >= 0
+            and follower_articulation != reference_articulation
+        ):
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"follower_articulation={follower_articulation}, "
+                f"reference_articulation={reference_articulation}."
+            )
+
+        offset = float(coeffs[0])
+        multiplier = float(coeffs[1])
+        if not math.isfinite(offset) or not math.isfinite(multiplier):
+            raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
+
+        if self.joint_mimic_joint[reference_joint] != -1:
+            raise ValueError(f"Reference joint {reference_joint} is already a mimic joint")
+        if joint in self.joint_mimic_joint:
+            raise ValueError(f"Follower joint {joint} is already referenced by another mimic joint")
+
+        self.joint_mimic_joint[joint] = reference_joint
+        self.joint_mimic_coeffs[joint] = (offset, multiplier)
+
     def add_constraint_mimic(
         self,
         joint0: int,
@@ -5906,6 +6192,11 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
+
+        .. deprecated:: 1.6
+            Use :meth:`set_joint_mimic` for joints with matching dimensions.
+            Mimic metadata is now stored per joint rather than as a separate
+            constraint.
 
         A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
@@ -5924,6 +6215,12 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        warnings.warn(
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "use set_joint_mimic() for joints with matching dimensions instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
             raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
@@ -6171,6 +6468,8 @@ class ModelBuilder:
                 "collision_filter_parent": self.joint_collision_filter_parent[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
+                "mimic_joint": self.joint_mimic_joint[i],
+                "mimic_coeffs": self.joint_mimic_coeffs[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
@@ -6643,6 +6942,8 @@ class ModelBuilder:
         self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
+        self.joint_mimic_joint.clear()
+        self.joint_mimic_coeffs.clear()
         for joint in retained_joints:
             self.joint_label.append(joint["label"])
             self.joint_type.append(joint["type"])
@@ -6674,6 +6975,9 @@ class ModelBuilder:
                 self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
+            mimic_joint = joint["mimic_joint"]
+            self.joint_mimic_joint.append(joint_remap.get(mimic_joint, -1))
+            self.joint_mimic_coeffs.append(joint["mimic_coeffs"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
@@ -7858,7 +8162,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_site(
         self,
         body: int,
@@ -8301,106 +8604,161 @@ class ModelBuilder:
 
         return remeshed_shapes
 
-    @deprecate_nonkeyword_arguments
-    def add_rod(
+    def _add_rod_object(
+        self,
+        rod: Rod,
+        *,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        junction_collision_filter: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> tuple[list[int], list[int]]:
+        """Add a Rod object through the established chain or graph path."""
+        radius = rod._resolve_radius()
+        if radius is None:
+            radius = 0.1
+
+        self._validate_rod_stiffness_inputs(
+            "add_rod",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
+
+        rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
+        uses_chain_assembly = len(rod_edges) >= 2 and Rod._is_ordered_chain_topology(len(rod_points), rod_edges)
+
+        stretch_rigidity: float | None = None
+        shear_rigidity: float | None = None
+        bend_rigidity: float | None = None
+        twist_rigidity: float | None = None
+        section_rigidities = rod._resolve_section_rigidities()
+        if section_rigidities is not None:
+            stretch_rigidity, shear_rigidity, bend_rigidity, twist_rigidity = section_rigidities
+            if stretch_stiffness is not None:
+                stretch_rigidity = None
+            if shear_stiffness is not None:
+                shear_rigidity = None
+            if bend_stiffness is not None:
+                bend_rigidity = None
+            if twist_stiffness is not None:
+                twist_rigidity = None
+            # Zero rigidity is topology-independent; positive gains require a unique joint pairing.
+            if any(
+                rigidity is not None and rigidity > 0.0
+                for rigidity in (stretch_rigidity, shear_rigidity, bend_rigidity, twist_rigidity)
+            ):
+                self._validate_rod_rigidity_topology(
+                    len(rod_points),
+                    rod_edges,
+                    wrap_in_articulation=wrap_in_articulation,
+                )
+
+        segment_vectors = rod_points[rod_edges[:, 1]] - rod_points[rod_edges[:, 0]]
+        segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+        rod_positions: list[Vec3] = [axis_to_vec3(point) for point in rod_points]
+        rod_quaternions: list[Quat] = [
+            wp.quat(float(frame[0]), float(frame[1]), float(frame[2]), float(frame[3])) for frame in rod_frames
+        ]
+
+        if uses_chain_assembly:
+            link_bodies, link_joints = self._add_rod_chain(
+                rod_positions,
+                quaternions=rod_quaternions,
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                closed=rod.closed,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
+        else:
+            link_bodies, link_joints = self._add_rod_graph(
+                node_positions=rod_positions,
+                edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                quaternions=rod_quaternions,
+                junction_collision_filter=junction_collision_filter,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
+
+        self._set_joint_rod_stiffnesses_from_rigidities(
+            segment_lengths,
+            link_bodies,
+            link_joints,
+            stretch_rigidity=stretch_rigidity,
+            shear_rigidity=shear_rigidity,
+            bend_rigidity=bend_rigidity,
+            twist_rigidity=twist_rigidity,
+        )
+        return link_bodies, link_joints
+
+    def _add_rod_chain(
         self,
         positions: list[Vec3],
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        closed: bool = False,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
+        quaternions: list[Quat] | None,
+        radius: float | None,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        closed: bool | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod composed of capsule bodies connected by rod joints.
+        """Add an ordered point chain through the established graph path."""
+        self._validate_rod_stiffness_inputs(
+            "add_rod",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
+        closed = False if closed is None else closed
 
-        Constructs a chain of capsule bodies from the given centerline points and orientations.
-        Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by rod joints providing separate slots for linear stretch/shear and angular
-        bend/twist.
-
-        Args:
-            positions: Centerline node positions (segment endpoints) in world space. These are the
-                cylindrical centerline endpoints of the capsules, with one extra point so that for
-                ``N`` segments there are ``N+1`` positions.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
-                defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                If None, defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
-                defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: If True, connects the last segment back to the first to form a closed loop. If False,
-                creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
-                retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, the created joints are automatically wrapped into a single
-                articulation. Defaults to True to ensure valid simulation models.
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the segment start position
-                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
-                segment length. ``"com"`` places the body origin at the segment midpoint so the
-                body origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
-                pass ``"start"`` or ``"com"`` explicitly.
-
-        Returns:
-            A pair ``(body_indices, joint_indices)``. For an open chain,
-            ``len(joint_indices) == num_segments - 1``; for a closed loop, ``len(joint_indices) == num_segments``.
-
-        Articulations:
-            By default (``wrap_in_articulation=True``), the created joints are wrapped into a single
-            articulation, which avoids orphan joints during :meth:`finalize <ModelBuilder.finalize>`.
-            If ``wrap_in_articulation=False``, this method will return the created joint indices but will
-            not wrap them; callers must place them into one or more articulations (via :meth:`add_articulation`)
-            before calling :meth:`finalize <ModelBuilder.finalize>`.
-
-        Raises:
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
-            ValueError: If the rod has fewer than 2 segments.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
-
-        Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
-              pass a larger value when neighboring capsules should remain nearly inextensible.
-            - Stretch, shear, bend, twist, and damping values are passed through as provided per joint.
-            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
-              the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
-              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
-              is at local ``(0, 0, 2 * half_height)``.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
-        """
+        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -8411,15 +8769,6 @@ class ModelBuilder:
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
-
-        # Input validation
-        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
-            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
-        if shear_stiffness is not None and shear_stiffness < 0.0:
-            raise ValueError("add_rod: shear_stiffness must be >= 0")
-        if twist_stiffness is not None and twist_stiffness < 0.0:
-            raise ValueError("add_rod: twist_stiffness must be >= 0")
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -8447,11 +8796,11 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Delegate to add_rod_graph to create bodies and internal joints.
+        # Use the graph core to create bodies and internal joints.
         # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
         # - open chains are wrapped into a single articulation (tree), and
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
-        link_bodies, link_joints = self.add_rod_graph(
+        link_bodies, link_joints = self._add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
             radius=radius,
@@ -8467,6 +8816,7 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            junction_collision_filter=True,
             color=color,
             body_frame_origin=body_frame_origin,
         )
@@ -8485,7 +8835,7 @@ class ModelBuilder:
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=self._external_warning_stacklevel(),
                 )
 
             if link_bodies:
@@ -8531,7 +8881,214 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
-    @deprecate_nonkeyword_arguments
+    def add_rod(
+        self,
+        positions: list[Vec3] | None = None,
+        *,
+        quaternions: list[Quat] | None = None,
+        radius: float | None = None,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        closed: bool | None = None,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+        rod: Rod | None = None,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]:
+        """Adds a rod composed of capsule bodies connected by rod joints.
+
+        Exactly one input form is required:
+
+        - ``positions=...`` constructs an ordered chain. The separate
+          ``quaternions`` and ``closed`` arguments belong only to this
+          compatibility form.
+        - ``rod=...`` uses the geometry, frames, topology, and optional
+          constitutive data stored on a :class:`newton.Rod`, which may represent
+          an ordered chain or an explicit graph.
+
+        The remaining arguments configure assembly. Each segment becomes a
+        capsule body, and incident segments are connected by rod joints with
+        separate stretch, shear, bend, and twist slots.
+
+        Args:
+            positions: Geometry source for the ordered-chain form: centerline
+                node positions (segment endpoints) in world space [m].
+                Mutually exclusive with ``rod``.
+
+                .. deprecated:: 1.6
+                    Construct a :class:`newton.Rod` and pass it with
+                    ``rod=...`` instead.
+            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
+                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
+                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
+                orientations are computed automatically to align +Z with each segment direction.
+                Valid only with ``positions``; must be None when ``rod`` is
+                supplied.
+            radius: Capsule radius [m] for the ``positions`` form. If None,
+                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
+                is used, with the same default when it is unset.
+            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
+                If None, it is derived locally from Rod material or section rigidity;
+                otherwise it defaults to 1.0e5.
+            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                the locally derived Rod shear stiffness, or to
+                ``stretch_stiffness`` otherwise.
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+                If None, it is derived locally from Rod material or section rigidity;
+                otherwise it defaults to 0.0.
+            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
+                the locally derived Rod twist stiffness, or to
+                ``bend_stiffness`` otherwise.
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
+            closed: For the ``positions`` form, whether to connect the last
+                segment back to the first. Repeat the first position at the end
+                to include the closing segment. When using ``rod``, pass
+                ``closed=True`` to the :class:`newton.Rod` constructor instead.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
+            wrap_in_articulation: Whether Newton automatically creates
+                articulations for the generated tree joints. Defaults to True.
+                See the Articulations section below.
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the rod uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the segment start position
+                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
+                segment length. ``"com"`` places the body origin at the segment midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
+            rod: Geometry, frame, topology, and constitutive-data source for
+                the prepared-object form. Mutually exclusive with ``positions``.
+            junction_collision_filter: Whether to suppress self-collisions
+                between incident, non-jointed segments at graph junctions.
+                Has no effect for an ordered chain.
+
+        Returns:
+            A pair ``(body_indices, joint_indices)``. Bodies follow segment
+            order. An open ordered chain has one fewer joint than segments; a
+            closed ordered chain has one joint per segment. Graph joint count
+            depends on topology and articulation wrapping.
+
+        Articulations:
+            With ``wrap_in_articulation=True`` (the default), Newton places an
+            ordered chain's non-closure joints in one articulation; for a
+            closed chain, the loop-closing joint remains outside it. For an
+            explicit graph, Newton creates one articulation-safe spanning tree
+            per connected component; cyclic adjacency joints are omitted. With
+            ``wrap_in_articulation=False``, Newton creates no articulations.
+            Before :meth:`finalize <ModelBuilder.finalize>`, callers must place
+            the tree or forest joints in articulations. Loop-closing joints
+            whose child is already reachable through those articulations may
+            remain outside them.
+
+        Raises:
+            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
+                passed as ``positions``.
+            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
+                with ``rod``.
+            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            ValueError: If the ordered point-list form has fewer than 2 segments.
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If automatic section-rigidity discretization is requested
+                for branching topology or for a wrapped explicit cycle.
+
+        Note:
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
+              pass a larger value when neighboring capsules should remain nearly inextensible.
+            - Direct stiffness and damping values are applied unchanged to every generated joint.
+            - For a material- or section-rigidity-defined :class:`newton.Rod`,
+              stiffness is derived per generated joint as ``R / L_dual``, where
+              ``R`` is the corresponding section rigidity and ``L_dual`` is the
+              mean rest length of the two adjacent segments. Explicit stiffness
+              arguments override the derived value per mode.
+            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
+              the cylindrical centerline, excluding the hemispherical caps.
+            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
+              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
+              is at local ``(0, 0, 2 * half_height)``.
+            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
+              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
+              ``(0, 0, half_height)``.
+        """
+        if (positions is None) == (rod is None):
+            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
+
+        if isinstance(positions, Rod):
+            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
+
+        if rod is not None and not isinstance(rod, Rod):
+            raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+
+        if rod is not None:
+            if quaternions is not None:
+                raise ValueError("add_rod: quaternions must be None when rod is supplied")
+            if radius is not None:
+                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
+            if closed is not None:
+                raise ValueError("add_rod: closed must be None when rod is supplied")
+            return self._add_rod_object(
+                rod,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                junction_collision_filter=junction_collision_filter,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
+
+        assert positions is not None
+        warnings.warn(
+            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
+        return self._add_rod_chain(
+            positions,
+            quaternions=quaternions,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            closed=closed,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
+
     def add_rod_graph(
         self,
         node_positions: list[Vec3],
@@ -8556,7 +9113,9 @@ class ModelBuilder:
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
 
-        This is a generalization of :meth:`add_rod` to support branching/junction topologies.
+        .. deprecated:: 1.6
+            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
+            :meth:`add_rod` with ``rod=...`` instead.
 
         Representation:
 
@@ -8626,6 +9185,55 @@ class ModelBuilder:
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
+        warnings.warn(
+            _ADD_ROD_GRAPH_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
+        return self._add_rod_graph(
+            node_positions,
+            edges,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            quaternions=quaternions,
+            junction_collision_filter=junction_collision_filter,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
+
+    def _add_rod_graph(
+        self,
+        node_positions: list[Vec3],
+        edges: list[tuple[int, int]],
+        *,
+        radius: float,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        quaternions: list[Quat] | None,
+        junction_collision_filter: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> tuple[list[int], list[int]]:
+        """Internal graph-assembly implementation shared by the rod input forms."""
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -8637,12 +9245,13 @@ class ModelBuilder:
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
-        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
-            raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
-        if shear_stiffness is not None and shear_stiffness < 0.0:
-            raise ValueError("add_rod_graph: shear_stiffness must be >= 0")
-        if twist_stiffness is not None and twist_stiffness < 0.0:
-            raise ValueError("add_rod_graph: twist_stiffness must be >= 0")
+        self._validate_rod_stiffness_inputs(
+            "add_rod_graph",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
         body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
@@ -8892,12 +9501,12 @@ class ModelBuilder:
                     # Undirected graph cycle condition: E > V - 1 (for any connected component).
                     if len(component_edges) > max(0, len(component_nodes) - 1):
                         warnings.warn(
-                            "add_rod_graph: detected a cycle (closed loop) in the edge graph. "
+                            "Rod graph contains a cycle (closed loop). "
                             "With wrap_in_articulation=True, joints are built as a tree/forest, so "
-                            "cycles are not closed. Use wrap_in_articulation=False and add explicit "
-                            "closure constraints if you need a ring/loop.",
+                            "cycles are not closed. Use wrap_in_articulation=False to retain every "
+                            "cycle adjacency joint.",
                             UserWarning,
-                            stacklevel=2,
+                            stacklevel=self._external_warning_stacklevel(),
                         )
 
                 # Wrap the connected component into an articulation.
@@ -9116,7 +9725,6 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
-    @deprecate_nonkeyword_arguments
     def add_triangle(
         self,
         i: int,
@@ -9212,7 +9820,6 @@ class ModelBuilder:
                 )
             return area
 
-    @deprecate_nonkeyword_arguments
     def add_triangles(
         self,
         i: list[int] | np.ndarray,
@@ -9417,7 +10024,6 @@ class ModelBuilder:
 
         return volume
 
-    @deprecate_nonkeyword_arguments
     def add_edge(
         self,
         i: int,
@@ -9490,7 +10096,6 @@ class ModelBuilder:
 
         return edge_index
 
-    @deprecate_nonkeyword_arguments
     def add_edges(
         self,
         i: list[int],
@@ -9636,7 +10241,6 @@ class ModelBuilder:
                 )
         return range(edge_start, len(self.edge_indices))
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
         *,
@@ -9773,7 +10377,6 @@ class ModelBuilder:
                 self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_mesh(
         self,
         *,
@@ -9933,7 +10536,6 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-    @deprecate_nonkeyword_arguments
     def add_particle_grid(
         self,
         *,
@@ -10037,7 +10639,6 @@ class ModelBuilder:
             custom_attributes=broadcast_custom_attrs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_soft_grid(
         self,
         *,
@@ -10221,7 +10822,6 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-    @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
         *,
@@ -11497,6 +12097,17 @@ class ModelBuilder:
             _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
+            joint_arrays = [
+                ("joint_mimic_joint", self.joint_mimic_joint),
+                ("joint_mimic_coeffs", self.joint_mimic_coeffs),
+            ]
+            for name, arr in joint_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
             # Per-DOF arrays should have length == joint_dof_count
             dof_arrays = [
                 ("joint_axis", self.joint_axis),
@@ -11895,13 +12506,15 @@ class ModelBuilder:
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
-
         with wp.ScopedDevice(device):
+            current_device = wp.get_device()
+            sdf_texture_paired_samples = _resolve_paired_samples_flag(self.sdf_texture_paired_samples, current_device)
+
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
-            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
+            m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             # Preserve deprecated extended-attribute requests without emitting a
             # second warning after the builder request already warned the caller.
@@ -12340,7 +12953,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
@@ -12441,7 +13053,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
-                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        sdf_kwargs["paired_samples"] = sdf_texture_paired_samples
                         # Convex collision geometry is deduplicated before finalization,
                         # so build and cache its deferred SDF against that same topology.
                         sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
@@ -12467,13 +13079,13 @@ class ModelBuilder:
                     if mesh_sdf is not None:
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
-                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                            (coarse_texture.num_channels == 2) != sdf_texture_paired_samples
                         ):
-                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            mode = "paired" if sdf_texture_paired_samples else "scalar"
                             raise ValueError(
                                 f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
                                 "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
-                                f"{self.sdf_texture_paired_samples})."
+                                f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
@@ -12528,7 +13140,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
-                                    paired_samples=self.sdf_texture_paired_samples,
+                                    paired_samples=sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -12615,7 +13227,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
-                            paired_samples=self.sdf_texture_paired_samples,
+                            paired_samples=sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
@@ -12980,9 +13592,13 @@ class ModelBuilder:
 
             # joints
             m._has_rod_joints = JointType.ROD in self.joint_type  # pyright: ignore[reportPrivateUsage]
+            joint_parent_np = np.asarray(self.joint_parent, dtype=np.int32)
+            joint_child_np = np.asarray(self.joint_child, dtype=np.int32)
+            joint_articulation_np = np.asarray(self.joint_articulation, dtype=np.int32)
+
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
-            m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
-            m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
+            m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
+            m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
@@ -12992,14 +13608,11 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            child_to_joint = {}
-            for i, child in enumerate(self.joint_child):
-                child_to_joint[child] = i
-            parent_joint = []
-            for parent in self.joint_parent:
-                parent_joint.append(child_to_joint.get(parent, -1))
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
-            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
+            m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
+            m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
+            m.joint_mimic_coeffs = wp.array(self.joint_mimic_coeffs, dtype=wp.vec2)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -13065,6 +13678,30 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+            from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
+
+            fk_topology = _build_fk_level_topology(
+                self.articulation_count,
+                joint_articulation_np,
+                joint_parent_np,
+                joint_child_np,
+            )
+            # Non-tree articulations and levels beyond the tile kernel's
+            # shared-memory staging capacity retain the serial FK path.
+            if fk_topology is not None:
+                (
+                    fk_articulation_level_start,
+                    fk_level_joint_start,
+                    fk_level_joints,
+                    fk_level_parent_pos,
+                ) = fk_topology
+                fk_level_capacity = int(np.max(np.diff(fk_level_joint_start), initial=1))
+                if fk_level_capacity <= FK_TILE_MAX_LEVEL_WIDTH:
+                    m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
+                    m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
+                    m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
+                    m._fk_level_parent_pos = wp.array(fk_level_parent_pos, dtype=wp.int32)
+                    m._fk_level_capacity = fk_level_capacity
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
@@ -13078,7 +13715,7 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # mimic constraints
+            # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
@@ -13117,9 +13754,7 @@ class ModelBuilder:
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            # The packed array was just installed on the model, so builder and
-            # model filters are known to match without rebuilding it.
-            self._find_shape_contact_pairs(m, allow_filter_blocks=True)
+            self._find_shape_contact_pairs(m)
 
             # enable ground plane
             m.up_axis = self.up_axis
@@ -13150,11 +13785,9 @@ class ModelBuilder:
                 if entry.pos_indices != entry.indices:
                     pos_indices_arg = self._build_index_array(entry.pos_indices, device)
 
-                # Build controller from stacked per-DOF arrays + shared kwargs
-                ctrl_arrays = self._stack_args_to_arrays(
-                    entry.controller_args, device=device, requires_grad=requires_grad
-                )
-                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+                # Build drive from stacked per-DOF arrays + shared kwargs
+                drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
+                drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
                 delay_obj = None
                 if entry.delay_args:
@@ -13178,7 +13811,7 @@ class ModelBuilder:
                 )
                 actuator = Actuator(
                     indices=indices,
-                    controller=controller,
+                    drive=drive,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
@@ -13433,43 +14066,7 @@ class ModelBuilder:
                     )
             validated_templates.add(template_key)
 
-    def find_shape_contact_pairs(self, model: Model):
-        """Deprecated method for rebuilding explicit shape contact pairs.
-
-        .. deprecated:: 1.4
-            Shape contact pairs are generated automatically by :meth:`finalize`.
-            Configure collision filters before finalization instead of rebuilding
-            contact pairs manually.
-
-        Identifies and stores all potential shape contact pairs for collision detection.
-
-        This method examines the collision groups and collision masks of all shapes in the model
-        to determine which pairs of shapes should be considered for contact generation. It respects
-        any user-specified collision filter pairs to avoid redundant or undesired contacts.
-
-        The resulting contact pairs are stored in the model as a 2D array of shape indices.
-
-        Uses the exact same filtering logic as the broad phase kernels (test_world_and_group_pair)
-        to ensure consistency between EXPLICIT mode (precomputed pairs) and NXN/SAP modes.
-
-        Args:
-            model: The simulation model to which the contact pairs will be assigned.
-
-        Side Effects:
-            - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
-            - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
-        """
-        warnings.warn(
-            "ModelBuilder.find_shape_contact_pairs() is deprecated; shape contact pairs are generated "
-            + "automatically by ModelBuilder.finalize(). Configure collision filters before finalization instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Deprecated calls may supply an unrelated model or a builder that has
-        # changed since finalization, so always query filters from the model.
-        self._find_shape_contact_pairs(model, allow_filter_blocks=False)
-
-    def _find_shape_contact_pairs(self, model: Model, *, allow_filter_blocks: bool) -> None:
+    def _find_shape_contact_pairs(self, model: Model) -> None:
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -13492,11 +14089,7 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # Builder-side storage is valid only while it describes the model's
-        # filters exactly; otherwise the general path queries the model.
-        use_world_templates = (
-            allow_filter_blocks and self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
-        )
+        use_world_templates = self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
         if use_world_templates:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start
@@ -13728,6 +14321,3 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(candidate_pairs)
-
-
-ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)

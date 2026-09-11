@@ -18,13 +18,16 @@ import newton
 from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
+)
+from newton._src.solvers.mujoco.enums import (
+    _ActuatorBiasType,
+    _ActuatorDynamicsType,
+    _ActuatorGainType,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.kernels import convert_solref
@@ -32,6 +35,29 @@ from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqu
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+
+
+def _add_deprecated_mimic_constraint(
+    builder: newton.ModelBuilder,
+    *,
+    joint0: int,
+    joint1: int,
+    coef0: float = 0.0,
+    coef1: float = 1.0,
+    enabled: bool = True,
+    label: str | None = None,
+) -> int:
+    """Add a sparse mimic constraint while acknowledging its deprecation."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return builder.add_constraint_mimic(
+            joint0=joint0,
+            joint1=joint1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+            label=label,
+        )
 
 
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
@@ -3453,7 +3479,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         np.testing.assert_allclose(eq_data[:3], np.array(anchor1), atol=1.0e-6)
         np.testing.assert_allclose(eq_data[3:6], np.array(expected_anchor2), atol=1.0e-5)
 
-        ref_q = SolverMuJoCo._copy_dof_ref_to_qref(model)
+        ref_q = SolverMuJoCo._build_ref_q(model)
         np.testing.assert_allclose(ref_q.numpy(), model.joint_q.numpy(), atol=1.0e-6)
         ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(model, ref_q).numpy()
         assert_np_equal(ref_body_q[body1], np.array(body1_xform), tol=1.0e-5)
@@ -4449,29 +4475,63 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
         self.assertEqual(injected_contact_count, generated_contact_count)
 
-    def test_newton_contact_defaults_bound_explicit_capacities(self):
-        """Preserve Newton-derived lower bounds for explicit MuJoCo capacities."""
+    def test_newton_contact_explicit_capacities_are_preserved(self):
+        """Preserve explicit MuJoCo capacities for Newton-generated contacts."""
         model = self._build_grounded_spheres(60)
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
-        collision_pipeline.collide(state, contacts)
-        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        nconmax = 200
+        njmax = 300
 
         try:
-            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=16, njmax=16)
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                nconmax=nconmax,
+                njmax=njmax,
+            )
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
-        self.assertGreater(generated_contact_count, 48)
-        self.assertGreater(model.rigid_contact_max, 16)
-        self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
-        self.assertGreaterEqual(solver.mjw_data.njmax, model.rigid_contact_max * 4)
+        self.assertEqual(solver.mjw_data.naconmax, nconmax)
+        self.assertEqual(solver.mjw_data.njmax, njmax)
 
-        solver._convert_contacts_to_mjwarp(model, state, contacts)
-        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
-        self.assertEqual(injected_contact_count, generated_contact_count)
+    def test_explicit_nconmax_below_initial_contacts_is_increased(self):
+        """Increase an explicit contact capacity below initial MuJoCo contacts."""
+        model = self._build_grounded_spheres(60)
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for nconmax is changed from 16 to 60"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True, nconmax=16)
+
+        self.assertEqual(solver.mjw_data.naconmax, 60)
+
+    def test_explicit_njmax_below_initial_constraints_is_increased(self):
+        """Increase an explicit constraint capacity below initial MuJoCo constraints."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.1)
+        for _ in range(5):
+            body = builder.add_link(mass=1.0, com=wp.vec3(), inertia=inertia)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=body,
+                limit_lower=1.0,
+                limit_upper=2.0,
+            )
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        with self.assertWarnsRegex(UserWarning, r"Value for njmax is changed from 1 to 5"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1, njmax=1)
+
+        self.assertEqual(solver.mjw_data.njmax, 5)
 
     def test_newton_contact_capacity_preserves_delayed_joint_limits(self):
         """Preserve default capacity for non-contact constraints activated after initialization."""
@@ -5303,7 +5363,8 @@ class TestImmovableContactFiltering(unittest.TestCase):
     The MuJoCo solver produces degenerate efc_D values when both sides of a
     contact have zero/near-zero invweight (both bodies are immovable).  The
     contact conversion kernel must skip such pairs.  Immovable bodies include
-    static shapes (body < 0) and kinematic bodies (BodyFlags.KINEMATIC).
+    static shapes (body < 0), kinematic bodies (BodyFlags.KINEMATIC), and
+    bodies whose weld group has no degrees of freedom.
     """
 
     @staticmethod
@@ -5434,7 +5495,7 @@ class TestImmovableContactFiltering(unittest.TestCase):
         """Contacts between a kinematic body and a fixed-root body must be filtered.
 
         Both sides are immovable: the kinematic body via BodyFlags.KINEMATIC,
-        the fixed-root body via body_weldid == 0 (welded to world).
+        the fixed-root body via its weld group having no degrees of freedom.
         """
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
@@ -5512,7 +5573,7 @@ class TestImmovableContactFiltering(unittest.TestCase):
     def test_two_fixed_root_bodies_contacts_filtered(self):
         """Contacts between two fixed-root bodies must be filtered.
 
-        Both bodies are welded to the world (body_weldid == 0), so both are
+        Neither body's weld group has any degrees of freedom, so both are
         immovable and the contact should be skipped.
         """
         builder = newton.ModelBuilder()
@@ -7451,6 +7512,129 @@ class TestMuJoCoOptions(unittest.TestCase):
         builder.replicate(template_builder, world_count)
         return builder.finalize()
 
+    def test_njmax_nnz_constructor_override(self):
+        """Forward an explicit sparse Jacobian capacity to MuJoCo Warp."""
+        model = self._create_multiworld_model(world_count=2)
+
+        solver = SolverMuJoCo(
+            model,
+            iterations=1,
+            disable_contacts=True,
+            jacobian="sparse",
+            njmax_nnz=123,
+        )
+
+        self.assertEqual(solver.mjw_data.njmax_nnz, 123)
+        self.assertEqual(solver.mjw_data.efc.J.shape, (2, 1, 123))
+
+    def test_njmax_nnz_includes_joint_limits(self):
+        """Include joint limits in automatic sparse capacity."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
+        builder.add_articulation([joint])
+
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, jacobian="sparse")
+
+        from mujoco_warp._src.io import _default_njmax_nnz
+
+        expected = min(
+            _default_njmax_nnz(solver.mj_model, 0, solver.mjw_data.njmax) + 1,
+            solver.mjw_data.njmax * solver.mj_model.nv,
+        )
+        self.assertEqual(solver.mjw_data.njmax_nnz, expected)
+
+    def test_njmax_nnz_rejects_invalid_values(self):
+        """Reject invalid sparse Jacobian capacities."""
+        model = self._create_multiworld_model(world_count=1)
+
+        for value in (True, 1.5, "123"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "njmax_nnz must be an integer or None"):
+                    SolverMuJoCo(model, njmax_nnz=value)
+
+        with self.assertRaisesRegex(ValueError, "njmax_nnz must be non-negative"):
+            SolverMuJoCo(model, njmax_nnz=-1)
+
+    def test_njmax_nnz_rejects_zero_sparse_capacity(self):
+        """Reject zero sparse capacity whether or not a limit is initially active."""
+        for limit_lower, limit_upper, initial_required_nnz in ((-1.0, 1.0, 0), (1.0, 2.0, 1)):
+            with self.subTest(initial_required_nnz=initial_required_nnz):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_revolute(
+                    parent=-1,
+                    child=body,
+                    limit_lower=limit_lower,
+                    limit_upper=limit_upper,
+                )
+                builder.add_articulation([joint])
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"njmax_nnz=0 is too small:.*initial Jacobian contains {initial_required_nnz} nonzeros",
+                ):
+                    SolverMuJoCo(
+                        builder.finalize(),
+                        disable_contacts=True,
+                        jacobian="sparse",
+                        njmax_nnz=0,
+                    )
+
+    def test_njmax_nnz_rejects_capacity_below_initial_nnz(self):
+        """Reject a positive sparse capacity below the initial Jacobian's requirement."""
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=1.0, limit_upper=2.0)
+            builder.add_articulation([joint])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"njmax_nnz=1 is too small:.*capacity of at least 2; the initial Jacobian contains 2 nonzeros",
+        ):
+            SolverMuJoCo(
+                builder.finalize(),
+                disable_contacts=True,
+                jacobian="sparse",
+                njmax_nnz=1,
+            )
+
+    def test_njmax_nnz_rejects_dense_initial_jacobian_in_sparse_storage(self):
+        """Reject an undersized capacity when MuJoCo's dense Jacobian is stored sparsely by MuJoCo Warp."""
+        builder = newton.ModelBuilder()
+        for joint_index in range(33):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            if joint_index < 2:
+                joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=1.0, limit_upper=2.0)
+            else:
+                joint = builder.add_joint_revolute(parent=-1, child=body)
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(
+            model,
+            disable_contacts=True,
+            jacobian="auto",
+            njmax_nnz=2,
+        )
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+        self.assertFalse(mujoco.mj_isSparse(solver.mj_model))
+        self.assertTrue(is_mujoco_warp_sparse(solver.mj_model))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"njmax_nnz=1 is too small:.*capacity of at least 2; the initial Jacobian contains 2 nonzeros",
+        ):
+            SolverMuJoCo(
+                model,
+                disable_contacts=True,
+                jacobian="auto",
+                njmax_nnz=1,
+            )
+
     def test_impratio_multiworld_conversion(self):
         """
         Verify that impratio custom attribute with WORLD frequency:
@@ -7902,6 +8086,40 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
+    def test_disable_sensors_rejects_rne_state_attributes(self):
+        """Reject disabled sensors when RNE-derived state attributes are requested."""
+        for attribute in ("body_qdd", "body_parent_f"):
+            with self.subTest(attribute=attribute):
+                model = self._create_multiworld_model(world_count=1)
+                solver = SolverMuJoCo(model, disable_sensors=True)
+                model.request_state_attributes(attribute)
+                state = model.state()
+                with self.assertRaisesRegex(ValueError, "disable_sensors"):
+                    solver.step(state, state, None, None, 0.01)
+
+    def test_disable_sensors_rejects_rne_observables(self):
+        """Reject disabled sensors when only RNE-derived observables are requested."""
+        for flag in (
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+        ):
+            with self.subTest(flag=flag):
+                model = self._create_multiworld_model(world_count=1)
+                solver = SolverMuJoCo(model, disable_sensors=True)
+                observables = solver.observables({flag})
+                state = model.state()
+                self.assertIsNone(state.body_qdd)
+                self.assertIsNone(state.body_parent_f)
+                with self.assertRaisesRegex(ValueError, "disable_sensors"):
+                    solver.step(state, state, None, None, 0.01, observables=observables)
+
+    def test_disable_sensors_allows_unrelated_state_attributes(self):
+        """Step with disabled sensors when no RNE-derived state attribute is requested."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, disable_sensors=True)
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
         model = self._create_multiworld_model(world_count=1)
@@ -8222,7 +8440,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = main.add_joint_revolute(-1, b0)
         j1 = main.add_joint_revolute(b0, b1)
         main.add_articulation([j0, j1])
-        main.add_constraint_mimic(joint0=j1, joint1=j0)
+        _add_deprecated_mimic_constraint(main, joint0=j1, joint1=j0)
 
         source = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(source)
@@ -8231,7 +8449,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj0 = source.add_joint_revolute(-1, s0)
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
-        sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
+        sm = _add_deprecated_mimic_constraint(source, joint0=sj1, joint1=sj0)
         _add_equality_constraint(
             source,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -9236,7 +9454,14 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        _add_deprecated_mimic_constraint(
+            builder,
+            joint0=j2,
+            joint1=j1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+        )
         return builder.finalize()
 
     def test_mimic_constraint_conversion(self):
@@ -9256,6 +9481,85 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
         mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
         self.assertEqual(mimic_map[0, 0], 0)
+
+    def test_joint_mimic_conversion_and_runtime_update(self):
+        """Verify MuJoCo lowers and updates joint-owned mimic metadata."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = builder.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = builder.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
+        self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (1.0, -3.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+
+    def test_joint_mimic_d6_conversion(self):
+        """Verify MuJoCo lowers multi-axis D6 mimic metadata componentwise."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y)]
+        reference = builder.add_joint_d6(-1, body0, linear_axes=axes)
+        follower = builder.add_joint_d6(body0, body1, linear_axes=axes)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        np.testing.assert_allclose(
+            solver.mjw_model.eq_data.numpy()[0, :, :5],
+            [[0.5, 2.0, 0.0, 0.0, 0.0], [0.5, 2.0, 0.0, 0.0, 0.0]],
+        )
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[0], [follower, follower])
+
+    def test_joint_mimic_multi_world_mapping(self):
+        """Verify dense mimic mappings and coefficients remain per world."""
+        template = newton.ModelBuilder()
+        body0 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = template.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = template.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_articulation([reference, follower])
+        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[:, 0], [1, 3])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [0.5, 2.0]])
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[3] = (-0.25, -4.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [-0.25, -4.0]])
 
     def test_mimic_constraint_runtime_update(self):
         """Test that mimic constraint properties can be updated at runtime."""
@@ -9307,7 +9611,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
             builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j1, j2])
-            mimic = builder.add_constraint_mimic(
+            mimic = _add_deprecated_mimic_constraint(
+                builder,
                 joint0=j2,
                 joint1=j1,
                 coef0=10.0 + world,
@@ -9366,7 +9671,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        mimic = builder.add_constraint_mimic(
+        mimic = _add_deprecated_mimic_constraint(
+            builder,
             joint0=j2,
             joint1=j1,
             coef0=10.0,
@@ -9444,7 +9750,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
         # Add a mimic constraint
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9503,7 +9809,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1, j2])
-        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(template_builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         world_count = 3
         builder = newton.ModelBuilder()
@@ -10531,6 +10837,192 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             )
 
 
+class TestMuJoCoRefCoordinates(unittest.TestCase):
+    """Verify the joint-reference (MJCF ``ref``) coordinate convention.
+
+    Newton joint coordinates, limits, and position targets are relative to the authored pose; MuJoCo's qpos,
+    jnt_range, and position-actuator ctrl are absolute. The importer subtracts ref from authored ranges, and the
+    solver adds it back at the MuJoCo boundary.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco model="refmodel">
+        <compiler angle="radian"/>
+        <option gravity="0 0 0"/>
+        <worldbody>
+            <body name="base" pos="0 0 0">
+                <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                <body name="child" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="drive" joint="hinge" kp="500" kv="50" inheritrange="1"/>
+        </actuator>
+    </mujoco>
+    """
+
+    def _make_sim(self, *, ctrl_direct=False, **solver_kwargs):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF, ctrl_direct=ctrl_direct)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True, **solver_kwargs)
+        return model, solver
+
+    def test_jnt_range_is_absolute(self):
+        """Exported jnt_range matches the authored absolute range."""
+        model, solver = self._make_sim()
+
+        # Newton stores the range relative to the authored pose.
+        self.assertAlmostEqual(float(model.joint_limit_lower.numpy()[0]), 0.1 - 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_limit_upper.numpy()[0]), 0.9 - 0.5, places=5)
+
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+
+    def test_runtime_limit_and_ref_updates(self):
+        """Preserve jnt_range = limits + ref across runtime updates."""
+        model, solver = self._make_sim()
+
+        model.joint_limit_lower.assign([-0.3])
+        model.joint_limit_upper.assign([0.3])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.2, 0.8], atol=1e-5)
+
+        # Changing ref relabels the MuJoCo coordinates: joint_q and its limits
+        # keep their meaning, while jnt_range and qpos0 shift with the new ref.
+        model.mujoco.dof_ref.assign([0.2])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [-0.1, 0.5], atol=1e-5)
+        self.assertAlmostEqual(float(solver.mjw_model.qpos0.numpy()[0][0]), 0.2, places=5)
+
+    def test_runtime_ref_update_preserves_compiled_ctrlrange(self):
+        """Keep compiled ctrlrange fixed when ref changes."""
+        model, solver = self._make_sim(use_mujoco_cpu=True)
+
+        model.mujoco.dof_ref.assign([1.5])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [1.1, 1.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+
+    def test_runtime_ref_update_preserves_direct_compiled_ctrlrange(self):
+        """Keep CTRL_DIRECT compiled ctrlrange fixed when ref changes."""
+        model, solver = self._make_sim(ctrl_direct=True, use_mujoco_cpu=True)
+
+        model.mujoco.dof_ref.assign([1.5])
+        solver.notify_model_changed(ModelFlags.ALL)
+
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+
+    def test_multiworld_runtime_refs_preserve_compiled_ctrlranges(self):
+        """Keep per-world compiled ctrlranges fixed when refs change."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(self.MJCF)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        model.mujoco.dof_ref.assign([0.5, 1.5])
+        solver.notify_model_changed(ModelFlags.ALL)
+
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[:, 0], [[0.1, 0.9], [1.1, 1.9]], atol=1e-5)
+        np.testing.assert_allclose(
+            solver.mjw_model.actuator_ctrlrange.numpy()[:, 0], [[0.1, 0.9], [0.1, 0.9]], atol=1e-5
+        )
+
+    def test_multiworld_inheritrange_factors_resolve_independently(self):
+        """Resolve each world's inheritrange factor independently."""
+        half_range = newton.ModelBuilder()
+        half_range.add_mjcf(self.MJCF.replace('inheritrange="1"', 'inheritrange="0.5"'))
+        full_range = newton.ModelBuilder()
+        full_range.add_mjcf(self.MJCF)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(half_range)
+        builder.add_world(full_range)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        expected = [[0.3, 0.7], [0.1, 0.9]]
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), expected, atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[:, 0], expected, atol=1e-5)
+
+    def test_runtime_ctrlrange_overrides_compiled_inheritrange(self):
+        """Apply explicit runtime ctrlrange edits after inheritrange compilation."""
+        for ctrl_direct in (False, True):
+            with self.subTest(ctrl_direct=ctrl_direct):
+                model, solver = self._make_sim(ctrl_direct=ctrl_direct, use_mujoco_cpu=True)
+                model.mujoco.actuator_ctrlrange.assign([[0.3, 0.7]])
+
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+
+                np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.3, 0.7], atol=1e-5)
+                np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.3, 0.7], atol=1e-5)
+
+    def test_position_target_matches_joint_q(self):
+        """A position target of x must drive joint_q to x regardless of ref."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        control.joint_target_q.assign([0.2])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.2, delta=1e-3)
+
+    def test_limit_clamps_joint_q(self):
+        """Driving past the limit clamps joint_q at its upper bound."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        # Target beyond the upper joint_q limit (0.9 - 0.5 = 0.4).
+        control.joint_target_q.assign([0.8])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.4, delta=0.02)
+
+    def test_inheritrange_ctrlrange_is_absolute(self):
+        """Verify that inheritrange control ranges use absolute MuJoCo coordinates."""
+        mjcf = """<?xml version="1.0" ?>
+        <mujoco model="inheritrange">
+            <compiler angle="radian" autolimits="true"/>
+            <worldbody>
+                <body name="base" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <body name="child" pos="0 0 0">
+                        <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="drive" joint="hinge" kp="500" inheritrange="1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        # Newton stores limits relative to the authored pose; MuJoCo uses absolute coordinates.
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
+
+
 class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
@@ -10952,6 +11444,19 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
         self.assertEqual(self.solver.mj_model.actuator_gaintype[0], 0)
         self.assertEqual(self.solver.mj_model.actuator_biastype[0], 1)
 
+    def test_unsupported_type_warns_naming_the_prim(self):
+        """Warn on an unsupported USD gainType, naming the offending actuator prim."""
+        from pxr import Sdf
+
+        def set_actuator_attrs(act):
+            act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("pid")
+
+        stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        with self.assertWarnsRegex(RuntimeWarning, r"gaintype 'pid' on prim '/World/actuator'"):
+            builder.add_usd(stage)
+
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUsdActuatorInheritrange(unittest.TestCase):
@@ -10961,12 +11466,6 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
     ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where midpoint
     and half_width come from the transmission target's joint range.
 
-    The asserted ctrlrange/ctrllimited values come from the parsed model row
-    (``model.mujoco.actuator_*``). USD MjcActuator position-shortcut rows are
-    promoted to ``CtrlSource.JOINT_TARGET`` (matching MJCF), so the compiled
-    MuJoCo actuator built by :class:`SolverMuJoCo` is rebuilt from
-    ``joint_target_*`` and intentionally does not carry the input ctrlrange.
-    Inputs are driven via ``Control.joint_target_q`` instead.
     """
 
     JOINT_LO_DEG = -90.0
@@ -10974,7 +11473,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
     CASES = (0.8, 1.0, 1.2)
 
-    def _build_model(self, inherit_range_value):
+    def _build_model(self, inherit_range_value, *, dof_ref=0.0, compiler_angle=None):
         from pxr import Sdf, Vt
 
         lo, hi = self.JOINT_LO_DEG, self.JOINT_HI_DEG
@@ -10982,6 +11481,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
         def set_joint_limits(joint):
             joint.CreateLowerLimitAttr().Set(lo)
             joint.CreateUpperLimitAttr().Set(hi)
+            joint.GetPrim().CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float, True).Set(dof_ref)
 
         def set_actuator_attrs(act):
             act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("fixed")
@@ -10998,6 +11498,10 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
             extra_joint_attrs=set_joint_limits,
             extra_actuator_attrs=set_actuator_attrs,
         )
+        if compiler_angle is not None:
+            stage.GetPrimAtPath("/physicsScene").CreateAttribute(
+                "mjc:compiler:angle", Sdf.ValueTypeNames.Token, True
+            ).Set(compiler_angle)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
@@ -11019,6 +11523,43 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
                 np.testing.assert_allclose(cr, [mean - radius, mean + radius], atol=1e-4)
 
                 self.assertEqual(int(model.mujoco.actuator_ctrllimited.numpy()[0]), 1)
+
+    def test_inheritrange_ctrlrange_with_joint_ref(self):
+        """Normalize a default-degree ref and retain absolute control ranges."""
+        dof_ref_degrees = 30.0
+        dof_ref = np.deg2rad(dof_ref_degrees)
+        model = self._build_model(1.0, dof_ref=dof_ref_degrees)
+
+        lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
+        hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
+        expected = [lo_rad, hi_rad]
+        np.testing.assert_allclose(model.mujoco.dof_ref.numpy()[-1], dof_ref, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], lo_rad - dof_ref, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], hi_rad - dof_ref, atol=1e-5)
+        cr = model.mujoco.actuator_ctrlrange.numpy()[0]
+        np.testing.assert_allclose(cr, expected, atol=1e-4)
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[-1], expected, atol=1e-4)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], expected, atol=1e-4)
+
+    def test_converter_degree_ref_uses_absolute_limits(self):
+        """Normalize converter-authored degree refs and absolute USD limits."""
+        dof_ref_degrees = 30.0
+        model = self._build_model(1.0, dof_ref=dof_ref_degrees, compiler_angle="degree")
+
+        lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
+        hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
+        ref_rad = dof_ref_degrees * np.pi / 180.0
+        np.testing.assert_allclose(model.mujoco.dof_ref.numpy()[-1], ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], lo_rad - ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], hi_rad - ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy()[0], [lo_rad, hi_rad], atol=1e-5)
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.qpos0[-1], ref_rad, atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[-1], [lo_rad, hi_rad], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [lo_rad, hi_rad], atol=1e-5)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -11563,9 +12104,12 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[0]), expected_solref[0], delta=abs(expected_solref[0]) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_solref[1], delta=abs(expected_solref[1]) * rel_tol)
 
-    def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
-        """MJCF joints without ``solreflimit`` must keep the sentinel so ``limit_ke`` updates apply."""
+    @staticmethod
+    def _build_mjcf_implicit_default_model(limit_ke=10000.0, limit_kd=10.0):
+        """Build an MJCF model whose joint uses MuJoCo's implicit limit response."""
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = limit_ke
+        builder.default_joint_cfg.limit_kd = limit_kd
         builder.add_mjcf(
             """
             <mujoco>
@@ -11581,65 +12125,82 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             """,
             ignore_inertial_definitions=False,
         )
-        model = builder.finalize()
+        return builder.finalize()
 
-        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+    def test_mjcf_configured_default_gains_apply_during_solver_construction(self):
+        """Verify that configured builder gains override an implicit MuJoCo limit default."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = self._build_mjcf_implicit_default_model(limit_ke=4321.0, limit_kd=76.0)
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
-        np.testing.assert_allclose(initial_solref, [0.02, 1.0], rtol=1e-6, atol=1e-6)
+                np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+                np.testing.assert_allclose(model.joint_limit_ke.numpy(), [4321.0], rtol=0.0, atol=0.0)
+                np.testing.assert_allclose(model.joint_limit_kd.numpy(), [76.0], rtol=0.0, atol=0.0)
 
-        ke = np.array([5000.0], dtype=np.float32)
-        kd = np.array([50.0], dtype=np.float32)
-        model.joint_limit_ke.assign(ke)
-        model.joint_limit_kd.assign(kd)
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                solver = SolverMuJoCo(
+                    model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+                dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+                dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+                factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                expected_solref = _expected_positive_limit_solref(4321.0, 76.0, factor)
+                actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
 
-        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
-        dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
-        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-        expected_solref = _expected_positive_limit_solref(ke[0], kd[0], factor)
-        actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+                np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
-        self.assertFalse(np.allclose(actual_solref, initial_solref))
-        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+    def test_mjcf_gain_edit_before_solver_construction_promotes_force_space(self):
+        """Verify that a post-import gain edit is detected when constructing the solver."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = self._build_mjcf_implicit_default_model()
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+                ke = np.array([5000.0], dtype=np.float32)
+                kd = np.array([50.0], dtype=np.float32)
+                model.joint_limit_ke.assign(ke)
+                model.joint_limit_kd.assign(kd)
+
+                solver = SolverMuJoCo(
+                    model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+                dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+                dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+                factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                expected_solref = _expected_positive_limit_solref(ke[0], kd[0], factor)
+                actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+                np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
     def test_mjcf_implicit_default_mode_promotes_after_gain_edit(self):
-        """Once imported MJCF default gains are edited, later default-valued gains stay force-space."""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(
-            """
-            <mujoco>
-              <compiler angle="radian"/>
-              <worldbody>
-                <body name="link">
-                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
-                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
-                  <geom type="sphere" size="0.05"/>
-                </body>
-              </worldbody>
-            </mujoco>
-            """,
-            ignore_inertial_definitions=False,
-        )
-        model = builder.finalize()
+        """Verify that an imported MJCF default-gain edit permanently promotes force-space mode."""
+        model = self._build_mjcf_implicit_default_model()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-        model.joint_limit_ke.assign(np.array([5000.0], dtype=np.float32))
-        model.joint_limit_kd.assign(np.array([50.0], dtype=np.float32))
+        initial_ke = model.joint_limit_ke.numpy().copy()
+        initial_kd = model.joint_limit_kd.numpy().copy()
+        edited_ke = np.nextafter(initial_ke, np.full_like(initial_ke, np.inf))
+        model.joint_limit_ke.assign(edited_ke)
         solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
 
-        model.joint_limit_ke.assign(np.array([DEFAULT_LIMIT_KE], dtype=np.float32))
-        model.joint_limit_kd.assign(np.array([DEFAULT_LIMIT_KD], dtype=np.float32))
+        model.joint_limit_ke.assign(initial_ke)
+        model.joint_limit_kd.assign(initial_kd)
         solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
         dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
         dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
         factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-        expected_solref = _expected_positive_limit_solref(DEFAULT_LIMIT_KE, DEFAULT_LIMIT_KD, factor)
+        expected_solref = _expected_positive_limit_solref(initial_ke[0], initial_kd[0], factor)
         actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
 
         np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
@@ -12167,28 +12728,59 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         )
 
     def test_mjcf_invalid_solreflimit_emits_import_warning(self):
-        """MJCF importer warns when ``solref_to_stiffness_damping`` rejects an authored solreflimit."""
-        mjcf_source = """
-            <mujoco>
-              <compiler angle="radian"/>
-              <worldbody>
-                <body name="link">
-                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
-                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="-1 1"/>
-                  <geom type="sphere" size="0.05"/>
-                </body>
-              </worldbody>
-            </mujoco>
-            """
-        builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
-        messages = [str(w.message) for w in caught]
-        self.assertTrue(
-            any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
-            f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
-        )
+        """Verify that MJCF import warns for invalid authored ``solreflimit`` signs."""
+        for joint_type in ("hinge", "ball"):
+            with self.subTest(joint_type=joint_type):
+                mjcf_source = f"""
+                    <mujoco>
+                      <compiler angle="radian"/>
+                      <worldbody>
+                        <body name="link">
+                          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                          <joint name="joint" type="{joint_type}" solreflimit="-1 1"/>
+                          <geom type="sphere" size="0.05"/>
+                        </body>
+                      </worldbody>
+                    </mujoco>
+                    """
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+                messages = [str(w.message) for w in caught]
+                self.assertTrue(
+                    any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
+                    f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
+                )
+
+    def test_mjcf_valid_solreflimit_does_not_emit_import_warning(self):
+        """Verify that MJCF import accepts native standard, direct, and default solref pairs."""
+        for joint_type, solreflimit in itertools.product(
+            ("hinge", "ball"),
+            ("0.03 0.7", "-100 -1", "0 0"),
+        ):
+            with self.subTest(joint_type=joint_type, solreflimit=solreflimit):
+                mjcf_source = f"""
+                    <mujoco>
+                      <compiler angle="radian"/>
+                      <worldbody>
+                        <body name="link">
+                          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                          <joint name="joint" type="{joint_type}" solreflimit="{solreflimit}"/>
+                          <geom type="sphere" size="0.05"/>
+                        </body>
+                      </worldbody>
+                    </mujoco>
+                    """
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+                messages = [str(w.message) for w in caught]
+                self.assertFalse(
+                    any("invalid solreflimit" in message for message in messages),
+                    f"Expected no MJCF importer warning for valid solreflimit, got: {messages}",
+                )
 
     def test_parse_vec_unknown_shorthand_warns(self):
         """``parse_vec`` warns when a non-whitelisted multi-component MJCF attribute gets a single value.
@@ -12750,6 +13342,67 @@ class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
             state_0, state_1 = state_1, state_0
         # Launch failures surface asynchronously, so force them to be raised here.
         wp.synchronize()
+
+
+class TestActuatorTypes(unittest.TestCase):
+    """Actuator type enums and their MJCF round trip."""
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body>
+                <joint name="j" type="hinge" axis="0 0 1"/>
+                <geom type="box" size=".1 .1 .1"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <general name="a" joint="j" dyntype="{dyntype}" gaintype="{gaintype}" biastype="{biastype}" {extra}/>
+        </actuator>
+    </mujoco>"""
+
+    def _mjcf(self, dyntype="none", gaintype="fixed", biastype="none", extra=""):
+        return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
+
+    def test_enums_match_mujoco(self):
+        """Pin every actuator enum ordinal against the matching mujoco.mjt* member."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for enum, mj_enum, prefix in (
+            (_ActuatorBiasType, mujoco.mjtBias, "mjBIAS_"),
+            (_ActuatorDynamicsType, mujoco.mjtDyn, "mjDYN_"),
+            (_ActuatorGainType, mujoco.mjtGain, "mjGAIN_"),
+        ):
+            for member in enum:
+                with self.subTest(enum=enum.__name__, member=member.name):
+                    self.assertEqual(int(member), int(mj_enum.__members__[prefix + member.name.replace("_", "")]))
+
+    def test_types_match_native(self):
+        """Compile actuator types through Newton and check they match native MuJoCo on the same MJCF."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for dyntype, gaintype, biastype, extra in (
+            ("none", "fixed", "none", ""),
+            ("none", "fixed", "affine", ""),
+            ("integrator", "fixed", "none", ""),
+            ("filter", "fixed", "none", ""),
+            ("filterexact", "fixed", "none", ""),
+            ("none", "affine", "affine", ""),
+            ("user", "user", "user", 'actearly="true"'),
+        ):
+            with self.subTest(dyntype=dyntype, gaintype=gaintype, biastype=biastype):
+                mjcf = self._mjcf(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                mj_model = SolverMuJoCo(builder.finalize()).mj_model
+                native = mujoco.MjModel.from_xml_string(mjcf)
+                assert_np_equal(mj_model.actuator_dyntype, native.actuator_dyntype)
+                assert_np_equal(mj_model.actuator_gaintype, native.actuator_gaintype)
+                assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
+
+    def test_unsupported_type_warns(self):
+        """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
+        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
+            with self.subTest(gaintype=gaintype):
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
+                    builder.add_mjcf(self._mjcf(gaintype=gaintype))
 
 
 if __name__ == "__main__":

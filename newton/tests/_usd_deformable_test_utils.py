@@ -7,12 +7,10 @@
 def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
-    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and optional
-    ``density``) so the importer does not warn about an unauthored cable thickness. Pass
-    ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
-    default-radius fallback or a test's own material binding. ``collision`` authors an
-    enabled ``PhysicsCollisionAPI`` (the common colliding case); pass ``False`` for the
-    collision-gating tests.
+    Authors a constant simulation-geometry ``thicknesses`` array and optionally binds a material
+    carrying ``density``. Pass ``thickness=None`` to exercise the default-radius fallback.
+    ``collision`` authors an enabled ``PhysicsCollisionAPI`` (the common colliding case); pass
+    ``False`` for the collision-gating tests.
     """
     from pxr import UsdGeom
 
@@ -27,11 +25,18 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     if collision:
         curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     if thickness is not None:
-        mat_attrs = {"curvesThickness": thickness}
-        if density is not None:
-            mat_attrs["density"] = density
-        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
+        _author_deformable_element_array(curves.GetPrim(), "thicknesses", [thickness], "constant")
+    if density is not None:
+        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", density=density)
     return curves
+
+
+def _author_deformable_element_array(prim, name, values, element_type):
+    """Author a deformable simulation array with its required element-type token."""
+    from pxr import Sdf
+
+    prim.CreateAttribute(f"physics:{name}", Sdf.ValueTypeNames.FloatArray).Set(list(values))
+    prim.CreateAttribute(f"physics:{name}:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
 
 
 def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **attrs):

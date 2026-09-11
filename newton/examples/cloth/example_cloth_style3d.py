@@ -112,9 +112,7 @@ class Example:
             flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
         self.model.particle_flags = wp.array(flags)
 
-        # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2e-2
-        self.model.soft_contact_margin = 0.35e-2
+        # set up contact material parameters
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.2

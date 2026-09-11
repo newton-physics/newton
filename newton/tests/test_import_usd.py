@@ -49,7 +49,7 @@ _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
 def _expect_jointless_articulation_warning(test):
     """Require the benign jointless-articulation warning on OpenUSD < 26.0.
 
-    ``UsdPhysics.LoadUsdPhysicsFromRange`` in OpenUSD < 26.0 (e.g. the
+    ``UsdPhysics``'s native physics parser in OpenUSD < 26.0 (e.g. the
     ``usd-exchange`` build resolved on ``aarch64``) reports an articulation root
     that has no joints as an invalid ``ArticulationDesc``, which
     :func:`~newton.utils.parse_usd` surfaces as a ``UserWarning``; usd-core
@@ -1621,6 +1621,103 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_merged_joint_gain_edit_before_solver_construction(self):
+        """Verify that pre-solver gain edits promote merged USD joints to force space."""
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "World" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "Body0" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+    )
+    {
+        double size = 0.2
+    }
+
+    def Cube "Body1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+    )
+    {
+        double size = 0.2
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsPrismaticJoint "slide" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </World/Body0>
+        rel physics:body1 = </World/Body1>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+
+    def PhysicsRevoluteJoint "hinge" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </World/Body0>
+        rel physics:body1 = </World/Body1>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()], load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+
+        merged_joint = result["path_joint_map"]["/World/hinge"]
+        self.assertEqual(result["path_joint_map"]["/World/slide"], merged_joint)
+        self.assertEqual(model.joint_type.numpy()[merged_joint], newton.JointType.D6)
+        dof_start = int(model.joint_qd_start.numpy()[merged_joint])
+        dof_slice = slice(dof_start, dof_start + 2)
+        np.testing.assert_array_equal(
+            model.mujoco.solreflimit_mode.numpy()[dof_slice],
+            [SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_MJCF_DEFAULT],
+        )
+        np.testing.assert_allclose(
+            model.mujoco.solreflimit_gain_baseline.numpy()[dof_slice],
+            [[builder.default_joint_cfg.limit_ke, builder.default_joint_cfg.limit_kd]] * 2,
+            rtol=0.0,
+            atol=0.0,
+        )
+
+        limit_ke = model.joint_limit_ke.numpy()
+        limit_kd = model.joint_limit_kd.numpy()
+        limit_ke[dof_slice] = [5000.0, 6000.0]
+        limit_kd[dof_slice] = [50.0, 60.0]
+        model.joint_limit_ke.assign(limit_ke)
+        model.joint_limit_kd.assign(limit_kd)
+        SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+
+        np.testing.assert_array_equal(
+            model.mujoco.solreflimit_mode.numpy()[dof_slice],
+            [SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE],
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
         """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
@@ -1885,9 +1982,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 88.0, places=2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_newton_limit_unset_falls_through_to_mjc(self):
-        """When newton:limitStiffness is NOT authored, MuJoCo per-DOF gains
-        from mjc:solreflimit must flow through as the fallback."""
+    def test_mjc_solreflimit_does_not_replace_newton_gains(self):
+        """Keep MuJoCo solref separate from generic Newton limit gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
@@ -1958,13 +2054,14 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
-        # No Newton limitStiffness authored -> MuJoCo solreflimit-derived gains must flow.
-        # solreflimit = [0.04, 2] -> ke = 1/(d*d) = 1/0.0016 = 625, kd = 2/(d) = 50
-        # (exact values depend on the MuJoCo gain conversion; just verify NOT builder default)
+        # Native MuJoCo solref remains available to SolverMuJoCo without being
+        # converted into the generic gains used by other Newton solvers.
         limit_ke = float(model.joint_limit_ke.numpy()[dof])
         limit_kd = float(model.joint_limit_kd.numpy()[dof])
-        self.assertNotAlmostEqual(limit_ke, 999.0, places=0)
-        self.assertNotAlmostEqual(limit_kd, 88.0, places=0)
+        self.assertAlmostEqual(limit_ke, 999.0, places=2)
+        self.assertAlmostEqual(limit_kd, 88.0, places=2)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.04, 2.0], rtol=1.0e-6, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
@@ -3530,20 +3627,13 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_parsing(self):
-        """Joint mjc:solreflimit on MjcJointAPI must populate joint_limit_ke / joint_limit_kd.
-
-        Uses prismatic joints so the authored solreflimit values flow straight through to
-        joint_limit_ke / joint_limit_kd without the revolute degree->radian rescaling that
-        import_usd.py applies to angular limits.
-        """
+        """Verify that native MuJoCo limit response does not replace generic Newton gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
 
         # Joint1 authors mjc:solreflimit = [0.08, 1]. Joint2 applies MjcJointAPI but omits
-        # solreflimit, so it should use MuJoCo's schema default [0.02, 1]. Joint3 has no
-        # MjcJointAPI and should preserve the customized ModelBuilder defaults. Joint4
-        # authors [0, 0], which is invalid for gain conversion but must remain raw.
+        # solreflimit. Joint3 has no MjcJointAPI. Joint4 authors the raw [0, 0] sentinel.
         usd_content = """#usda 1.0
 (
     upAxis = "Z"
@@ -3680,17 +3770,17 @@ def Xform "Articulation" (
         raw_solreflimit = model.mujoco.solreflimit.numpy()
         solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # Joint1: solreflimit=[0.08, 1] -> ke=1/(0.08^2)=156.25, kd=2/0.08=25.0
+        # Native MuJoCo values stay separate from the configured generic gains.
         dof1 = joint_qd_start[joint1_idx]
-        self.assertAlmostEqual(float(limit_ke[dof1]), 156.25, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof1]), 25.0, places=4)
+        self.assertAlmostEqual(float(limit_ke[dof1]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof1]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(solreflimit_mode[dof1]), SOLREF_MODE_RAW)
 
-        # Joint2: no solreflimit authored -> MuJoCo default [0.02, 1]
+        # Configured builder gains override the implicit MuJoCo default.
         dof2 = joint_qd_start[joint2_idx]
-        self.assertAlmostEqual(float(limit_ke[dof2]), 2500.0, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof2]), 100.0, places=4)
-        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
+        self.assertAlmostEqual(float(limit_ke[dof2]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof2]), builder.default_joint_cfg.limit_kd, places=4)
+        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_FORCE_SPACE)
 
         # Joint3: no MjcJointAPI -> customized ModelBuilder defaults
         dof3 = joint_qd_start[joint3_idx]
@@ -3700,12 +3790,14 @@ def Xform "Articulation" (
 
         # Joint4: authored raw [0, 0] remains raw even though it cannot be converted to gains.
         dof4 = joint_qd_start[joint4_idx]
+        self.assertAlmostEqual(float(limit_ke[dof4]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof4]), builder.default_joint_cfg.limit_kd, places=4)
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_solreflimit_mode_respects_resolver_priority(self):
-        """Higher-priority authored gains must not be treated as MuJoCo's implicit default."""
+    def test_solreflimit_keeps_generic_authored_gains(self):
+        """Keep native MuJoCo solref and generic Newton gains independently."""
         from pxr import Sdf, Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
@@ -3755,6 +3847,7 @@ def Xform "Articulation" (
         token physics:axis = "X"
         float physics:lowerLimit = -1
         float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.08, 1]
     }
 }
 """
@@ -3766,18 +3859,19 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
         model = builder.finalize()
 
         joint_idx = model.joint_label.index("/Articulation/Joint")
         dof = model.joint_qd_start.numpy()[joint_idx]
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 2500.0, places=4)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 100.0, places=4)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_FORCE_SPACE)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.08, 1.0], rtol=1.0e-6, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_declared_on_physics_scene(self):
-        """A PhysicsScene declaration must be available when joint modes are emitted."""
+        """Verify that a PhysicsScene declaration exposes imported joint modes."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
@@ -3850,21 +3944,104 @@ def Xform "Articulation" (
 
         joint_idx = model.joint_label.index("/Articulation/Joint")
         dof = model.joint_qd_start.numpy()[joint_idx]
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 2500.0, places=4)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 100.0, places=4)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_solreflimit_parsing_revolute(self):
-        """Joint mjc:solreflimit on a revolute joint must produce per-radian limit_ke/_kd.
+    def test_unauthored_usd_solreflimit_uses_mujoco_default(self):
+        """Preserve MuJoCo's implicit limit response for an unauthored USD joint."""
+        from pxr import Usd
 
-        mjModel always stores stiffness per-radian for hinge joints regardless of
-        ``mjc:compiler:angle``. The USD importer divides revolute and D6-angular
-        ``limit_ke``/``limit_kd`` by ``DegreesToRadian`` on the assumption that
-        UsdPhysics-authored gains are per-degree. The MJC angular schema entries
-        compensate by pre-multiplying so the per-radian value survives. Regression
-        for #2536.
-        """
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        point3f physics:centerOfMass = (0, 0, 0)
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 1
+    }
+
+    def Xform "Link" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        point3f physics:centerOfMass = (0, 0, 0)
+        float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        float physics:mass = 1
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "Joint" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Base>
+        rel physics:body1 = </Articulation/Link>
+        token physics:axis = "Y"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+    }
+}
+"""
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                stage = Usd.Stage.CreateInMemory()
+                stage.GetRootLayer().ImportFromString(usd_content)
+
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+                model = builder.finalize(device="cpu")
+
+                joint = model.joint_label.index("/Articulation/Joint")
+                dof = int(model.joint_qd_start.numpy()[joint])
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
+                np.testing.assert_allclose(
+                    [model.joint_limit_ke.numpy()[dof], model.joint_limit_kd.numpy()[dof]],
+                    [builder.default_joint_cfg.limit_ke, builder.default_joint_cfg.limit_kd],
+                    rtol=0.0,
+                    atol=0.0,
+                )
+
+                solver = SolverMuJoCo(
+                    model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+                mjc_joints = np.flatnonzero(solver.mjc_jnt_to_newton_dof.numpy()[0] == dof)
+                self.assertEqual(len(mjc_joints), 1)
+                mjc_joint = int(mjc_joints[0])
+                np.testing.assert_allclose(
+                    solver.mjw_model.jnt_solref.numpy()[0, mjc_joint],
+                    [0.02, 1.0],
+                    rtol=1.0e-6,
+                    atol=1.0e-6,
+                )
+                np.testing.assert_allclose(
+                    solver.mj_model.jnt_solref[mjc_joint],
+                    [0.02, 1.0],
+                    rtol=1.0e-6,
+                    atol=1.0e-6,
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solreflimit_parsing_revolute(self):
+        """Verify that revolute MuJoCo solref stays separate from generic Newton gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
@@ -3964,15 +4141,12 @@ def Xform "Articulation" (
         dof2 = joint_qd_start[joint2_idx]
         solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # solreflimit=[0.08, 1] -> per-radian ke = 1/0.08^2 = 156.25, kd = 2/0.08 = 25.0.
-        # Without the MJC angular compensation, the importer would over-scale by
-        # 1/(pi/180) ~= 57.3x giving ke ~= 8952 and kd ~= 1432.
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof1]), 156.25, places=3)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof1]), 25.0, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof1]), builder.default_joint_cfg.limit_ke, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof1]), builder.default_joint_cfg.limit_kd, places=3)
+        self.assertEqual(int(solreflimit_mode[dof1]), SOLREF_MODE_RAW)
 
-        # Missing solreflimit uses MuJoCo's [0.02, 1] default in per-radian units.
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof2]), 2500.0, places=3)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof2]), 100.0, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof2]), builder.default_joint_cfg.limit_ke, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof2]), builder.default_joint_cfg.limit_kd, places=3)
         self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
 
     def test_limit_margin_parsing(self):
@@ -4899,7 +5073,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     from pxr import Gf, Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
-    parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+    parsed = usd_utils.load_physics_from_range(stage, ["/"])
     # since the key is generated from USD paths we can assume that keys are unique
     body_key_to_idx = dict(zip(model.body_label, range(model.body_count), strict=False))
     shape_key_to_idx = dict(zip(model.shape_label, range(model.shape_count), strict=False))
@@ -7107,7 +7281,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ref_attribute_parsing(self):
-        """Test that 'mjc:ref' attribute is parsed."""
+        """Interpret an unauthored-angle revolute ``mjc:ref`` in degrees."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -7160,7 +7334,64 @@ def Xform "Articulation" (
         qd_start = model.joint_qd_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
-        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
+        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], np.deg2rad(90.0), places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ref_does_not_change_usd_drive_target(self):
+        """Keep a standard USD drive target unchanged when ``mjc:ref`` is present."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+    }
+
+    def Cube "child" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "joint" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/base>
+        rel physics:body1 = </Articulation/child>
+        float drive:angular:physics:stiffness = 10.0
+        float drive:angular:physics:targetPosition = 20.0
+        float mjc:ref = 30.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        joint_idx = model.joint_label.index("/Articulation/joint")
+        target_idx = model.joint_target_q_start.numpy()[joint_idx]
+        self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
@@ -7254,10 +7485,118 @@ def Xform "Articulation" (
         qd_start = model.joint_qd_start.numpy()
 
         revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
-        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
+        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], np.deg2rad(30.0), places=4)
 
         prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_converter_degree_joint_angles_are_converted(self):
+        """Convert declared degree refs and springrefs while preserving prismatic lengths.
+
+        Both are native MuJoCo scalar joint coordinates, so ``mjc:compiler:angle = "degree"`` authors them in
+        degrees. Prismatic values are lengths and must stay unchanged.
+        """
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+    uniform token mjc:compiler:angle = "degree"
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body0" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision0" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint"
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/Body0>
+        rel physics:body1 = </Articulation/Body1>
+        float mjc:ref = 30.0
+        float mjc:springref = 45.0
+    }
+
+    def PhysicsPrismaticJoint "prismatic_joint"
+    {
+        token physics:axis = "Z"
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        float mjc:ref = 0.5
+        float mjc:springref = 0.25
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        dof_ref = model.mujoco.dof_ref.numpy()
+        springref = model.mujoco.dof_springref.numpy()
+
+        revolute_dof = qd_start[model.joint_label.index("/Articulation/revolute_joint")]
+        prismatic_dof = qd_start[model.joint_label.index("/Articulation/prismatic_joint")]
+
+        for name, value, expected in (
+            ("revolute dof_ref", dof_ref[revolute_dof], np.deg2rad(30.0)),
+            ("revolute dof_springref", springref[revolute_dof], np.deg2rad(45.0)),
+            ("prismatic dof_ref", dof_ref[prismatic_dof], 0.5),
+            ("prismatic dof_springref", springref[prismatic_dof], 0.25),
+        ):
+            with self.subTest(name):
+                self.assertAlmostEqual(value, expected, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_parsing(self):
@@ -9658,7 +9997,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
-        """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
+        """Verify NewtonMimicAPI is parsed into joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -9710,17 +10049,16 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], joint2_idx)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], joint1_idx)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[joint2_idx], joint1_idx)
         # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
-        # mimic constraints use joint coordinates, so it arrives in radians.
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+        # mimic metadata uses joint coordinates, so it arrives in radians.
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[joint2_idx, 0], math.radians(0.5), places=6)
         # coef1 is dimensionless and is passed through unscaled.
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 2.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[joint2_idx, 1], 2.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_units_follow_the_follower_joint(self):
@@ -9782,16 +10120,16 @@ def Xform "Articulation" (
         ):
             with self.subTest(leader=leader_cls.__name__, follower=follower_cls.__name__):
                 model = build(leader_cls, follower_cls)
-                self.assertEqual(model.constraint_mimic_count, 1)
-                self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], expected, places=6)
+                followers = np.flatnonzero(model.joint_mimic_joint.numpy() >= 0)
+                self.assertEqual(len(followers), 1)
+                self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[followers[0], 0], expected, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_mimic_coef0_units_survive_joint_merging(self):
-        """An angular follower merged into a D6 is still converted from degrees.
+    def test_mimic_rejects_dimension_change_from_joint_merging(self):
+        """Reject a scalar leader when joint merging makes the follower multi-DOF.
 
         Single-DOF prims sharing a body pair are merged into one D6 joint, so the
-        follower's builder joint type is D6 rather than REVOLUTE. The authored USD prim
-        is what carries the unit, and a warning notes the widened constraint.
+        follower has two coordinates while the leader has one.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -9831,19 +10169,9 @@ def Xform "Articulation" (
         prim.GetAttribute("newton:mimicCoef0").Set(0.5)
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = builder.add_usd(stage)
-        model = builder.finalize()
-
-        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
-        self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
-        self.assertEqual(model.constraint_mimic_count, 1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
-        self.assertTrue(
-            any("merged into a multi-DOF joint" in str(w.message) for w in caught),
-            "expected a warning that the mimic constraint was widened to the merged joint",
-        )
+        with self.assertWarnsRegex(UserWarning, "merged into a multi-DOF joint"):
+            with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
+                builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_warns_for_multi_dof_follower(self):
@@ -9885,11 +10213,15 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            builder.add_usd(stage)
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=6)
+        leader_idx = result["path_joint_map"]["/World/Root/Leader"]
+        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
         self.assertTrue(
             any("no defined unit" in str(w.message) for w in caught),
             "expected a warning that the offset has no defined unit for a multi-DOF follower",
@@ -10606,8 +10938,10 @@ def Xform "Articulation" (
         scene = UsdPhysics.Scene.Define(stage, "/Scene")
         scene.CreateGravityMagnitudeAttr(2.0)
 
-        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
-        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+        # Patch Newton's compat wrapper rather than the OpenUSD entry point, whose name
+        # differs across OpenUSD versions.
+        load_physics = usd_utils.load_physics_from_range
+        with mock.patch.object(usd_utils, "load_physics_from_range", wraps=load_physics) as load_physics_mock:
             result = newton.ModelBuilder().add_usd(stage)
 
         load_physics_mock.assert_called_once()
@@ -13175,7 +13509,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_mimic_joint_basic(self):
-        """PhysxMimicJointAPI on a revolute joint creates a mimic constraint."""
+        """Verify PhysxMimicJointAPI creates joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -13238,26 +13572,20 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 1)
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
 
         model = builder.finalize()
-        self.assertEqual(model.constraint_mimic_count, 1)
-
-        joint0 = model.constraint_mimic_joint0.numpy()[0]
-        joint1 = model.constraint_mimic_joint1.numpy()[0]
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        self.assertEqual(model.constraint_mimic_count, 0)
 
         follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
         leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
 
-        self.assertEqual(joint0, follower_idx)
-        self.assertEqual(joint1, leader_idx)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         # PhysX: jointPos + gearing * refPos + offset = 0
-        # Newton: joint0 = coef0 + coef1 * joint1
+        # Newton: follower = offset + multiplier * reference
         # So coef1 = -gearing = -(-2.0) = 2.0, coef0 = -offset = 0.0
-        self.assertAlmostEqual(coef0, 0.0, places=5)
-        self.assertAlmostEqual(coef1, 2.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 1], 2.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_mimic_joint_no_api_no_constraint(self):
@@ -13296,6 +13624,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder.add_usd(stage)
 
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+        self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
 class TestHasAppliedApiSchema(unittest.TestCase):
@@ -13371,8 +13700,8 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         first.CreateGravityMagnitudeAttr(2.0)
         second = UsdPhysics.Scene.Define(stage, "/World/SecondScene")
 
-        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
-        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+        load_physics = usd_utils.load_physics_from_range
+        with mock.patch.object(usd_utils, "load_physics_from_range", wraps=load_physics) as load_physics_mock:
             scenes = usd.get_physics_scenes(stage)
 
         load_physics_mock.assert_called_once()
@@ -15134,7 +15463,7 @@ def Xform "World"
             )
         )
 
-        with mock.patch("newton._src.utils.import_usd.usd.get_tetmesh", return_value=source_tetmesh):
+        with mock.patch("newton._src.utils.import_usd.usd._get_tetmesh", return_value=source_tetmesh):
             builder.add_usd(stage)
 
         self.assertEqual(set(source_tetmesh.custom_attributes), {"temperature", "regionId"})

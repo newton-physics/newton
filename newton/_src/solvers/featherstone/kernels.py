@@ -63,6 +63,123 @@ def zero_kinematic_body_forces(
     body_f[tid] = wp.spatial_vector()
 
 
+@wp.kernel
+def reduce_mimic_inertia(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_H_start: wp.array[int],
+    articulation_H_rows: wp.array[int],
+    articulation_dof_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_armature: wp.array[float],
+    H: wp.array[float],
+    H_reduced: wp.array[float],
+):
+    """Reduce a Featherstone inertia matrix to its independent coordinates."""
+    articulation = wp.tid()
+    joint_start = articulation_start[articulation]
+    joint_end = articulation_end[articulation]
+    matrix_start = articulation_H_start[articulation]
+    matrix_rows = articulation_H_rows[articulation]
+    dof_start = articulation_dof_start[articulation]
+
+    for row_joint in range(joint_start, joint_end):
+        row_reference = joint_mimic_joint[row_joint]
+        row_multiplier = float(1.0)
+        row_destination_start = joint_qd_start[row_joint]
+        if row_reference >= 0:
+            row_multiplier = joint_mimic_coeffs[row_joint][1]
+            row_destination_start = joint_qd_start[row_reference]
+
+        row_count = joint_qd_start[row_joint + 1] - joint_qd_start[row_joint]
+        for row_axis in range(row_count):
+            source_row = joint_qd_start[row_joint] + row_axis
+            destination_row = row_destination_start + row_axis
+
+            for column_joint in range(joint_start, joint_end):
+                column_reference = joint_mimic_joint[column_joint]
+                column_multiplier = float(1.0)
+                column_destination_start = joint_qd_start[column_joint]
+                if column_reference >= 0:
+                    column_multiplier = joint_mimic_coeffs[column_joint][1]
+                    column_destination_start = joint_qd_start[column_reference]
+
+                column_count = joint_qd_start[column_joint + 1] - joint_qd_start[column_joint]
+                for column_axis in range(column_count):
+                    source_column = joint_qd_start[column_joint] + column_axis
+                    destination_column = column_destination_start + column_axis
+                    value = H[matrix_start + (source_row - dof_start) * matrix_rows + (source_column - dof_start)]
+                    if source_row == source_column:
+                        value += joint_armature[source_row]
+                    wp.atomic_add(
+                        H_reduced,
+                        matrix_start + (destination_row - dof_start) * matrix_rows + (destination_column - dof_start),
+                        row_multiplier * column_multiplier * value,
+                    )
+
+    # Follower columns are unused by the reduced mapping. Give each one a unit
+    # diagonal so the fixed-size matrix remains positive definite.
+    for joint in range(joint_start, joint_end):
+        if joint_mimic_joint[joint] >= 0:
+            dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
+            for axis in range(dof_count):
+                follower_dof = joint_qd_start[joint] + axis - dof_start
+                H_reduced[matrix_start + follower_dof * matrix_rows + follower_dof] = 1.0
+
+
+@wp.kernel
+def reduce_mimic_forces(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_tau: wp.array[float],
+    joint_tau_reduced: wp.array[float],
+):
+    """Transfer follower generalized forces to their independent references."""
+    articulation = wp.tid()
+    joint_start = articulation_start[articulation]
+    joint_end = articulation_end[articulation]
+
+    for joint in range(joint_start, joint_end):
+        reference = joint_mimic_joint[joint]
+        multiplier = float(1.0)
+        destination_start = joint_qd_start[joint]
+        if reference >= 0:
+            multiplier = joint_mimic_coeffs[joint][1]
+            destination_start = joint_qd_start[reference]
+
+        dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
+        for axis in range(dof_count):
+            wp.atomic_add(
+                joint_tau_reduced,
+                destination_start + axis,
+                multiplier * joint_tau[joint_qd_start[joint] + axis],
+            )
+
+
+@wp.kernel
+def expand_mimic_accelerations(
+    joint_qd_start: wp.array[int],
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_qdd: wp.array[float],
+):
+    """Expand independent accelerations into follower coordinates."""
+    joint = wp.tid()
+    reference = joint_mimic_joint[joint]
+    if reference < 0:
+        return
+
+    multiplier = joint_mimic_coeffs[joint][1]
+    dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
+    for axis in range(dof_count):
+        joint_qdd[joint_qd_start[joint] + axis] = multiplier * joint_qdd[joint_qd_start[reference] + axis]
+
+
 @wp.func
 def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
     """
