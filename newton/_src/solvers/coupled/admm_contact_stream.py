@@ -137,7 +137,7 @@ def admm_contact_stream_update_normal_force_kernel(
         return
 
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
-    force_mag = wp.max(0.0, wp.dot(normal[i], force))
-    normal_force[i] = force_mag
-    normal_impulse[i] = force_mag * dt
+    impulse = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    impulse_mag = wp.max(0.0, wp.dot(normal[i], impulse))
+    normal_force[i] = impulse_mag / dt
+    normal_impulse[i] = impulse_mag
