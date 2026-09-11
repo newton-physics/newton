@@ -7394,12 +7394,6 @@ class ModelBuilder:
 
         self.shape_body.append(body)
         shape = self.shape_count
-        if cfg.has_shape_collision:
-            # no contacts between shapes of the same body
-            for same_body_shape in self.body_shapes[body]:
-                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
-                    continue
-                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -14046,6 +14040,12 @@ class ModelBuilder:
                     )
             validated_templates.add(template_key)
 
+    def _is_shape_pair_inherently_filtered(self, shape_a: int, shape_b: int) -> bool:
+        """Return whether a shape pair is excluded without an explicit filter pair."""
+        body_a = self.shape_body[shape_a]
+        body_b = self.shape_body[shape_b]
+        return (body_a >= 0 and body_a == body_b) or (body_a < 0 and body_b < 0)
+
     def _find_shape_contact_pairs(self, model: Model) -> None:
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
@@ -14130,6 +14130,7 @@ class ModelBuilder:
             if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
+                shape_body_np = np.asarray(self.shape_body, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
                     (int(shape_idx), self.shape_collision_group[shape_idx])
@@ -14138,6 +14139,8 @@ class ModelBuilder:
 
                 for i1, (shape_a, group_a) in enumerate(colliding_globals):
                     for shape_b, group_b in colliding_globals[i1 + 1 :]:
+                        if self._is_shape_pair_inherently_filtered(shape_a, shape_b):
+                            continue
                         if not self._test_group_pair(group_a, group_b):
                             continue
                         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
@@ -14158,12 +14161,19 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
+                    world_shape_bodies = shape_body_np[world_start:world_end]
+                    body_key = np.where(
+                        world_shape_bodies >= 0,
+                        world_shape_bodies - self.body_world_start[world],
+                        -1,
+                    ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
                     # tuples; re-hashing per-shape tuples per world dominates
                     # this loop at high world counts.
                     cache_key = (
                         shape_flags_np[world_start:world_end].tobytes(),
                         shape_group_np[world_start:world_end].tobytes(),
+                        body_key,
                         block_key,
                         explicit_filter_specs,
                     )
@@ -14198,6 +14208,8 @@ class ModelBuilder:
                         global_local_pairs = []
                         for global_shape, global_group in colliding_globals:
                             for local_shape in local_colliding_indices:
+                                if self._is_shape_pair_inherently_filtered(global_shape, world_start + local_shape):
+                                    continue
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
                                     pair = (global_shape, local_shape)
                                     if pair not in global_local_filters:
@@ -14207,6 +14219,10 @@ class ModelBuilder:
                         for i1, shape_a in enumerate(local_colliding_indices):
                             group_a = collision_groups[shape_a]
                             for shape_b in local_colliding_indices[i1 + 1 :]:
+                                if self._is_shape_pair_inherently_filtered(
+                                    world_start + shape_a, world_start + shape_b
+                                ):
+                                    continue
                                 if not self._test_group_pair(group_a, collision_groups[shape_b]):
                                     continue
 
@@ -14283,6 +14299,9 @@ class ModelBuilder:
                     break
 
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+                    continue
+
+                if self._is_shape_pair_inherently_filtered(s1, s2):
                     continue
 
                 if s1 > s2:

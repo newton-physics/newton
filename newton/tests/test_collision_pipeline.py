@@ -1318,6 +1318,37 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         test.assertEqual(n, 0, f"Expected 0 rigid contacts when only pair is excluded (got {n})")
 
 
+def test_same_body_filter_is_inherent(test, device):
+    """Reject same-body pairs without storing explicit collision filters.
+
+    Args:
+        test: The test case instance.
+        device: Warp device to run on.
+    """
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = 0.01
+        body = builder.add_body()
+        shape_a = builder.add_shape_sphere(body=body, radius=0.5)
+        shape_b = builder.add_shape_sphere(body=body, radius=0.5)
+        other_body = builder.add_body()
+        shape_c = builder.add_shape_sphere(body=other_body, radius=0.5)
+
+        model = builder.finalize(device=device)
+        test.assertEqual(model.shape_collision_filter_pairs, set())
+        expected_pairs = {(shape_a, shape_c), (shape_b, shape_c)}
+
+        for broad_phase in ("explicit", "nxn", "sap"):
+            pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            shape0 = contacts.rigid_contact_shape0.numpy()
+            shape1 = contacts.rigid_contact_shape1.numpy()
+            pairs = {(min(int(shape0[i]), int(shape1[i])), max(int(shape0[i]), int(shape1[i]))) for i in range(count)}
+            test.assertEqual(pairs, expected_pairs, broad_phase)
+
+
 add_function_test(
     TestCollisionPipelineFilterPairs,
     "test_shape_collision_filter_pairs_nxn",
@@ -1331,6 +1362,12 @@ add_function_test(
     test_shape_collision_filter_pairs,
     devices=devices,
     broad_phase="sap",
+)
+add_function_test(
+    TestCollisionPipelineFilterPairs,
+    "test_same_body_filter_is_inherent",
+    test_same_body_filter_is_inherent,
+    devices=devices,
 )
 
 
@@ -2247,7 +2284,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        world.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+        world.add_shape_mesh(body=world.add_body(), mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_world(world)
         builder.add_world(world)
@@ -2272,12 +2309,15 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         """Generate contacts for two intersecting finite planes."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_shape_plane(body=-1, width=1.0, length=1.0)
-        builder.add_shape_plane(
-            body=-1,
+        kinematic_body = builder.add_body(
             xform=wp.transform(
                 wp.vec3(0.0, 0.0, 0.0),
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0),
             ),
+            is_kinematic=True,
+        )
+        builder.add_shape_plane(
+            body=kinematic_body,
             width=1.0,
             length=1.0,
         )
