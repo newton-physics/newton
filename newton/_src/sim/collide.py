@@ -82,53 +82,14 @@ def _pair_requires_generic_convex_narrow_phase(
     return (type_a, type_b) not in _ANALYTIC_PRIMITIVE_PAIRS
 
 
-def _generic_convex_pair_requirements(
-    model: Model,
-    *,
-    broad_phase_mode: str,
-    shape_pairs_filtered: wp.array[wp.vec2i] | None,
-) -> list[bool] | None:
-    """Collect generic-convex requirements for possible shape-type pairs."""
-    shape_types_array = getattr(model, "shape_type", None)
-    if shape_types_array is None:
-        return None
-
-    shape_types = shape_types_array.numpy()
-    if broad_phase_mode == "explicit":
-        if shape_pairs_filtered is None:
-            return None
-        pairs = shape_pairs_filtered.numpy()
-        if pairs.size == 0:
-            return []
-        requirements = []
-        for shape_a, shape_b in pairs.reshape(-1, 2):
-            type_a = int(shape_types[shape_a])
-            type_b = int(shape_types[shape_b])
-            requirements.append(_pair_requires_generic_convex_narrow_phase(type_a, type_b))
-        return requirements
-
-    colliding_types = shape_types[_shape_collide_mask(model, len(shape_types))]
-    unique_types = np.unique(colliding_types)
-    return [
-        _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b))
-        for index, type_a in enumerate(unique_types)
-        for type_b in unique_types[index:]
-    ]
-
-
-def _has_generic_convex_pairs(
-    model: Model,
-    *,
-    broad_phase_mode: str,
-    shape_pairs_filtered: wp.array[wp.vec2i] | None,
-) -> bool:
-    """Conservatively prove whether any broad-phase pair can reach GJK/MPR."""
-    requirements = _generic_convex_pair_requirements(
-        model,
-        broad_phase_mode=broad_phase_mode,
-        shape_pairs_filtered=shape_pairs_filtered,
-    )
-    return True if requirements is None else any(requirements)
+_GEO_TYPE_COUNT = max(int(shape_type) for shape_type in GeoType) + 1
+_GENERIC_CONVEX_PAIR_LOOKUP = np.array(
+    [
+        [_pair_requires_generic_convex_narrow_phase(type_a, type_b) for type_b in range(_GEO_TYPE_COUNT)]
+        for type_a in range(_GEO_TYPE_COUNT)
+    ],
+    dtype=bool,
+)
 
 
 @wp.struct
@@ -874,6 +835,52 @@ _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 27_776
 _SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 65_536
 
 
+def _compute_generic_convex_pair_stats(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+    candidate_pair_work_estimate: int,
+) -> tuple[bool, int]:
+    """Determine whether generic convex pairs exist and estimate their work."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return True, candidate_pair_work_estimate
+    shape_types = shape_types_array.numpy()
+
+    if broad_phase_mode == "explicit":
+        if shape_pairs_filtered is None:
+            return True, candidate_pair_work_estimate
+        explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+        if len(explicit_pairs) == 0:
+            return False, 0
+        pair_types = shape_types[explicit_pairs]
+        generic_pair_count = int(
+            np.count_nonzero(
+                _GENERIC_CONVEX_PAIR_LOOKUP[
+                    pair_types[:, 0],
+                    pair_types[:, 1],
+                ]
+            )
+        )
+        return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
+
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
+    has_generic_convex_pairs = False
+    generic_pair_bound = 0
+    unique_types = np.unique(shape_types[colliding_mask])
+    for index, type_a in enumerate(unique_types):
+        first_mask = colliding_mask & (shape_types == type_a)
+        for type_b in unique_types[index:]:
+            if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
+                continue
+            has_generic_convex_pairs = True
+            second_mask = colliding_mask & (shape_types == type_b)
+            generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
+
+    return has_generic_convex_pairs, min(candidate_pair_work_estimate, generic_pair_bound)
+
+
 def _compute_generic_convex_pair_work_estimate(
     model: Model,
     *,
@@ -882,35 +889,12 @@ def _compute_generic_convex_pair_work_estimate(
     candidate_pair_work_estimate: int,
 ) -> int:
     """Estimate how much of the candidate-pair bound can reach GJK/MPR."""
-    shape_types_array = getattr(model, "shape_type", None)
-    if shape_types_array is None:
-        return candidate_pair_work_estimate
-
-    shape_types = shape_types_array.numpy()
-    if broad_phase_mode == "explicit":
-        requirements = _generic_convex_pair_requirements(
-            model,
-            broad_phase_mode=broad_phase_mode,
-            shape_pairs_filtered=shape_pairs_filtered,
-        )
-        return (
-            candidate_pair_work_estimate
-            if requirements is None
-            else min(candidate_pair_work_estimate, sum(requirements))
-        )
-
-    colliding_mask = _shape_collide_mask(model, len(shape_types))
-    generic_pair_bound = 0
-    unique_types = np.unique(shape_types[colliding_mask])
-    for index, type_a in enumerate(unique_types):
-        first_mask = colliding_mask & (shape_types == type_a)
-        for type_b in unique_types[index:]:
-            if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
-                continue
-            second_mask = colliding_mask & (shape_types == type_b)
-            generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
-
-    return min(candidate_pair_work_estimate, generic_pair_bound)
+    return _compute_generic_convex_pair_stats(
+        model,
+        broad_phase_mode=broad_phase_mode,
+        shape_pairs_filtered=shape_pairs_filtered,
+        candidate_pair_work_estimate=candidate_pair_work_estimate,
+    )[1]
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -1677,15 +1661,10 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
-            has_generic_convex_pairs = _has_generic_convex_pairs(
-                model,
-                broad_phase_mode=self.broad_phase_mode,
-                shape_pairs_filtered=self.shape_pairs_filtered,
-            )
             candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
-            generic_convex_pair_work_estimate = _compute_generic_convex_pair_work_estimate(
+            has_generic_convex_pairs, generic_convex_pair_work_estimate = _compute_generic_convex_pair_stats(
                 model,
                 broad_phase_mode=self.broad_phase_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
