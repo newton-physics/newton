@@ -1061,13 +1061,16 @@ def parse_usd(
         texture = material_props.get("texture")
         if texture is not None:
             mesh.texture = texture
+        roughness_texture = material_props.get("roughness_texture")
+        if roughness_texture is not None:
+            mesh.roughness_texture = roughness_texture
         if mesh.texture is not None:
             # Textures provide albedo; do not tint them with the shape palette.
             mesh.color = (1.0, 1.0, 1.0)
         elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
 
-        for key in ("opacity", "roughness", "metallic", "texture_transform"):
+        for key in ("opacity", "roughness", "roughness_texture_influence", "metallic", "texture_transform"):
             value = material_props.get(key)
             if value is not None:
                 setattr(mesh, key, value)
@@ -1076,8 +1079,9 @@ def parse_usd(
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
+        roughness_texture = material_props.get("roughness_texture")
         physics_mesh = _get_mesh_cached(prim)
-        if texture is not None:
+        if texture is not None or roughness_texture is not None:
             render_mesh = _get_mesh_cached(prim, load_uvs=True)
             # Texture UV expansion is render-only. Preserve the collision mesh's
             # mass/inertia so visibility changes do not perturb simulation.
@@ -1098,8 +1102,8 @@ def parse_usd(
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
         _apply_visual_material(mesh, material_props)
-        if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
+        if (mesh.texture is not None or mesh.roughness_texture is not None) and mesh.uvs is None:
+            logger.info("Mesh %s has a visual texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
 
     def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
@@ -1182,7 +1186,7 @@ def parse_usd(
         uvs = None
         if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
             uvs = mesh.uvs[used_vertices]
-        elif material_props.get("texture") is not None:
+        elif material_props.get("texture") is not None or material_props.get("roughness_texture") is not None:
             uvs = _get_subset_uvs(prim, used_vertices, len(used_vertices))
 
         submesh = Mesh(
@@ -1196,9 +1200,9 @@ def parse_usd(
         )
 
         _apply_visual_material(submesh, material_props)
-        if submesh.texture is not None and submesh.uvs is None:
+        if (submesh.texture is not None or submesh.roughness_texture is not None) and submesh.uvs is None:
             logger.info(
-                "Mesh material subset %s has a texture but no UV coordinates; texture sampling is disabled.",
+                "Mesh material subset %s has a visual texture but no UV coordinates; texture sampling is disabled.",
                 path_name,
             )
         return submesh
@@ -1338,7 +1342,9 @@ def parse_usd(
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
-        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
+        return any(
+            material_props.get(key) is not None for key in ("texture", "roughness_texture", "roughness", "metallic")
+        )
 
     def _is_effectively_visible(prim: Usd.Prim) -> bool:
         """Return whether ``prim`` is effectively visible in USD.

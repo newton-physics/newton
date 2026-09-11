@@ -1466,6 +1466,9 @@ void main() {
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        *,
+        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1486,6 +1489,10 @@ void main() {
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture_influence: Blend weight between ``roughness`` and
+                ``roughness_texture`` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
         """
         name = self._qualify(name)
 
@@ -1504,6 +1511,8 @@ void main() {
                 roughness=roughness,
                 metallic=metallic,
                 dynamic=dynamic,
+                roughness_texture=roughness_texture,
+                roughness_texture_influence=roughness_texture_influence,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:

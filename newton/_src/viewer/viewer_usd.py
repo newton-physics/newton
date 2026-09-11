@@ -160,7 +160,7 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
-        layer._texture_paths: dict[str, str] = {}
+        layer._texture_paths: dict[tuple[str, str], str] = {}
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
         layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
 
@@ -300,6 +300,9 @@ class ViewerUSD(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        *,
+        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -321,6 +324,10 @@ class ViewerUSD(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture_influence: Blend weight between ``roughness`` and
+                ``roughness_texture`` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
         """
 
         name = self._qualify(name)
@@ -351,8 +358,11 @@ class ViewerUSD(ViewerBase):
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
+        valid_roughness_texture = roughness_texture is not None and uvs is not None
         self._mesh_appearance[name] = {
             "texture": texture if valid_texture else None,
+            "roughness_texture": roughness_texture if valid_roughness_texture else None,
+            "roughness_texture_influence": roughness_texture_influence,
             "color": color,
             "roughness": roughness,
             "metallic": metallic,
@@ -375,10 +385,12 @@ class ViewerUSD(ViewerBase):
             st_pv.Set(uvs_np)
 
         # A UsdUVTexture shader without an "st" primvar would sample undefined data.
-        if valid_texture:
+        if valid_texture or valid_roughness_texture:
             material = self._get_preview_surface_material(
                 name,
-                texture=texture,
+                texture=texture if valid_texture else None,
+                roughness_texture=roughness_texture if valid_roughness_texture else None,
+                roughness_texture_influence=roughness_texture_influence,
                 opacity=opacity,
                 roughness=roughness,
                 metallic=metallic,
@@ -409,13 +421,14 @@ class ViewerUSD(ViewerBase):
                 )
             display_opacity.Set([float(np.clip(opacity, 0.0, 1.0))], self._frame_index)
 
-    def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
+    def _resolve_texture_path(self, mesh_name: str, texture, *, texture_role: str = "color") -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""
         if isinstance(texture, str):
             return os.path.abspath(texture)
 
-        if mesh_name in self._texture_paths:
-            return self._texture_paths[mesh_name]
+        cache_key = (mesh_name, texture_role)
+        if cache_key in self._texture_paths:
+            return self._texture_paths[cache_key]
 
         from ..utils.texture import load_texture  # noqa: PLC0415
 
@@ -425,7 +438,8 @@ class ViewerUSD(ViewerBase):
 
         tex_dir = os.path.dirname(self.output_path)
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
-        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
+        role_suffix = "" if texture_role == "color" else f"_{texture_role}"
+        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}{role_suffix}.png")
         try:
             self._save_texture_atomic(tex_array, tex_path)
         except Exception as exc:
@@ -435,7 +449,7 @@ class ViewerUSD(ViewerBase):
             )
             return None
 
-        self._texture_paths[mesh_name] = tex_path
+        self._texture_paths[cache_key] = tex_path
         return tex_path
 
     @staticmethod
@@ -470,25 +484,35 @@ class ViewerUSD(ViewerBase):
         opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """Return a cached UsdPreviewSurface material for the requested appearance."""
         from pxr import Sdf as _Sdf
         from pxr import UsdShade
 
         tex_path = self._resolve_texture_path(mesh_name, texture) if texture is not None else None
+        roughness_tex_path = (
+            self._resolve_texture_path(mesh_name, roughness_texture, texture_role="roughness")
+            if roughness_texture is not None
+            else None
+        )
         color_value = self._material_color(color)
         requested_opacity_value = self._material_float(opacity, 1.0)
         opacity_value = self._preview_surface_opacity_value(requested_opacity_value)
         roughness_value = self._material_float(roughness, 0.5)
+        roughness_influence_value = self._material_float(roughness_texture_influence, 1.0)
         metallic_value = self._material_float(metallic, 0.0)
         ior_value = self._preview_surface_ior_value(requested_opacity_value)
 
         key = (
             "preview",
             os.path.normcase(tex_path) if tex_path is not None else None,
+            os.path.normcase(roughness_tex_path) if roughness_tex_path is not None else None,
             tuple(self._material_key_value(v) for v in color_value),
             self._material_key_value(opacity_value),
             self._material_key_value(roughness_value),
+            self._material_key_value(roughness_influence_value),
             self._material_key_value(metallic_value),
             self._material_key_value(ior_value) if ior_value is not None else None,
         )
@@ -503,7 +527,8 @@ class ViewerUSD(ViewerBase):
         surface = UsdShade.Shader.Define(self.stage, f"{mat_path}/PreviewSurface")
         surface.CreateIdAttr("UsdPreviewSurface")
         diff_input = surface.CreateInput("diffuseColor", _Sdf.ValueTypeNames.Color3f)
-        surface.CreateInput("roughness", _Sdf.ValueTypeNames.Float).Set(roughness_value)
+        roughness_input = surface.CreateInput("roughness", _Sdf.ValueTypeNames.Float)
+        roughness_input.Set(roughness_value)
         surface.CreateInput("metallic", _Sdf.ValueTypeNames.Float).Set(metallic_value)
         surface.CreateInput("opacity", _Sdf.ValueTypeNames.Float).Set(opacity_value)
         surface.CreateInput("opacityMode", _Sdf.ValueTypeNames.Token).Set("transparent")
@@ -511,6 +536,13 @@ class ViewerUSD(ViewerBase):
         if ior_value is not None:
             surface.CreateInput("ior", _Sdf.ValueTypeNames.Float).Set(ior_value)
         material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+
+        st_reader = None
+        if tex_path is not None or roughness_tex_path is not None:
+            st_reader = UsdShade.Shader.Define(self.stage, f"{mat_path}/PrimvarSt")
+            st_reader.CreateIdAttr("UsdPrimvarReader_float2")
+            st_reader.CreateInput("varname", _Sdf.ValueTypeNames.Token).Set("st")
+            st_reader.CreateOutput("result", _Sdf.ValueTypeNames.Float2)
 
         if tex_path is not None:
             tex_reader = UsdShade.Shader.Define(self.stage, f"{mat_path}/DiffuseTexture")
@@ -521,16 +553,27 @@ class ViewerUSD(ViewerBase):
             tex_reader.CreateInput("wrapT", _Sdf.ValueTypeNames.Token).Set("repeat")
             tex_reader.CreateOutput("rgb", _Sdf.ValueTypeNames.Float3)
             diff_input.ConnectToSource(tex_reader.ConnectableAPI(), "rgb")
-
-            st_reader = UsdShade.Shader.Define(self.stage, f"{mat_path}/PrimvarSt")
-            st_reader.CreateIdAttr("UsdPrimvarReader_float2")
-            st_reader.CreateInput("varname", _Sdf.ValueTypeNames.Token).Set("st")
-            st_reader.CreateOutput("result", _Sdf.ValueTypeNames.Float2)
             tex_reader.CreateInput("st", _Sdf.ValueTypeNames.Float2).ConnectToSource(
                 st_reader.ConnectableAPI(), "result"
             )
         else:
             diff_input.Set(Gf.Vec3f(*color_value))
+
+        if roughness_tex_path is not None:
+            roughness_reader = UsdShade.Shader.Define(self.stage, f"{mat_path}/RoughnessTexture")
+            roughness_reader.CreateIdAttr("UsdUVTexture")
+            roughness_reader.CreateInput("file", _Sdf.ValueTypeNames.Asset).Set(roughness_tex_path)
+            roughness_reader.CreateInput("sourceColorSpace", _Sdf.ValueTypeNames.Token).Set("raw")
+            roughness_reader.CreateInput("wrapS", _Sdf.ValueTypeNames.Token).Set("repeat")
+            roughness_reader.CreateInput("wrapT", _Sdf.ValueTypeNames.Token).Set("repeat")
+            roughness_reader.CreateInput("scale", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_influence_value))
+            roughness_bias = (1.0 - roughness_influence_value) * roughness_value
+            roughness_reader.CreateInput("bias", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_bias))
+            roughness_reader.CreateOutput("r", _Sdf.ValueTypeNames.Float)
+            roughness_reader.CreateInput("st", _Sdf.ValueTypeNames.Float2).ConnectToSource(
+                st_reader.ConnectableAPI(), "result"
+            )
+            roughness_input.ConnectToSource(roughness_reader.ConnectableAPI(), "r")
 
         self._preview_materials[key] = material
         return material
@@ -631,6 +674,8 @@ class ViewerUSD(ViewerBase):
 
         mesh_appearance = self._mesh_appearance.get(mesh, {})
         mesh_texture = mesh_appearance.get("texture")
+        mesh_roughness_texture = mesh_appearance.get("roughness_texture")
+        mesh_roughness_texture_influence = mesh_appearance.get("roughness_texture_influence", 1.0)
         mesh_opacity = mesh_appearance.get("opacity")
 
         for i in range(len(xforms)):
@@ -680,9 +725,8 @@ class ViewerUSD(ViewerBase):
             if (appearance_changed or created_instance) and (
                 material_color is not None or material_opacity is not None or material_params is not None
             ):
-                use_texture = mesh_texture is not None and (
-                    material_params is None or len(material_params) < 4 or material_params[3] > 0.5
-                )
+                textures_enabled = material_params is None or len(material_params) < 4 or material_params[3] > 0.5
+                use_texture = mesh_texture is not None and textures_enabled
                 roughness = (
                     float(material_params[0]) if material_params is not None and len(material_params) > 0 else None
                 )
@@ -692,6 +736,8 @@ class ViewerUSD(ViewerBase):
                 material = self._get_preview_surface_material(
                     mesh,
                     texture=mesh_texture if use_texture else None,
+                    roughness_texture=mesh_roughness_texture if textures_enabled else None,
+                    roughness_texture_influence=mesh_roughness_texture_influence,
                     color=None if use_texture else material_color,
                     opacity=float(material_opacity) if material_opacity is not None else None,
                     roughness=roughness,

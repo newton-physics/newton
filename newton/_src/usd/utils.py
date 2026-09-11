@@ -1206,6 +1206,8 @@ def _get_mesh_from_source(
         compute_inertia=compute_inertia,
         color=material_source.color if material_source is not None else None,
         texture=material_source.texture if material_source is not None else None,
+        roughness_texture=material_source.roughness_texture if material_source is not None else None,
+        roughness_texture_influence=material_source.roughness_texture_influence if material_source is not None else 1.0,
         metallic=material_source.metallic if material_source is not None else None,
         roughness=material_source.roughness if material_source is not None else None,
         texture_transform=material_source.texture_transform
@@ -1782,6 +1784,10 @@ def get_mesh(
         color=material_props.get("color"),
         opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
+        roughness_texture=material_props.get("roughness_texture"),
+        roughness_texture_influence=material_props["roughness_texture_influence"]
+        if material_props.get("roughness_texture_influence") is not None
+        else 1.0,
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
         texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
@@ -2863,6 +2869,24 @@ def _resolve_color_texture_asset(
     return linear_texture_to_srgb(pixels)
 
 
+def _resolve_uv_texture_asset(
+    shader: UsdShade.Shader,
+    prim: Usd.Prim,
+    *,
+    is_color: bool,
+) -> str | np.ndarray | None:
+    """Resolve the file authored on a ``UsdUVTexture`` shader."""
+    file_input = shader.GetInput("file")
+    if not file_input:
+        return None
+    attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
+    asset_attr = attrs[0] if attrs else file_input.GetAttr()
+    asset = asset_attr.Get()
+    if is_color:
+        return _resolve_color_texture_asset(asset, prim, asset_attr, shader)
+    return _resolve_asset_path(asset, prim, asset_attr)
+
+
 def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | np.ndarray | None:
     """Search a shader network for a connected texture asset.
 
@@ -2878,16 +2902,7 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
         return None
     shader_id = shader.GetIdAttr().Get()
     if shader_id == "UsdUVTexture":
-        file_input = shader.GetInput("file")
-        if file_input:
-            attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
-            if attrs:
-                asset = attrs[0].Get()
-                return _resolve_color_texture_asset(asset, prim, attrs[0], shader)
-            asset = file_input.Get()
-            if asset:
-                return _resolve_color_texture_asset(asset, prim, file_input.GetAttr(), shader)
-        return None
+        return _resolve_uv_texture_asset(shader, prim, is_color=True)
     if shader_id == "UsdPreviewSurface":
         for input_name in ("diffuseColor", "baseColor"):
             shader_input = shader.GetInput(input_name)
@@ -2942,6 +2957,8 @@ def _empty_material_properties() -> dict[str, Any]:
         "metallic": None,
         "roughness": None,
         "texture": None,
+        "roughness_texture": None,
+        "roughness_texture_influence": None,
         "texture_transform": None,
     }
 
@@ -3168,16 +3185,27 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         except Exception:
             has_roughness_source = False
         if has_roughness_source:
+            roughness_texture, roughness_transform = _roughness_texture_from_input(roughness_input, prim)
+            properties["roughness_texture"] = roughness_texture
+            if roughness_texture is not None:
+                properties["roughness_texture_influence"] = 1.0
+            if properties["texture_transform"] is None and roughness_transform is not None:
+                properties["texture_transform"] = roughness_transform
+
+            # Preserve the authored input value as the renderer's fallback when
+            # the texture cannot be sampled.
+            properties["roughness"] = _coerce_float(roughness_input.Get())
             source = roughness_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
-            roughness_value = _get_input_value(
-                source_shader,
-                ("roughness", "roughness_constant", "reflection_roughness_constant"),
-            )
-            properties["roughness"] = _coerce_float(roughness_value)
             if properties["roughness"] is None:
+                roughness_value = _get_input_value(
+                    source_shader,
+                    ("roughness", "roughness_constant", "reflection_roughness_constant"),
+                )
+                properties["roughness"] = _coerce_float(roughness_value)
+            if properties["roughness"] is None and properties["roughness_texture"] is None:
                 warnings.warn(
-                    "Roughness texture inputs are not yet supported; using scalar fallback.",
+                    "Could not resolve connected roughness input; using the renderer default.",
                     stacklevel=2,
                 )
         else:
@@ -3200,11 +3228,67 @@ def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
 # input name is the disambiguator for both connected and direct-asset textures.
 _COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
 
+_ROUGHNESS_TEXTURE_INPUT_NAMES = frozenset(
+    (
+        "roughness",
+        "roughnesstexture",
+        "reflectionroughnesstexture",
+    )
+)
+
 
 def _is_color_texture_input_name(base_name: str) -> bool:
     """Return whether an input name denotes a base-color/albedo texture parameter."""
     name = base_name.lower()
     return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
+
+
+def _is_roughness_texture_input_name(base_name: str) -> bool:
+    """Return whether an input can provide the primary surface roughness map."""
+    normalized = base_name.lower().replace("_", "")
+    return normalized in _ROUGHNESS_TEXTURE_INPUT_NAMES
+
+
+def _default_roughness_texture_influence(input_name: str) -> float:
+    """Return the shader convention's default roughness-map influence."""
+    normalized = input_name.lower().replace("_", "")
+    return 0.0 if normalized == "reflectionroughnesstexture" else 1.0
+
+
+def _roughness_texture_from_input(
+    surface_input: UsdShade.Input,
+    prim: Usd.Prim,
+) -> tuple[str | np.ndarray | None, tuple[tuple[float, float, float], tuple[float, float, float]] | None]:
+    """Return a linear roughness texture and its standard UV transform."""
+    if not _is_roughness_texture_input_name(surface_input.GetBaseName()):
+        return None, None
+
+    try:
+        producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
+    except Exception:
+        producing = ()
+    for attr in producing:
+        source_shader = UsdShade.Shader(attr.GetPrim())
+        try:
+            is_uv_texture = source_shader.GetIdAttr().Get() == "UsdUVTexture"
+        except Exception:
+            is_uv_texture = False
+        if not is_uv_texture:
+            continue
+        texture = _resolve_uv_texture_asset(source_shader, prim, is_color=False)
+        if texture is not None:
+            return texture, _extract_usd_transform2d(source_shader)
+
+    try:
+        connected = surface_input.HasConnectedSource()
+    except Exception:
+        connected = False
+    if not connected:
+        asset = surface_input.Get()
+        texture = _resolve_asset_path(asset, prim, surface_input.GetAttr())
+        if texture is not None:
+            return texture, None
+    return None, None
 
 
 def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
@@ -3305,6 +3389,27 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         roughness_value = _get_input_value(shader, ("reflection_roughness_constant", "roughness_constant", "roughness"))
         properties["roughness"] = _coerce_float(roughness_value)
 
+    if properties["roughness_texture"] is None:
+        for inp in shader.GetInputs():
+            roughness_texture, roughness_transform = _roughness_texture_from_input(inp, prim)
+            if roughness_texture is None:
+                continue
+            properties["roughness_texture"] = roughness_texture
+            influence = _coerce_float(
+                _get_input_value(
+                    shader,
+                    ("reflection_roughness_texture_influence", "roughness_texture_influence"),
+                )
+            )
+            if influence is None:
+                # OmniPBR disables an authored roughness map by default; generic
+                # roughness-map inputs conventionally use the map directly.
+                influence = _default_roughness_texture_influence(inp.GetBaseName())
+            properties["roughness_texture_influence"] = influence
+            if properties["texture_transform"] is None and roughness_transform is not None:
+                properties["texture_transform"] = roughness_transform
+            break
+
     if properties["texture"] is None:
         for inp in shader.GetInputs():
             texture = _color_texture_from_input(inp, prim)
@@ -3325,6 +3430,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     if material is None:
         return properties
 
+    roughness_texture_input_name = None
     for inp in material.GetInputs():
         name = inp.GetBaseName()
         name_lower = name.lower()
@@ -3337,7 +3443,15 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
         if value is None:
             continue
 
-        if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
+        if properties["roughness_texture"] is None and _is_roughness_texture_input_name(name):
+            roughness_texture, _ = _roughness_texture_from_input(inp, prim)
+            if roughness_texture is not None:
+                properties["roughness_texture"] = roughness_texture
+                roughness_texture_input_name = name
+                continue
+
+        is_generic_color_texture = name_lower in ("texture", "file")
+        if properties["texture"] is None and (is_generic_color_texture or _is_color_texture_input_name(name)):
             texture = _resolve_color_texture_asset(value, prim, inp.GetAttr())
             if texture is not None:
                 properties["texture"] = texture
@@ -3383,6 +3497,17 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             roughness = _coerce_float(value)
             if roughness is not None:
                 properties["roughness"] = roughness
+
+        if properties["roughness_texture_influence"] is None and name_lower in (
+            "roughness_texture_influence",
+            "reflection_roughness_texture_influence",
+        ):
+            properties["roughness_texture_influence"] = _coerce_float(value)
+
+    if properties["roughness_texture"] is not None and properties["roughness_texture_influence"] is None:
+        properties["roughness_texture_influence"] = _default_roughness_texture_influence(
+            roughness_texture_input_name or ""
+        )
 
     return properties
 
@@ -3443,7 +3568,15 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "color", "opacity", "metallic", "roughness"):
+    for key in (
+        "texture",
+        "roughness_texture",
+        "roughness_texture_influence",
+        "color",
+        "opacity",
+        "metallic",
+        "roughness",
+    ):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     display_props = _extract_display_primvar_properties(target_prim)
@@ -3504,6 +3637,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                     continue
                 if (
                     subset_props.get("texture") is not None
+                    or subset_props.get("roughness_texture") is not None
                     or subset_props.get("color") is not None
                     or subset_props.get("opacity") is not None
                 ):

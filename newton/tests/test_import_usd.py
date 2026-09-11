@@ -7991,18 +7991,39 @@ def Xform "Articulation" (
         return stage
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_fallback_texture_ignores_scalar_data_maps(self):
-        """A shader wiring only a single-channel data map imports no base-color texture.
+    def test_fallback_texture_routes_scalar_data_maps(self):
+        """Import a roughness map without mistaking it for a base-color texture.
 
         Regression test: the fallback texture search must not mistake a scalar data
         map (here a roughness map consumed from the ``r`` output) for the diffuse
-        texture. Selection is by the connected ``UsdUVTexture`` output type.
+        texture. It must retain the map in the dedicated roughness-texture slot.
         """
         stage = self._build_custom_shader_mesh_stage(with_diffuse=False)
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
+        self.assertIsInstance(src.roughness_texture, str)
+        self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 1.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preview_surface_imports_roughness_texture(self):
+        """Import a standard Preview Surface roughness connection as linear data."""
+        from pxr import UsdShade
+
+        stage = self._build_custom_shader_mesh_stage(with_diffuse=False)
+        surface = UsdShade.Shader(stage.GetPrimAtPath("/M/Surface"))
+        surface.GetIdAttr().Set("UsdPreviewSurface")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+
+        self.assertIsNone(src.texture)
+        self.assertIsInstance(src.roughness_texture, str)
+        self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 1.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_fallback_texture_prefers_color_output(self):
@@ -8060,7 +8081,7 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
 
-    def _build_mdl_shader_mesh_stage(self, texture_inputs: dict):
+    def _build_mdl_shader_mesh_stage(self, texture_inputs: dict, float_inputs: dict | None = None):
         """Build a stage whose mesh binds an MDL-style shader with direct asset parameters.
 
         MDL materials wire textures as direct asset inputs (e.g. ``diffuse_texture``)
@@ -8090,17 +8111,20 @@ def Xform "Articulation" (
         shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
         for name, asset in texture_inputs.items():
             shader.CreateInput(name, Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(asset))
+        for name, value in (float_inputs or {}).items():
+            shader.CreateInput(name, Sdf.ValueTypeNames.Float).Set(value)
         material.CreateOutput("mdl:surface", Sdf.ValueTypeNames.Token).ConnectToSource(shader.ConnectableAPI(), "out")
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
         return stage
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mdl_direct_asset_selects_diffuse_texture(self):
-        """An MDL shader's direct ``diffuse_texture`` parameter imports as the base color.
+        """Route an MDL shader's direct texture parameters to their PBR slots.
 
         Regression test: MDL wires textures as direct asset parameters (no
         ``UsdUVTexture`` node), so the base-color parameter is recognized by name;
-        a ``normalmap_texture`` must not be selected instead.
+        a ``normalmap_texture`` must not be selected instead, and OmniPBR's
+        ``reflectionroughness_texture`` must remain a linear roughness map.
         """
         stage = self._build_mdl_shader_mesh_stage(
             {"normalmap_texture": "normal.png", "diffuse_texture": "albedo.png", "reflectionroughness_texture": "r.png"}
@@ -8110,6 +8134,26 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsInstance(src.texture, str)
         self.assertTrue(src.texture.endswith("albedo.png"), src.texture)
+        self.assertIsInstance(src.roughness_texture, str)
+        self.assertTrue(src.roughness_texture.endswith("r.png"), src.roughness_texture)
+        self.assertEqual(src.roughness_texture_influence, 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mdl_roughness_texture_preserves_influence(self):
+        """Preserve OmniPBR's blend between scalar and texture roughness."""
+        stage = self._build_mdl_shader_mesh_stage(
+            {"reflectionroughness_texture": "r.png"},
+            {
+                "reflection_roughness_constant": 0.8,
+                "reflection_roughness_texture_influence": 0.25,
+            },
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+
+        self.assertAlmostEqual(src.roughness, 0.8)
+        self.assertAlmostEqual(src.roughness_texture_influence, 0.25)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mdl_direct_asset_ignores_non_color_maps(self):

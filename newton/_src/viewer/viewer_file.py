@@ -1348,6 +1348,9 @@ class ViewerFile(ViewerBase):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        *,
+        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """File viewer does not render meshes.
 
@@ -1368,6 +1371,8 @@ class ViewerFile(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture_influence: Blend weight between scalar and texture roughness (unused).
         """
         pass
 
