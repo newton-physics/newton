@@ -1051,7 +1051,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # deterministic modes use the per-particle gather, which needs no atomics.
         self._particle_contact_use_gather = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         particle_deterministic_max_records = 0
-        coupling_deterministic_max_records = 0
         if effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
             if model.attachment_particle_body_count > 0:
                 attachment_particles = model.attachment_particle_body_particle.numpy()
