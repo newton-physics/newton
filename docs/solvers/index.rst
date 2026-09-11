@@ -346,6 +346,17 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
 | :sup:`8` VBD applies regularized Coulomb friction to each free coordinate of REVOLUTE, PRISMATIC, and D6 joints. The force is ``-joint_friction * tanh(qd / 0.01)``; near rest this allows slow creep rather than exact sticking. Friction on either joint in a mimic pair resists the coupled motion.
 
+VBD also supports passive viscous :attr:`~newton.Model.joint_damping` for
+REVOLUTE, PRISMATIC, and D6 joints. Set ``damping`` when adding a joint, or
+on its :class:`~newton.ModelBuilder.JointDofConfig`. Each free coordinate
+receives a resisting force or torque ``-damping * qd``. This differs from
+``joint_target_kd``, which damps toward the drive's target velocity. Passive
+damping works with or without a drive and adds to Coulomb friction. On a mimic
+pair, damping on either joint resists the coupled motion. VBD includes both
+in its implicit body solve; no additional iteration setting is needed.
+Values in ``model.joint_damping`` can be changed without rebuilding the solver
+or recapturing a CUDA graph. Other VBD joint types currently ignore this property.
+
 **Actuation and control**
 
 .. list-table::

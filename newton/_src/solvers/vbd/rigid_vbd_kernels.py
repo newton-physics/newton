@@ -2681,7 +2681,7 @@ def _eval_joint_axis_friction(rate: float, friction: float, inv_dt: float):
 
 
 @wp.func
-def _evaluate_joint_friction(
+def _evaluate_joint_dissipation(
     body: int,
     joint: int,
     body_q: wp.array[wp.transform],
@@ -2697,13 +2697,16 @@ def _evaluate_joint_friction(
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
     joint_friction: wp.array[float],
+    joint_damping: wp.array[float],
     dt: float,
 ):
-    """Differentiate frictional dissipation in the actual joint coordinates.
+    """Assemble Coulomb friction and passive damping in joint coordinates.
 
     Using coordinate increments avoids fictitious sliding when both bodies
     rotate together. Coordinate gradients also include the moving parent
     axis and use Euler-coordinate covectors for multi-axis D6 rotations.
+    Viscous damping adds d * rate to the resisting force and d / dt to
+    its positive pose-space solve metric, independently of drive targets.
     """
     force, torque, H_ll, H_al, H_aa = _zero_force_hessian()
     jt = joint_type[joint]
@@ -2711,8 +2714,10 @@ def _evaluate_joint_friction(
         return force, torque, H_ll, H_al, H_aa
     linear_count = joint_dof_dim[joint, 0]
     for component in range(linear_count + joint_dof_dim[joint, 1]):
-        friction = joint_friction[joint_qd_start[joint] + component]
-        if friction <= 0.0:
+        dof = joint_qd_start[joint] + component
+        friction = joint_friction[dof]
+        damping = wp.max(joint_damping[dof], 0.0)
+        if friction <= 0.0 and damping == 0.0:
             continue
         q, g_p, g_c = eval_joint_mimic_coordinate(
             joint,
@@ -2745,7 +2750,10 @@ def _evaluate_joint_friction(
         displacement = q - q_prev
         if component >= linear_count:
             displacement = wp.atan2(wp.sin(displacement), wp.cos(displacement))
-        f, h = _eval_joint_axis_friction(displacement / dt, friction, 1.0 / dt)
+        rate = displacement / dt
+        f, h = _eval_joint_axis_friction(rate, friction, 1.0 / dt)
+        f += damping * rate
+        h += damping / dt
         gradient = g_c
         if body == joint_parent[joint]:
             gradient = g_p
@@ -5772,6 +5780,7 @@ def solve_rigid_body(
     joint_dof_dim: wp.array2d[int],
     joint_rest_angle: wp.array[float],
     joint_friction: wp.array[float],
+    joint_damping: wp.array[float],
     external_forces: wp.array[wp.vec3],
     external_torques: wp.array[wp.vec3],
     # Preaccumulated rigid-contact Hessian contributions
@@ -5952,7 +5961,7 @@ def solve_rigid_body(
             dt,
         )
 
-        friction_force, friction_torque, friction_H_ll, friction_H_al, friction_H_aa = _evaluate_joint_friction(
+        passive_force, passive_torque, passive_H_ll, passive_H_al, passive_H_aa = _evaluate_joint_dissipation(
             body_index,
             joint_idx,
             body_q,
@@ -5968,13 +5977,14 @@ def solve_rigid_body(
             joint_dof_dim,
             joint_axis,
             joint_friction,
+            joint_damping,
             dt,
         )
-        joint_force += friction_force
-        joint_torque += friction_torque
-        joint_H_ll += friction_H_ll
-        joint_H_al += friction_H_al
-        joint_H_aa += friction_H_aa
+        joint_force += passive_force
+        joint_torque += passive_torque
+        joint_H_ll += passive_H_ll
+        joint_H_al += passive_H_al
+        joint_H_aa += passive_H_aa
 
         f_force = f_force + joint_force
         f_torque = f_torque + joint_torque

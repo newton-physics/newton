@@ -1,14 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Passive VBD gripper: drag the left finger against friction on the right.
+"""Passive VBD gripper: drag a finger against friction and viscous damping.
 
 Run with the example dependencies installed:
     uv run --extra examples -m newton.examples vbd_mimic_gripper
 
 Right-drag either fingertip. The viewer draws the picking spring. Compare
 friction = 0 with friction = 0.15 N*m; release the mouse to observe stopping.
-Expand "Example Options" in the viewer sidebar for the friction slider and plots.
+Expand "Example Options" for the right hinge's friction and damping sliders
+and plots. Friction is nearly constant while sliding; viscous damping grows
+with speed. Either resistance slows both fingers through the mimic joint.
 The plots show mirrored angles and speeds. VBD regularizes friction near
 zero speed, so creep is normal.
 The fingers are 30 cm long and about 0.8 kg each. The 16 substeps resolve the
@@ -17,6 +19,7 @@ friction smoothing region; much lighter fingers need a smaller step or friction.
 For a reproducible coast-down without picking:
     uv run --extra examples -m newton.examples vbd_mimic_gripper --initial-speed 0.5
     uv run --extra examples -m newton.examples vbd_mimic_gripper --initial-speed 0.5 --friction 0
+    uv run --extra examples -m newton.examples vbd_mimic_gripper --initial-speed 0.5 --friction 0 --damping 0.3
 """
 
 import math
@@ -41,14 +44,17 @@ class Example:
         self.sim_dt = self.frame_dt / self.SUBSTEPS
         self.sim_time = 0.0
         self.friction = float(args.friction)
+        self.damping = float(args.damping)
         if not math.isfinite(self.friction) or not 0.0 <= self.friction <= 0.3:
             raise ValueError("friction must be in [0, 0.3] N*m")
+        if not math.isfinite(self.damping) or not 0.0 <= self.damping <= 1.0:
+            raise ValueError("damping must be in [0, 1] N*m*s/rad")
         if not math.isfinite(args.initial_speed) or abs(args.initial_speed) > 1.0:
             raise ValueError("initial-speed must be in [-1, 1] rad/s")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        # With no contacts, motors, or passive damping, resistance comes from
-        # hinge friction and, at the ends of travel, the angular limits.
+        # With no contacts or motors, resistance comes from the hinge's passive
+        # friction/damping and, at the ends of travel, the angular limits.
         finger_cfg = newton.ModelBuilder.ShapeConfig(
             density=2200.0,
             has_shape_collision=False,
@@ -90,7 +96,7 @@ class Example:
                 axis=newton.Axis.Z,
                 target_ke=0.0,
                 target_kd=0.0,
-                damping=0.0,
+                damping=0.0 if i == 0 else self.damping,
                 armature=0.0,
                 friction=0.0 if i == 0 else self.friction,
                 limit_lower=0.0 if i == 0 else -math.radians(55.0),
@@ -168,6 +174,11 @@ class Example:
         self.friction = float(friction)
         self.model.joint_friction[1:2].fill_(self.friction)
 
+    def set_damping(self, damping):
+        """Change follower damping without rebuilding the solver or CUDA graph."""
+        self.damping = float(damping)
+        self.model.joint_damping[1:2].fill_(self.damping)
+
     def simulate(self):
         """Advance one frame with GPU operations that can be captured and replayed."""
         for _ in range(self.SUBSTEPS):
@@ -198,16 +209,22 @@ class Example:
         self.max_mimic_error = max(self.max_mimic_error, abs(float(self.q[0] + self.q[1])))
 
     def gui(self, ui):
-        """Adjust follower friction live and plot mirrored angles and speeds."""
+        """Adjust follower resistance live and plot mirrored angles and speeds."""
         from imgui_bundle import implot  # noqa: PLC0415 - optional GUI dependency
 
         ui.text_wrapped("Right-drag a fingertip; release to let go.")
-        ui.text_wrapped("Blue: left hinge. Orange: frictional right hinge.")
+        ui.text_wrapped("Blue: left hinge. Orange: right hinge with friction and damping.")
         ui.text("Right hinge friction [N*m]")
         ui.set_next_item_width(-1)
         changed, friction = ui.slider_float("##right_friction", self.friction, 0.0, 0.3, "%.3f")
         if changed:
             self.set_friction(friction)
+        ui.text("Right hinge damping [N*m*s/rad]")
+        ui.set_next_item_width(-1)
+        changed, damping = ui.slider_float("##right_damping", self.damping, 0.0, 1.0, "%.3f")
+        if changed:
+            self.set_damping(damping)
+        ui.text_wrapped("Friction is nearly constant while sliding; damping grows with speed.")
         if ui.button("Reset"):
             self.reset()
         ui.text(f"Left speed: {math.degrees(self.qd[0]):+.2f} deg/s")
@@ -255,6 +272,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--friction", type=float, default=0.15, help="Right hinge friction [N*m].")
+        parser.add_argument("--damping", type=float, default=0.0, help="Right hinge passive damping [N*m*s/rad].")
         parser.add_argument("--initial-speed", type=float, default=0.0, help="Initial opening speed [rad/s].")
         parser.set_defaults(num_frames=600, render_fps=60)
         return parser

@@ -199,6 +199,13 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
+        - :attr:`~newton.Model.joint_damping` is supported for REVOLUTE, PRISMATIC, and D6
+          joints as a per-DOF passive viscous damper: ``force = -joint_damping * qd``
+          [N or N·m]. Unlike drive damping (``joint_target_kd``), it always opposes
+          motion, regardless of drive targets. It is solved
+          implicitly alongside Coulomb friction, including on mimic followers.
+          Coefficients are read live; changing array values needs no notification
+          or CUDA graph recapture. Other joint types do not use this property.
         - :attr:`~newton.Model.joint_friction` is supported for REVOLUTE, PRISMATIC, and D6
           joints as a per-DOF Coulomb dry-friction force or torque [N or N·m]. The friction
           force is ``-joint_friction * tanh(qd / 0.01)`` (velocity in m/s or rad/s).
@@ -3612,6 +3619,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_dof_dim,
                     self.joint_rest_angle,
                     model.joint_friction,
+                    model.joint_damping,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
