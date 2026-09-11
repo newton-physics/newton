@@ -90,7 +90,6 @@ def _soft_solver_entry_args(soft_solver: str, args):
                 "particle_enable_self_contact": False,
                 "particle_enable_tile_solve": False,
                 "rigid_compliant_alm": True,
-                "rigid_body_particle_contact_buffer_size": 512,
             },
         )
     raise ValueError(f"Unsupported soft solver {soft_solver!r}")
@@ -209,7 +208,6 @@ class Example:
                 particle_enable_self_contact=False,
                 particle_enable_tile_solve=False,
                 rigid_compliant_alm=True,
-                rigid_body_particle_contact_buffer_size=512,
             )
         elif self.solver_type == "coupled":
             rigid_name, rigid_solver, rigid_kwargs = _rigid_solver_entry_args(self.rigid_solver)

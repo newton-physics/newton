@@ -2339,7 +2339,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
     np.testing.assert_allclose(state_out.body_qd.numpy()[source_bodies], model_qd[source_bodies], atol=1.0e-5)
 
 
-def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, radius=0.05, dt=1.0 / 60.0):
+def _harvest_wrench_on_one_proxy_body(particle_count, depth=0.01, radius=0.05, dt=1.0 / 60.0):
     """Harvest the proxy wrench for one body pressed by ``particle_count`` identical soft contacts.
 
     The particles sit at the same depth on a flat, uniform face, so every contact carries the same
@@ -2355,9 +2355,18 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
         hz=0.5,
         xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
     )
+    # Square grid so counts past the legacy 256/body budget still fit the box face.
+    side = int(particle_count**0.5)
+    if side * side < particle_count:
+        side += 1
     for i in range(particle_count):
+        row, col = divmod(i, side)
         builder.add_particle(
-            pos=(2.0 * radius * (i - 0.5 * (particle_count - 1)), 0.0, radius - depth),
+            pos=(
+                2.0 * radius * (col - 0.5 * (side - 1)),
+                2.0 * radius * (row - 0.5 * (side - 1)),
+                radius - depth,
+            ),
             vel=(0.0, 0.0, 0.0),
             mass=1.0,
             radius=radius,
@@ -2369,7 +2378,6 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
         model=model,
         iterations=1,
         integrate_with_external_rigid_solver=False,
-        rigid_body_particle_contact_buffer_size=buffer_size,
         rigid_compliant_alm=True,
     )
     state_in = model.state()
@@ -2392,7 +2400,6 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
     return {
         "soft_contact_count": int(contacts.soft_contact_count.numpy()[0]),
         "listed": int(solver.body_particle_contact_counts.numpy()[0]),
-        "overflow_max": int(solver.body_particle_contact_overflow_max.numpy()[0]),
         "wrench": out_body_f.numpy()[0],
     }
 
@@ -2400,25 +2407,27 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
 
-    def test_proxy_wrench_harvest_respects_body_particle_contact_buffer_cap(self):
-        particle_count = 12
-        cap = 4
+    def test_proxy_wrench_harvest_covers_all_body_particle_contacts(self):
+        """Harvest the reaction of every soft contact through the exact per-body list.
 
-        full = _harvest_wrench_on_one_proxy_body(particle_count, particle_count)
+        Per-body lists are exact-size, so the harvested wrench reflects the whole contact
+        stream; with identical contacts, half as many contacts feed back half the linear
+        reaction. 300 contacts on one body exceed the removed 256-entry per-body budget,
+        so a reintroduced cap would break the half/full ratio here.
+        """
+        particle_count = 300
+
+        full = _harvest_wrench_on_one_proxy_body(particle_count)
         self.assertEqual(full["soft_contact_count"], particle_count)
         self.assertEqual(full["listed"], particle_count)
-        self.assertEqual(full["overflow_max"], 0, "the uncapped reference must not overflow")
         force_full = full["wrench"][:3]
         self.assertGreater(abs(force_full[2]), 0.0, "the contacts must actually push the body")
 
-        capped = _harvest_wrench_on_one_proxy_body(cap, particle_count)
-        self.assertEqual(capped["soft_contact_count"], particle_count)
-        self.assertGreater(capped["overflow_max"], cap, "the small buffer must actually overflow")
-
-        # The solve applied only the `cap` records its per-body list kept, so the reaction fed back
-        # to the source is that same fraction of the whole stream -- not all of it.
-        expected = force_full * (cap / particle_count)
-        np.testing.assert_allclose(capped["wrench"][:3], expected, rtol=1.0e-5, atol=1.0e-6)
+        half = _harvest_wrench_on_one_proxy_body(particle_count // 2)
+        self.assertEqual(half["listed"], particle_count // 2)
+        # float32 sums over hundreds of contacts carry ~1e-4 relative noise; a
+        # reintroduced 256-entry cap would skew the ratio by ~17%.
+        np.testing.assert_allclose(half["wrench"][:3], force_full * 0.5, rtol=2.0e-4, atol=1.0e-3)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
