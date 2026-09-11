@@ -1414,18 +1414,27 @@ def vertex_triangle_collision_detection_kernel(
     # outputs
     vt_pairs: wp.array[wp.vec2i],
     counters: wp.array[wp.int32],
+    vertex_list_heads: wp.array[wp.int32],
+    vertex_list_next: wp.array[wp.int32],
+    vertex_stored_counts: wp.array[wp.int32],
     vertex_colliding_triangles_count: wp.array[wp.int32],
     vertex_colliding_triangles_min_dist: wp.array[float],
+    triangle_list_heads: wp.array[wp.int32],
+    triangle_list_next: wp.array[wp.int32],
+    triangle_colliding_vertices_count: wp.array[wp.int32],
     triangle_colliding_vertices_min_dist: wp.array[float],
 ):
     """Discrete vertex-triangle collision detection into the shared pair array.
 
     One thread per vertex walks the triangle BVH and appends every hit as a
     ``(vertex, triangle)`` record to ``vt_pairs`` through the shared cursor
-    ``counters[VT_PAIR_CURSOR]``. Hits found beyond ``vt_pair_capacity`` are
-    counted (``vertex_colliding_triangles_count`` records the full demand) but
-    not stored, and ``counters[VT_PAIR_OVERFLOW]`` is set so the host can warn
-    and grow the array.
+    ``counters[VT_PAIR_CURSOR]``, linking each stored record into the vertex's
+    list. The thread is its own list's only writer, so the chain head lives in
+    a register and the list order is the BVH traversal order. Hits found beyond
+    ``vt_pair_capacity`` are counted (``vertex_colliding_triangles_count``
+    records the full demand) but not stored or linked, and
+    ``counters[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
+    array.
 
     Args:
         max_query_radius: the upper bound of collision distance.
@@ -1438,10 +1447,20 @@ def vertex_triangle_collision_detection_kernel(
         vt_pair_capacity: capacity of ``vt_pairs``.
         vt_pairs: shared (vertex, triangle) pair array.
         counters: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        vertex_list_heads: per-vertex head slot of the linked record list (-1 = empty).
+        vertex_list_next: per-record next slot in the owning vertex's list.
+        vertex_stored_counts: per-vertex count of records actually stored and linked.
         vertex_colliding_triangles_count: number of triangles each vertex collides
             with (full demand; may exceed what fit into ``vt_pairs``).
         vertex_colliding_triangles_min_dist: each vertex's min distance to all
             non-filtered triangles.
+        triangle_list_heads: optional (may be empty): per-triangle reverse list
+            heads. Many vertex threads push onto one triangle's list, so the
+            push is a lock-free atomic exchange and the list order is
+            scheduling-dependent.
+        triangle_list_next: optional: next slots of the triangle-keyed lists.
+        triangle_colliding_vertices_count: optional: per-triangle stored count,
+            accumulated with atomics.
         triangle_colliding_vertices_min_dist: optional (may be empty): per-triangle
             min distance to all colliding vertices, updated with atomic_min.
     """
@@ -1456,6 +1475,8 @@ def vertex_triangle_collision_detection_kernel(
     vertex_num_collisions = wp.int32(0)
     min_dis_to_tris = max_query_radius
     vertex_world = particle_world[v_index]
+    list_head = int(-1)
+    stored_count = wp.int32(0)
 
     # Only collide a vertex with triangles in its own world or in the global
     # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
@@ -1529,11 +1550,19 @@ def vertex_triangle_collision_detection_kernel(
                         continue
 
                 if dist < max_query_radius:
-                    # record the (vertex, triangle) pair to the shared array
+                    # record the (vertex, triangle) pair to the shared array and
+                    # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
                     slot = wp.atomic_add(counters, VT_PAIR_CURSOR, 1)
                     if slot < vt_pair_capacity:
                         vt_pairs[slot] = wp.vec2i(v_index, tri_index)
+                        vertex_list_next[slot] = list_head
+                        list_head = slot
+                        stored_count = stored_count + 1
+                        if triangle_list_heads:
+                            # triangle-keyed reverse list: many writers, lock-free push-front
+                            triangle_list_next[slot] = wp.atomic_exch(triangle_list_heads, tri_index, slot)
+                            wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
                     else:
                         counters[VT_PAIR_OVERFLOW] = 1
 
@@ -1542,6 +1571,8 @@ def vertex_triangle_collision_detection_kernel(
                     if triangle_colliding_vertices_min_dist:
                         wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
 
+    vertex_list_heads[v_index] = list_head
+    vertex_stored_counts[v_index] = stored_count
     vertex_colliding_triangles_count[v_index] = vertex_num_collisions
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
 
@@ -1564,17 +1595,21 @@ def edge_colliding_edges_detection_kernel(
     # outputs
     ee_pairs: wp.array[wp.vec2i],
     counters: wp.array[wp.int32],
+    edge_list_heads: wp.array[wp.int32],
+    edge_list_next: wp.array[wp.int32],
+    edge_stored_counts: wp.array[wp.int32],
     edge_colliding_edges_count: wp.array[wp.int32],
     edge_colliding_edges_min_dist: wp.array[float],
 ):
     """Discrete edge-edge collision detection into the shared pair array.
 
-    One thread per edge walks the edge BVH and appends every hit as an
+    One thread per edge walks the edge BVH, appends every hit as an
     ``(edge, colliding_edge)`` record to ``ee_pairs`` through the shared cursor
-    ``counters[EE_PAIR_CURSOR]``. Pairs are recorded from both edges' threads
-    (both directions), matching the historical row contents. Hits found beyond
-    ``ee_pair_capacity`` are counted but not stored, and
-    ``counters[EE_PAIR_OVERFLOW]`` is set.
+    ``counters[EE_PAIR_CURSOR]``, and links each stored record into the edge's
+    single-writer list (chain head in a register, order = traversal order).
+    Pairs are recorded from both edges' threads (both directions), matching the
+    historical row contents. Hits found beyond ``ee_pair_capacity`` are counted
+    but not stored or linked, and ``counters[EE_PAIR_OVERFLOW]`` is set.
 
     Args:
         max_query_radius: the upper bound of collision distance.
@@ -1601,6 +1636,9 @@ def edge_colliding_edges_detection_kernel(
 
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
+
+    list_head = int(-1)
+    stored_count = wp.int32(0)
 
     lower = wp.min(e0_v0_pos, e0_v1_pos)
     upper = wp.max(e0_v0_pos, e0_v1_pos)
@@ -1681,44 +1719,24 @@ def edge_colliding_edges_detection_kernel(
                         continue
 
                 if dist < max_query_radius:
-                    # record e-e collision from e0's side; e1 records its own direction
+                    # record e-e collision from e0's side (e1 records its own
+                    # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
                     slot = wp.atomic_add(counters, EE_PAIR_CURSOR, 1)
                     if slot < ee_pair_capacity:
                         ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
+                        edge_list_next[slot] = list_head
+                        list_head = slot
+                        stored_count = stored_count + 1
                     else:
                         counters[EE_PAIR_OVERFLOW] = 1
 
                     edge_num_collisions = edge_num_collisions + 1
 
+    edge_list_heads[e_index] = list_head
+    edge_stored_counts[e_index] = stored_count
     edge_colliding_edges_count[e_index] = edge_num_collisions
     edge_colliding_edges_min_dist[e_index] = min_dis_to_edges
-
-
-@wp.kernel
-def count_self_contact_pair_rows(
-    pairs: wp.array[wp.vec2i],
-    counters: wp.array[wp.int32],
-    cursor_slot: wp.int32,
-    pair_capacity: wp.int32,
-    owner_component: wp.int32,
-    stride: wp.int32,
-    # outputs
-    row_counts: wp.array[wp.int32],
-):
-    """Count stored pairs per owning element (pass 1 of the exact-CSR build).
-
-    Counts only pairs that were actually stored (bounded by the capacity), so
-    the CSR stays consistent when detection overflowed and dropped records.
-    ``owner_component`` selects which pair member owns the row: 0 for the
-    querying element (vertex or edge), 1 for the reverse triangle-side table.
-    """
-    t_id = wp.tid()
-    count = wp.min(counters[cursor_slot], pair_capacity)
-    i = t_id
-    while i < count:
-        wp.atomic_add(row_counts, pairs[i][owner_component], 1)
-        i += stride
 
 
 @wp.kernel
@@ -1737,31 +1755,30 @@ def finalize_row_offsets(
 
 
 @wp.kernel
-def fill_self_contact_pair_rows(
-    pairs: wp.array[wp.vec2i],
-    counters: wp.array[wp.int32],
-    cursor_slot: wp.int32,
-    pair_capacity: wp.int32,
-    owner_component: wp.int32,
-    stride: wp.int32,
+def fill_self_contact_rows_from_lists(
+    list_heads: wp.array[wp.int32],
+    list_next: wp.array[wp.int32],
     row_offsets: wp.array[wp.int32],
     # outputs
-    row_cursors: wp.array[wp.int32],
     row_values: wp.array[wp.int32],
 ):
-    """Scatter each stored pair's index into its owner's CSR row (pass 3).
+    """Walk each element's linked record list and write its CSR row.
 
-    Row order within an element is scheduling-dependent (the historical fixed
-    rows were filled in BVH-traversal order); no consumer relies on row order.
+    The chain holds the records in reverse traversal order (push-front), so the
+    row is written back to front, which restores the forward BVH-traversal
+    order the historical fixed rows had. Single writer per row, no atomics:
+    row contents and order are deterministic. Triangle-keyed reverse lists are
+    pushed by many threads, so their row order is scheduling-dependent.
     """
-    t_id = wp.tid()
-    count = wp.min(counters[cursor_slot], pair_capacity)
-    i = t_id
-    while i < count:
-        owner = pairs[i][owner_component]
-        slot = row_offsets[owner] + wp.atomic_add(row_cursors, owner, 1)
-        row_values[slot] = i
-        i += stride
+    element = wp.tid()
+    end = row_offsets[element + 1]
+    start = row_offsets[element]
+    cursor = list_heads[element]
+    j = end - start
+    while cursor >= 0:
+        j -= 1
+        row_values[start + j] = cursor
+        cursor = list_next[cursor]
 
 
 @wp.kernel
