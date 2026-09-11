@@ -1,0 +1,6 @@
+﻿newton.usd.get\_attribute
+=========================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_attribute

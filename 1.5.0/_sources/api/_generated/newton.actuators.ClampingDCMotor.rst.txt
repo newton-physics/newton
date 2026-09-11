@@ -1,0 +1,8 @@
+﻿newton.actuators.ClampingDCMotor
+================================
+
+.. autoclass:: newton.actuators.ClampingDCMotor
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

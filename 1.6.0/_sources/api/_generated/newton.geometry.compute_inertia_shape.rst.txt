@@ -1,0 +1,6 @@
+﻿newton.geometry.compute\_inertia\_shape
+=======================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: compute_inertia_shape
