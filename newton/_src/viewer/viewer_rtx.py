@@ -1416,6 +1416,7 @@ void main() {
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
             self._update_ovrtx_instance_visibility()
+            self._update_ovrtx_mesh_visibility()
             self._update_ovrtx_line_batches()
             self._update_ovrtx_point_batches()
             self._update_ovrtx_mesh_points()
@@ -1500,29 +1501,32 @@ void main() {
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:
-            pts = (
-                points.numpy().astype(np.float32)
-                if isinstance(points, wp.array)
-                else np.asarray(points, dtype=np.float32)
-            )
-            self._pending_mesh_points[name] = pts
-            if normals is not None:
-                self._pending_mesh_normals[name] = (
-                    normals.numpy().astype(np.float32)
-                    if isinstance(normals, wp.array)
-                    else np.asarray(normals, dtype=np.float32)
+            if not hidden:
+                pts = (
+                    points.numpy().astype(np.float32)
+                    if isinstance(points, wp.array)
+                    else np.asarray(points, dtype=np.float32)
                 )
-            elif dynamic:
-                self._pending_mesh_normals[name] = None
-            if dynamic:
-                indices_np = (
-                    indices.numpy().astype(np.int32)
-                    if isinstance(indices, wp.array)
-                    else np.asarray(indices, dtype=np.int32)
-                )
-                face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
-                self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
-            self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
+                self._pending_mesh_points[name] = pts
+                if normals is not None:
+                    self._pending_mesh_normals[name] = (
+                        normals.numpy().astype(np.float32)
+                        if isinstance(normals, wp.array)
+                        else np.asarray(normals, dtype=np.float32)
+                    )
+                elif dynamic:
+                    self._pending_mesh_normals[name] = None
+                if dynamic:
+                    indices_np = (
+                        indices.numpy().astype(np.int32)
+                        if isinstance(indices, wp.array)
+                        else np.asarray(indices, dtype=np.int32)
+                    )
+                    face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
+                    self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
+                self._pending_mesh_visibility[name] = len(pts) > 0
+            else:
+                self._pending_mesh_visibility[name] = False
 
     @override
     def log_instances(
@@ -1745,6 +1749,20 @@ void main() {
                 prim_paths=paths,
                 attribute_name="visibility",
                 tensor=["inherited" if visible else "invisible"] * len(paths),
+            )
+
+    def _update_ovrtx_mesh_visibility(self):
+        if self._rtx is None or not self._pending_mesh_visibility:
+            return
+
+        for name, visible in self._pending_mesh_visibility.items():
+            prim_path = self._mesh_prim_paths.get(name)
+            if prim_path is None:
+                continue
+            self._rtx.write_attribute(
+                prim_paths=[prim_path],
+                attribute_name="visibility",
+                tensor=["inherited" if visible else "invisible"],
             )
 
     @staticmethod

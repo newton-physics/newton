@@ -1,0 +1,261 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Import proposal graphics geometry under deformable bodies.
+
+Per the AOUSD deformable proposal, graphics geometries are not tagged: they are
+the ``UsdGeomPointBased`` prims under a ``PhysicsDeformableBodyAPI`` prim that
+carry neither a simulation API nor a collision API. This pass walks each
+imported deformable body's subtree (only bodies discovered by the scout, so a
+stage without deformables pays nothing), reads each untagged ``UsdGeom.Mesh``,
+extracts its proposal bind pose (``PhysicsDeformablePoseAPI`` with a
+``bindPose`` purpose, falling back to the mesh's ``points``), and embeds it in
+the body's simulation geometry via
+:meth:`~newton.ModelBuilder.add_deformable_visual_mesh`:
+
+- volume bodies embed into the owning tet range;
+- surface bodies embed into the owning triangle range;
+- cable bodies bind to the curve's imported segment bodies.
+
+``UsdGeom.Mesh`` graphics become visual meshes. Experimental
+``ParticleField3DGaussianSplat`` graphics become Gaussian visuals when they
+belong to a volume deformable.
+"""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+import warp as wp
+
+from .import_usd_deformable_utils import _DeformableImportContext
+
+
+def _transform_points_np(world_mat, points: np.ndarray) -> np.ndarray:
+    """Apply a warp 4x4 world matrix to an [N, 3] point array (full affine)."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    return points @ m[:3, :3].T + m[:3, 3]
+
+
+def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_range) -> np.ndarray | None:
+    """Particle positions overridden with the simulation geometry's bind pose.
+
+    Embedding must pair the graphics bind pose with the simulation bind pose.
+    When the simulation prim authors no ``bindPose`` its imported points are the
+    bind configuration and no override is needed (returns ``None``).
+    """
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    sim_prim = ctx.stage.GetPrimAtPath(sim_path)
+    if not sim_prim or not sim_prim.IsValid():
+        return None
+    bind = usd._get_deformable_bind_pose(sim_prim, strict=True)
+    if bind is None:
+        return None
+    p0, p1 = particle_range
+    if len(bind) != p1 - p0:
+        raise ValueError(
+            f"invalid_bind_pose_count: {sim_path} bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
+        )
+    world_mat = ctx.get_prim_world_mat(sim_prim, None, ctx.incoming_world_xform)
+    positions = np.array(ctx.builder.particle_q, dtype=np.float64)
+    positions[p0:p1] = _transform_points_np(world_mat, bind)
+    return positions
+
+
+def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
+    """Read experimental tet-index and barycentric-weight attributes."""
+    parent_attr = prim.GetAttribute("newton:deformableSkin:tetIndices")
+    weights_attr = prim.GetAttribute("newton:deformableSkin:influenceWeights")
+    has_parent = bool(parent_attr and parent_attr.HasValue())
+    has_weights = bool(weights_attr and weights_attr.HasValue())
+    if has_parent != has_weights:
+        raise ValueError("tetIndices and influenceWeights must be authored together")
+    if not has_parent:
+        return None, None
+
+    parent = np.asarray(parent_attr.Get(), dtype=np.int32).reshape(-1)
+    weights = np.asarray(weights_attr.Get(), dtype=np.float32).reshape(-1, 4)
+    if len(parent) != count or len(weights) != count:
+        raise ValueError("tetIndices and influenceWeights must have one row per Gaussian")
+    # USD indices address the simulation TetMesh locally; Newton's builder uses
+    # absolute indices so independently imported bodies can share one builder.
+    parent = parent + int(tet_range[0])
+    return parent, weights
+
+
+def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
+    """Bake the prim placement into Gaussian centers, orientations, and scales."""
+    world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+    positions = _transform_points_np(world_mat, gaussian.positions).astype(np.float32)
+    linear = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)[:3, :3]
+    rotations = np.empty_like(gaussian.rotations)
+    scales = np.empty_like(gaussian.scales)
+    for i, (rotation, scale) in enumerate(zip(gaussian.rotations, gaussian.scales, strict=True)):
+        rest_rotation = np.asarray(wp.quat_to_matrix(wp.quat(*rotation)), dtype=np.float64).reshape(3, 3)
+        axes = linear @ rest_rotation @ np.diag(scale)
+        world_rotation, world_scale, _ = np.linalg.svd(axes)
+        if np.linalg.det(world_rotation) < 0.0:
+            world_rotation[:, -1] *= -1.0
+        rotations[i] = np.asarray(wp.quat_from_matrix(wp.mat33f(world_rotation.astype(np.float32))), dtype=np.float32)
+        scales[i] = world_scale.astype(np.float32)
+    return type(gaussian)(
+        positions=positions,
+        rotations=rotations,
+        scales=scales,
+        opacities=gaussian.opacities,
+        sh_coeffs=gaussian.sh_coeffs,
+        sh_degree=gaussian.sh_degree,
+        min_response=gaussian.min_response,
+        sorting_mode=gaussian.sorting_mode,
+    )
+
+
+def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
+    """Import graphics payloads for every imported deformable body and embed them."""
+    from pxr import UsdGeom
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    builder = ctx.builder
+    for body_path, sim_path in ctx.prims.body_owner.items():
+        if sim_path in ctx.path_soft_map:
+            family = "soft"
+        elif sim_path in ctx.path_cloth_map:
+            family = "cloth"
+        elif sim_path in ctx.path_cable_map or any(key.startswith(f"{sim_path}_curve") for key in ctx.path_cable_map):
+            family = "cable"
+        else:
+            continue  # the governing simulation geometry did not import
+        body_prim = ctx.stage.GetPrimAtPath(body_path)
+        if not body_prim or not body_prim.IsValid():
+            continue
+
+        for prim in ctx.prims.visual_meshes.get(body_path, ()):
+            if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
+                continue
+            path = str(prim.GetPath())
+            mesh = ctx.get_mesh_cached(prim, load_uvs=True)
+            if mesh is None or len(mesh.vertices) == 0 or len(mesh.indices) == 0:
+                warnings.warn(f"{path}: graphics mesh has no geometry; skipping visual mesh.", stacklevel=2)
+                continue
+
+            # Proposal bind pose (or the mesh points), in the common world frame the
+            # simulation geometry was imported in.
+            try:
+                bind = usd._get_deformable_bind_pose(prim, strict=True)
+            except ValueError as exc:
+                warnings.warn(f"{path}: invalid visual bind pose; skipping ({exc})", stacklevel=2)
+                continue
+            points = bind if bind is not None else np.asarray(mesh.vertices, dtype=np.float64)
+            if len(points) != len(mesh.vertices):
+                warnings.warn(
+                    f"{path}: bind pose has {len(points)} points but the mesh has "
+                    f"{len(mesh.vertices)} vertices; skipping visual mesh.",
+                    stacklevel=2,
+                )
+                continue
+            world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+            world_verts = _transform_points_np(world_mat, points).astype(np.float32)
+            uvs = mesh._uvs if mesh._uvs is not None and len(mesh._uvs) == len(world_verts) else None
+            texture = usd.resolve_material_properties_for_prim(prim).get("texture")
+            indices = np.asarray(mesh.indices, dtype=np.int32)
+
+            try:
+                if family == "soft":
+                    ranges = ctx.path_soft_map[sim_path]
+                    tet_range = ranges["tet"]
+                    positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                    parent, weights = builder._embed_visual_vertices_in_tets(
+                        world_verts, tet_range, positions=positions
+                    )
+                    index = builder.add_deformable_visual_mesh(
+                        world_verts,
+                        indices,
+                        kind="tet",
+                        tet_range=tet_range,
+                        parent=parent,
+                        weights=weights,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
+                    )
+                elif family == "cloth":
+                    ranges = ctx.path_cloth_map[sim_path]
+                    tri_range = ranges["tri"]
+                    positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                    parent, weights = builder._embed_visual_vertices_in_triangles(
+                        world_verts, tri_range, positions=positions
+                    )
+                    index = builder.add_deformable_visual_mesh(
+                        world_verts,
+                        indices,
+                        kind="triangle",
+                        tri_range=tri_range,
+                        parent=parent,
+                        weights=weights,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
+                    )
+                else:
+                    # A multi-curve prim records per-curve entries; a welded graph curve
+                    # keeps its exact (possibly non-contiguous) body list.
+                    bodies: list[int] = []
+                    for key, (curve_bodies, _joints) in ctx.path_cable_map.items():
+                        if key == sim_path or key.startswith(f"{sim_path}_curve"):
+                            bodies.extend(int(b) for b in curve_bodies)
+                    index = builder.add_deformable_visual_mesh(
+                        world_verts,
+                        indices,
+                        kind="body",
+                        bodies=bodies,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
+                    )
+            except ValueError as exc:
+                warnings.warn(f"{path}: could not embed visual mesh; skipping ({exc})", stacklevel=2)
+                continue
+
+            spec = builder._deformable_visual_meshes[index]
+            spec["body_path"] = body_path
+            spec["sim_path"] = sim_path
+            spec["graphics_path"] = path
+            if ctx.verbose:
+                print(f"  Embedded visual mesh {path} ({len(world_verts)} verts) in {family} {sim_path}.")
+
+        for prim in ctx.prims.visual_gaussians.get(body_path, ()):
+            path = str(prim.GetPath())
+            if family != "soft":
+                warnings.warn(
+                    f"{path}: Gaussian graphics currently require a volume deformable; skipping.", stacklevel=2
+                )
+                continue
+            imageable = UsdGeom.Imageable(prim)
+            if imageable and imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
+                continue
+            try:
+                gaussian = _gaussian_in_world(ctx, prim, usd.get_gaussian(prim))
+                tet_range = ctx.path_soft_map[sim_path]["tet"]
+                parent, weights = _read_gaussian_embedding(prim, tet_range, gaussian.count)
+                index = builder.add_deformable_visual_gaussian(
+                    gaussian,
+                    kind="tet",
+                    tet_range=tet_range,
+                    parent=parent,
+                    weights=weights,
+                    label=path,
+                )
+            except ValueError as exc:
+                warnings.warn(f"{path}: could not embed Gaussian graphics; skipping ({exc})", stacklevel=2)
+                continue
+
+            spec = builder._deformable_visual_gaussians[index]
+            spec["body_path"] = body_path
+            spec["sim_path"] = sim_path
+            spec["graphics_path"] = path
+            ctx.path_shape_map[path] = spec["shape"]
+            if ctx.verbose:
+                print(f"  Embedded Gaussian graphics {path} ({gaussian.count} splats) in volume {sim_path}.")
