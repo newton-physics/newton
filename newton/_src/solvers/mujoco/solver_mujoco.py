@@ -477,14 +477,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _allocate_observables(self, observables: Observables, *, requires_grad: bool) -> None:
         """Allocate standard and MuJoCo-specific observable arrays."""
-        if SolverObservableFlags.CONTACT_F in observables and self.mjw_data.naconmax > self.model.rigid_contact_max:
+        if (
+            observables.is_requested(SolverObservableFlags.CONTACT_F)
+            and self.mjw_data.naconmax > self.model.rigid_contact_max
+        ):
             raise ValueError(
                 f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
                 f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
                 "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
             )
         super()._allocate_observables(observables, requires_grad=requires_grad)
-        if self.ObservableFlags.QFRC_ACTUATOR in observables:
+        if observables.is_requested(self.ObservableFlags.QFRC_ACTUATOR):
             observables.qfrc_actuator = wp.zeros(
                 self.model.joint_dof_count,
                 dtype=wp.float32,
@@ -4274,8 +4277,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
-                if observables is not None and observables.contact_f is not None:
-                    observable_contacts = observables._contacts
+                if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+                    observable_contacts = observables.contacts
                     if observable_contacts is None:
                         raise ValueError("Contact storage is missing from solver observables.")
                     self._populate_contact_observables(observable_contacts, observables.contact_f)
@@ -4552,7 +4555,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.mj_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_SENSOR and (
             state_out.body_qdd is not None
             or state_out.body_parent_f is not None
-            or (observables is not None and (observables.body_qdd is not None or observables.body_parent_f is not None))
+            or (
+                observables is not None
+                and (
+                    observables.is_requested(SolverObservableFlags.BODY_QDD)
+                    or observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+                )
+            )
         ):
             raise ValueError(
                 "disable_sensors=True is incompatible with requested body_qdd or body_parent_f "
@@ -4566,10 +4575,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if m.sensor_rne_postconstraint:
             return
         needs_body_qdd = state_out.body_qdd is not None or (
-            observables is not None and observables.body_qdd is not None
+            observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
         )
         needs_body_parent_f = state_out.body_parent_f is not None or (
-            observables is not None and observables.body_parent_f is not None
+            observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
         )
         if needs_body_qdd or needs_body_parent_f:
             # required for cfrc_ext, cfrc_int, cacc
@@ -5392,11 +5401,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Update requested rigid-body observables. Extended state attributes remain
         # compatibility destinations during migration to SolverObservables.
         body_qdd = (
-            observables.body_qdd if observables is not None and observables.body_qdd is not None else state.body_qdd
+            observables.body_qdd
+            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            else state.body_qdd
         )
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.body_parent_f is not None
+            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
             else state.body_parent_f
         )
         if body_qdd is not None or body_parent_f is not None:
@@ -5429,7 +5440,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Update actuator forces in joint DOF space.
         legacy_qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
-        qfrc_actuator = observables.qfrc_actuator if isinstance(observables, self.Observables) else None
+        qfrc_actuator = (
+            observables.qfrc_actuator
+            if isinstance(observables, self.Observables)
+            and observables.is_requested(self.ObservableFlags.QFRC_ACTUATOR)
+            else None
+        )
         if qfrc_actuator is None:
             qfrc_actuator = legacy_qfrc_actuator
         if qfrc_actuator is not None:

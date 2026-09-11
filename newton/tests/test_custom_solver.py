@@ -72,7 +72,7 @@ class DummySolver(newton.solvers.SolverBase):
     def _allocate_observables(self, observables: DummySolverObservables, *, requires_grad: bool) -> None:
         """Allocate inherited observables before solver-specific arrays."""
         super()._allocate_observables(observables, requires_grad=requires_grad)
-        if DummyObservableFlags.BODY_TEMPERATURE in observables:
+        if observables.is_requested(DummyObservableFlags.BODY_TEMPERATURE):
             observables.body_temperature = wp.zeros(
                 self.model.body_count,
                 dtype=wp.float32,

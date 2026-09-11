@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -367,6 +368,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
             super().__init__(flags)
             self.entry_observables: dict[str, SolverObservables] = {}
             """Observable containers allocated by each owning sub-solver."""
+
+        def select(self, flags: Iterable[Enum]) -> SolverCoupled.Observables:
+            """Select global fields and matching entry-local arrays without allocating."""
+            selected = super().select(flags)
+            selected.entry_observables = {
+                name: entry.select(selected.flags.intersection(entry.flags))
+                for name, entry in self.entry_observables.items()
+            }
+            return selected
 
     OBSERVABLES_TYPE = Observables
 
@@ -2262,18 +2272,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _reconcile_observables(self, observables: Observables) -> None:
         """Merge body-indexed entry observables into global observable arrays."""
-        for dst in (observables.body_qdd, observables.body_parent_f):
-            if dst is not None:
-                dst.zero_()
+        for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+            if observables.is_requested(flag):
+                getattr(observables, flag.value).zero_()
 
         for entry in self._entries.values():
             entry_observables = observables.entry_observables[entry.name]
-            for src, dst in (
-                (entry_observables.body_qdd, observables.body_qdd),
-                (entry_observables.body_parent_f, observables.body_parent_f),
-            ):
-                if src is None or dst is None or entry.body_indices.shape[0] == 0:
+            for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+                if (
+                    not observables.is_requested(flag)
+                    or not entry_observables.is_requested(flag)
+                    or entry.body_indices.shape[0] == 0
+                ):
                     continue
+                src = getattr(entry_observables, flag.value)
+                dst = getattr(observables, flag.value)
                 wp.launch(
                     _scatter_spatial_state_mapped,
                     dim=entry.body_indices.shape[0],

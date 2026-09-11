@@ -196,7 +196,7 @@ capability flag set. Contact dependencies follow the declared frequency:
 
        def _allocate_observables(self, observables, *, requires_grad):
            super()._allocate_observables(observables, requires_grad=requires_grad)
-           if CustomObservableFlags.CONTACT_PRESSURE in observables:
+           if observables.is_requested(CustomObservableFlags.CONTACT_PRESSURE):
                observables.contact_pressure = wp.zeros(
                    self.model.rigid_contact_max,
                    dtype=float,
@@ -209,6 +209,26 @@ The base solver requires pipeline initialization, freezes capacities, and binds
 contact storage for any requested contact frequency, including custom fields
 requested without ``CONTACT_F``. Body- and joint-indexed fields do not require
 a collision pipeline.
+
+Use :meth:`~newton.solvers.SolverObservables.is_requested` in both allocation
+and stepping code. For example, after validating the container and advancing
+the simulation, compute a custom diagnostic only when it is requested:
+
+.. code-block:: python
+
+   if observables is not None and observables.is_requested(CustomObservableFlags.CONTACT_PRESSURE):
+       wp.launch(
+           compute_contact_pressure,
+           dim=contacts.rigid_contact_max,
+           inputs=[contacts.rigid_contact_count],
+           outputs=[observables.contact_pressure],
+           device=self.model.device,
+       )
+
+``compute_contact_pressure`` is a solver-specific kernel, not provided by this
+snippet. ``flag in observables`` remains equivalent to
+``observables.is_requested(flag)``. Neither expression tests freshness.
+The request remains true for zero-length arrays and while they are being allocated.
 
 Contact row domains
 -------------------
@@ -276,6 +296,71 @@ The viewer follows the same pattern:
 .. code-block:: python
 
    viewer.log_contacts(contacts, state_out, solver_observables=observables)
+
+Substep scheduling
+------------------
+
+Allocate the union of needed observables once, then use
+:meth:`~newton.solvers.SolverObservables.select` to create reusable subsets.
+Each subset has the same concrete container type and shares the selected array
+objects, including gradients, with the original container. Omitted fields are
+``None`` in the subset, while the original container and its arrays are unchanged.
+The subset's read-only ``flags`` and ``is_requested(flag)`` describe only its
+selected fields. No observable arrays are allocated or copied by ``select()``.
+
+For example, an IMU may need acceleration every substep, while a contact sensor
+only needs the final substep's forces. After configuring the solver, collision
+pipeline, and sensors as above:
+
+.. code-block:: python
+
+   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
+   observables = solver.observables(flags)
+   every_substep = observables.select(imu.solver_observable_flags)
+   substep_dt = frame_dt / num_substeps
+
+   for substep in range(num_substeps):
+       is_last = substep == num_substeps - 1
+       requested = observables if is_last else every_substep
+       # Run the usual collision update here if using external collision detection.
+       solver.step(state_in, state_out, control, contacts, substep_dt, observables=requested)
+       state_in, state_out = state_out, state_in
+       imu.update(state_in, solver_observables=every_substep)
+
+   contact_sensor.update(state_in, contacts, solver_observables=observables)
+
+If all fields are needed only at the end, pass ``observables=None`` on earlier
+substeps. ``observables.select(set())`` also requests no diagnostics.
+Selecting a field absent from the source raises :class:`ValueError`; selecting
+an existing subset can only narrow it. Select from the original container to
+create a different combination. Do not temporarily replace fields with ``None``.
+
+The same selection mechanism handles standard and custom flags. Simple derived
+containers inherit it unchanged. Containers with nested observable containers
+should override ``select()``, call ``super()``, and select their children in the
+returned object. :class:`~newton.solvers.experimental.coupled.SolverCoupled`
+does this for its entry-local containers. Other custom metadata is shallow-copied.
+Contact-indexed subsets share one contact binding with their source and siblings,
+even if they are created before the first step. A body-only subset needs no
+contact binding even when the original container includes contact fields.
+
+Create selections before graph capture and reuse them. A fixed Python substep
+schedule is captured with the graph; changing a Python selection afterward does
+not change an existing graph. Device-driven choices require graph control flow
+with the desired selections captured in its branches.
+
+Skipped arrays retain their previous values. ``is_requested()`` does not mean
+those values were updated, and mixed-rate containers do not represent a single
+time snapshot. Consume sensors only after their required fields have been
+produced, before reusing the corresponding state or contact geometry. Last-substep
+forces are not frame-averaged forces; averaging or integration requires sampling
+the relevant substeps. Contact rows may change between collision updates.
+
+Selection controls observable writes and optional diagnostic work, not calculations
+needed by the dynamics or other requested fields. Legacy extended attributes
+can still request their own work. MuJoCo currently keeps its post-constraint RNE
+stage enabled after its first request, so omitting those observables does not
+necessarily avoid that internal computation on subsequent steps.
 
 Deprecated extended attributes
 ------------------------------

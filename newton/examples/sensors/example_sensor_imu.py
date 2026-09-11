@@ -113,6 +113,7 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
         observable_flags = self.imu.solver_observable_flags | {newton.solvers.SolverObservableFlags.CONTACT_F}
         self.solver_observables = self.solver.observables(observable_flags)
+        self.imu_observables = self.solver_observables.select(self.imu.solver_observable_flags)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -133,7 +134,7 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
@@ -145,7 +146,8 @@ class Example:
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                observables=self.solver_observables,
+                # Sample IMU every substep; export viewer contact forces only on the last.
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else self.imu_observables,
             )
 
             # swap states

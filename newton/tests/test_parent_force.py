@@ -94,7 +94,10 @@ def test_parent_force_solver_observables(test, device, solver_fn):
 
     test.assertIsNone(state_1.body_parent_f)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables)
+    observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
+    np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
 
     parent_f = observables.body_parent_f.numpy()[0]
     weight = model.body_mass.numpy()[0] * 9.81
@@ -114,7 +117,10 @@ def test_parent_force_solver_observables_xpbd(test, device):
     state_0, state_1 = model.state(), model.state()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables)
+    observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
+    np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
 
     test.assertIsNone(state_1.body_parent_f)
     parent_f = observables.body_parent_f.numpy()[0]

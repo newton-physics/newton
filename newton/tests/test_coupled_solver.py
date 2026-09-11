@@ -367,8 +367,10 @@ class _BodyObservableCopySolver(_StepCountingCopySolver):
         if observables is None:
             return
         value = 1.0 if self.model.name == "left" else 2.0
-        observables.body_qdd.fill_(value)
-        observables.body_parent_f.fill_(value + 10.0)
+        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_QDD):
+            observables.body_qdd.fill_(value)
+        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_PARENT_F):
+            observables.body_parent_f.fill_(value + 10.0)
 
 
 class _ResetRecordingCopySolver(_StepCountingCopySolver):
@@ -1149,6 +1151,41 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
         np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
         self.assertEqual(set(observables.entry_observables), {"left", "right"})
+
+    def test_select_routes_only_requested_observables(self):
+        """Propagate subsets to child solvers and preserve skipped global and local arrays."""
+        coupled = SolverCoupled(
+            self.model,
+            [
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0], substeps=2),
+                SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
+            ],
+        )
+        flags = newton.solvers.SolverObservableFlags
+        observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
+        observables.body_parent_f.fill_(-1.0)
+        for entry in observables.entry_observables.values():
+            entry.body_parent_f.fill_(-2.0)
+        selected = observables.select({flags.BODY_QDD})
+        self.assertIs(type(selected), SolverCoupled.Observables)
+        self.assertIsNot(selected.entry_observables, observables.entry_observables)
+        for name, entry in selected.entry_observables.items():
+            self.assertIs(entry.body_qdd, observables.entry_observables[name].body_qdd)
+            self.assertIsNone(entry.body_parent_f)
+
+        state_in, state_out = self.model.state(), self.model.state()
+        coupled.step(state_in, state_out, None, None, 0.01, observables=selected)
+        np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
+        np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((2, 6), -1.0))
+        for entry in observables.entry_observables.values():
+            np.testing.assert_array_equal(entry.body_parent_f.numpy(), np.full(entry.body_parent_f.numpy().shape, -2.0))
+
+        empty = selected.select(set())
+        observables.body_qdd.fill_(-3.0)
+        coupled.step(state_in, state_out, None, None, 0.01, observables=empty)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((2, 6), -3.0))
+        coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
+        np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
 
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):

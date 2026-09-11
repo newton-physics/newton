@@ -8120,6 +8120,23 @@ class TestMuJoCoOptions(unittest.TestCase):
         state_in, state_out = model.state(), model.state()
         solver.step(state_in, state_out, model.control(), None, 0.01)
 
+    def test_selected_actuator_observable_skips_rne_request(self):
+        """Select a custom actuator field without requesting allocated body diagnostics."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, disable_sensors=True)
+        flags = newton.solvers.SolverObservableFlags
+        actuator_flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flags.BODY_QDD, actuator_flag})
+        selected = observables.select({actuator_flag})
+        self.assertIs(type(selected), SolverMuJoCo.Observables)
+        self.assertIs(selected.qfrc_actuator, observables.qfrc_actuator)
+        observables.body_qdd.fill_(wp.spatial_vector(-1.0))
+        observables.qfrc_actuator.fill_(float("nan"))
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01, observables=selected)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((model.body_count, 6), -1.0))
+        self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
+
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
         model = self._create_multiworld_model(world_count=1)

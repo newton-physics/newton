@@ -169,7 +169,7 @@ class TestSensorIMU(unittest.TestCase):
 
         self.assertIsNone(state.body_qdd)
         observables.body_qdd.zero_()
-        sensor.update(state, solver_observables=observables)
+        sensor.update(state, solver_observables=observables.select(sensor.solver_observable_flags))
 
         np.testing.assert_allclose(sensor.accelerometer.numpy()[0], -model.gravity.numpy()[-1], atol=1e-5)
         np.testing.assert_allclose(sensor.gyroscope.numpy()[0], [0.0, 0.0, 0.0], atol=1e-5)

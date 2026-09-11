@@ -47,7 +47,7 @@ class CustomContactSolver(ContactSolver):
 
     def _allocate_observables(self, observables, *, requires_grad):
         super()._allocate_observables(observables, requires_grad=requires_grad)
-        if CustomContactFlags.PRESSURE in observables:
+        if observables.is_requested(CustomContactFlags.PRESSURE):
             observables.pressure = wp.zeros(
                 self.model.rigid_contact_max, dtype=float, device=self.model.device, requires_grad=requires_grad
             )
@@ -99,6 +99,170 @@ class TestSolverObservables(unittest.TestCase):
         observables = self.solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
         self.assertEqual(observables.body_qdd.shape, (self.model.body_count,))
         self.assertIsNone(observables.contact_f)
+
+    def test_select_shares_arrays_without_allocating(self):
+        """Select existing buffers without allocating, copying, or mutating the source."""
+        flags = newton.solvers.SolverObservableFlags
+        observables = self.solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
+        with patch.object(self.solver, "_allocate_observables", side_effect=AssertionError("allocated")):
+            selected = observables.select({flags.BODY_QDD})
+        self.assertIsNot(selected, observables)
+        self.assertIs(type(selected), type(observables))
+        self.assertIs(selected.body_qdd, observables.body_qdd)
+        self.assertIs(selected.body_qdd.grad, observables.body_qdd.grad)
+        self.assertIsNone(selected.body_parent_f)
+        self.assertIsNotNone(observables.body_parent_f)
+        self.assertEqual(observables.flags, {flags.BODY_QDD, flags.BODY_PARENT_F})
+        self.assertEqual(selected.flags, {flags.BODY_QDD})
+        self.assertTrue(selected.is_requested(flags.BODY_QDD))
+        self.assertFalse(selected.is_requested(flags.BODY_PARENT_F))
+        self.assertIn(flags.BODY_QDD, selected)
+        self.assertNotIn(flags.BODY_PARENT_F, selected)
+        self.assertIs(selected.model, self.model)
+        selected.body_qdd.fill_(wp.spatial_vector(7.0))
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), 7.0))
+        self.solver._validate_observables(selected)
+        with self.assertRaisesRegex(ValueError, "solver instance"):
+            ContactSolver(self.model)._validate_observables(selected)
+
+    def test_select_empty_and_nested_subsets(self):
+        """Narrow selections without re-enabling fields excluded by their parent."""
+        flags = newton.solvers.SolverObservableFlags
+        observables = self.solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
+        selected = observables.select({flags.BODY_QDD})
+        self.assertIs(selected.select(selected.flags).body_qdd, observables.body_qdd)
+        empty = selected.select(set())
+        self.assertEqual(empty.flags, frozenset())
+        self.assertIsNone(empty.body_qdd)
+        self.assertIsNone(empty.body_parent_f)
+        self.solver._validate_observables(empty)
+        for source, requested in ((observables, {flags.CONTACT_F}), (selected, {flags.BODY_PARENT_F})):
+            with self.subTest(requested=requested), self.assertRaisesRegex(ValueError, "not requested"):
+                source.select(requested)
+        with self.assertRaises(AttributeError):
+            selected.flags = frozenset()
+        with self.assertRaisesRegex(ValueError, "allocated"):
+            newton.solvers.SolverObservables().select(set())
+
+    def test_select_custom_fields_and_shared_contact_binding(self):
+        """Share binding across custom contact subsets created before the first step."""
+        flags = newton.solvers.SolverObservableFlags
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
+        solver = CustomContactSolver(self.model)
+        observables = solver.observables({flags.BODY_QDD, flags.CONTACT_F, CustomContactFlags.PRESSURE})
+        pressure = observables.select({CustomContactFlags.PRESSURE})
+        force = observables.select({flags.CONTACT_F})
+        body = observables.select({flags.BODY_QDD})
+        self.assertIs(type(pressure), CustomContactObservables)
+        self.assertIs(pressure.pressure, observables.pressure)
+        self.assertIsNone(pressure.contact_f)
+        self.assertIsNone(force.pressure)
+        self.assertEqual(pressure.get_attribute_frequency("pressure"), newton.Model.AttributeFrequency.CONTACT_RIGID)
+        solver._validate_observables(body)
+        solver._validate_observables(observables.select(set()))
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            solver._validate_observables(pressure)
+        contacts = pipeline.contacts()
+        solver._validate_observables(pressure, contacts)
+        for selection in (observables, pressure, force, force.select(force.flags)):
+            self.assertIs(selection.contacts, contacts)
+            with self.assertRaisesRegex(ValueError, "Contacts instance"):
+                solver._validate_observables(selection, pipeline.contacts())
+        self.assertIsNone(body.contacts)
+
+    def test_select_zero_capacity_remains_requested(self):
+        """Treat selected zero-length contact buffers as requested."""
+        newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
+        observables = self.solver.observables(self.flags)
+        selected = observables.select(self.flags)
+        self.assertTrue(selected.is_requested(newton.solvers.SolverObservableFlags.CONTACT_F))
+        self.assertIs(selected.contact_f, observables.contact_f)
+        self.assertEqual(selected.contact_f.shape, (0,))
+
+    def test_select_substep_schedule(self):
+        """Update selected custom fields per substep and preserve skipped values."""
+        flags = newton.solvers.SolverObservableFlags
+
+        class SamplingSolver(CustomContactSolver):
+            def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
+                self._validate_observables(observables, contacts)
+                if observables is not None:
+                    for flag in (flags.BODY_QDD, CustomContactFlags.PRESSURE):
+                        if observables.is_requested(flag):
+                            array = getattr(observables, flag.value)
+                            array.fill_(dt if flag is CustomContactFlags.PRESSURE else wp.spatial_vector(dt))
+
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        solver = SamplingSolver(self.model)
+        observables = solver.observables({flags.BODY_QDD, CustomContactFlags.PRESSURE})
+        every_substep = observables.select({flags.BODY_QDD})
+        observables.pressure.fill_(-1.0)
+        for step in range(3):
+            solver.step(None, None, None, contacts, step + 1, observables=every_substep)
+            np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), step + 1))
+            np.testing.assert_array_equal(observables.pressure.numpy(), [-1.0, -1.0])
+        solver.step(None, None, None, contacts, 4, observables=observables)
+        np.testing.assert_array_equal(observables.pressure.numpy(), [4.0, 4.0])
+        solver.step(None, None, None, contacts, 5, observables=observables.select(set()))
+        solver.step(None, None, None, contacts, 6)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), 4.0))
+        np.testing.assert_array_equal(observables.pressure.numpy(), [4.0, 4.0])
+
+    def test_select_graph_substeps(self):
+        """Capture a fixed schedule of shared subsets without changing skipped arrays."""
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=0.0)
+        model = builder.finalize(device="cuda:0")
+        solver = ContactSolver(model)
+        flags = newton.solvers.SolverObservableFlags
+        observables = solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
+        early = observables.select({flags.BODY_QDD})
+        last = observables.select({flags.BODY_PARENT_F})
+        pointer = observables.body_qdd.ptr
+        with wp.ScopedCapture(device=model.device) as capture:
+            for step in range(3):
+                selected = last if step == 2 else early
+                solver._validate_observables(selected)
+                for flag in flags:
+                    if selected.is_requested(flag):
+                        getattr(selected, flag.value).fill_(wp.spatial_vector(step + 1.0))
+        for _ in range(2):
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), 2.0))
+            np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((1, 6), 3.0))
+        self.assertEqual(observables.body_qdd.ptr, pointer)
+
+    def test_select_conditional_graph(self):
+        """Preserve skipped custom fields and share contact binding through a conditional graph."""
+        if not wp.is_cuda_available() or not wp.is_conditional_graph_supported():
+            self.skipTest("Conditional CUDA graphs are unavailable")
+        model = newton.ModelBuilder().finalize(device="cuda:0")
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=0)
+        solver = CustomContactSolver(model)
+        flags = newton.solvers.SolverObservableFlags
+        observables = solver.observables({flags.CONTACT_F, CustomContactFlags.PRESSURE})
+        selected = observables.select({CustomContactFlags.PRESSURE})
+        contacts = pipeline.contacts()
+        condition = wp.ones(1, dtype=wp.int32, device=model.device)
+        observables.contact_f.fill_(wp.spatial_vector(-1.0))
+
+        def body():
+            solver._validate_observables(selected, contacts)
+            if selected.is_requested(CustomContactFlags.PRESSURE):
+                selected.pressure.fill_(3.0)
+
+        with wp.ScopedCapture(device=model.device) as capture:
+            wp.capture_if(condition, body)
+        for enabled in (0, 1, 0):
+            condition.fill_(enabled)
+            observables.pressure.zero_()
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(observables.pressure.numpy(), np.full(2, 3.0 * enabled))
+            np.testing.assert_array_equal(observables.contact_f.numpy(), np.full((2, 6), -1.0))
+        self.assertIs(observables.contacts, contacts)
 
     def test_observable_frequency_metadata(self):
         """Inherit standard row frequencies without another capability flag set."""

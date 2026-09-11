@@ -498,7 +498,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         model = self.model
         body_parent_f = (
-            observables.body_parent_f if observables is not None and observables.body_parent_f is not None else None
+            observables.body_parent_f
+            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            else None
         )
         if body_parent_f is None:
             body_parent_f = state_out.body_parent_f

@@ -1035,7 +1035,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
         """Check the native detector budget before allocating contact observables."""
-        if SolverObservableFlags.CONTACT_F in observables and self._collision_detector_kamino is not None:
+        if observables.is_requested(SolverObservableFlags.CONTACT_F) and self._collision_detector_kamino is not None:
             native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
             if native_max > self.model.rigid_contact_max:
                 raise ValueError(
@@ -1119,7 +1119,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q_com=state_in_kamino.q_i,
         )
 
-        body_qdd = observables.body_qdd if observables is not None else None
+        body_qdd = (
+            observables.body_qdd
+            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            else None
+        )
         if body_qdd is None:
             body_qdd = state_out.body_qdd
         if body_qdd is not None:
@@ -1159,8 +1163,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q=state_out_kamino.q_i,
         )
 
-        if observables is not None and observables.contact_f is not None:
-            observable_contacts = observables._contacts
+        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+            observable_contacts = observables.contacts
             if observable_contacts is None:
                 raise ValueError("Contact storage is missing from solver observables.")
             self._populate_contact_observables(observable_contacts, state_out, observables.contact_f)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import copy
 from enum import Enum, IntEnum
 from typing import Any, ClassVar
 
@@ -72,8 +73,7 @@ class SolverObservables:
         Args:
             flags: Observable flags represented by this container.
         """
-        self.flags: frozenset[Enum] = frozenset(flags)
-        """Observable flags allocated in this container."""
+        self._flags: frozenset[Enum] = frozenset(flags)
 
         self.body_qdd: wp.array[wp.spatial_vector] | None = None
         """Rigid-body accelerations [m/s², rad/s²], shape ``(body_count,)``."""
@@ -87,10 +87,82 @@ class SolverObservables:
         self._solver: SolverBase | None = None
         self._contacts: Contacts | None = None
         self._contact_capacity: tuple[int, int] | None = None
+        self._source: SolverObservables | None = None
+
+    @property
+    def flags(self) -> frozenset[Enum]:
+        """Observable flags requested by this container or selected subset."""
+        return self._flags
+
+    def is_requested(self, flag: Enum) -> bool:
+        """Return whether this container requests an observable on the current call.
+
+        This checks the request, not whether its values are fresh. It also
+        returns True for requested zero-length arrays and during allocation.
+
+        Args:
+            flag: A standard or solver-specific observable enum member.
+        """
+        return flag in self._flags
 
     def __contains__(self, flag: Enum) -> bool:
-        """Return whether an observable flag was allocated."""
-        return flag in self.flags
+        """Return whether an observable is requested, like :meth:`is_requested`."""
+        return self.is_requested(flag)
+
+    def select(self, flags: Iterable[Enum]) -> SolverObservables:
+        """Return a reusable subset sharing this container's allocated arrays.
+
+        The result has the same concrete type, solver owner, and selected
+        array objects, including gradients. Fields omitted from the selection
+        are None in the result; this container is not modified. Stepping a
+        subset therefore leaves the source's omitted arrays unchanged.
+
+        Create selections before graph capture and reuse them across substeps.
+        Only Python containers are created; no array allocation or copying is
+        performed. Selections share the source's contact-storage binding.
+
+        Derived containers with nested observable containers should override
+        this method, call super(), and select their children in the result.
+        Other solver-specific metadata is shallow-copied.
+
+        Args:
+            flags: Subset of :attr:`flags` to request. An empty set requests
+                no observables. Selecting a selection can only narrow it.
+
+        Returns:
+            A same-type container referencing the selected arrays.
+
+        Raises:
+            ValueError: If this container was not allocated by a solver or a
+                flag is not requested by this container.
+        """
+        if self._solver is None:
+            raise ValueError("Solver observables must be allocated by a solver before selecting fields.")
+        requested = frozenset(flags)
+        missing = requested.difference(self.flags)
+        if missing:
+            raise ValueError(f"Cannot select observable flags not requested by this container: {missing}.")
+        selected = copy(self)
+        selected._flags = requested
+        selected._source = self._source if self._source is not None else self
+        for flag in self.flags.difference(requested):
+            setattr(selected, flag.value, None)
+        if not selected._has_contact_observables():
+            selected._contact_capacity = None
+        return selected
+
+    def _has_contact_observables(self) -> bool:
+        """Validate row frequencies and identify contact-indexed requests."""
+        frequencies = {self.get_attribute_frequency(flag.value) for flag in self.flags}
+        return bool(
+            frequencies.intersection(
+                (
+                    Model.AttributeFrequency.CONTACT,
+                    Model.AttributeFrequency.CONTACT_RIGID,
+                    Model.AttributeFrequency.CONTACT_SOFT,
+                )
+            )
+        )
 
     def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
         """Return an array's row domain, including inherited declarations.
@@ -118,8 +190,11 @@ class SolverObservables:
 
     @property
     def contacts(self) -> Contacts | None:
-        """Contact storage bound on the first solver step, or ``None`` before it."""
-        return self._contacts
+        """Shared contact storage, or None before binding or without contact requests."""
+        if self._contact_capacity is None:
+            return None
+        source = self._source if self._source is not None else self
+        return source._contacts
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -580,18 +655,10 @@ class SolverBase:
         if requires_grad is None:
             requires_grad = self.model.requires_grad
         try:
-            frequencies = {observables.get_attribute_frequency(flag.value) for flag in requested}
+            has_contact_observables = observables._has_contact_observables()
         except KeyError as error:
             raise ValueError(error.args[0]) from error
-        if any(
-            frequency
-            in (
-                Model.AttributeFrequency.CONTACT,
-                Model.AttributeFrequency.CONTACT_RIGID,
-                Model.AttributeFrequency.CONTACT_SOFT,
-            )
-            for frequency in frequencies
-        ):
+        if has_contact_observables:
             observables._contact_capacity = self.model._get_contact_capacity()
         self._allocate_observables(observables, requires_grad=requires_grad)
         if observables._contact_capacity is not None:
@@ -606,7 +673,7 @@ class SolverBase:
     def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
         """Allocate standard arrays requested in an observable container."""
         for flag in SolverObservableFlags:
-            if flag not in observables:
+            if not observables.is_requested(flag):
                 continue
             frequency = observables.get_attribute_frequency(flag.value)
             setattr(
@@ -635,11 +702,12 @@ class SolverBase:
                 raise ValueError("Solver observables and Contacts must be on the solver device.")
             if (contacts.rigid_contact_max, contacts.soft_contact_max) != observables._contact_capacity:
                 raise ValueError(f"Contacts capacities must match solver observables: {observables._contact_capacity}.")
-            if observables._contacts is not None and observables._contacts is not contacts:
+            if observables.contacts is not None and observables.contacts is not contacts:
                 raise ValueError(
                     "Contact solver observables must be used with the Contacts instance bound on the first step."
                 )
-            observables._contacts = contacts
+            source = observables._source if observables._source is not None else observables
+            source._contacts = contacts
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)
