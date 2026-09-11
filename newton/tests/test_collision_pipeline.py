@@ -2284,7 +2284,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        world.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+        world.add_shape_mesh(body=world.add_body(), mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_world(world)
         builder.add_world(world)
@@ -2309,12 +2309,15 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         """Generate contacts for two intersecting finite planes."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_shape_plane(body=-1, width=1.0, length=1.0)
-        builder.add_shape_plane(
-            body=-1,
+        kinematic_body = builder.add_body(
             xform=wp.transform(
                 wp.vec3(0.0, 0.0, 0.0),
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0),
             ),
+            is_kinematic=True,
+        )
+        builder.add_shape_plane(
+            body=kinematic_body,
             width=1.0,
             length=1.0,
         )
