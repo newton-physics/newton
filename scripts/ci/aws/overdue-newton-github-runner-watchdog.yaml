@@ -1,10 +1,34 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Alert when tagged Newton GitHub runners remain active too long.
+Description: Report and clean up tagged Newton GitHub runners that remain active too long.
 
 Parameters:
   AlertTopicArn:
     Type: String
     Description: Existing SNS topic ARN for watchdog alarm transitions.
+  TerminateAfterMinutes:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 120
+    Description: Age at which an owned running instance becomes a cleanup candidate.
+  TerminationEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Whether the watchdog may terminate cleanup candidates.
+  RequiredRepository:
+    Type: String
+    Default: ""
+    Description: Optional exact repository tag required during a cleanup canary.
+
+Conditions:
+  RestrictTerminationByRepository:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: RequiredRepository
+          - ""
 
 Resources:
   WatchdogRole:
@@ -30,9 +54,28 @@ Resources:
               - Sid: DiscoverInstances
                 Effect: Allow
                 Action:
-                  - ec2:DescribeRegions
                   - ec2:DescribeInstances
                 Resource: "*"
+              - Fn::If:
+                  - RestrictTerminationByRepository
+                  - Sid: TerminateCanaryRepositoryRunners
+                    Effect: Allow
+                    Action: ec2:TerminateInstances
+                    Resource:
+                      Fn::Sub: arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*
+                    Condition:
+                      StringEquals:
+                        ec2:ResourceTag/created-by: github-actions-newton-role
+                        ec2:ResourceTag/GitHub-Repository:
+                          Ref: RequiredRepository
+                  - Sid: TerminateOwnedRunners
+                    Effect: Allow
+                    Action: ec2:TerminateInstances
+                    Resource:
+                      Fn::Sub: arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*
+                    Condition:
+                      StringEquals:
+                        ec2:ResourceTag/created-by: github-actions-newton-role
               - Sid: PublishWatchdogMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData
@@ -50,21 +93,28 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: overdue-newton-github-runner-watchdog
-      Description: Report tagged Newton runners active for at least 120 minutes.
+      Description: Report and clean up tagged Newton GitHub runners active too long.
       Runtime: python3.12
       Handler: index.lambda_handler
       Role:
         Fn::GetAtt:
           - WatchdogRole
           - Arn
-      Timeout: 60
+      Timeout: 120
       MemorySize: 128
       Environment:
         Variables:
-          MAX_AGE_MINUTES: "120"
+          ALERT_AFTER_MINUTES: "120"
+          MONITORED_REGIONS: us-east-1,us-east-2,us-west-2,ap-northeast-1,ap-northeast-2
+          REQUIRED_REPOSITORY:
+            Ref: RequiredRepository
+          TERMINATE_AFTER_MINUTES:
+            Ref: TerminateAfterMinutes
+          TERMINATION_ENABLED:
+            Ref: TerminationEnabled
       Code:
         ZipFile: |
-          """Report overdue Newton GitHub runner instances across AWS regions."""
+          """Report and clean up tagged Newton GitHub runner instances."""
 
           from __future__ import annotations
 
@@ -75,15 +125,75 @@ Resources:
 
           CREATED_BY = "github-actions-newton-role"
           METRIC_NAMESPACE = "Newton/GitHubRunnerWatchdog"
+          PRODUCTION_TERMINATE_AFTER_MINUTES = 90
 
 
-          def find_overdue_instances(region_names, ec2_factory, now, max_age_minutes):
-              """Return matching running instances at least the maximum age."""
+          def parse_bool(value):
+              """Parse an exact lower-case Boolean string."""
+              if value == "true":
+                  return True
+              if value == "false":
+                  return False
+              raise ValueError("TERMINATION_ENABLED must be 'true' or 'false'")
+
+
+          def load_config(environ):
+              """Return validated cleanup configuration from an environment mapping."""
+              region_names = [
+                  region.strip()
+                  for region in environ.get("MONITORED_REGIONS", "").split(",")
+                  if region.strip()
+              ]
+              terminate_after_minutes = float(environ["TERMINATE_AFTER_MINUTES"])
+              alert_after_minutes = int(environ["ALERT_AFTER_MINUTES"])
+              termination_enabled = parse_bool(environ["TERMINATION_ENABLED"])
+              required_repository = environ.get("REQUIRED_REPOSITORY", "")
+
+              if not region_names:
+                  raise ValueError("MONITORED_REGIONS must not be empty")
+              if not 1 <= terminate_after_minutes <= alert_after_minutes:
+                  raise ValueError(
+                      "TERMINATE_AFTER_MINUTES must be between 1 and "
+                      "ALERT_AFTER_MINUTES"
+                  )
+              if alert_after_minutes != 120:
+                  raise ValueError("ALERT_AFTER_MINUTES must be 120")
+              if (
+                  termination_enabled
+                  and terminate_after_minutes < PRODUCTION_TERMINATE_AFTER_MINUTES
+                  and not required_repository
+              ):
+                  raise ValueError(
+                      "RequiredRepository must not be empty when termination is enabled "
+                      "below the production threshold"
+                  )
+
+              return {
+                  "region_names": region_names,
+                  "terminate_after_minutes": terminate_after_minutes,
+                  "alert_after_minutes": alert_after_minutes,
+                  "termination_enabled": termination_enabled,
+                  "required_repository": required_repository,
+              }
+
+
+          def scan_runner_instances(
+              region_names,
+              ec2_factory,
+              now,
+              terminate_after_minutes,
+              alert_after_minutes,
+              required_repository,
+          ):
+              """Return owned, candidate, overdue, and failed regional scan records."""
               filters = [
                   {"Name": "tag:created-by", "Values": [CREATED_BY]},
                   {"Name": "instance-state-name", "Values": ["running"]},
               ]
+              owned = []
+              candidates = []
               overdue = []
+              failures = []
 
               for region in region_names:
                   try:
@@ -93,42 +203,105 @@ Resources:
                               for instance in reservation.get("Instances", []):
                                   launch_time = instance["LaunchTime"]
                                   age_minutes = int((now - launch_time).total_seconds() // 60)
-                                  if age_minutes < max_age_minutes:
-                                      continue
                                   tags = {tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])}
-                                  overdue.append(
-                                      {
-                                          "instance_id": instance["InstanceId"],
-                                          "instance_type": instance["InstanceType"],
-                                          "region": region,
-                                          "launch_time": launch_time.isoformat(),
-                                          "age_minutes": age_minutes,
-                                          "repository": tags.get("GitHub-Repository", "unknown"),
-                                          "trigger": tags.get("Newton-Trigger", "unknown"),
-                                          "workload": tags.get("Newton-Workload", "unknown"),
-                                          "run_id": tags.get("GitHub-Run-ID", "unknown"),
-                                          "run_attempt": tags.get("GitHub-Run-Attempt", "unknown"),
-                                      }
-                                  )
+                                  repository = tags.get("GitHub-Repository")
+                                  record = {
+                                      "instance_id": instance["InstanceId"],
+                                      "instance_type": instance["InstanceType"],
+                                      "region": region,
+                                      "launch_time": launch_time.isoformat(),
+                                      "age_minutes": age_minutes,
+                                      "repository": repository if repository is not None else "unknown",
+                                      "trigger": tags.get("Newton-Trigger", "unknown"),
+                                      "workload": tags.get("Newton-Workload", "unknown"),
+                                      "run_id": tags.get("GitHub-Run-ID", "unknown"),
+                                      "run_attempt": tags.get("GitHub-Run-Attempt", "unknown"),
+                                  }
+                                  owned.append(record)
+                                  if age_minutes >= terminate_after_minutes and (
+                                      not required_repository
+                                      or repository == required_repository
+                                  ):
+                                      candidates.append(record)
+                                  if age_minutes >= alert_after_minutes:
+                                      overdue.append(record)
                   except Exception as error:
-                      raise RuntimeError(f"Failed to scan region {region}") from error
+                      failures.append({"operation": "scan", "region": region, "error": str(error)})
 
-              overdue.sort(key=lambda item: (-item["age_minutes"], item["region"], item["instance_id"]))
-              return overdue
+              sort_key = lambda item: (-item["age_minutes"], item["region"], item["instance_id"])
+              owned.sort(key=sort_key)
+              candidates.sort(key=sort_key)
+              overdue.sort(key=sort_key)
+              failures.sort(key=lambda item: (item["operation"], item["region"], item.get("instance_id", "")))
+              return {
+                  "owned": owned,
+                  "candidates": candidates,
+                  "overdue": overdue,
+                  "failures": failures,
+              }
 
 
-          def publish_metrics(cloudwatch, overdue_instances):
-              """Publish aggregate overdue-runner metrics."""
+          def apply_cleanup(candidates, ec2_factory, termination_enabled):
+              """Return cleanup decisions, terminated records, and failures."""
+              decisions = []
+              terminated = []
+              failures = []
+
+              for candidate in candidates:
+                  if not termination_enabled:
+                      decisions.append({**candidate, "decision": "would_terminate"})
+                      continue
+                  try:
+                      ec2_factory(candidate["region"]).terminate_instances(
+                          InstanceIds=[candidate["instance_id"]]
+                      )
+                  except Exception as error:
+                      decisions.append(
+                          {**candidate, "decision": "termination_failed", "error": str(error)}
+                      )
+                      failures.append(
+                          {
+                              "operation": "terminate",
+                              "region": candidate["region"],
+                              "instance_id": candidate["instance_id"],
+                              "error": str(error),
+                          }
+                      )
+                  else:
+                      decisions.append({**candidate, "decision": "terminated"})
+                      terminated.append(candidate)
+
+              failures.sort(key=lambda item: (item["operation"], item["region"], item.get("instance_id", "")))
+              return {"decisions": decisions, "terminated": terminated, "failures": failures}
+
+
+          def publish_metrics(cloudwatch, owned, candidates, terminated, overdue):
+              """Publish aggregate runner cleanup and alert metrics."""
               oldest_age = max(
-                  (instance["age_minutes"] for instance in overdue_instances),
+                  (instance["age_minutes"] for instance in owned),
                   default=0,
               )
               cloudwatch.put_metric_data(
                   Namespace=METRIC_NAMESPACE,
                   MetricData=[
                       {
+                          "MetricName": "OwnedRunnerCount",
+                          "Value": float(len(owned)),
+                          "Unit": "Count",
+                      },
+                      {
+                          "MetricName": "TerminationCandidateCount",
+                          "Value": float(len(candidates)),
+                          "Unit": "Count",
+                      },
+                      {
+                          "MetricName": "TerminatedRunnerCount",
+                          "Value": float(len(terminated)),
+                          "Unit": "Count",
+                      },
+                      {
                           "MetricName": "OverdueRunnerCount",
-                          "Value": float(len(overdue_instances)),
+                          "Value": float(len(overdue)),
                           "Unit": "Count",
                       },
                       {
@@ -141,36 +314,53 @@ Resources:
 
 
           def lambda_handler(event, context):
-              """Scan enabled regions and publish global overdue-runner metrics."""
+              """Scan configured regions, clean up candidates, and publish metrics."""
               import boto3
 
               home_region = os.environ.get("AWS_REGION", "us-east-1")
-              max_age_minutes = int(os.environ.get("MAX_AGE_MINUTES", "60"))
-              home_ec2 = boto3.client("ec2", region_name=home_region)
-              region_names = sorted(
-                  region["RegionName"]
-                  for region in home_ec2.describe_regions(AllRegions=False)["Regions"]
-              )
+              config = load_config(os.environ)
               now = datetime.now(timezone.utc)
-              overdue = find_overdue_instances(
-                  region_names,
+              scan = scan_runner_instances(
+                  config["region_names"],
                   lambda region: boto3.client("ec2", region_name=region),
                   now,
-                  max_age_minutes,
+                  config["terminate_after_minutes"],
+                  config["alert_after_minutes"],
+                  config["required_repository"],
               )
-              publish_metrics(
-                  boto3.client("cloudwatch", region_name=home_region),
-                  overdue,
+              cleanup = apply_cleanup(
+                  scan["candidates"],
+                  lambda region: boto3.client("ec2", region_name=region),
+                  config["termination_enabled"],
               )
+              failures = scan["failures"] + cleanup["failures"]
 
               summary = {
                   "scan_time": now.isoformat(),
-                  "scanned_region_count": len(region_names),
-                  "max_age_minutes": max_age_minutes,
-                  "overdue_count": len(overdue),
-                  "overdue_instances": overdue,
+                  "scanned_region_count": len(config["region_names"]),
+                  "scanned_regions": config["region_names"],
+                  "terminate_after_minutes": config["terminate_after_minutes"],
+                  "alert_after_minutes": config["alert_after_minutes"],
+                  "termination_enabled": config["termination_enabled"],
+                  "required_repository": config["required_repository"],
+                  "owned_count": len(scan["owned"]),
+                  "candidate_count": len(scan["candidates"]),
+                  "terminated_count": len(cleanup["terminated"]),
+                  "overdue_count": len(scan["overdue"]),
+                  "decisions": cleanup["decisions"],
+                  "overdue_instances": scan["overdue"],
+                  "failures": failures,
               }
               print(json.dumps(summary, sort_keys=True))
+              publish_metrics(
+                  boto3.client("cloudwatch", region_name=home_region),
+                  scan["owned"],
+                  scan["candidates"],
+                  cleanup["terminated"],
+                  scan["overdue"],
+              )
+              if failures:
+                  raise RuntimeError("Watchdog encountered cleanup failures")
               return summary
       Tags:
         - Key: Project
@@ -182,8 +372,8 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: overdue-newton-github-runner-watchdog-schedule
-      Description: Scan for overdue Newton GitHub runners every four hours.
-      ScheduleExpression: rate(4 hours)
+      Description: Scan and clean up tagged Newton GitHub runners every 15 minutes.
+      ScheduleExpression: rate(15 minutes)
       State: ENABLED
       Targets:
         - Arn:
@@ -217,12 +407,40 @@ Resources:
       Namespace: Newton/GitHubRunnerWatchdog
       MetricName: OverdueRunnerCount
       Statistic: Maximum
-      Period: 21600
+      Period: 1800
       EvaluationPeriods: 1
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: breaching
+      AlarmActions:
+        - Ref: AlertTopicArn
+      OKActions:
+        - Ref: AlertTopicArn
+      Tags:
+        - Key: Project
+          Value: Newton
+        - Key: Purpose
+          Value: RunnerCostGuard
+
+  WatchdogErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: newton-github-runner-cleanup-errors
+      AlarmDescription: The Newton GitHub runner cleanup Lambda invocation failed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: WatchdogFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
       AlarmActions:
         - Ref: AlertTopicArn
       OKActions:
@@ -240,3 +458,6 @@ Outputs:
   AlarmName:
     Value:
       Ref: WatchdogAlarm
+  ErrorAlarmName:
+    Value:
+      Ref: WatchdogErrorAlarm
