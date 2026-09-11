@@ -83,7 +83,7 @@ class State:
     """
     Deprecated optional solver-produced state attributes.
 
-    .. deprecated:: 1.6
+    .. deprecated:: 1.7
 
         Request :class:`newton.solvers.SolverObservables` from the solver instead.
     """
@@ -140,7 +140,7 @@ class State:
         First three entries: linear acceleration [m/s²] relative to the body's center of mass in world frame;
         last three: angular acceleration [rad/s²] in world frame.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Request :attr:`newton.solvers.SolverObservableFlags.BODY_QDD` from the solver and read
             :attr:`newton.solvers.SolverObservables.body_qdd` instead.
         """
@@ -158,7 +158,7 @@ class State:
         """Parent interaction forces [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force [N]; last three: torque [N·m].
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Request :attr:`newton.solvers.SolverObservableFlags.BODY_PARENT_F` from the solver and read
             :attr:`newton.solvers.SolverObservables.body_parent_f` instead.
 

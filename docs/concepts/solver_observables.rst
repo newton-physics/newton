@@ -14,7 +14,7 @@ Solver Observables
    categories are migrated to it.
 
 See the standalone `Solver Observables architecture guide
-<../_static/solver_observables_architecture.html>`_ for diagrams of the ownership,
+<https://reports.eric-heiden.com/solver-observables/>`_ for diagrams of the ownership,
 allocation, extension, and sensor-consumption flows.
 
 Quantities produced by a solver but not required to advance simulation belong
@@ -280,7 +280,7 @@ The viewer follows the same pattern:
 Deprecated extended attributes
 ------------------------------
 
-.. deprecated:: 1.6
+.. deprecated:: 1.7
 
    Request solver-produced arrays from the solver instead of extending
    ``State`` or ``Contacts``.
@@ -315,7 +315,9 @@ The request methods and ``update_contacts()`` emit
 :class:`DeprecationWarning`. ``SensorIMU`` and ``SensorContact`` no longer
 request extended attributes by default. Set their respective
 ``request_state_attributes=True`` or ``request_contact_attributes=True`` only
-while migrating legacy code.
+while migrating legacy code. These options are deprecated in Newton 1.7 and
+emit one sensor-specific warning at the caller's location. Leaving the options
+at their default ``False`` does not emit a warning or request legacy fields.
 
 ``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
 remain compatibility APIs. New integrations should not allocate

@@ -3,7 +3,9 @@
 
 """Tests for SensorIMU."""
 
+import inspect
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -25,6 +27,39 @@ class TestSensorIMU(unittest.TestCase):
     @staticmethod
     def _observables(model, sensor):
         return SolverBodyQdd(model).observables(sensor.solver_observable_flags)
+
+    def test_legacy_attribute_request_warns_at_caller(self):
+        """Warn once at the caller when opting into deprecated state allocation."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body, label="imu_site")
+        model = builder.finalize(device="cpu")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            caller_line = inspect.currentframe().f_lineno + 1
+            SensorIMU(model, sites=[site], request_state_attributes=True)
+
+        self.assertEqual(len(caught), 1)
+        self.assertIs(caught[0].category, DeprecationWarning)
+        self.assertRegex(str(caught[0].message), r"SensorIMU.*request_state_attributes=True.*1\.7.*SolverObservables")
+        self.assertEqual(caught[0].filename, __file__)
+        self.assertEqual(caught[0].lineno, caller_line)
+        self.assertIsNotNone(model.state().body_qdd)
+
+    def test_observable_path_does_not_request_state_attributes(self):
+        """Keep default and explicit False construction warning-free and solver-driven."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body, label="imu_site")
+        model = builder.finalize(device="cpu")
+
+        for kwargs in ({}, {"request_state_attributes": False}):
+            with self.subTest(kwargs=kwargs), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                SensorIMU(model, sites=[site], **kwargs)
+            self.assertEqual(caught, [])
+            self.assertIsNone(model.state().body_qdd)
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""

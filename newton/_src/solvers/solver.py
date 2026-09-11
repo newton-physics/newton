@@ -877,7 +877,7 @@ class SolverBase:
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update a legacy Contacts object with forces from the solver state.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
 
             Request :attr:`SolverObservableFlags.CONTACT_F` using :meth:`observables`
             and pass the resulting container to :meth:`step` instead.

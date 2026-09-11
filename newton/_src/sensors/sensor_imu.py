@@ -4,6 +4,7 @@
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
 import re
+import warnings
 
 import warp as wp
 
@@ -150,6 +151,11 @@ class SensorIMU:
             request_state_attributes: If True, request the deprecated extended
                 state attribute ``body_qdd`` from the model. Defaults to False;
                 :meth:`update` must receive solver observables containing ``body_qdd``.
+
+                .. deprecated:: 1.7
+                    Passing True is deprecated. Allocate :attr:`solver_observable_flags`
+                    through the solver and pass :class:`~newton.solvers.SolverObservables`
+                    to :meth:`update` instead.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -166,7 +172,14 @@ class SensorIMU:
 
         # Retain an explicit compatibility path during the deprecation period.
         if request_state_attributes:
-            self.model.request_state_attributes("body_qdd")
+            warnings.warn(
+                "SensorIMU(request_state_attributes=True) is deprecated in Newton 1.7; "
+                "allocate SolverObservables with solver.observables(sensor.solver_observable_flags) "
+                "and pass them to update(..., solver_observables=...).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.model._request_state_attributes("body_qdd")
 
         self._validate_sensor_sites(sites)
 

@@ -5640,12 +5640,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Update legacy contact-force storage from MuJoCo contacts.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
             Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
             pass the resulting container to :meth:`step` instead.
         """
         warnings.warn(
-            "SolverMuJoCo.update_contacts() is deprecated; request SolverObservableFlags.CONTACT_F and pass "
+            "SolverMuJoCo.update_contacts() is deprecated in Newton 1.7; request SolverObservableFlags.CONTACT_F and pass "
             "SolverObservables to step().",
             DeprecationWarning,
             stacklevel=2,

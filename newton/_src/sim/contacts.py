@@ -133,7 +133,7 @@ class Contacts:
     """
     Deprecated optional solver-produced contact attributes.
 
-    .. deprecated:: 1.6
+    .. deprecated:: 1.7
 
         Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from the
         solver instead.
@@ -423,7 +423,7 @@ class Contacts:
             First three entries: linear force [N]; last three entries: torque (moment) [N·m].
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
 
-            .. deprecated:: 1.6
+            .. deprecated:: 1.7
                 Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` and read
                 :attr:`newton.solvers.SolverObservables.contact_f` instead.
             """

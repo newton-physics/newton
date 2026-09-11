@@ -493,6 +493,11 @@ class SensorContact:
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
                 for compatibility. Defaults to False; pass solver observables to :meth:`update` instead.
+
+                .. deprecated:: 1.7
+                    Passing True is deprecated. Allocate :attr:`solver_observable_flags`
+                    through the solver and pass :class:`~newton.solvers.SolverObservables`
+                    to :meth:`update` instead.
         """
         deprecated_sensing_bodies = kwargs.pop("sensing_obj_bodies", _UNSET)
         if deprecated_sensing_bodies is not _UNSET:
@@ -523,9 +528,16 @@ class SensorContact:
         self.device = model.device
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
-        # request contact force attribute
+        # Retain an explicit compatibility path during the deprecation period.
         if request_contact_attributes:
-            model.request_contact_attributes("force")
+            warnings.warn(
+                "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
+                "allocate SolverObservables with solver.observables(sensor.solver_observable_flags) "
+                "and pass them to update(..., solver_observables=...).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            model._request_contact_attributes("force")
 
         if sensing_bodies is not None:
             s_bodies = match_labels(model.body_label, sensing_bodies)

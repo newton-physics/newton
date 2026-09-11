@@ -2033,7 +2033,7 @@ class Model:
     def request_state_attributes(self, *attributes: str) -> None:
         """Request optional solver-produced state attributes.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
 
             Request :class:`newton.solvers.SolverObservables` from the solver
             instead.
@@ -2044,17 +2044,22 @@ class Model:
             *attributes: Variable number of attribute names (strings).
         """
         warnings.warn(
-            "Model.request_state_attributes() is deprecated; request SolverObservables from the solver instead.",
+            "Model.request_state_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
+        self._request_state_attributes(*attributes)
+
+    def _request_state_attributes(self, *attributes: str) -> None:
+        """Register legacy state fields after the entry point emits its warning."""
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def request_contact_attributes(self, *attributes: str) -> None:
         """Request optional solver-produced contact attributes.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
 
             Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
             the solver instead.
@@ -2063,10 +2068,15 @@ class Model:
             *attributes: Variable number of attribute names (strings).
         """
         warnings.warn(
-            "Model.request_contact_attributes() is deprecated; request SolverObservables from the solver instead.",
+            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
+        self._request_contact_attributes(*attributes)
+
+    def _request_contact_attributes(self, *attributes: str) -> None:
+        """Register legacy contact fields after the entry point emits its warning."""
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 

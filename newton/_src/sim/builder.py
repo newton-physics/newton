@@ -11442,7 +11442,7 @@ class ModelBuilder:
     def request_contact_attributes(self, *attributes: str) -> None:
         """Request optional contact attributes on the finalized model.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
 
             Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
             the solver instead.
@@ -11454,7 +11454,8 @@ class ModelBuilder:
         from .contacts import Contacts  # noqa: PLC0415
 
         warnings.warn(
-            "ModelBuilder.request_contact_attributes() is deprecated; request SolverObservables from the solver instead.",
+            "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -11464,7 +11465,7 @@ class ModelBuilder:
     def request_state_attributes(self, *attributes: str) -> None:
         """Request optional solver-produced attributes on the finalized model.
 
-        .. deprecated:: 1.6
+        .. deprecated:: 1.7
 
             Request :class:`newton.solvers.SolverObservables` from the solver
             instead.
@@ -11478,7 +11479,8 @@ class ModelBuilder:
         from .state import State  # noqa: PLC0415
 
         warnings.warn(
-            "ModelBuilder.request_state_attributes() is deprecated; request SolverObservables from the solver instead.",
+            "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )

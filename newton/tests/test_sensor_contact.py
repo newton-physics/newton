@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import types
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -71,6 +73,35 @@ def create_contacts(device, pairs, naconmax, normals=None, forces=None):
 
 
 class TestSensorContact(unittest.TestCase):
+    def test_legacy_attribute_request_warns_at_caller(self):
+        """Warn once at the caller when opting into deprecated force allocation."""
+        model = _make_two_world_model(device="cpu")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            caller_line = inspect.currentframe().f_lineno + 1
+            SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
+
+        self.assertEqual(len(caught), 1)
+        self.assertIs(caught[0].category, DeprecationWarning)
+        self.assertRegex(
+            str(caught[0].message), r"SensorContact.*request_contact_attributes=True.*1\.7.*SolverObservables"
+        )
+        self.assertEqual(caught[0].filename, __file__)
+        self.assertEqual(caught[0].lineno, caller_line)
+        self.assertIsNotNone(newton.CollisionPipeline(model).contacts().force)
+
+    def test_observable_path_does_not_request_contact_attributes(self):
+        """Keep default and explicit False construction warning-free and solver-driven."""
+        model = _make_two_world_model(device="cpu")
+
+        for kwargs in ({}, {"request_contact_attributes": False}):
+            with self.subTest(kwargs=kwargs), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                SensorContact(model, sensing_bodies="*", **kwargs)
+            self.assertEqual(caught, [])
+            self.assertIsNone(newton.CollisionPipeline(model).contacts().force)
+
     def test_net_force_aggregation(self):
         """Test net force aggregation across different contact subsets"""
         device = wp.get_device()
