@@ -183,7 +183,8 @@ formulation.
   ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
-  :class:`~newton.solvers.SolverVBD` consumes these properties for rigid-rigid contacts.
+  :class:`~newton.solvers.SolverVBD` consumes these properties for rigid-rigid contacts,
+  with separate Coulomb limits for sliding, torsion, and rolling rather than one coupled cone.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and

@@ -465,6 +465,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 matching it also restores projected tangential multipliers as a
                 numerical warm start; with sticky matching, tangential memory is
                 represented by the collision pipeline's replayed material anchor.
+                Matched hard/ALM contacts also restore projected angular-friction multipliers.
                 Legacy hard contacts restore the full multiplier; legacy soft contacts
                 restore penalty k only. Contact geometry remains owned by the
                 collision pipeline. Requires ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
@@ -3763,6 +3764,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             Output buffers persist and grow on demand; they do not shrink, so
             iterate up to the returned ``rigid_contact_count`` rather than the
             array length.
+
+            These outputs exclude pure torsional/rolling friction couples, so
+            point-force moments alone do not reconstruct the full contact wrench.
 
         Returns:
             tuple[
