@@ -7,11 +7,14 @@ import inspect
 import unittest
 from enum import Enum
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import patch
 
+import numpy as np
 import warp as wp
 
 import newton
+from newton.selection import ArticulationView
 
 
 class ContactSolver(newton.solvers.SolverBase):
@@ -29,6 +32,8 @@ class CustomContactFlags(Enum):
 class CustomContactObservables(newton.solvers.SolverObservables):
     """Keep custom contact pressure separate from the standard force array."""
 
+    ATTRIBUTE_FREQUENCIES: ClassVar = {"pressure": newton.Model.AttributeFrequency.CONTACT_RIGID}
+
     def __init__(self, flags=()):
         super().__init__(flags)
         self.pressure: wp.array[float] | None = None
@@ -39,7 +44,6 @@ class CustomContactSolver(ContactSolver):
 
     OBSERVABLES_TYPE = CustomContactObservables
     SUPPORTED_OBSERVABLE_FLAGS = ContactSolver.SUPPORTED_OBSERVABLE_FLAGS | {CustomContactFlags.PRESSURE}
-    CONTACT_OBSERVABLE_FLAGS = ContactSolver.CONTACT_OBSERVABLE_FLAGS | {CustomContactFlags.PRESSURE}
 
     def _allocate_observables(self, observables, *, requires_grad):
         super()._allocate_observables(observables, requires_grad=requires_grad)
@@ -95,6 +99,123 @@ class TestSolverObservables(unittest.TestCase):
         observables = self.solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
         self.assertEqual(observables.body_qdd.shape, (self.model.body_count,))
         self.assertIsNone(observables.contact_f)
+
+    def test_observable_frequency_metadata(self):
+        """Inherit standard row frequencies without another capability flag set."""
+        observables = CustomContactObservables()
+        frequency = newton.Model.AttributeFrequency
+        self.assertEqual(observables.get_attribute_frequency("body_qdd"), frequency.BODY)
+        self.assertEqual(observables.get_attribute_frequency("pressure"), frequency.CONTACT_RIGID)
+        self.assertEqual(observables.get_attribute_frequency("contact_f"), frequency.CONTACT)
+        self.assertFalse(hasattr(ContactSolver, "CONTACT_OBSERVABLE_FLAGS"))
+
+    def test_missing_observable_frequency(self):
+        """Reject custom requests without a declared row frequency before allocating."""
+        solver = CustomContactSolver(self.model)
+        solver.OBSERVABLES_TYPE = newton.solvers.SolverObservables
+        with self.assertRaisesRegex(ValueError, "frequency.*pressure"):
+            solver.observables({CustomContactFlags.PRESSURE})
+
+    def test_invalid_frequency_declaration(self):
+        """Reject integer frequency values rather than guessing their domain."""
+
+        class InvalidObservables(CustomContactObservables):
+            ATTRIBUTE_FREQUENCIES: ClassVar = {"pressure": 5}
+
+        solver = CustomContactSolver(self.model)
+        solver.OBSERVABLES_TYPE = InvalidObservables
+        with self.assertRaisesRegex(TypeError, "Invalid observable frequency.*pressure"):
+            solver.observables({CustomContactFlags.PRESSURE})
+
+    def test_flag_values_name_array_fields(self):
+        """Reject plain enum members whose values cannot identify an array field."""
+
+        class InvalidFlags(Enum):
+            NUMBER = 0
+            EXPRESSION = "pressure[0]"
+
+        for flag in InvalidFlags:
+            with self.subTest(flag=flag), self.assertRaisesRegex(TypeError, "string naming its array field"):
+                self.solver.observables({flag})
+
+    def test_contact_frequency_counts(self):
+        """Resolve each contact domain from capacity rather than live counts."""
+        frequency = newton.Model.AttributeFrequency
+        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+            self.model._attribute_frequency_count(frequency.CONTACT_SOFT)
+        newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        for domain, count in ((frequency.CONTACT_RIGID, 5), (frequency.CONTACT_SOFT, 3), (frequency.CONTACT, 8)):
+            with self.subTest(domain=domain):
+                self.assertEqual(self.model._attribute_frequency_count(domain), count)
+
+    def test_custom_soft_contact_frequency(self):
+        """Require contact binding for a soft-only diagnostic without standard forces."""
+
+        class SoftObservables(CustomContactObservables):
+            ATTRIBUTE_FREQUENCIES: ClassVar = {"pressure": newton.Model.AttributeFrequency.CONTACT_SOFT}
+
+        class SoftSolver(CustomContactSolver):
+            OBSERVABLES_TYPE = SoftObservables
+
+            def _allocate_observables(self, observables, *, requires_grad):
+                observables.pressure = wp.zeros(self.model.soft_contact_max, device=self.model.device)
+
+        solver = SoftSolver(self.model)
+        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+            solver.observables({CustomContactFlags.PRESSURE})
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        observables = solver.observables({CustomContactFlags.PRESSURE})
+        self.assertEqual(observables.pressure.shape, (3,))
+        self.assertIsNone(observables.contact_f)
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            solver._validate_observables(observables)
+        solver._validate_observables(observables, pipeline.contacts())
+
+    def test_selection_uses_observable_frequencies(self):
+        """Select custom body and DOF arrays without registering fields on the model."""
+        builder = newton.ModelBuilder()
+        for index in range(3):
+            body = builder.add_link(label=f"robot_{index}/body")
+            joint = builder.add_joint_free(child=body, label=f"robot_{index}/joint")
+            builder.add_articulation([joint], label=f"robot_{index}")
+        model = builder.finalize(device="cpu")
+        view = ArticulationView(model, [0, 2])
+        for frequency, width in (
+            (newton.Model.AttributeFrequency.BODY, 1),
+            (newton.Model.AttributeFrequency.JOINT_DOF, 6),
+        ):
+            with self.subTest(frequency=frequency):
+
+                class Observables(CustomContactObservables):
+                    ATTRIBUTE_FREQUENCIES: ClassVar = {"pressure": frequency}
+
+                class Solver(CustomContactSolver):
+                    OBSERVABLES_TYPE = Observables
+
+                    def _allocate_observables(self, observables, *, requires_grad):
+                        count = self.model._attribute_frequency_count(observables.get_attribute_frequency("pressure"))
+                        observables.pressure = wp.zeros(count, device=self.model.device)
+
+                observables = Solver(model).observables({CustomContactFlags.PRESSURE})
+                values = np.arange(3 * width, dtype=np.float32)
+                observables.pressure.assign(values)
+                with self.assertRaises(KeyError):
+                    model.get_attribute_frequency("pressure")
+                np.testing.assert_array_equal(
+                    view.get_attribute("pressure", observables).numpy(), values.reshape(1, 3, width)[:, [0, 2]]
+                )
+                with self.assertRaisesRegex(ValueError, "not requested"):
+                    view.get_attribute("body_qdd", observables)
+                with self.assertRaisesRegex(ValueError, "same model"):
+                    view.get_attribute(
+                        "body_qdd", self.solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
+                    )
+
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=1)
+        observables = ContactSolver(model).observables(self.flags)
+        with self.assertRaisesRegex(AttributeError, "dynamic contact"):
+            view.get_attribute("contact_f", observables)
+        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
 
     def test_eager_capacity_allocation(self):
         """Allocate full rigid and soft capacity before creating Contacts."""

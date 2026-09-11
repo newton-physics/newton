@@ -24,6 +24,7 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
+from ..solvers.solver import SolverObservables
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1168,7 +1169,12 @@ class ArticulationView:
     # Generic attribute API
 
     @functools.lru_cache(maxsize=None)  # noqa
-    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
+    def _get_attribute_array(
+        self, name: str, source: Model | State | Control | SolverObservables, _slice: Slice | int | None = None
+    ):
+        is_observable = isinstance(source, SolverObservables)
+        if is_observable and source.model is not self.model:
+            raise ValueError("Solver observables and ArticulationView must use the same model.")
         # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
@@ -1182,10 +1188,19 @@ class ArticulationView:
         else:
             attrib = getattr(source, name)
             frequency_name = name
+        if is_observable and attrib is None:
+            raise ValueError(f"Observable '{name}' was not requested from the solver.")
         assert isinstance(attrib, wp.array)
 
         # get frequency info
-        frequency = self.model.get_attribute_frequency(frequency_name)
+        frequency_source = source if is_observable else self.model
+        frequency = frequency_source.get_attribute_frequency(frequency_name)
+        if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
+            raise AttributeError(
+                f"Attribute '{name}' has dynamic contact frequency '{frequency.name}'; "
+                "ArticulationView requires stable articulation ownership. "
+                "Filter using Contacts endpoints or reduce to a BODY-frequency observable first."
+            )
 
         if isinstance(frequency, str):
             layout = self.frequency_layouts.get(frequency)
@@ -1288,7 +1303,9 @@ class ArticulationView:
 
         return attrib
 
-    def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
+    def _get_attribute_values(
+        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None
+    ):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
         if hasattr(attrib, "_staging_array"):
             if hasattr(attrib, "_gather_src"):
@@ -1310,7 +1327,12 @@ class ArticulationView:
         return attrib
 
     def _set_attribute_values(
-        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None
+        self,
+        name: str,
+        target: Model | State | Control | SolverObservables,
+        values,
+        mask=None,
+        _slice: slice | None = None,
     ):
         attrib = self._get_attribute_array(name, target, _slice=_slice)
 
@@ -1370,9 +1392,9 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
         """
-        Get an attribute from the source (Model, State, or Control).
+        Get an attribute from a model, state, control, or solver observable container.
 
         Args:
             name: The name of the attribute to get.
@@ -1380,13 +1402,19 @@ class ArticulationView:
 
         Returns:
             array: The attribute values (dtype matches the attribute).
+
+        .. experimental::
+
+            ``SolverObservables`` sources use their declared row frequencies
+            and must belong to this view's model. Dynamic contact frequencies
+            are not supported; they need endpoint-based filtering or reduction.
         """
         return self._get_attribute_values(name, source)
 
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control,
+        target: Model | State | Control | SolverObservables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:

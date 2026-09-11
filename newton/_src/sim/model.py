@@ -203,6 +203,22 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        CONTACT = 16
+        """Packed rigid and soft-rigid contact slots, sized by the sum of their capacities.
+
+        The soft segment starts at ``rigid_contact_max``, not the live rigid count.
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_RIGID = 17
+        """Rigid-rigid contact slots, sized by ``rigid_contact_max``.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_SOFT = 18
+        """Soft-rigid contact slots, sized by ``soft_contact_max``; excludes soft self-contact.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -1743,6 +1759,17 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency in (
+            Model.AttributeFrequency.CONTACT,
+            Model.AttributeFrequency.CONTACT_RIGID,
+            Model.AttributeFrequency.CONTACT_SOFT,
+        ):
+            rigid_max, soft_max = self._get_contact_capacity()
+            if frequency == Model.AttributeFrequency.CONTACT_RIGID:
+                return rigid_max
+            if frequency == Model.AttributeFrequency.CONTACT_SOFT:
+                return soft_max
+            return rigid_max + soft_max
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import unittest
 from enum import Enum, IntEnum
+from typing import ClassVar
 
 import numpy as np
 import warp as wp
@@ -28,6 +29,8 @@ class IntegerObservableFlags(IntEnum):
 
 class DummySolverObservables(newton.solvers.SolverObservables):
     """Extend the standard observable container with a custom body array."""
+
+    ATTRIBUTE_FREQUENCIES: ClassVar = {"body_temperature": newton.Model.AttributeFrequency.BODY}
 
     def __init__(self, flags=()):
         """Initialize the inherited and custom output fields."""

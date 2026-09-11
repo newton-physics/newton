@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterable
 from contextlib import contextmanager
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -448,6 +448,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     class Observables(SolverObservables):
         """Standard and MuJoCo-specific observable arrays."""
+
+        ATTRIBUTE_FREQUENCIES: ClassVar = {"qfrc_actuator": AttributeFrequency.JOINT_DOF}
 
         def __init__(self, flags=()):
             """Initialize output fields before solver-owned allocation."""

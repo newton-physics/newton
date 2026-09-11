@@ -1,1212 +1,584 @@
-<!DOCTYPE html>
+<!doctype html>
 <!--
 SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 SPDX-License-Identifier: CC-BY-4.0
+Layout adapted from the Aperture research report template.
 -->
-<html lang="en">
+<html lang="en" data-theme="light" data-template="aperture">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <link rel="icon" href="data:,">
-  <title>Solver Observables Architecture — Newton</title>
-  <style>
-    :root {
-      --page: #f5f7f9;
-      --surface: #ffffff;
-      --surface-soft: #eef3f6;
-      --surface-code: #111820;
-      --ink: #16202a;
-      --muted: #536170;
-      --line: #ced7df;
-      --line-strong: #93a2af;
-      --accent: #4f7f18;
-      --accent-soft: #e9f4dc;
-      --blue: #216c8c;
-      --blue-soft: #e4f2f7;
-      --purple: #7053a3;
-      --purple-soft: #eee8f7;
-      --orange: #9a5a0a;
-      --orange-soft: #fff0d6;
-      --danger: #9c3e3e;
-      --danger-soft: #fbe8e7;
-      --shadow: 0 12px 34px rgb(17 29 41 / 9%);
-      --radius: 14px;
-      --content: 1120px;
-      --sidebar: 238px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --page: #0f151b;
-        --surface: #171f27;
-        --surface-soft: #1e2933;
-        --surface-code: #090d12;
-        --ink: #edf3f7;
-        --muted: #acbac5;
-        --line: #34424e;
-        --line-strong: #617382;
-        --accent: #9acb61;
-        --accent-soft: #273a22;
-        --blue: #79bdd9;
-        --blue-soft: #1c3540;
-        --purple: #c0a6ed;
-        --purple-soft: #322a43;
-        --orange: #e1aa5f;
-        --orange-soft: #3e3020;
-        --danger: #ef9292;
-        --danger-soft: #422829;
-        --shadow: 0 14px 38px rgb(0 0 0 / 25%);
-      }
-    }
-
-    * { box-sizing: border-box; }
-
-    html {
-      scroll-behavior: smooth;
-      scroll-padding-top: 24px;
-    }
-
-    body {
-      margin: 0;
-      color: var(--ink);
-      background: var(--page);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 16px;
-      line-height: 1.62;
-    }
-
-    a { color: var(--blue); }
-    a:hover { text-decoration-thickness: 2px; }
-
-    code,
-    pre {
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    }
-
-    code {
-      padding: 0.08em 0.32em;
-      border-radius: 5px;
-      background: var(--surface-soft);
-      font-size: 0.91em;
-    }
-
-    pre {
-      overflow-x: auto;
-      margin: 0;
-      padding: 20px 22px;
-      border: 1px solid #273544;
-      border-radius: 11px;
-      color: #e7eef4;
-      background: var(--surface-code);
-      font-size: 13px;
-      line-height: 1.56;
-      tab-size: 4;
-    }
-
-    pre code {
-      padding: 0;
-      color: inherit;
-      background: transparent;
-      font-size: inherit;
-    }
-
-    .shell {
-      display: grid;
-      grid-template-columns: var(--sidebar) minmax(0, 1fr);
-      gap: 42px;
-      width: min(calc(100% - 40px), var(--content));
-      margin: 0 auto;
-      padding: 26px 0 72px;
-    }
-
-    .toc {
-      position: sticky;
-      top: 22px;
-      align-self: start;
-      max-height: calc(100vh - 44px);
-      overflow-y: auto;
-      padding: 18px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: color-mix(in srgb, var(--surface) 94%, transparent);
-      box-shadow: var(--shadow);
-    }
-
-    .toc-brand {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      margin-bottom: 14px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-    }
-
-    .brand-mark {
-      display: grid;
-      width: 28px;
-      height: 28px;
-      place-items: center;
-      border-radius: 7px;
-      color: #fff;
-      background: var(--accent);
-      font-size: 13px;
-      font-weight: 800;
-    }
-
-    .toc ul {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .toc a {
-      display: block;
-      padding: 6px 8px;
-      border-radius: 7px;
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 13px;
-      line-height: 1.35;
-    }
-
-    .toc a:hover {
-      color: var(--ink);
-      background: var(--surface-soft);
-    }
-
-    .toc .toc-back {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--line);
-      color: var(--blue);
-    }
-
-    main { min-width: 0; }
-
-    .hero {
-      position: relative;
-      overflow: hidden;
-      padding: 46px 48px;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      background:
-        radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 36%),
-        linear-gradient(145deg, var(--surface), color-mix(in srgb, var(--blue-soft) 52%, var(--surface)));
-      box-shadow: var(--shadow);
-    }
-
-    .eyebrow {
-      margin: 0 0 9px;
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    h1,
-    h2,
-    h3 {
-      line-height: 1.16;
-      letter-spacing: -0.035em;
-    }
-
-    h1 {
-      max-width: 740px;
-      margin: 0;
-      font-size: clamp(38px, 6vw, 64px);
-    }
-
-    .hero .lede {
-      max-width: 760px;
-      margin: 20px 0 0;
-      color: var(--muted);
-      font-size: 19px;
-      line-height: 1.55;
-    }
-
-    .badges {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 24px 0 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .badge {
-      padding: 5px 10px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      color: var(--muted);
-      background: color-mix(in srgb, var(--surface) 78%, transparent);
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-    section {
-      padding-top: 64px;
-    }
-
-    section > h2 {
-      margin: 0 0 12px;
-      font-size: clamp(28px, 4vw, 39px);
-    }
-
-    section > .section-lede {
-      max-width: 800px;
-      margin: 0 0 28px;
-      color: var(--muted);
-      font-size: 17px;
-    }
-
-    h3 {
-      margin: 0 0 10px;
-      font-size: 20px;
-    }
-
-    p { margin: 0 0 16px; }
-
-    .callout {
-      margin-top: 28px;
-      padding: 18px 20px;
-      border-left: 4px solid var(--accent);
-      border-radius: 0 10px 10px 0;
-      background: var(--accent-soft);
-    }
-
-    .callout strong { color: var(--accent); }
-
-    .comparison {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
-    }
-
-    .panel,
-    .benefit,
-    .decision {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      box-shadow: 0 8px 22px rgb(17 29 41 / 5%);
-    }
-
-    .panel { padding: 24px; }
-
-    .panel.before { border-top: 4px solid var(--danger); }
-    .panel.after { border-top: 4px solid var(--accent); }
-
-    .panel-label {
-      display: inline-block;
-      margin-bottom: 13px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 0.09em;
-      text-transform: uppercase;
-    }
-
-    .mini-flow {
-      display: grid;
-      gap: 9px;
-      margin: 18px 0;
-    }
-
-    .mini-node {
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-soft);
-      font-size: 13px;
-      font-weight: 700;
-      text-align: center;
-    }
-
-    .mini-arrow {
-      height: 18px;
-      color: var(--line-strong);
-      text-align: center;
-      line-height: 18px;
-    }
-
-    .panel ul,
-    .benefit ul {
-      margin: 12px 0 0;
-      padding-left: 20px;
-      color: var(--muted);
-    }
-
-    .diagram {
-      margin: 28px 0 0;
-      padding: 18px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface);
-      box-shadow: var(--shadow);
-    }
-
-    .diagram-scroll {
-      overflow-x: auto;
-    }
-
-    .diagram svg {
-      display: block;
-      width: 100%;
-      height: auto;
-    }
-
-    .diagram figcaption {
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 13px;
-      text-align: center;
-    }
-
-    .narrow-hint { display: none; }
-
-    .extension-heading { margin-top: 34px; }
-
-    .svg-node { fill: var(--surface-soft); stroke: var(--line-strong); stroke-width: 1.5; }
-    .svg-node-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
-    .svg-node-blue { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.7; }
-    .svg-node-purple { fill: var(--purple-soft); stroke: var(--purple); stroke-width: 1.7; }
-    .svg-node-orange { fill: var(--orange-soft); stroke: var(--orange); stroke-width: 1.7; }
-    .svg-edge { fill: none; stroke: var(--line-strong); stroke-width: 2; }
-    .svg-edge-accent { fill: none; stroke: var(--accent); stroke-width: 2.4; }
-    .svg-edge-dashed { fill: none; stroke: var(--line-strong); stroke-width: 1.7; stroke-dasharray: 7 6; }
-    .svg-label { fill: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 700; }
-    .svg-sub { fill: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 11.5px; }
-    .svg-small { fill: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 10.5px; font-weight: 700; }
-
-    .benefits {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 28px;
-    }
-
-    .benefit { padding: 20px; }
-
-    .benefit-index {
-      display: grid;
-      width: 30px;
-      height: 30px;
-      margin-bottom: 13px;
-      place-items: center;
-      border-radius: 8px;
-      color: var(--accent);
-      background: var(--accent-soft);
-      font-size: 13px;
-      font-weight: 800;
-    }
-
-    .benefit p,
-    .decision p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .contract-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 24px;
-    }
-
-    .decision { padding: 19px; }
-
-    .decision h3 {
-      display: flex;
-      gap: 9px;
-      align-items: center;
-      font-size: 17px;
-    }
-
-    .decision-dot {
-      width: 10px;
-      height: 10px;
-      flex: 0 0 auto;
-      border-radius: 50%;
-      background: var(--accent);
-    }
-
-    .workflow {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin: 26px 0;
-      padding: 0;
-      list-style: none;
-      counter-reset: flow;
-    }
-
-    .workflow li {
-      position: relative;
-      padding: 20px 17px 17px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--surface);
-      counter-increment: flow;
-    }
-
-    .workflow li::before {
-      content: counter(flow);
-      display: grid;
-      width: 28px;
-      height: 28px;
-      margin-bottom: 12px;
-      place-items: center;
-      border-radius: 50%;
-      color: #fff;
-      background: var(--accent);
-      font-size: 12px;
-      font-weight: 800;
-    }
-
-    .workflow strong { display: block; margin-bottom: 5px; }
-    .workflow span { color: var(--muted); font-size: 13px; }
-
-    .table-wrap {
-      overflow-x: auto;
-      margin-top: 24px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--surface);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-
-    th,
-    td {
-      padding: 13px 15px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      vertical-align: top;
-    }
-
-    th {
-      color: var(--muted);
-      background: var(--surface-soft);
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    tr:last-child td { border-bottom: 0; }
-
-    .code-heading {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: baseline;
-      margin: 26px 0 10px;
-    }
-
-    .code-heading h3 { margin: 0; }
-    .code-heading span { color: var(--muted); font-size: 12px; }
-
-    .migration td:first-child { color: var(--danger); }
-    .migration td:nth-child(2) { color: var(--accent); }
-
-    .footer {
-      margin-top: 68px;
-      padding-top: 22px;
-      border-top: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .footer p { margin: 0; }
-
-    @media (max-width: 920px) {
-      .shell {
-        grid-template-columns: 1fr;
-        gap: 20px;
-        width: min(calc(100% - 28px), 820px);
-      }
-
-      .toc {
-        position: static;
-        max-height: none;
-      }
-
-      .toc ul {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 3px 8px;
-      }
-
-      .toc .toc-back {
-        margin-top: 8px;
-      }
-
-      .benefits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-
-    @media (max-width: 650px) {
-      body { font-size: 15px; }
-      .shell { width: min(calc(100% - 20px), 620px); padding-top: 10px; }
-      .hero { padding: 30px 22px; border-radius: 16px; }
-      .hero .lede { font-size: 17px; }
-      section { padding-top: 48px; }
-      .comparison,
-      .benefits,
-      .contract-grid,
-      .workflow { grid-template-columns: 1fr; }
-      .panel { padding: 20px; }
-      .diagram { margin-inline: -2px; padding: 8px; }
-      .diagram-scroll svg { min-width: 720px; }
-      .diagram figcaption { padding-inline: 8px; }
-      .narrow-hint { display: block; }
-      th,
-      td { padding: 11px 12px; }
-      pre { padding: 16px; font-size: 12px; }
-    }
-
-    @media print {
-      :root {
-        --page: #fff;
-        --surface: #fff;
-        --surface-soft: #f1f3f5;
-        --ink: #111;
-        --muted: #444;
-        --line: #bbb;
-        --line-strong: #777;
-      }
-
-      body { background: #fff; }
-      .shell { display: block; width: 100%; padding: 0; }
-      .toc { display: none; }
-      .hero,
-      .panel,
-      .benefit,
-      .decision,
-      .diagram { box-shadow: none; break-inside: avoid; }
-      section { break-before: auto; }
-      pre { white-space: pre-wrap; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex">
+<meta name="description" content="A proposed Newton API for requesting, allocating, extending, and consuming optional solver diagnostics separately from simulation state.">
+<title>Solver Observables Architecture — Newton</title>
+<link rel="icon" href="data:,">
+<script>
+try { document.documentElement.dataset.theme = localStorage.getItem("report-theme") === "dark" ? "dark" : "light"; } catch (_) {}
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #ffffff; --surface: #fcfffe; --surface-2: #eaf3f1; --surface-3: #d8e7e3;
+  --text: #142522; --muted: #5b706c; --line: #d5e2df; --line-strong: #829e97;
+  --accent: #087b72; --accent-soft: #dcefeb;
+  --code-bg: #111623; --code-text: #e8edf7;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --reading-width: 760px; --site-width: 920px;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #091713; --surface: #0f201c; --surface-2: #173029; --surface-3: #204039;
+  --text: #e9f8f4; --muted: #9db9b3; --line: #27433d; --line-strong: #7a9e94;
+  --accent: #55d2c3; --accent-soft: #174039; --code-bg: #090d15; --code-text: #eef1f8;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 82px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 var(--sans); }
+a { color: var(--accent); text-underline-offset: .16em; }
+button { font: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.skip-link { position: absolute; top: -100px; left: 16px; z-index: 50; }
+.skip-link:focus { top: 10px; background: var(--bg); padding: 8px; }
+.site-nav { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); background: var(--bg); }
+.nav-inner { width: min(var(--site-width), calc(100% - 32px)); min-height: 54px; margin: auto; display: flex; align-items: center; gap: 20px; }
+.brand { color: var(--text); text-decoration: none; font: 600 13px var(--mono); }
+.nav-links { display: flex; flex-wrap: wrap; gap: 16px; margin-left: auto; font-size: 13px; }
+.theme-toggle { margin-left: auto; padding: 6px 10px; min-height: 38px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); color: var(--text); font-size: 13px; }
+.report-shell { width: min(var(--reading-width), calc(100% - 32px)); margin: auto; }
+.report { min-width: 0; }
+.report-hero { padding: 40px 0 28px; }
+.report-dates { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--muted); font: 12px var(--mono); margin-bottom: 16px; }
+h1 { margin: 0 0 16px; font: 650 31px/1.25 var(--mono); letter-spacing: -.03em; }
+h2 { margin: 0 0 18px; font: 650 19px/1.4 var(--mono); }
+h3 { margin: 26px 0 10px; font-size: 16px; line-height: 1.45; }
+p, ul, ol, dl { max-width: 680px; }
+p { margin: 0 0 16px; }
+ul, ol { margin: 12px 0 20px; padding-left: 24px; }
+li { padding: 2px 0; }
+.report-section { border-top: 1px solid var(--line); padding: 30px 0; }
+.section-number { color: var(--muted); font-size: 14px; }
+.abstract-block { margin-top: 22px; }
+.abstract-block h2 { font: 600 16px var(--sans); margin-bottom: 10px; }
+.paper-meta { margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+.contents { margin: 22px 0 0; font-size: 14px; }
+.contents summary { cursor: pointer; font-weight: 600; }
+.contents ol { columns: 2; }
+.note { padding: 12px 0 12px 16px; border-left: 2px solid var(--accent); margin: 20px 0; }
+code { font-family: var(--mono); font-size: .87em; overflow-wrap: anywhere; }
+p code, li code, td code, dt code { background: var(--surface-2); padding: .12em .25em; border-radius: 2px; }
+pre { max-width: 100%; margin: 12px 0 22px; padding: 16px; overflow-x: auto; background: var(--code-bg); color: var(--code-text); border-radius: 3px; font: 13px/1.65 var(--mono); tab-size: 4; }
+pre code { padding: 0; background: none; font: inherit; overflow-wrap: normal; }
+pre span { background: transparent; }
+.tok-keyword { color: #cfabff; font-weight: 600; }
+.tok-name { color: #85d9ff; }
+.tok-string { color: #b5e69b; }
+.tok-number { color: #ffd392; }
+.tok-comment { color: #a7b3c8; font-style: italic; }
+.tok-operator { color: #f0b7cf; }
+.table-wrap { width: 100%; overflow-x: auto; margin: 18px 0; }
+table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--line); padding: 10px 8px; text-align: left; vertical-align: top; }
+th { font-weight: 600; color: var(--muted); border-top: 1px solid var(--line-strong); }
+dt { font-weight: 600; margin: 18px 0 5px; }
+dd { margin: 0 0 12px; }
+figure { margin: 24px 0; max-width: 100%; }
+.mermaid-shell { min-height: 100px; display: grid; place-items: center; padding: 12px 0; }
+.mermaid-shell svg { display: block; width: 100%; height: auto; max-width: 100%; }
+figcaption { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+figcaption strong { color: var(--text); }
+.diagram-fallback { color: var(--muted); font-size: 14px; }
+.report-footer { border-top: 1px solid var(--line); padding: 22px 0 36px; font-size: 13px; color: var(--muted); }
+@media (max-width: 650px) {
+  .nav-links { display: none; }
+  .nav-inner, .report-shell { width: calc(100% - 28px); }
+  .report-hero { padding-top: 28px; }
+  h1 { font-size: 26px; }
+  h2 { font-size: 18px; }
+  .contents ol { columns: 1; }
+  .report-section { padding: 26px 0; }
+  pre { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media print {
+  .site-nav, .contents, .skip-link { display: none; }
+  .report-shell { width: 100%; }
+  figure, pre { break-inside: avoid; }
+  pre { white-space: pre-wrap; }
+}
+</style>
 </head>
 <body>
-  <div class="shell">
-    <nav class="toc" aria-label="Document sections">
-      <div class="toc-brand"><span class="brand-mark">N</span> Newton design</div>
-      <ul>
-        <li><a href="#summary">Summary</a></li>
-        <li><a href="#motivation">Why change</a></li>
-        <li><a href="#architecture">Architecture</a></li>
-        <li><a href="#contracts">Design contracts</a></li>
-        <li><a href="#usage">How to use it</a></li>
-        <li><a href="#extension">Custom solver extension</a></li>
-        <li><a href="#sensors">Sensor consumption</a></li>
-        <li><a href="#migration">Migration map</a></li>
-        <li><a href="#benefits">Benefits</a></li>
-      </ul>
-      <a class="toc-back" href="../concepts/solver_observables.html">← Solver Observables reference</a>
+<a class="skip-link" href="#main-content">Skip to report</a>
+<header class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="https://reports.eric-heiden.com/">Research reports</a>
+    <nav class="nav-links" aria-label="Report sections">
+      <a href="#architecture">Architecture</a><a href="#usage">Usage</a><a href="#extension">Extension</a><a href="#sensors">Sensors</a>
     </nav>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark theme">Bright</button>
+  </div>
+</header>
+<div class="report-shell">
+<main class="report" id="main-content">
+<header class="report-hero" id="summary">
+  <div class="report-dates"><span>Created <time datetime="2026-09-01">2026-09-01</time></span><span>Modified <time datetime="2026-09-11">2026-09-11</time></span></div>
+  <h1>Solver Observables Architecture</h1>
+  <p class="paper-meta">Newton · API design proposal · <a href="https://github.com/newton-physics/newton/pull/4231">Draft implementation #4231</a></p>
+  <div class="abstract-block">
+    <h2>Abstract</h2>
+    <p>Newton solvers can compute quantities that are useful for measurement but are not needed to advance simulation, such as body acceleration and contact forces. This proposal moves those optional arrays out of <code>State</code> and <code>Contacts</code> into <code>SolverObservables</code>. Applications compose requests using sets of flags; the solver allocates the requested arrays once and fills them during each step. Sensors and other consumers read the same container without changing the model's allocation policy.</p>
+    <p>Each observable declares its row frequency: the bodies, joint degrees of freedom, or contact slots that index its array. This metadata drives allocation dependencies and lets articulation views select supported static layouts without model field registration. The API is experimental; dynamic contact selection and soft-contact force sensing remain future work. The diagrams describe ownership and call sequence, not a measured performance result.</p>
+  </div>
+  <details class="contents"><summary>Contents</summary><ol>
+    <li><a href="#motivation">What changes</a></li><li><a href="#architecture">Allocation and runtime flow</a></li><li><a href="#contracts">Data contracts</a></li><li><a href="#usage">Application usage</a></li><li><a href="#extension">Custom solvers</a></li><li><a href="#sensors">Sensor consumption</a></li><li><a href="#selection">Selection and row frequencies</a></li><li><a href="#migration">Migration</a></li><li><a href="#benefits">Benefits and limitations</a></li>
+  </ol></details>
+</header>
+<section class="report-section" id="motivation">
+  <h2><span class="section-number">1.</span> What changes</h2>
+  <p>The existing extended-attribute mechanism asks the model to allocate solver-produced data. A request such as <code>model.request_state_attributes("body_parent_f")</code> changes subsequent state allocations even though the selected solver determines whether and how that field can be computed.</p>
+  <p>With solver observables, the request goes to the producer: <code>solver.observables(flags)</code>. Simulation state retains the quantities used for integration; contacts retain collision geometry and indexing. Optional diagnostic arrays have their own lifetime and a solver-specific extension point.</p>
+  <div class="table-wrap"><table><thead><tr><th>Responsibility</th><th>Extended attributes</th><th>Solver observables</th></tr></thead><tbody>
+    <tr><td>Request</td><td>Model or builder request methods</td><td><code>solver.observables(flags)</code></td></tr>
+    <tr><td>Storage</td><td>Optional fields on state and contacts</td><td>One reusable diagnostic container</td></tr>
+    <tr><td>Capability checks</td><td>Separate from model allocation</td><td>Solver rejects unsupported requests</td></tr>
+    <tr><td>Custom solver fields</td><td>Model/state plumbing</td><td>Derived container and independent enum</td></tr>
+    <tr><td>Sensor input</td><td>Solver fields embedded in state/contacts</td><td>Explicit <code>solver_observables=</code> argument</td></tr>
+  </tbody></table></div>
+</section>
+<section class="report-section" id="architecture">
+  <h2><span class="section-number">2.</span> Allocation and runtime flow</h2>
+  <h3>Setup: request and allocate once</h3>
+  <p>The application unions sensor requirements with any fields it needs directly. For contact-indexed fields, a completed collision pipeline first publishes its rigid and soft contact capacities on the model. These are storage limits, not the current number of active contacts.</p>
+  <figure id="allocation-figure" class="diagram-panel">
+  <div class="mermaid-shell" data-mermaid-source="flowchart LR
+    R[&quot;Requested flags&quot;] --> F[&quot;solver.observables(flags)&quot;]
+    P[&quot;Model contact capacities&quot;] --> F
+    F --> O[&quot;SolverObservables&quot;]" role="img" aria-label="Setup: flags and contact capacities enter the solver allocator">
+    <p class="diagram-fallback">The application sends a set of flags to solver.observables(). Contact requests also use the model capacities published by CollisionPipeline. The factory returns allocated SolverObservables.</p>
+  </div>
+  <figcaption><strong>Figure 1.</strong> The solver validates the requested flags and allocates every requested array before returning. Body-only requests do not need a collision pipeline.</figcaption>
+</figure>
+  <h3>Runtime: fill the existing arrays</h3>
+  <p>Each step receives the input state, control, contacts, and optional observable container. It advances the simulation and fills the requested diagnostics. A consumer then reads the updated state and the diagnostics from that same step.</p>
+  <figure id="runtime-figure" class="diagram-panel">
+  <div class="mermaid-shell" data-mermaid-source="flowchart LR
+    I[&quot;State, control, Contacts&quot;] --> S[&quot;solver.step()&quot;]
+    B[&quot;Allocated observable buffers&quot;] --> S
+    S --> Q[&quot;Updated State&quot;]
+    S --> O[&quot;Populated SolverObservables&quot;]" role="img" aria-label="Runtime: the solver advances state and fills separate observable arrays">
+    <p class="diagram-fallback">State, control, contacts, and allocated observable buffers enter solver.step(). The step produces updated state and fills the same SolverObservables buffers.</p>
+  </div>
+  <figcaption><strong>Figure 2.</strong> Updated state and solver observables have separate roles. “Populated” means the existing arrays have been written; a step does not allocate a replacement observable container.</figcaption>
+</figure>
+  <p class="note"><strong>Reading the arrows:</strong> arrows indicate data or a request entering the next operation. Setup and runtime are separate figures so allocation is not mistaken for per-step work. Figure 4 shows how sensors consume the populated arrays.</p>
+</section>
+<section class="report-section" id="contracts">
+  <h2><span class="section-number">3.</span> Data contracts</h2>
+  <dl>
+    <dt>Flags compose as a set of plain <code>Enum</code> members.</dt>
+    <dd>Standard and custom flags can be unioned without assigning disjoint bit ranges. Each member's string value names its array field. Integer enums, string-mixin enums, raw strings, and integers are rejected: equal values from independent extensions could otherwise collide in a set.</dd>
+    <dt>Every requested array declares its row frequency.</dt>
+    <dd>The container's <code>ATTRIBUTE_FREQUENCIES</code> maps field names to <code>Model.AttributeFrequency</code> members or custom string frequencies. Lookup follows inheritance. Missing metadata is rejected before allocation. Frequency means row indexing, not update rate. <code>SUPPORTED_OBSERVABLE_FLAGS</code> is the sole capability set; contact dependencies are derived from frequencies.</dd>
+    <dt>Allocation establishes ownership.</dt>
+    <dd>Each container belongs to the solver instance that allocated it. The solver checks its concrete type and ownership before using it. <code>supported_observable_flags</code> reports supported requests.</dd>
+    <dt><code>None</code> means unrequested, not pending.</dt>
+    <dd>Every requested array exists when <code>observables()</code> returns. A valid zero-capacity request produces an empty array; it does not leave the field as <code>None</code>.</dd>
+    <dt>Contact arrays use resolved capacity.</dt>
+    <dd><code>contact_f</code> has <code>rigid_contact_max + soft_contact_max</code> entries: rigid slots first, then soft-rigid slots. The soft segment begins at the rigid <em>capacity</em>, not the live rigid count. Each segment's live count, clamped to its capacity, identifies active slots; force availability remains solver-dependent. Before pipeline initialization, the model capacities are <code>None</code>.</dd>
+    <dt>Contact allocation freezes capacity; the first step binds storage.</dt>
+    <dd>Changing the model's capacities after contact-observable allocation is rejected. The first step verifies the contacts' device and both capacities, then binds that exact <code>Contacts</code> instance. Subsequent steps and sensors must use it.</dd>
+    <dt>Allocate before graph capture.</dt>
+    <dd>The observable arrays are reusable in ordinary and conditional CUDA graphs. There is no deferred observable allocation. Other solver scratch storage may still require its usual warmup.</dd>
+  </dl>
+  <div class="table-wrap"><table><thead><tr><th>Flag / array</th><th>Row frequency</th><th>Meaning and units</th></tr></thead><tbody>
+    <tr><td><code>BODY_QDD</code><br><code>body_qdd</code></td><td><code>BODY</code></td><td>Body center-of-mass spatial acceleration in the world frame: linear [m/s²], angular [rad/s²].</td></tr>
+    <tr><td><code>BODY_PARENT_F</code><br><code>body_parent_f</code></td><td><code>BODY</code></td><td>Incoming parent-joint wrench at the child center of mass: force [N], torque [N·m].</td></tr>
+    <tr><td><code>CONTACT_F</code><br><code>contact_f</code></td><td><code>CONTACT</code></td><td>Contact spatial force aligned with bound contact storage: force [N], torque [N·m]. Packed capacity is not a guarantee of soft-force production.</td></tr>
+  </tbody></table></div>
+  <h3>Contact indexing domains</h3>
+  <p>Three domains preserve the current packed layout while allowing precise declarations for new fields. They describe solver-observable storage; they do not add builder custom-attribute allocation or new numerical force producers.</p>
+  <div class="table-wrap"><table><thead><tr><th>Frequency</th><th>Allocated rows</th><th>Interpretation</th></tr></thead><tbody>
+    <tr><td><code>CONTACT_RIGID</code></td><td><code>rigid_contact_max</code></td><td>Rigid-rigid contacts; active rows begin at zero.</td></tr>
+    <tr><td><code>CONTACT_SOFT</code></td><td><code>soft_contact_max</code></td><td>Soft-rigid contacts; active rows begin at zero. Excludes the separate soft self-contact buffers.</td></tr>
+    <tr><td><code>CONTACT</code></td><td>Sum of both capacities</td><td>Two packed segments, used by existing <code>contact_f</code>. Not a universal domain for every future contact representation.</td></tr>
+  </tbody></table></div>
+  <p><strong>Recommendation:</strong> use the specific rigid or soft domain for new arrays. Retain the combined domain for existing packed fields. Using only two domains would require splitting or changing <code>contact_f</code>; using only the combined domain would hide meaningful differences in indexing.</p>
+</section>
+<section class="report-section" id="usage">
+  <h2><span class="section-number">4.</span> Application usage</h2>
+  <p>The snippets assume a finalized <code>model</code>, input and output states, a <code>control</code> buffer, and a time step <code>dt</code> in seconds. Allocate observables before entering the simulation loop.</p>
+  <h3>Body-level diagnostics</h3>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">from</span> newton.solvers <span class="tok-keyword">import</span> SolverMuJoCo, SolverObservableFlags
 
-    <main>
-      <header class="hero" id="summary">
-        <p class="eyebrow">Architecture proposal</p>
-        <h1>Solver Observables</h1>
-        <p class="lede">
-          A separate, extensible data plane for optional diagnostics produced by a solver—requested by consumers,
-          allocated by the solver, populated during <code>step()</code>, and consumed by sensors, viewers, and applications.
-        </p>
-        <ul class="badges">
-          <li class="badge">solver-owned</li>
-          <li class="badge">set-composable flags</li>
-          <li class="badge">allocate once, reuse</li>
-          <li class="badge">custom-solver extensible</li>
-          <li class="badge">fail-fast validation</li>
-        </ul>
-      </header>
-
-      <div class="callout">
-        <strong>Core rule:</strong> simulation state stores the data needed to advance the simulation. Optional data that a
-        solver can report—but the simulation does not need to continue—belongs in <code>SolverObservables</code>.
-      </div>
-
-      <section id="motivation">
-        <h2>Why change the ownership model?</h2>
-        <p class="section-lede">
-          Extended attributes made the model responsible for requesting data that only a solver can produce. This inverted
-          ownership, expanded every state/contact allocation, and made it hard for a custom solver to expose new diagnostics.
-        </p>
-
-        <div class="comparison">
-          <article class="panel before">
-            <span class="panel-label">Before — extended attributes</span>
-            <h3>Consumer mutates model allocation policy</h3>
-            <div class="mini-flow" role="group" aria-label="Old request flow">
-              <div class="mini-node">Sensor or application</div>
-              <div class="mini-arrow">↓ request_state_attribute(...)</div>
-              <div class="mini-node">Model / ModelBuilder</div>
-              <div class="mini-arrow">↓ allocates every State or Contacts</div>
-              <div class="mini-node">State.body_parent_f / Contacts.force</div>
-            </div>
-            <ul>
-              <li>The model appears to own solver capabilities.</li>
-              <li>Optional diagnostics are mixed into persistent simulation data.</li>
-              <li>Custom solver observables need global model/state plumbing.</li>
-              <li>Allocation intent is implicit and can happen far from the solver.</li>
-            </ul>
-          </article>
-
-          <article class="panel after">
-            <span class="panel-label">After — solver observables</span>
-            <h3>Consumers declare needs; solver owns allocation</h3>
-            <div class="mini-flow" role="group" aria-label="New request flow">
-              <div class="mini-node">Sensors / viewer / application</div>
-              <div class="mini-arrow">↓ union solver_observable_flags</div>
-              <div class="mini-node">solver.observables(flags)</div>
-              <div class="mini-arrow">↓ validates + allocates concrete type</div>
-              <div class="mini-node">SolverObservables</div>
-            </div>
-            <ul>
-              <li>The request is made against the component that produces the data.</li>
-              <li>Only requested arrays are allocated.</li>
-              <li>Standard and solver-specific flags compose in one set.</li>
-              <li>The same container flows explicitly to every consumer.</li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section id="architecture">
-        <h2>Proposed architecture</h2>
-        <p class="section-lede">
-          The design separates the persistent simulation data plane from an optional diagnostic data plane. Allocation occurs
-          once during setup; production and consumption occur every step without changing the model.
-        </p>
-
-        <figure class="diagram">
-          <div class="diagram-scroll">
-          <svg viewBox="0 0 920 560" role="img" aria-labelledby="runtime-title runtime-desc">
-            <title id="runtime-title">Solver Observables allocation and runtime data flow</title>
-            <desc id="runtime-desc">CollisionPipeline publishes capacities on Model. Consumers union observable flags, the solver eagerly allocates a concrete observable container from those capacities, then solver step binds contact storage and fills observables for sensors and viewers.</desc>
-            <defs>
-              <marker id="runtime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
-              </marker>
-              <marker id="runtime-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"></path>
-              </marker>
-            </defs>
-
-            <text x="28" y="35" class="svg-small">SETUP — DECLARE AND ALLOCATE ONCE</text>
-            <rect x="28" y="58" width="190" height="82" rx="12" class="svg-node-blue"></rect>
-            <text x="123" y="88" text-anchor="middle" class="svg-label">Consumers</text>
-            <text x="123" y="110" text-anchor="middle" class="svg-sub">IMU · contact sensor · viewer</text>
-            <text x="123" y="127" text-anchor="middle" class="svg-sub">each exposes required flags</text>
-
-            <rect x="298" y="58" width="198" height="82" rx="12" class="svg-node"></rect>
-            <text x="397" y="88" text-anchor="middle" class="svg-label">Composable set</text>
-            <text x="397" y="110" text-anchor="middle" class="svg-sub">standard Enum + custom Enum</text>
-            <text x="397" y="127" text-anchor="middle" class="svg-sub">union removes duplicates</text>
-
-            <rect x="576" y="50" width="302" height="98" rx="12" class="svg-node-accent"></rect>
-            <text x="727" y="82" text-anchor="middle" class="svg-label">solver.observables(flags)</text>
-            <text x="727" y="105" text-anchor="middle" class="svg-sub">validate support and ownership</text>
-            <text x="727" y="123" text-anchor="middle" class="svg-sub">instantiate OBSERVABLES_TYPE · allocate arrays</text>
-
-            <path d="M 218 99 H 287" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
-            <text x="252" y="88" text-anchor="middle" class="svg-small">UNION</text>
-            <path d="M 496 99 H 565" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
-            <text x="530" y="88" text-anchor="middle" class="svg-small">REQUEST</text>
-
-            <text x="28" y="171" class="svg-sub">CollisionPipeline → Model rigid/soft capacities</text>
-            <path d="M 415 165 H 727 V 151" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
-            <line x1="28" y1="188" x2="878" y2="188" class="svg-edge-dashed"></line>
-            <text x="28" y="222" class="svg-small">RUNTIME — PRODUCE AND CONSUME EVERY STEP</text>
-
-            <rect x="28" y="253" width="185" height="88" rx="12" class="svg-node"></rect>
-            <text x="120" y="283" text-anchor="middle" class="svg-label">State</text>
-            <text x="120" y="305" text-anchor="middle" class="svg-sub">q · qd · forces</text>
-            <text x="120" y="323" text-anchor="middle" class="svg-sub">simulation data</text>
-
-            <rect x="28" y="382" width="185" height="88" rx="12" class="svg-node-orange"></rect>
-            <text x="120" y="412" text-anchor="middle" class="svg-label">Contacts</text>
-            <text x="120" y="434" text-anchor="middle" class="svg-sub">geometry · ordering</text>
-            <text x="120" y="452" text-anchor="middle" class="svg-sub">bound on first step</text>
-
-            <rect x="309" y="296" width="250" height="126" rx="14" class="svg-node-accent"></rect>
-            <text x="434" y="332" text-anchor="middle" class="svg-label">solver.step(..., observables=)</text>
-            <text x="434" y="357" text-anchor="middle" class="svg-sub">advance State</text>
-            <text x="434" y="378" text-anchor="middle" class="svg-sub">populate only allocated observable arrays</text>
-            <text x="434" y="399" text-anchor="middle" class="svg-sub">preserve contact index alignment</text>
-
-            <rect x="655" y="253" width="223" height="88" rx="12" class="svg-node-purple"></rect>
-            <text x="766" y="283" text-anchor="middle" class="svg-label">SolverObservables</text>
-            <text x="766" y="305" text-anchor="middle" class="svg-sub">body_qdd · body_parent_f</text>
-            <text x="766" y="323" text-anchor="middle" class="svg-sub">contact_f · custom fields</text>
-
-            <rect x="655" y="382" width="223" height="88" rx="12" class="svg-node-blue"></rect>
-            <text x="766" y="412" text-anchor="middle" class="svg-label">Consumers</text>
-            <text x="766" y="434" text-anchor="middle" class="svg-sub">sensor.update(…)</text>
-            <text x="766" y="452" text-anchor="middle" class="svg-sub">viewer · logging · application</text>
-
-            <path d="M 213 297 H 298" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
-            <path d="M 213 426 H 269 Q 287 426 296 411 L 315 390" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
-            <path d="M 559 338 H 644" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
-            <path d="M 766 341 V 371" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
-            <path d="M 559 390 H 615 Q 633 390 646 405" class="svg-edge-dashed" marker-end="url(#runtime-arrow)"></path>
-            <text x="603" y="378" text-anchor="middle" class="svg-small">STATE</text>
-
-            <text x="28" y="526" class="svg-sub">Solid green: optional diagnostic data plane</text>
-            <text x="298" y="526" class="svg-sub">Gray: persistent simulation data</text>
-            <text x="605" y="526" class="svg-sub">Dashed: additional consumer context</text>
-          </svg>
-          </div>
-          <figcaption>
-            Allocation is explicit and front-loaded; the runtime loop only fills and reads reusable buffers.
-            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
-          </figcaption>
-        </figure>
-
-        <h3 class="extension-heading">Class and extension model</h3>
-        <figure class="diagram">
-          <div class="diagram-scroll">
-          <svg viewBox="0 0 920 430" role="img" aria-labelledby="inherit-title inherit-desc">
-            <title id="inherit-title">Inheritance and extension model for solver observables</title>
-            <desc id="inherit-desc">A standard flag enum and base observable class are extended by custom flag enums and custom observable containers, selected by each solver.</desc>
-            <defs>
-              <marker id="inherit-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
-              </marker>
-              <marker id="inherit-triangle" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto">
-                <path d="M 1 1 L 11 6 L 1 11 z" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1.4"></path>
-              </marker>
-            </defs>
-
-            <rect x="34" y="42" width="230" height="130" rx="12" class="svg-node"></rect>
-            <text x="149" y="73" text-anchor="middle" class="svg-label">SolverObservableFlags</text>
-            <text x="149" y="98" text-anchor="middle" class="svg-sub">plain enum.Enum</text>
-            <text x="149" y="121" text-anchor="middle" class="svg-sub">BODY_QDD</text>
-            <text x="149" y="139" text-anchor="middle" class="svg-sub">BODY_PARENT_F</text>
-            <text x="149" y="157" text-anchor="middle" class="svg-sub">CONTACT_F</text>
-
-            <rect x="347" y="42" width="230" height="130" rx="12" class="svg-node-accent"></rect>
-            <text x="462" y="73" text-anchor="middle" class="svg-label">SolverObservables</text>
-            <text x="462" y="98" text-anchor="middle" class="svg-sub">flags: frozenset[Enum]</text>
-            <text x="462" y="121" text-anchor="middle" class="svg-sub">body_qdd: array | None</text>
-            <text x="462" y="139" text-anchor="middle" class="svg-sub">body_parent_f: array | None</text>
-            <text x="462" y="157" text-anchor="middle" class="svg-sub">contact_f: array | None</text>
-
-            <rect x="660" y="42" width="226" height="130" rx="12" class="svg-node-blue"></rect>
-            <text x="773" y="73" text-anchor="middle" class="svg-label">SolverBase</text>
-            <text x="773" y="98" text-anchor="middle" class="svg-sub">SUPPORTED_OBSERVABLE_FLAGS</text>
-            <text x="773" y="121" text-anchor="middle" class="svg-sub">OBSERVABLES_TYPE</text>
-            <text x="773" y="139" text-anchor="middle" class="svg-sub">observables(...)</text>
-            <text x="773" y="157" text-anchor="middle" class="svg-sub">_allocate/_validate_observables(...)</text>
-
-            <rect x="34" y="282" width="230" height="104" rx="12" class="svg-node-orange"></rect>
-            <text x="149" y="315" text-anchor="middle" class="svg-label">ThermalObservableFlags</text>
-            <text x="149" y="340" text-anchor="middle" class="svg-sub">BODY_TEMPERATURE</text>
-            <text x="149" y="360" text-anchor="middle" class="svg-sub">separate plain Enum</text>
-
-            <rect x="347" y="270" width="230" height="128" rx="12" class="svg-node-purple"></rect>
-            <text x="462" y="304" text-anchor="middle" class="svg-label">ThermalSolverObservables</text>
-            <text x="462" y="329" text-anchor="middle" class="svg-sub">extends SolverObservables</text>
-            <text x="462" y="352" text-anchor="middle" class="svg-sub">body_temperature: array | None</text>
-            <text x="462" y="375" text-anchor="middle" class="svg-sub">inherits all standard fields</text>
-
-            <rect x="660" y="270" width="226" height="128" rx="12" class="svg-node-blue"></rect>
-            <text x="773" y="304" text-anchor="middle" class="svg-label">ThermalSolver</text>
-            <text x="773" y="325" text-anchor="middle" class="svg-sub">OBSERVABLES_TYPE =</text>
-            <text x="773" y="342" text-anchor="middle" class="svg-sub">ThermalSolverObservables</text>
-            <text x="773" y="359" text-anchor="middle" class="svg-sub">supports standard + custom flags</text>
-            <text x="773" y="375" text-anchor="middle" class="svg-sub">allocates and fills custom arrays</text>
-
-            <path d="M 462 270 V 184" class="svg-edge" marker-end="url(#inherit-triangle)"></path>
-            <text x="475" y="225" class="svg-small">INHERITS</text>
-            <path d="M 773 270 V 184" class="svg-edge" marker-end="url(#inherit-triangle)"></path>
-            <text x="786" y="225" class="svg-small">INHERITS</text>
-            <path d="M 264 334 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
-            <text x="300" y="323" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
-            <path d="M 577 334 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
-            <text x="613" y="323" text-anchor="middle" class="svg-small">TYPE</text>
-            <path d="M 264 108 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
-            <text x="300" y="96" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
-            <path d="M 577 108 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
-            <text x="613" y="96" text-anchor="middle" class="svg-small">DEFAULT TYPE</text>
-          </svg>
-          </div>
-          <figcaption>
-            Custom solvers inherit the common container, add a separate flag enum, and select a derived concrete observable type.
-            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
-          </figcaption>
-        </figure>
-      </section>
-
-      <section id="contracts">
-        <h2>Design contracts</h2>
-        <p class="section-lede">
-          A small number of strict contracts keep extension safe and make configuration errors fail during setup instead of
-          silently corrupting data at runtime.
-        </p>
-
-        <div class="contract-grid">
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Flags are plain <code>Enum</code> members</h3>
-            <p>Standard and custom enum members coexist in a set without coordinating bit ranges. <code>IntEnum</code>, raw strings, and string-mixin enums are rejected because value equality can collide across independent extensions.</p>
-          </article>
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Unsupported requests fail at allocation</h3>
-            <p>Every solver advertises <code>supported_observable_flags</code>. A request outside that set raises immediately, before a simulation loop or graph capture begins.</p>
-          </article>
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Containers belong to one solver instance</h3>
-            <p>The allocator records solver ownership. Passing the container to another solver is rejected, preventing compatible-looking arrays from being filled with the wrong semantics.</p>
-          </article>
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Contact observables bind to contact storage</h3>
-            <p>The pipeline publishes rigid and soft capacities on <code>Model</code>. Allocation needs no <code>Contacts</code> argument; the first step validates and binds the exact contact storage used by subsequent steps and consumers.</p>
-          </article>
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Unrequested fields stay <code>None</code></h3>
-            <p>The concrete type is stable, but buffers are opt-in. Consumers can inspect flags or fields without allocating every diagnostic supported by the solver.</p>
-          </article>
-          <article class="decision">
-            <h3><span class="decision-dot"></span>Allocation is reusable and graph-friendly</h3>
-            <p>Allocate before graph capture and reuse the same arrays, including inside conditional graph nodes. Solver observables need no deferred allocation; other solver scratch buffers may still need warmup.</p>
-          </article>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Standard flag</th><th>Observable field</th><th>Meaning</th><th>Shape / binding</th></tr>
-            </thead>
-            <tbody>
-              <tr><td><code>BODY_QDD</code></td><td><code>body_qdd</code></td><td>Rigid-body spatial acceleration</td><td><code>(body_count,)</code></td></tr>
-              <tr><td><code>BODY_PARENT_F</code></td><td><code>body_parent_f</code></td><td>Incoming parent-joint wrench at child COM</td><td><code>(body_count,)</code></td></tr>
-              <tr><td><code>CONTACT_F</code></td><td><code>contact_f</code></td><td>Spatial contact force aligned with contact indices</td><td><code>rigid_contact_max + soft_contact_max</code>; bound to <code>Contacts</code></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section id="usage">
-        <h2>How applications use it</h2>
-        <p class="section-lede">
-          The application gathers requirements from all consumers, allocates one container, and threads it explicitly through
-          the solver step and downstream processing.
-        </p>
-
-        <ol class="workflow">
-          <li><strong>Collect flags</strong><span>Union application needs with every sensor's <code>solver_observable_flags</code>.</span></li>
-          <li><strong>Allocate once</strong><span>Construct <code>CollisionPipeline(model)</code> for contact requests, then call <code>solver.observables(flags)</code>.</span></li>
-          <li><strong>Populate on step</strong><span>Pass the same container to <code>solver.step(..., observables=observables)</code>.</span></li>
-          <li><strong>Consume observables</strong><span>Read arrays directly or pass the container to sensors and viewers.</span></li>
-        </ol>
-
-        <div class="code-heading"><h3>Body-level observables</h3><span>Allocate once during setup</span></div>
-        <pre><code>from newton.solvers import SolverMuJoCo, SolverObservableFlags
-
-solver = SolverMuJoCo(model)
-observables = solver.observables(
+solver <span class="tok-operator">=</span> SolverMuJoCo(model)
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables(
     {
-        SolverObservableFlags.BODY_QDD,
-        SolverObservableFlags.BODY_PARENT_F,
+        SolverObservableFlags<span class="tok-operator">.</span>BODY_QDD,
+        SolverObservableFlags<span class="tok-operator">.</span>BODY_PARENT_F,
     }
 )
 
-for _ in range(num_steps):
-    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+<span class="tok-keyword">for</span> _ <span class="tok-operator">in</span> <span class="tok-name">range</span>(num_steps):
+    solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables)
 
-    acceleration = observables.body_qdd
-    parent_wrench = observables.body_parent_f
-    state_in, state_out = state_out, state_in</code></pre>
+    acceleration <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>body_qdd
+    parent_wrench <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>body_parent_f
+    state_in, state_out <span class="tok-operator">=</span> state_out, state_in</code></pre>
+  <h3>Contact-indexed diagnostics with Newton collision detection</h3>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">import</span> newton
+<span class="tok-keyword">from</span> newton.solvers <span class="tok-keyword">import</span> SolverObservableFlags
 
-        <div class="code-heading"><h3>Contact-indexed observables</h3><span>Eager allocation from model capacities</span></div>
-        <pre><code>pipeline = newton.CollisionPipeline(model)
-solver = newton.solvers.SolverXPBD(model)
-observables = solver.observables({SolverObservableFlags.CONTACT_F})
-contacts = pipeline.contacts()
+pipeline <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>CollisionPipeline(model)
+solver <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>solvers<span class="tok-operator">.</span>SolverXPBD(model)
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables({SolverObservableFlags<span class="tok-operator">.</span>CONTACT_F})
+contacts <span class="tok-operator">=</span> pipeline<span class="tok-operator">.</span>contacts()
 
-pipeline.collide(state_in, contacts)
-solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+pipeline<span class="tok-operator">.</span>collide(state_in, contacts)
+solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables)
 
-# Same ordering and capacity as `contacts`.
-contact_force = observables.contact_f</code></pre>
-        <p>Before collision setup, model capacities are <code>None</code>; zero is a valid empty capacity.
-          Requesting contact observables too early raises an error. When allocation returns, every requested field is an array
-          (possibly empty), while unrequested fields remain <code>None</code>. Capacities are frozen by the first
-          contact-indexed observable allocation. No live contact-count readback or pending-allocation state is needed.</p>
-        <div class="code-heading"><h3>Native collision backends</h3><span>Match the backend's export budget</span></div>
-        <pre><code>solver = newton.solvers.SolverMuJoCo(model)
-pipeline = newton.CollisionPipeline(
-    model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+<span class="tok-comment"># Same ordering and capacity as `contacts`.</span>
+contact_force <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>contact_f</code></pre>
+  <p>Only contact-indexed requests need a completed pipeline. No <code>Contacts</code> argument is required by <code>solver.observables()</code>, and no contact-count readback is needed to size its arrays.</p>
+  <h3>Native collision backends</h3>
+  <pre tabindex="0"><code class="language-python">solver <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>solvers<span class="tok-operator">.</span>SolverMuJoCo(model)
+pipeline <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>CollisionPipeline(
+    model, rigid_contact_max<span class="tok-operator">=</span>solver<span class="tok-operator">.</span>get_max_contact_count(), soft_contact_max<span class="tok-operator">=</span><span class="tok-number">0</span>
 )
-observables = solver.observables({SolverObservableFlags.CONTACT_F})
-contacts = pipeline.contacts()
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables({SolverObservableFlags<span class="tok-operator">.</span>CONTACT_F})
+contacts <span class="tok-operator">=</span> pipeline<span class="tok-operator">.</span>contacts()
 
-# Native MuJoCo fills contact geometry and forces; no pipeline.collide() here.
-solver.step(state_in, state_out, control, contacts, dt, observables=observables)</code></pre>
-        <p>Construct native Kamino before the pipeline to seed its rigid-contact budget. Both backends reject a pipeline
-          that is too small for contact observable export. Reconfigure capacities before observable allocation, never during a step.</p>
-      </section>
+<span class="tok-comment"># Native MuJoCo fills contact geometry and forces; no pipeline.collide() here.</span>
+solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables)</code></pre>
+  <p>With native MuJoCo collision detection, the solver writes contact geometry and forces into the export buffer. Do not also call <code>pipeline.collide()</code> for this path. Construct native Kamino before the pipeline to seed its rigid-contact budget. Both backends reject an insufficient export capacity at observable allocation.</p>
+</section>
+<section class="report-section" id="extension">
+  <h2><span class="section-number">5.</span> Custom solver extension</h2>
+  <p>There are two distinct extension mechanisms: subclass the container and solver, but define custom flags in an independent enum. A populated Python enum is not subclassed to add members.</p>
+  <figure id="inheritance-figure" class="diagram-panel">
+  <div class="mermaid-shell" data-mermaid-source="flowchart TB
+    C[&quot;ThermalSolver&quot;] -->|inherits| B[&quot;SolverBase&quot;]
+    C -->|allocates| T[&quot;ThermalSolverObservables&quot;]
+    T -->|inherits| O[&quot;SolverObservables&quot;]" role="img" aria-label="A custom solver and observable container inherit independently">
+    <p class="diagram-fallback">ThermalSolver inherits SolverBase and allocates ThermalSolverObservables. ThermalSolverObservables inherits SolverObservables. Custom flags form a separate Enum.</p>
+  </div>
+  <figcaption><strong>Figure 3.</strong> The custom solver selects its concrete container through <code>OBSERVABLES_TYPE</code>. “Inherits” arrows point from the derived class to its base. The custom flag enum is separate from this inheritance graph.</figcaption>
+</figure>
+  <h3>1. Define a flag and the derived container</h3>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">from</span> enum <span class="tok-keyword">import</span> Enum
+<span class="tok-keyword">import</span> warp <span class="tok-keyword">as</span> wp
 
-      <section id="extension">
-        <h2>Extend it for a custom solver</h2>
-        <p class="section-lede">
-          A custom solver defines its own plain enum, derives a container that retains every standard field, advertises the
-          combined supported set, and extends allocation and population for custom fields.
-        </p>
-
-        <div class="code-heading"><h3>1. Define the custom flag and container</h3><span>No global registry or bit allocation</span></div>
-        <pre><code>from enum import Enum
-import warp as wp
-
-from newton.solvers import SolverObservables
-
-
-class ThermalObservableFlags(Enum):
-    BODY_TEMPERATURE = "body_temperature"
-
-
-class ThermalSolverObservables(SolverObservables):
-    def __init__(self, flags=()):
-        super().__init__(flags)
-        self.body_temperature: wp.array[wp.float32] | None = None</code></pre>
-
-        <div class="code-heading"><h3>2. Select the type and allocate custom fields</h3><span>Call <code>super()</code> for standard arrays</span></div>
-        <pre><code>from newton.solvers import SolverBase, SolverObservableFlags
+<span class="tok-keyword">from</span> newton <span class="tok-keyword">import</span> Model
+<span class="tok-keyword">from</span> newton.solvers <span class="tok-keyword">import</span> SolverObservables
 
 
-class ThermalSolver(SolverBase):
-    OBSERVABLES_TYPE = ThermalSolverObservables
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+<span class="tok-keyword">class</span> <span class="tok-name">ThermalObservableFlags</span>(Enum):
+    BODY_TEMPERATURE <span class="tok-operator">=</span> <span class="tok-string">"</span><span class="tok-string">body_temperature</span><span class="tok-string">"</span>
+
+
+<span class="tok-keyword">class</span> <span class="tok-name">ThermalSolverObservables</span>(SolverObservables):
+    ATTRIBUTE_FREQUENCIES <span class="tok-operator">=</span> {
+        <span class="tok-string">"body_temperature"</span>: Model.AttributeFrequency.BODY,
+    }
+
+    <span class="tok-keyword">def</span> <span class="tok-name">__init__</span>(<span class="tok-name">self</span>, flags<span class="tok-operator">=</span>()):
+        <span class="tok-name">super</span>()<span class="tok-operator">.</span><span class="tok-name">__init__</span>(flags)
+        <span class="tok-name">self</span><span class="tok-operator">.</span>body_temperature: wp<span class="tok-operator">.</span>array[wp<span class="tok-operator">.</span>float32] <span class="tok-operator">|</span> <span class="tok-keyword">None</span> <span class="tok-operator">=</span> <span class="tok-keyword">None</span></code></pre>
+  <h3>2. Advertise support and extend allocation</h3>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">from</span> newton.solvers <span class="tok-keyword">import</span> SolverBase, SolverObservableFlags
+
+
+<span class="tok-keyword">class</span> <span class="tok-name">ThermalSolver</span>(SolverBase):
+    OBSERVABLES_TYPE <span class="tok-operator">=</span> ThermalSolverObservables
+    SUPPORTED_OBSERVABLE_FLAGS <span class="tok-operator">=</span> <span class="tok-name">frozenset</span>(
         {
-            SolverObservableFlags.BODY_QDD,
-            ThermalObservableFlags.BODY_TEMPERATURE,
+            SolverObservableFlags<span class="tok-operator">.</span>BODY_QDD,
+            ThermalObservableFlags<span class="tok-operator">.</span>BODY_TEMPERATURE,
         }
     )
 
-    def _allocate_observables(self, observables, *, requires_grad):
-        super()._allocate_observables(observables, requires_grad=requires_grad)
+    <span class="tok-keyword">def</span> <span class="tok-name">_allocate_observables</span>(<span class="tok-name">self</span>, observables, <span class="tok-operator">*</span>, requires_grad):
+        <span class="tok-name">super</span>()<span class="tok-operator">.</span>_allocate_observables(observables, requires_grad<span class="tok-operator">=</span>requires_grad)
 
-        if ThermalObservableFlags.BODY_TEMPERATURE in observables:
-            observables.body_temperature = wp.zeros(
-                self.model.body_count,
-                dtype=wp.float32,
-                device=self.model.device,
-                requires_grad=requires_grad,
+        <span class="tok-keyword">if</span> ThermalObservableFlags<span class="tok-operator">.</span>BODY_TEMPERATURE <span class="tok-operator">in</span> observables:
+            observables<span class="tok-operator">.</span>body_temperature <span class="tok-operator">=</span> wp<span class="tok-operator">.</span>zeros(
+                <span class="tok-name">self</span><span class="tok-operator">.</span>model<span class="tok-operator">.</span>body_count,
+                dtype<span class="tok-operator">=</span>wp<span class="tok-operator">.</span>float32,
+                device<span class="tok-operator">=</span><span class="tok-name">self</span><span class="tok-operator">.</span>model<span class="tok-operator">.</span>device,
+                requires_grad<span class="tok-operator">=</span>requires_grad,
             )</code></pre>
-
-        <div class="code-heading"><h3>3. Validate and populate during the step</h3><span>Only fill arrays that were requested</span></div>
-        <pre><code>    def step(
-        self,
+  <p><code>super()._allocate_observables()</code> allocates requested standard fields. The override allocates custom fields using dimensions known to the solver. In this illustrative extension, temperature has one value per body; the temperature model and its physical units must be specified by the concrete solver.</p>
+  <h3>3. Fill requested arrays inside the step</h3>
+  <p>The following method belongs to <code>ThermalSolver</code>. The integration, acceleration calculation, and <code>compute_body_temperature</code> kernel are solver-specific implementation points, not complete numerical implementations in this example.</p>
+  <pre tabindex="0"><code class="language-python">    <span class="tok-keyword">def</span> <span class="tok-name">step</span>(
+        <span class="tok-name">self</span>,
         state_in,
         state_out,
         control,
         contacts,
         dt,
-        *,
-        observables=None,
+        <span class="tok-operator">*</span>,
+        observables<span class="tok-operator">=</span><span class="tok-keyword">None</span>,
     ):
-        self._validate_observables(observables, contacts)
+        <span class="tok-name">self</span><span class="tok-operator">.</span>_validate_observables(observables, contacts)
 
-        # ...advance simulation and populate standard observables...
+        <span class="tok-comment"># ...advance simulation and populate standard observables...</span>
 
-        if observables is not None and observables.body_temperature is not None:
-            wp.launch(
+        <span class="tok-keyword">if</span> observables <span class="tok-operator">is</span> <span class="tok-operator">not</span> <span class="tok-keyword">None</span> <span class="tok-operator">and</span> observables<span class="tok-operator">.</span>body_temperature <span class="tok-operator">is</span> <span class="tok-operator">not</span> <span class="tok-keyword">None</span>:
+            wp<span class="tok-operator">.</span>launch(
                 compute_body_temperature,
-                dim=self.model.body_count,
-                inputs=[state_out.body_qd],
-                outputs=[observables.body_temperature],
-                device=self.model.device,
+                dim<span class="tok-operator">=</span><span class="tok-name">self</span><span class="tok-operator">.</span>model<span class="tok-operator">.</span>body_count,
+                inputs<span class="tok-operator">=</span>[state_out<span class="tok-operator">.</span>body_qd],
+                outputs<span class="tok-operator">=</span>[observables<span class="tok-operator">.</span>body_temperature],
+                device<span class="tok-operator">=</span><span class="tok-name">self</span><span class="tok-operator">.</span>model<span class="tok-operator">.</span>device,
             )</code></pre>
-
-        <div class="code-heading"><h3>4. Compose standard and custom requests</h3><span>The caller treats both enums uniformly</span></div>
-        <pre><code>requested = {
-    SolverObservableFlags.BODY_QDD,
-    ThermalObservableFlags.BODY_TEMPERATURE,
+  <h3>4. Compose requests from both enums</h3>
+  <pre tabindex="0"><code class="language-python">solver <span class="tok-operator">=</span> ThermalSolver(model)
+requested <span class="tok-operator">=</span> {
+    SolverObservableFlags<span class="tok-operator">.</span>BODY_QDD,
+    ThermalObservableFlags<span class="tok-operator">.</span>BODY_TEMPERATURE,
 }
 
-observables = solver.observables(requested)
-solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables(requested)
+solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables)
 
-temperature = observables.body_temperature</code></pre>
-        <p>For a custom <em>contact-indexed</em> field, also extend <code>CONTACT_OBSERVABLE_FLAGS</code> with its flag.
-          The base solver then requires a completed pipeline, freezes its capacities, and binds contacts on the first step
-          even when <code>CONTACT_F</code> is not requested. Allocate the custom array in <code>_allocate_observables()</code>
-          using <code>model.rigid_contact_max</code>, <code>model.soft_contact_max</code>, or their sum as appropriate.
-          Body- and solver-sized fields need no contact dependency.</p>
-      </section>
+temperature <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>body_temperature</code></pre>
+  <h3>Contact-indexed custom fields</h3>
+  <p>Declare a contact frequency on the <em>container</em>, just as temperature declares <code>BODY</code>. A solver advertises the flag only in <code>SUPPORTED_OBSERVABLE_FLAGS</code>. The base solver derives pipeline initialization, capacity freezing, and storage binding from the frequency, even when the standard force array is not requested.</p>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">class</span> <span class="tok-name">ContactObservableFlags</span>(Enum):
+    CONTACT_PRESSURE <span class="tok-operator">=</span> <span class="tok-string">"contact_pressure"</span>
 
-      <section id="sensors">
-        <h2>How sensors consume observables</h2>
-        <p class="section-lede">
-          Sensors declare requirements without mutating the model. The application remains the orchestrator: it unions all
-          consumer requirements, verifies that the selected solver supports them, and shares one populated container.
-        </p>
+<span class="tok-keyword">class</span> <span class="tok-name">ContactObservables</span>(SolverObservables):
+    ATTRIBUTE_FREQUENCIES <span class="tok-operator">=</span> {
+        <span class="tok-string">"contact_pressure"</span>: Model.AttributeFrequency.CONTACT_RIGID,
+    }
 
-        <figure class="diagram">
-          <div class="diagram-scroll">
-          <svg viewBox="0 0 920 410" role="img" aria-labelledby="sensor-title sensor-desc">
-            <title id="sensor-title">Sensor requirements and consumption flow</title>
-            <desc id="sensor-desc">IMU and contact sensor solver-observable flag sets are combined, allocated by the solver, populated during step, and routed back to each sensor.</desc>
-            <defs>
-              <marker id="sensor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
-              </marker>
-              <marker id="sensor-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"></path>
-              </marker>
-            </defs>
-
-            <rect x="30" y="42" width="205" height="92" rx="12" class="svg-node-blue"></rect>
-            <text x="132" y="74" text-anchor="middle" class="svg-label">SensorIMU</text>
-            <text x="132" y="99" text-anchor="middle" class="svg-sub">solver_observable_flags</text>
-            <text x="132" y="118" text-anchor="middle" class="svg-sub">{ BODY_QDD }</text>
-
-            <rect x="30" y="274" width="205" height="92" rx="12" class="svg-node-orange"></rect>
-            <text x="132" y="306" text-anchor="middle" class="svg-label">SensorContact</text>
-            <text x="132" y="331" text-anchor="middle" class="svg-sub">solver_observable_flags</text>
-            <text x="132" y="350" text-anchor="middle" class="svg-sub">{ CONTACT_F }</text>
-
-            <rect x="340" y="151" width="240" height="108" rx="13" class="svg-node-accent"></rect>
-            <text x="460" y="184" text-anchor="middle" class="svg-label">Union + allocation</text>
-            <text x="460" y="208" text-anchor="middle" class="svg-sub">flags = imu.flags | contact.flags</text>
-            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.observables(flags)</text>
-            <text x="460" y="248" text-anchor="middle" class="svg-sub">allocate one reusable container</text>
-
-            <rect x="685" y="151" width="205" height="108" rx="13" class="svg-node-purple"></rect>
-            <text x="787" y="184" text-anchor="middle" class="svg-label">solver.step()</text>
-            <text x="787" y="208" text-anchor="middle" class="svg-sub">fills body_qdd</text>
-            <text x="787" y="229" text-anchor="middle" class="svg-sub">fills contact_f</text>
-            <text x="787" y="248" text-anchor="middle" class="svg-sub">same observable identity</text>
-
-            <path d="M 235 88 H 280 Q 300 88 312 105 L 365 161" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
-            <path d="M 235 320 H 280 Q 300 320 312 303 L 365 249" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
-            <path d="M 580 205 H 674" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
-
-            <path d="M 787 151 V 107 Q 787 88 768 88 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
-            <text x="560" y="77" text-anchor="middle" class="svg-small">imu.update(state, solver_observables=observables)</text>
-            <path d="M 787 259 V 303 Q 787 320 768 320 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
-            <text x="560" y="349" text-anchor="middle" class="svg-small">contact_sensor.update(state, contacts, solver_observables=observables)</text>
-
-            <text x="30" y="399" class="svg-sub">A sensor declares what it needs; it does not decide how the solver computes it.</text>
-          </svg>
-          </div>
-          <figcaption>
-            Multiple consumers share one observable allocation, with each sensor reading only the fields it declared.
-            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
-          </figcaption>
-        </figure>
-
-        <div class="code-heading"><h3>Combined IMU and contact sensor loop</h3><span>Requirements remain composable</span></div>
-        <pre><code>imu = newton.sensors.SensorIMU(model, sites="imu_*")
-contact_sensor = newton.sensors.SensorContact(
-    model,
-    sensing_shapes="foot_*",
+    <span class="tok-keyword">def</span> <span class="tok-name">__init__</span>(<span class="tok-name">self</span>, flags<span class="tok-operator">=</span>()):
+        <span class="tok-name">super</span>().__init__(flags)
+        <span class="tok-name">self</span>.contact_pressure <span class="tok-operator">=</span> <span class="tok-keyword">None</span></code></pre>
+  <p>The allocator override creates <code>contact_pressure</code> with <code>model.rigid_contact_max</code> rows. Units, dtype, and computation remain the custom solver's responsibility. Standard frequency declarations are inherited automatically. No separate contact flag registry or field-name heuristic is needed.</p>
+  <h3>Existing solver-specific entries</h3>
+  <p>MuJoCo defines <code>SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR</code>. Requesting it returns a <code>SolverMuJoCo.Observables</code> container whose <code>qfrc_actuator</code> array contains generalized actuator forces, with frequency <code>JOINT_DOF</code>. It can be combined with standard flags in the same set.</p>
+</section>
+<section class="report-section" id="sensors">
+  <h2><span class="section-number">6.</span> Sensor consumption</h2>
+  <p><code>SensorIMU.solver_observable_flags</code> requests <code>BODY_QDD</code>; <code>SensorContact.solver_observable_flags</code> requests <code>CONTACT_F</code>. The application unions these requirements and makes one allocation. The sensors do not request fields on the model.</p>
+  <figure id="sensor-figure" class="diagram-panel">
+  <div class="mermaid-shell" data-mermaid-source="flowchart LR
+    O[&quot;SolverObservables&quot;] -->|body_qdd| I[&quot;SensorIMU.update()&quot;]
+    O -->|contact_f| C[&quot;SensorContact.update()&quot;]
+    I --> A[&quot;Accelerometer and gyroscope&quot;]
+    C --> F[&quot;Aggregated contact measurements&quot;]" role="img" aria-label="Sensors read solver observables and write their own measurements">
+    <p class="diagram-fallback">SolverObservables.body_qdd enters SensorIMU.update(), which produces accelerometer and gyroscope measurements. SolverObservables.contact_f enters SensorContact.update(), which produces aggregated contact measurements.</p>
+  </div>
+  <figcaption><strong>Figure 4.</strong> The observable container is sensor <em>input</em>. Sensor measurements are separate outputs. IMU also reads the updated state; the contact sensor also reads state and the bound contacts.</figcaption>
+</figure>
+  <p>The keyword <code>solver_observables=</code> makes that input role explicit at consumer boundaries. A viewer can read the same container; it does not need a second allocation.</p>
+  <h3>Rigid forces only in the current contact sensor</h3>
+  <p><code>SensorContact</code> launches its aggregation over <code>rigid_contact_max</code> and reads <code>rigid_contact_count</code>, rigid shape endpoints, points, and normals. It does not read the soft segment. Allocating a packed <code>contact_f</code> therefore does not enable deformable-contact measurements. This follows the existing <a href="https://github.com/eric-heiden/newton/blob/1004aa2796090009651ee376a43ebf5d8639408c/newton/_src/sensors/sensor_contact.py#L742">sensor aggregation implementation</a>.</p>
+  <p>Soft-rigid sensing would need both a solver that exports those forces and an aggregation path for soft endpoints, including particles and potentially edges or faces. Soft self-contact uses separate storage. These are numerical and selection semantics to design explicitly, not behavior that a frequency declaration can supply.</p>
+  <h3>A combined sensor loop</h3>
+  <pre tabindex="0"><code class="language-python">imu <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>sensors<span class="tok-operator">.</span>SensorIMU(model, sites<span class="tok-operator">=</span><span class="tok-string">"</span><span class="tok-string">imu_*</span><span class="tok-string">"</span>)
+contact_sensor <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>sensors<span class="tok-operator">.</span>SensorContact(
+    model, sensing_shapes<span class="tok-operator">=</span><span class="tok-string">"</span><span class="tok-string">foot_*</span><span class="tok-string">"</span>
 )
 
-pipeline = newton.CollisionPipeline(model)
-contacts = pipeline.contacts()
+<span class="tok-comment"># This example uses Newton collision detection with MuJoCo Warp.</span>
+solver <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>solvers<span class="tok-operator">.</span>SolverMuJoCo(model, use_mujoco_contacts<span class="tok-operator">=</span><span class="tok-keyword">False</span>)
+pipeline <span class="tok-operator">=</span> newton<span class="tok-operator">.</span>CollisionPipeline(
+    model, rigid_contact_max<span class="tok-operator">=</span>solver<span class="tok-operator">.</span>get_max_contact_count(), soft_contact_max<span class="tok-operator">=</span><span class="tok-number">0</span>
+)
+contacts <span class="tok-operator">=</span> pipeline<span class="tok-operator">.</span>contacts()
+flags <span class="tok-operator">=</span> imu<span class="tok-operator">.</span>solver_observable_flags <span class="tok-operator">|</span> contact_sensor<span class="tok-operator">.</span>solver_observable_flags
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables(flags)
 
-flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
-observables = solver.observables(flags)
+<span class="tok-keyword">for</span> _ <span class="tok-operator">in</span> <span class="tok-name">range</span>(num_steps):
+    state_in<span class="tok-operator">.</span>clear_forces()
+    pipeline<span class="tok-operator">.</span>collide(state_in, contacts)
+    solver<span class="tok-operator">.</span>step(
+        state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables
+    )
+    imu<span class="tok-operator">.</span>update(state_out, solver_observables<span class="tok-operator">=</span>observables)
+    contact_sensor<span class="tok-operator">.</span>update(state_out, contacts, solver_observables<span class="tok-operator">=</span>observables)
+    viewer<span class="tok-operator">.</span>log_contacts(contacts, state_out, solver_observables<span class="tok-operator">=</span>observables)
+    state_in, state_out <span class="tok-operator">=</span> state_out, state_in</code></pre>
+  <p>The selected solver must support the union of all requested flags. MuJoCo's CPU backend does not expose <code>CONTACT_F</code> through this API. MuJoCo Warp must keep sensors enabled for RNE-derived body acceleration and parent-wrench diagnostics.</p>
+</section>
+<section class="report-section" id="selection">
+  <h2><span class="section-number">7.</span> Selection and row frequencies</h2>
+  <p>An articulation view groups rows by selected articulations. Its existing static layouts include bodies, joints, joint degrees of freedom, joint coordinates, and shapes. Previously, generic attribute lookup always asked the model for a field's frequency, so a solver-specific array could not be selected unless its name was also registered on the model.</p>
+  <p>The view now asks a <code>SolverObservables</code> source for <code>get_attribute_frequency(name)</code> and checks that the container belongs to the same model. This reuses the existing strided and indexed selection layouts. It does not duplicate the solver field schema on the model.</p>
+  <figure id="selection-figure" class="diagram-panel">
+    <div class="mermaid-shell" data-mermaid-source="flowchart LR
+    M[&quot;Observable row frequency&quot;] --> A[&quot;Allocation dependencies&quot;]
+    M --> V[&quot;Storage validation&quot;]
+    M --> S[&quot;ArticulationView layout&quot;]" role="img" aria-label="One frequency declaration informs allocation, storage validation, and static selection">
+      <p class="diagram-fallback">The observable container declares a row frequency once. The solver uses it for allocation dependencies and storage validation; ArticulationView uses it to choose an existing static layout.</p>
+    </div>
+    <figcaption><strong>Figure 5.</strong> Shared row metadata replaces independent classifications. Contact frequencies trigger storage validation but are not static articulation layouts.</figcaption>
+  </figure>
+  <pre tabindex="0"><code class="language-python"><span class="tok-keyword">from</span> newton.selection <span class="tok-keyword">import</span> ArticulationView
 
-for _ in range(num_steps):
-    pipeline.collide(state_in, contacts)
-    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+view <span class="tok-operator">=</span> ArticulationView(model, <span class="tok-string">"robot_*"</span>)
+temperature <span class="tok-operator">=</span> view.get_attribute(<span class="tok-string">"body_temperature"</span>, observables)</code></pre>
+  <p>This example continues the thermal solver extension above. A custom string frequency can also be selected when the model declares its articulation ownership and a compatible layout. A frequency name alone does not establish row ownership. Arrays must be allocated before selection and remain stable while the view caches their layout.</p>
+  <h3>Why raw contacts need a different selection policy</h3>
+  <p>Contact rows can change after every collision pass, have variable counts, and connect two different articulations. There is no unique, stable rectangular articulation layout. The current view rejects all three contact frequencies with an explicit error.</p>
+  <p><strong>Recommended next step:</strong> define endpoint-based filtering with an explicit choice of either endpoint, both endpoints, or signed force on a selected body. For rectangular articulation data, reduce contact forces to a <code>BODY</code>-frequency observable first. Automatic filtering and reduction are not implemented here. A future schema could reuse <code>Model.AttributeSpec</code> when row widths, reference domains, or compaction policies are needed; the present declaration contains only the shared frequency contract.</p>
+</section>
+<section class="report-section" id="migration">
+  <h2><span class="section-number">8.</span> Migration from extended attributes</h2>
+  <p>The existing paths remain available for a deprecation window. New code should request diagnostics on the solver and pass the resulting container explicitly.</p>
+  <div class="table-wrap"><table><thead><tr><th>Deprecated path</th><th>Replacement</th></tr></thead><tbody>
+    <tr><td><code>State.body_qdd</code></td><td><code>observables.body_qdd</code></td></tr>
+    <tr><td><code>State.body_parent_f</code></td><td><code>observables.body_parent_f</code></td></tr>
+    <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Observables.qfrc_actuator</code></td></tr>
+    <tr><td><code>Contacts.force</code></td><td><code>observables.contact_f</code></td></tr>
+    <tr><td>Model/builder state and contact request methods</td><td><code>solver.observables(flags)</code></td></tr>
+    <tr><td><code>solver.update_contacts(...)</code></td><td>Pass observables to <code>solver.step(...)</code></td></tr>
+  </tbody></table></div>
+  <h3>Before: model-driven allocation</h3>
+  <pre tabindex="0"><code class="language-python">model<span class="tok-operator">.</span>request_state_attributes(<span class="tok-string">"</span><span class="tok-string">body_parent_f</span><span class="tok-string">"</span>)
+model<span class="tok-operator">.</span>request_contact_attributes(<span class="tok-string">"</span><span class="tok-string">force</span><span class="tok-string">"</span>)
 
-    imu.update(state_out, solver_observables=observables)
-    contact_sensor.update(state_out, contacts, solver_observables=observables)
-    viewer.log_contacts(contacts, state_out, solver_observables=observables)
+state_in, state_out <span class="tok-operator">=</span> model<span class="tok-operator">.</span>state(), model<span class="tok-operator">.</span>state()
+contacts <span class="tok-operator">=</span> model<span class="tok-operator">.</span>contacts()
 
-    state_in, state_out = state_out, state_in</code></pre>
-      </section>
+solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt)
+solver<span class="tok-operator">.</span>update_contacts(contacts, state_out)
 
-      <section id="migration">
-        <h2>What changes for existing code?</h2>
-        <p class="section-lede">
-          Legacy extended-attribute paths remain available for a deprecation window, but new code requests the equivalent
-          observable from the solver and passes the container explicitly.
-        </p>
-
-        <div class="table-wrap">
-          <table class="migration">
-            <thead>
-              <tr><th>Deprecated path</th><th>Replacement</th><th>Reason</th></tr>
-            </thead>
-            <tbody>
-              <tr><td><code>State.body_qdd</code></td><td><code>observables.body_qdd</code></td><td>Acceleration is solver-produced diagnostic data.</td></tr>
-              <tr><td><code>State.body_parent_f</code></td><td><code>observables.body_parent_f</code></td><td>Joint reaction reporting varies by solver capability.</td></tr>
-              <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Observables.qfrc_actuator</code></td><td>Solver-specific diagnostics stay on the solver-specific container.</td></tr>
-              <tr><td><code>Contacts.force</code></td><td><code>observables.contact_f</code></td><td>Contact geometry and computed force have separate ownership.</td></tr>
-              <tr><td><code>model.request_state_attributes(...)</code></td><td><code>solver.observables({...})</code></td><td>Requests target the producer rather than the model.</td></tr>
-              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.observables({...})</code></td><td>Contact-indexed observables are bound explicitly to their storage.</td></tr>
-              <tr><td><code>solver.update_contacts(...)</code></td><td><code>solver.step(..., observables=observables)</code></td><td>Observables are produced with the step, avoiding a separate update protocol.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="code-heading"><h3>Before</h3><span>Model-driven allocation</span></div>
-        <pre><code>model.request_state_attributes("body_parent_f")
-model.request_contact_attributes("force")
-
-state = model.state()
-contacts = model.contacts()
-
-solver.step(state_in, state_out, control, contacts, dt)
-solver.update_contacts(contacts, state_out)
-
-parent_wrench = state_out.body_parent_f
-contact_force = contacts.force</code></pre>
-
-        <div class="code-heading"><h3>After</h3><span>Solver-driven allocation</span></div>
-        <pre><code># CollisionPipeline has already published compatible model capacities.
-observables = solver.observables(
+parent_wrench <span class="tok-operator">=</span> state_out<span class="tok-operator">.</span>body_parent_f
+contact_force <span class="tok-operator">=</span> contacts<span class="tok-operator">.</span>force</code></pre>
+  <h3>After: solver-driven allocation</h3>
+  <pre tabindex="0"><code class="language-python"><span class="tok-comment"># CollisionPipeline has already published compatible model capacities.</span>
+observables <span class="tok-operator">=</span> solver<span class="tok-operator">.</span>observables(
     {
-        SolverObservableFlags.BODY_PARENT_F,
-        SolverObservableFlags.CONTACT_F,
+        SolverObservableFlags<span class="tok-operator">.</span>BODY_PARENT_F,
+        SolverObservableFlags<span class="tok-operator">.</span>CONTACT_F,
     }
 )
 
-solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+solver<span class="tok-operator">.</span>step(state_in, state_out, control, contacts, dt, observables<span class="tok-operator">=</span>observables)
 
-parent_wrench = observables.body_parent_f
-contact_force = observables.contact_f</code></pre>
-      </section>
-
-      <section id="benefits">
-        <h2>Benefits and future-proofing</h2>
-        <p class="section-lede">
-          This is more than moving arrays. It establishes a stable extension point between solvers and optional consumers while
-          keeping model and state APIs focused on simulation data.
-        </p>
-
-        <div class="benefits">
-          <article class="benefit"><div class="benefit-index">01</div><h3>Clear ownership</h3><p>Users ask the solver for solver observables. The API location matches the component with the capability and implementation.</p></article>
-          <article class="benefit"><div class="benefit-index">02</div><h3>Pay only for what is used</h3><p>Optional arrays are absent until requested, reducing memory and avoiding unnecessary diagnostic computation.</p></article>
-          <article class="benefit"><div class="benefit-index">03</div><h3>Independent extension</h3><p>Custom solvers add flags and fields without editing Newton's global state schema or coordinating enum bit assignments.</p></article>
-          <article class="benefit"><div class="benefit-index">04</div><h3>Composable consumers</h3><p>Sensors, viewers, loggers, and applications publish requirements as sets that can be unioned into one allocation.</p></article>
-          <article class="benefit"><div class="benefit-index">05</div><h3>Stronger validation</h3><p>Unsupported flags, wrong concrete types, solver mismatches, and contact-buffer mismatches fail close to allocation or step.</p></article>
-          <article class="benefit"><div class="benefit-index">06</div><h3>Room to evolve</h3><p>Future observable families—iterations, residuals, thermal fields, stresses, actuator diagnostics—can follow the same contract.</p></article>
-        </div>
-
-        <div class="callout">
-          <strong>Scope boundary:</strong> this migration covers built-in solver-produced diagnostics. Custom model, state,
-          control, and contact attributes remain valid for authored or persistent simulation data.
-        </div>
-      </section>
-
-      <footer class="footer">
-        <p>Newton architecture note · Solver Observables proposal · Experimental API subject to refinement as more solvers and consumers migrate.</p>
-      </footer>
-    </main>
-  </div>
+parent_wrench <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>body_parent_f
+contact_force <span class="tok-operator">=</span> observables<span class="tok-operator">.</span>contact_f</code></pre>
+  <p>During migration, sensors can opt into their deprecated automatic request behavior with <code>request_state_attributes=True</code> or <code>request_contact_attributes=True</code>. New sensor code should use the flag sets and explicit input shown above.</p>
+</section>
+<section class="report-section" id="benefits">
+  <h2><span class="section-number">9.</span> Benefits and limitations</h2>
+  <ul>
+    <li><strong>Ownership follows computation.</strong> Capability checks and allocation are attached to the solver that produces the data.</li>
+    <li><strong>Allocation follows demand.</strong> Unrequested diagnostic arrays stay absent. This can avoid storage and computation, but the report makes no measured speedup claim.</li>
+    <li><strong>Extensions remain local.</strong> A custom solver can add flags and arrays without editing the global state schema or reserving flag bits.</li>
+    <li><strong>Consumers compose requirements.</strong> Applications can union sensor requirements and share one container across sensors, viewers, and logging code.</li>
+    <li><strong>Row semantics are declared once.</strong> Custom fields participate in dependency checks and supported articulation layouts through the same frequency metadata.</li>
+  </ul>
+  <p>The tradeoff is explicit lifecycle management: applications must keep the container with its owning solver and keep contact-indexed results with the bound storage. A replacement pipeline with different capacity requires rebuilding the relevant allocation setup. The API does not permit a caller to silently resize contact buffers in the middle of a captured loop.</p>
+  <p>Availability and physical interpretation remain solver-dependent. Kamino reports discrete step-average acceleration, including impact impulse divided by the step duration. XPBD's reaction wrenches are approximate applied constraint reactions. The coupled solver wrapper exposes a body observable only when all body-owning entries support it; contact observables require an explicit index-remapping contract and are not exposed by that wrapper.</p>
+  <p>Custom attributes on models, states, controls, and contacts remain supported for authored or persistent simulation data. This proposal only migrates built-in solver-produced diagnostics. Additional observable families remain possible, but do not become supported merely because their fields can be declared.</p>
+</section>
+<footer class="report-footer">
+  <p>Experimental design, with implementation and discussion in <a href="https://github.com/newton-physics/newton/pull/4231">Newton draft PR #4231</a>. Diagrams describe architecture rather than numerical results.</p>
+</footer>
+</main>
+</div>
+<script>
+(() => {
+  const root = document.documentElement;
+  const button = document.getElementById("theme-toggle");
+  function sync() {
+    const dark = root.dataset.theme === "dark";
+    button.textContent = dark ? "Dark" : "Bright";
+    button.setAttribute("aria-pressed", String(dark));
+    button.setAttribute("aria-label", dark ? "Switch to bright theme" : "Switch to dark theme");
+  }
+  sync();
+  button.addEventListener("click", () => {
+    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+    try { localStorage.setItem("report-theme", root.dataset.theme); } catch (_) {}
+    sync();
+    window.dispatchEvent(new CustomEvent("report-theme-change"));
+  });
+})();
+</script>
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.esm.min.mjs";
+let rendering = false;
+let requested = false;
+let serial = 0;
+// Short line breaks keep labels readable without changing graph relationships.
+const mobileSources = {
+  "allocation-figure": `flowchart TB
+    R["Flags"] --> F["solver.observables(flags)"]
+    P["Contact capacity"] --> F
+    F --> O["SolverObservables"]`,
+  "runtime-figure": `flowchart TB
+    I["State, control,<br/>Contacts"] --> S["solver.step()"]
+    B["Allocated<br/>buffers"] --> S
+    S --> Q["Updated State"]
+    S --> O["Populated<br/>observables"]`,
+  "inheritance-figure": `flowchart TB
+    C["ThermalSolver"] -->|inherits| B["SolverBase"]
+    C -->|allocates| T["ThermalSolver<br/>Observables"]
+    T -->|inherits| O["SolverObservables"]`,
+  "sensor-figure": `flowchart TB
+    O["SolverObservables"] -->|body_qdd| I["SensorIMU<br/>update()"]
+    O -->|contact_f| C["SensorContact<br/>update()"]
+    I --> A["Accelerometer<br/>and gyroscope"]
+    C --> F["Contact<br/>measurements"]`,
+  "selection-figure": `flowchart TB
+    M["Observable<br/>row frequency"] --> A["Allocation<br/>dependencies"]
+    M --> V["Storage validation"]
+    M --> S["ArticulationView<br/>layout"]
+    A ~~~ V
+    V ~~~ S`
+};
+async function renderDiagrams() {
+  requested = true;
+  if (rendering) return;
+  rendering = true;
+  try {
+    while (requested) {
+      requested = false;
+      const styles = getComputedStyle(document.documentElement);
+      const color = (name) => styles.getPropertyValue(name).trim();
+      mermaid.initialize({
+        startOnLoad: false, securityLevel: "strict", theme: "base",
+        themeVariables: {
+          fontFamily: color("--sans"), fontSize: "16px",
+          primaryColor: color("--surface-2"), primaryTextColor: color("--text"),
+          primaryBorderColor: color("--line-strong"), lineColor: color("--accent"),
+          secondaryColor: color("--surface"), tertiaryColor: color("--surface"),
+          edgeLabelBackground: color("--bg"), textColor: color("--text")
+        },
+        flowchart: {htmlLabels: false, curve: "linear", nodeSpacing: 26, rankSpacing: 34, padding: 16}
+      });
+      for (const node of document.querySelectorAll("[data-mermaid-source]")) {
+        const source = node.clientWidth < 500
+          ? mobileSources[node.closest("figure").id]
+          : node.clientWidth < 680
+            ? node.dataset.mermaidSource.replace("flowchart LR", "flowchart TB")
+            : node.dataset.mermaidSource;
+        try {
+          const result = await mermaid.render("solver-diagram-" + (++serial), source);
+          node.innerHTML = result.svg;
+          node.dataset.rendered = "true";
+        } catch (error) {
+          // Keep the accessible prose fallback when a diagram cannot load.
+          node.dataset.rendered = "error";
+          console.error("Diagram rendering failed", error);
+        }
+      }
+    }
+  } finally { rendering = false; }
+}
+window.addEventListener("report-theme-change", renderDiagrams);
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderDiagrams, 160);
+});
+renderDiagrams();
+</script>
 </body>
 </html>

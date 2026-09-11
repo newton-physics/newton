@@ -165,21 +165,34 @@ Observable enums must derive directly from :class:`enum.Enum`, not
 :class:`enum.IntEnum` or a string-mixin enum. Integer and string enum members
 can compare equal across enum classes and silently collide in a set.
 
+Each flag's string value names its array field. Declare that field's row domain
+in the container's ``ATTRIBUTE_FREQUENCIES`` mapping, using
+:class:`~newton.Model.AttributeFrequency` or a custom string frequency. Lookup
+inherits base declarations; subclasses need only list their additional fields.
+Missing declarations are rejected before allocation. Frequency means indexing
+domain, not how often an observable is updated.
+
 Override ``_allocate_observables()`` and call ``super()`` to allocate inherited
-arrays before custom arrays. Custom contact-indexed flags also belong in
-``CONTACT_OBSERVABLE_FLAGS`` so the base solver requires pipeline initialization,
-freezes capacities, and binds contact storage even when ``CONTACT_F`` itself is
-not requested:
+arrays before custom arrays. ``SUPPORTED_OBSERVABLE_FLAGS`` is the only
+capability flag set. Contact dependencies follow the declared frequency:
 
 .. code-block:: python
+
+   class CustomObservableFlags(Enum):
+       CONTACT_PRESSURE = "contact_pressure"
+
+   class CustomObservables(newton.solvers.SolverObservables):
+       ATTRIBUTE_FREQUENCIES = {
+           "contact_pressure": newton.Model.AttributeFrequency.CONTACT_RIGID,
+       }
+
+       def __init__(self, flags=()):
+           super().__init__(flags)
+           self.contact_pressure = None
 
    class CustomSolver(newton.solvers.SolverBase):
        OBSERVABLES_TYPE = CustomObservables
        SUPPORTED_OBSERVABLE_FLAGS = frozenset({CustomObservableFlags.CONTACT_PRESSURE})
-       CONTACT_OBSERVABLE_FLAGS = (
-           newton.solvers.SolverBase.CONTACT_OBSERVABLE_FLAGS
-           | {CustomObservableFlags.CONTACT_PRESSURE}
-       )
 
        def _allocate_observables(self, observables, *, requires_grad):
            super()._allocate_observables(observables, requires_grad=requires_grad)
@@ -191,9 +204,52 @@ not requested:
                    requires_grad=requires_grad,
                )
 
-Here ``CustomObservables`` derives from ``SolverObservables`` and initializes
-``contact_pressure`` to ``None``. Custom fields sized by bodies, particles, or
-solver-owned dimensions do not need ``CONTACT_OBSERVABLE_FLAGS``.
+The snippet assumes ``from enum import Enum`` and ``import warp as wp``.
+The base solver requires pipeline initialization, freezes capacities, and binds
+contact storage for any requested contact frequency, including custom fields
+requested without ``CONTACT_F``. Body- and joint-indexed fields do not require
+a collision pipeline.
+
+Contact row domains
+-------------------
+
+Three experimental frequencies describe the existing contact storage layouts:
+
+* ``CONTACT_RIGID``: ``rigid_contact_max`` rigid-rigid slots.
+* ``CONTACT_SOFT``: ``soft_contact_max`` soft-rigid slots. This does not include
+  the separate soft self-contact storage.
+* ``CONTACT``: the packed sum of both capacities, used by ``contact_f`` for
+  compatibility. The soft segment begins at ``rigid_contact_max``, not at the
+  live rigid contact count.
+
+These frequencies currently describe solver observables, not builder custom
+attributes. Capacity determines allocation; live counts determine which slots
+can be read. Packed storage does not guarantee that a solver produces forces for
+both segments. :class:`~newton.sensors.SensorContact` currently consumes only
+rigid-rigid forces, using ``rigid_contact_count`` and rigid shape endpoints.
+Soft-force production and soft-contact sensor aggregation are separate future
+features.
+
+Selection
+---------
+
+:class:`~newton.selection.ArticulationView` reads frequencies from a
+``SolverObservables`` source rather than requiring field registration on the
+model. Standard and custom fields using supported static layouts, such as
+``BODY`` and ``JOINT_DOF``, can therefore be selected directly:
+
+.. code-block:: python
+
+   view = newton.selection.ArticulationView(model, "robot_*")
+   accelerations = view.get_attribute("body_qdd", observables)
+
+The container must belong to the same model and the field must be allocated.
+Custom string frequencies still need the model's articulation-ownership
+metadata. Raw contact rows do not have stable, unique articulation ownership:
+their order changes during collision detection and their endpoints can belong
+to different articulations. The view rejects contact frequencies. Filter using
+contact endpoints or reduce forces to a ``BODY``-frequency field before using
+an articulation view; automatic contact filtering and reduction are not provided.
 
 Sensors
 -------

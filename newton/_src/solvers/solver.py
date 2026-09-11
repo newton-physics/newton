@@ -21,6 +21,9 @@ class SolverObservableFlags(Enum):
     solver-specific enums can add entries without coordinating integer bits
     with Newton or other solver implementations.
 
+    Each member's string value names its observable array. The container
+    declares that array's row frequency in ``ATTRIBUTE_FREQUENCIES``.
+
     .. experimental::
 
         The solver observable API may change while additional solvers and observable
@@ -50,6 +53,19 @@ class SolverObservables:
         categories are migrated to it.
     """
 
+    ATTRIBUTE_FREQUENCIES: ClassVar[Mapping[str, Model.AttributeFrequency | str]] = {
+        "body_qdd": Model.AttributeFrequency.BODY,
+        "body_parent_f": Model.AttributeFrequency.BODY,
+        "contact_f": Model.AttributeFrequency.CONTACT,
+    }
+    """Row domains of observable arrays, keyed by field name.
+
+    Derived containers declare only their additional fields; frequency lookup
+    follows the class inheritance order. Every requested flag must have a
+    string value naming a field with a declared frequency. Custom string
+    frequencies use the model's custom-frequency ownership metadata for selection.
+    """
+
     def __init__(self, flags: Iterable[Enum] = ()) -> None:
         """Initialize an unallocated observable container.
 
@@ -75,6 +91,30 @@ class SolverObservables:
     def __contains__(self, flag: Enum) -> bool:
         """Return whether an observable flag was allocated."""
         return flag in self.flags
+
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
+        """Return an array's row domain, including inherited declarations.
+
+        Args:
+            name: Observable array field name.
+
+        Raises:
+            KeyError: If no frequency is declared for the field.
+            TypeError: If the declaration is not an attribute frequency or string.
+        """
+        for cls in type(self).__mro__:
+            frequencies = cls.__dict__.get("ATTRIBUTE_FREQUENCIES", {})
+            if name in frequencies:
+                frequency = frequencies[name]
+                if not isinstance(frequency, (Model.AttributeFrequency, str)):
+                    raise TypeError(f"Invalid observable frequency for '{name}': {frequency!r}.")
+                return frequency
+        raise KeyError(f"No observable frequency declared for '{name}'.")
+
+    @property
+    def model(self) -> Model | None:
+        """Model whose indexing this container uses, or ``None`` before allocation."""
+        return None if self._solver is None else self._solver.model
 
     @property
     def contacts(self) -> Contacts | None:
@@ -309,14 +349,6 @@ class SolverBase:
     SUPPORTED_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
     """Observable flags accepted by :meth:`observables`."""
 
-    CONTACT_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset({SolverObservableFlags.CONTACT_F})
-    """Flags requiring contact capacities and storage binding.
-
-    Custom solvers extend this set for their own contact-indexed arrays. This
-    declares a sizing dependency, not support; also add each custom flag to
-    :attr:`SUPPORTED_OBSERVABLE_FLAGS`.
-    """
-
     def __init__(
         self,
         model: Model,
@@ -510,7 +542,8 @@ class SolverBase:
             TypeError: If a request is not a plain enum member or the
                 configured observable type does not derive from
                 :class:`SolverObservables`.
-            ValueError: If this solver does not support a requested observable.
+            ValueError: If this solver does not support a requested observable
+                or its container does not declare the observable's row frequency.
             RuntimeError: If contact-indexed observables are requested before
                 constructing :class:`~newton.CollisionPipeline` for the model.
 
@@ -532,6 +565,8 @@ class SolverBase:
                 "Solver observable flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
                 f"or string-mixin enum members; got: {values}."
             )
+        if any(not isinstance(flag.value, str) or not flag.value.isidentifier() for flag in requested):
+            raise TypeError("Each solver observable flag's value must be a string naming its array field.")
 
         unsupported = requested.difference(self.supported_observable_flags)
         if unsupported:
@@ -544,7 +579,19 @@ class SolverBase:
         observables._solver = self
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        if requested.intersection(self.CONTACT_OBSERVABLE_FLAGS):
+        try:
+            frequencies = {observables.get_attribute_frequency(flag.value) for flag in requested}
+        except KeyError as error:
+            raise ValueError(error.args[0]) from error
+        if any(
+            frequency
+            in (
+                Model.AttributeFrequency.CONTACT,
+                Model.AttributeFrequency.CONTACT_RIGID,
+                Model.AttributeFrequency.CONTACT_SOFT,
+            )
+            for frequency in frequencies
+        ):
             observables._contact_capacity = self.model._get_contact_capacity()
         self._allocate_observables(observables, requires_grad=requires_grad)
         if observables._contact_capacity is not None:
@@ -558,28 +605,19 @@ class SolverBase:
 
     def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
         """Allocate standard arrays requested in an observable container."""
-        if SolverObservableFlags.BODY_QDD in observables:
-            observables.body_qdd = wp.zeros(
-                self.model.body_count,
-                dtype=wp.spatial_vector,
-                device=self.model.device,
-                requires_grad=requires_grad,
-            )
-        if SolverObservableFlags.BODY_PARENT_F in observables:
-            observables.body_parent_f = wp.zeros(
-                self.model.body_count,
-                dtype=wp.spatial_vector,
-                device=self.model.device,
-                requires_grad=requires_grad,
-            )
-
-        if SolverObservableFlags.CONTACT_F in observables:
-            rigid_max, soft_max = observables._contact_capacity
-            observables.contact_f = wp.zeros(
-                rigid_max + soft_max,
-                dtype=wp.spatial_vector,
-                device=self.model.device,
-                requires_grad=requires_grad,
+        for flag in SolverObservableFlags:
+            if flag not in observables:
+                continue
+            frequency = observables.get_attribute_frequency(flag.value)
+            setattr(
+                observables,
+                flag.value,
+                wp.zeros(
+                    self.model._attribute_frequency_count(frequency),
+                    dtype=wp.spatial_vector,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
             )
 
     def _validate_observables(self, observables: SolverObservables | None, contacts: Contacts | None = None) -> None:
