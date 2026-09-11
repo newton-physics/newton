@@ -46,10 +46,12 @@ class TriMeshCollisionInfo:
     tables over the pair arrays, rebuilt after each detection from the
     per-element linked record lists: row ``i`` of a family lists the indices of
     the pairs owned by element ``i`` in BVH-traversal order. Each element's
-    list has a single writer, so a row's dereferenced contents are
-    deterministic run to run; the pair-slot indices inside the row depend on
-    the shared cursor's scheduling (only the optional triangle-side reverse
-    table also has scheduling-dependent order). Counts record all pairs found
+    list has a single writer, so absent overflow a row's dereferenced contents
+    are deterministic run to run (under overflow, which records won a slot is
+    an inter-thread race; each row keeps a prefix of its traversal order); the
+    pair-slot indices inside the row depend on the shared cursor's scheduling
+    (only the optional triangle-side reverse table also has
+    scheduling-dependent order). Counts record all pairs found
     and may exceed what fit into a pair array when it overflows (the matching
     ``counters`` overflow flag is set). Kernel code should read results through
     the internal ``get_*`` accessors.
@@ -543,6 +545,7 @@ class TriMeshCollisionDetector:
         # triangle-side recording is off (parity with the historical behavior:
         # the array then keeps its constant query-radius fill)
         self._empty_min_dist = wp.empty(shape=(0,), dtype=float, device=self.device)
+        self._empty_int32 = wp.empty(shape=(0,), dtype=wp.int32, device=self.device)
 
         # data for triangle-triangle intersection; they will only be initialized on demand, as triangle-triangle intersection is not needed for simulation
         self.triangle_intersecting_triangles = None
@@ -894,8 +897,10 @@ class TriMeshCollisionDetector:
                 f"tri-mesh self-contact pair arrays overflowed "
                 f"(vertex-triangle demand {vt_demand} / capacity {self.vt_pairs.shape[0]}, "
                 f"edge-edge demand {ee_demand} / capacity {self.ee_pairs.shape[0]}); "
-                "excess contacts were dropped this detection. Increase the "
-                "*_collision_buffer_pre_alloc budgets, or rely on the solver's "
+                "excess contacts were dropped this detection. Raise the average "
+                "per-element budgets (SolverVBD: particle_vertex_contact_buffer_size / "
+                "particle_edge_contact_buffer_size; detector or pipeline: the "
+                "vertex/edge *_pre_alloc parameters), or rely on the solver's "
                 "automatic growth outside CUDA graph capture.",
                 stacklevel=2,
             )
@@ -1003,9 +1008,14 @@ class TriMeshCollisionDetector:
                 info._vertex_stored_counts,
                 info.vertex_colliding_triangles_count,
                 info.vertex_colliding_triangles_min_dist,
-                info.triangle_list_heads,
-                info.triangle_list_next,
-                info.triangle_colliding_vertices_count,
+                # gate the triangle-side outputs on the DETECTOR's flag: an
+                # injected struct may carry recording arrays, but without the
+                # per-detection resets above they would accumulate stale data
+                info.triangle_list_heads if self.record_triangle_contacting_vertices else self._empty_int32,
+                info.triangle_list_next if self.record_triangle_contacting_vertices else self._empty_int32,
+                info.triangle_colliding_vertices_count
+                if self.record_triangle_contacting_vertices
+                else self._empty_int32,
                 info.triangle_colliding_vertices_min_dist
                 if self.record_triangle_contacting_vertices
                 else self._empty_min_dist,
@@ -1095,6 +1105,9 @@ class TriMeshCollisionDetector:
         return int(min(32, max(8, 2 ** round(math.log2(blocks_per_sm)))))
 
     def triangle_triangle_intersection_detection(self):
+        # resize_flags only reports this on-demand query now; clear it per call
+        # so a past overflow does not read as a current one
+        self.resize_flags.zero_()
         if self.triangle_intersecting_triangles is None:
             self.triangle_intersecting_triangles = wp.zeros(
                 shape=(self.model.tri_count * self.triangle_triangle_collision_buffer_pre_alloc,),

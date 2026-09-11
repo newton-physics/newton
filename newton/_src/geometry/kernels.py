@@ -1554,7 +1554,9 @@ def vertex_triangle_collision_detection_kernel(
                     # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
                     slot = wp.atomic_add(counters, VT_PAIR_CURSOR, 1)
-                    if slot < vt_pair_capacity:
+                    # slot >= 0 guards int32 cursor wrap-around on pathological
+                    # demand (>2^31 pairs): drop instead of writing out of bounds
+                    if slot >= 0 and slot < vt_pair_capacity:
                         vt_pairs[slot] = wp.vec2i(v_index, tri_index)
                         vertex_list_next[slot] = list_head
                         list_head = slot
@@ -1723,7 +1725,9 @@ def edge_colliding_edges_detection_kernel(
                     # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
                     slot = wp.atomic_add(counters, EE_PAIR_CURSOR, 1)
-                    if slot < ee_pair_capacity:
+                    # slot >= 0 guards int32 cursor wrap-around on pathological
+                    # demand (>2^31 pairs): drop instead of writing out of bounds
+                    if slot >= 0 and slot < ee_pair_capacity:
                         ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
                         edge_list_next[slot] = list_head
                         list_head = slot
@@ -1767,8 +1771,10 @@ def fill_self_contact_rows_from_lists(
     The chain holds the records in reverse traversal order (push-front), so the
     row is written back to front, which restores the forward BVH-traversal
     order the historical fixed rows had. Single writer per row, no atomics:
-    row contents and order are deterministic. Triangle-keyed reverse lists are
-    pushed by many threads, so their row order is scheduling-dependent.
+    absent overflow, row contents and order are deterministic (under overflow,
+    which records won a slot is an inter-thread race; each row still stores a
+    prefix of its traversal order). Triangle-keyed reverse lists are pushed by
+    many threads, so their row order is scheduling-dependent.
     """
     element = wp.tid()
     end = row_offsets[element + 1]

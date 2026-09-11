@@ -224,10 +224,12 @@ class Contacts:
                 ``soft_self_contact=True``.
             tri_count: Number of mesh triangles; used only when ``soft_self_contact=True``.
             edge_count: Number of mesh edges; used only when ``soft_self_contact=True``.
-            soft_self_contact_vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
-            soft_self_contact_edge_buffer_pre_alloc: Per-edge collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
+            soft_self_contact_vertex_buffer_pre_alloc: Average vertex-triangle
+                contact budget per vertex; the shared pair array holds
+                ``budget x particle_count`` records. On overflow excess pairs
+                are dropped and the overflow flag in ``counters`` is set.
+            soft_self_contact_edge_buffer_pre_alloc: Average edge-edge contact
+                budget per edge; same pooled semantics as the vertex budget.
             soft_self_contact_record_triangle_vertices: Also record per-triangle
                 contacting vertices.
 

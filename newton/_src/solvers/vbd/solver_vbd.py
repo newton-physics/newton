@@ -549,7 +549,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
-                ``wp.config.deterministic`` mode.
+                ``wp.config.deterministic`` mode. Self-contact force
+                accumulation is excluded: its shared pair arrays have no
+                per-element record bound, so its sums stay
+                scheduling-dependent even under a deterministic mode.
 
             Collision pipeline ownership:
 
@@ -2375,6 +2378,25 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         _Frequency = SolverBase.CollisionFrequencyType
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
+
+        # Periodic self-contact overflow check (readback = device sync, so not
+        # every step); no-op during capture. Runs BEFORE this step's detection
+        # so grown arrays are refilled within the same step and no consumer --
+        # including a between-steps coupling harvest -- can observe the fresh,
+        # empty storage. Captured workflows should call
+        # check_and_grow_self_contact_buffers() between replays (and re-capture
+        # after growth) if they expect contact demand to grow.
+        if (
+            self.particle_enable_self_contact
+            and self.model.particle_count > 0
+            and self._sc_mode_this_step != _Frequency.NONE
+            and not self.device.is_capturing
+        ):
+            self._self_contact_steps_since_check += 1
+            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
+                self._self_contact_steps_since_check = 0
+                self.check_and_grow_self_contact_buffers()
+
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
         if self.collision_pipeline is not None:
@@ -2422,21 +2444,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._snapshot_rigid_contact_history(contacts)
         self._finalize_rigid_bodies(state_in, state_out, dt)
         self._finalize_particles(state_out, dt)
-
-        # Periodic self-contact overflow check (readback = device sync, so not
-        # every step); no-op during capture. Captured workflows should call
-        # check_and_grow_self_contact_buffers() between replays if they expect
-        # contact demand to grow.
-        if (
-            self.particle_enable_self_contact
-            and self.model.particle_count > 0
-            and self._sc_mode_this_step != _Frequency.NONE
-            and not self.device.is_capturing
-        ):
-            self._self_contact_steps_since_check += 1
-            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
-                self._self_contact_steps_since_check = 0
-                self.check_and_grow_self_contact_buffers()
 
     @override
     def reset(
