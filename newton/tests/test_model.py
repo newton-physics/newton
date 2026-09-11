@@ -1404,7 +1404,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
-                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                self.assertNotIn(tuple(sorted((shape, extra_shape))), filter_pairs)
                 parent_pair = tuple(sorted((parent_shape, extra_shape)))
                 self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
 
@@ -1613,6 +1613,22 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
+    def test_replicated_same_body_filters_are_inherent(self):
+        """Keep replicated same-body collision filters out of explicit pair storage."""
+
+        source = ModelBuilder()
+        for _ in range(8):
+            source.add_shape_box(-1)
+
+        builder = ModelBuilder()
+        builder.replicate(source, 16)
+
+        self.assertEqual(len(builder._shape_collision_filter_pairs), 0)  # pyright: ignore[reportPrivateUsage]
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.shape_collision_filter_pairs, set())
+        self.assertEqual(model.shape_contact_pair_count, 0)
 
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
         """Keep large replicated filters compact and read-only while preserving contacts."""
