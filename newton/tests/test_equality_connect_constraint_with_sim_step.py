@@ -1406,13 +1406,12 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
         Returns:
             A :class:`Sim` containing the model, solver, states, and control.
         """
-        inertia_mat = wp.mat33(np.eye(3))
+        inertia_mat = self._inertia_matrix()
         joint0_xform, joint1_xform, joint2_xform = self._joint_xforms()
 
         all_worlds_builder = newton.ModelBuilder(gravity=wp.vec3(0.0), up_axis=1)
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=wp.vec3(0.0), up_axis=1)
-            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+            builder = self._new_mujoco_builder()
 
             root_body = builder.add_link(mass=1.0, inertia=inertia_mat)
             root_joint = builder.add_joint_fixed(parent=-1, child=root_body)
@@ -1456,13 +1455,7 @@ class TestConnectAnchorRefPoseBase(TestEqualityConstraintWithSimStepBase):
 
             all_worlds_builder.add_world(builder)
 
-        model = all_worlds_builder.finalize()
-        state_in = model.state()
-        state_out = model.state()
-        control = model.control()
-        solver = self._create_solver(model)
-
-        return Sim(model, solver, state_in, state_out, control)
+        return self._finalize_sim(all_worlds_builder)
 
     def _expected_anchor2(self, anchor_body_b):
         """Compute anchor2 at the reference pose (identity joint transforms)."""
