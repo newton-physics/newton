@@ -30,6 +30,7 @@ from ..core.types import (
     Mat33,
     Quat,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     Vec6,
@@ -48,6 +49,7 @@ from ..geometry import (
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -1492,15 +1494,18 @@ class ModelBuilder:
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
                 halve SDF texture memory at the cost of slower hydroelastic
-                sampling. Every prebuilt mesh SDF added to this builder must
-                use the same layout, selected by the ``paired_samples``
-                argument to :meth:`Mesh.build_sdf`.
+                sampling. This optimization is automatically disabled on CUDA
+                devices with architectures older than SM90 when Warp was built
+                with CUDA Toolkit 13.0 or earlier. Every prebuilt mesh SDF
+                added to this builder must use the same effective layout,
+                selected by the ``paired_samples`` argument to
+                :meth:`Mesh.build_sdf` and the target device.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
-        """Whether generated SDF textures store adjacent X samples together."""
+        """Whether generated SDF textures should store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -1855,6 +1860,10 @@ class ModelBuilder:
         """World indices accumulated for :attr:`Model.joint_world`."""
         self.joint_articulation: list[int] = []
         """Articulation indices accumulated for :attr:`Model.joint_articulation`."""
+        self.joint_mimic_joint: list[int] = []
+        """Reference joint indices accumulated for :attr:`Model.joint_mimic_joint`."""
+        self.joint_mimic_coeffs: list[Vec2] = []
+        """Mimic offset and multiplier pairs accumulated for :attr:`Model.joint_mimic_coeffs`."""
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
@@ -1941,7 +1950,7 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # mimic constraints
+        # deprecated sparse mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
         self.constraint_mimic_joint1: list[int] = []
@@ -5148,6 +5157,8 @@ class ModelBuilder:
         self.joint_collision_filter_parent.append(collision_filter_parent)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
+        self.joint_mimic_joint.append(-1)
+        self.joint_mimic_coeffs.append((0.0, 1.0))
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -6081,6 +6092,95 @@ class ModelBuilder:
                 twist_stiffness=None if twist_rigidity is None else twist_rigidity / dual_length,
             )
 
+    def set_joint_mimic(
+        self,
+        joint: int,
+        reference_joint: int | None,
+        coeffs: Vec2 = (0.0, 1.0),
+    ) -> None:
+        """Configure a joint to mimic another joint with matching dimensions.
+
+        The relationship is applied componentwise to every position and
+        velocity coordinate. The follower coordinates are defined by
+        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
+        ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
+        ``reference_joint`` clears the relationship.
+
+        Mimic chains are not supported: the reference joint must be independent,
+        and a joint referenced by another mimic joint cannot become a follower.
+
+        Args:
+            joint: Index of the follower joint.
+            reference_joint: Index of the reference joint, or ``None`` to make
+                ``joint`` independent.
+            coeffs: Offset and multiplier applied componentwise to the reference
+                coordinates [m or rad, dimensionless].
+
+        Raises:
+            ValueError: If an index is invalid, the joint dimensions differ, the
+                joints belong to different worlds or articulations, the
+                coefficients are not finite, or the relationship creates a mimic
+                chain.
+        """
+        joint_count = self.joint_count
+        if joint < 0 or joint >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint}; expected 0..{joint_count - 1}")
+
+        if reference_joint is None:
+            self.joint_mimic_joint[joint] = -1
+            self.joint_mimic_coeffs[joint] = (0.0, 1.0)
+            return
+
+        if reference_joint < 0 or reference_joint >= joint_count:
+            raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
+        if joint == reference_joint:
+            raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
+        reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
+        if follower_dimensions != reference_dimensions:
+            follower_qd_dim, follower_q_dim = follower_dimensions
+            reference_qd_dim, reference_q_dim = reference_dimensions
+            raise ValueError(
+                "Mimic joints must have matching position and velocity dimensions. "
+                f"Follower joint {joint} has (q={follower_q_dim}, qd={follower_qd_dim}); "
+                f"reference joint {reference_joint} has (q={reference_q_dim}, qd={reference_qd_dim})."
+            )
+
+        follower_world = self.joint_world[joint]
+        reference_world = self.joint_world[reference_joint]
+        if follower_world != reference_world:
+            raise ValueError(
+                "Mimic joints must belong to the same world. "
+                f"follower_world={follower_world}, reference_world={reference_world}."
+            )
+
+        follower_articulation = self.joint_articulation[joint]
+        reference_articulation = self.joint_articulation[reference_joint]
+        if (
+            follower_articulation >= 0
+            and reference_articulation >= 0
+            and follower_articulation != reference_articulation
+        ):
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"follower_articulation={follower_articulation}, "
+                f"reference_articulation={reference_articulation}."
+            )
+
+        offset = float(coeffs[0])
+        multiplier = float(coeffs[1])
+        if not math.isfinite(offset) or not math.isfinite(multiplier):
+            raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
+
+        if self.joint_mimic_joint[reference_joint] != -1:
+            raise ValueError(f"Reference joint {reference_joint} is already a mimic joint")
+        if joint in self.joint_mimic_joint:
+            raise ValueError(f"Follower joint {joint} is already referenced by another mimic joint")
+
+        self.joint_mimic_joint[joint] = reference_joint
+        self.joint_mimic_coeffs[joint] = (offset, multiplier)
+
     def add_constraint_mimic(
         self,
         joint0: int,
@@ -6092,6 +6192,11 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
+
+        .. deprecated:: 1.6
+            Use :meth:`set_joint_mimic` for joints with matching dimensions.
+            Mimic metadata is now stored per joint rather than as a separate
+            constraint.
 
         A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
@@ -6110,6 +6215,12 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        warnings.warn(
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "use set_joint_mimic() for joints with matching dimensions instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
             raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
@@ -6357,6 +6468,8 @@ class ModelBuilder:
                 "collision_filter_parent": self.joint_collision_filter_parent[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
+                "mimic_joint": self.joint_mimic_joint[i],
+                "mimic_coeffs": self.joint_mimic_coeffs[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
@@ -6829,6 +6942,8 @@ class ModelBuilder:
         self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
+        self.joint_mimic_joint.clear()
+        self.joint_mimic_coeffs.clear()
         for joint in retained_joints:
             self.joint_label.append(joint["label"])
             self.joint_type.append(joint["type"])
@@ -6860,6 +6975,9 @@ class ModelBuilder:
                 self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
+            mimic_joint = joint["mimic_joint"]
+            self.joint_mimic_joint.append(joint_remap.get(mimic_joint, -1))
+            self.joint_mimic_coeffs.append(joint["mimic_coeffs"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
@@ -11961,6 +12079,17 @@ class ModelBuilder:
             _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
+            joint_arrays = [
+                ("joint_mimic_joint", self.joint_mimic_joint),
+                ("joint_mimic_coeffs", self.joint_mimic_coeffs),
+            ]
+            for name, arr in joint_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
             # Per-DOF arrays should have length == joint_dof_count
             dof_arrays = [
                 ("joint_axis", self.joint_axis),
@@ -12359,13 +12488,15 @@ class ModelBuilder:
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
-
         with wp.ScopedDevice(device):
+            current_device = wp.get_device()
+            sdf_texture_paired_samples = _resolve_paired_samples_flag(self.sdf_texture_paired_samples, current_device)
+
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
-            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
+            m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -12802,7 +12933,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
@@ -12903,7 +13033,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
-                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        sdf_kwargs["paired_samples"] = sdf_texture_paired_samples
                         # Convex collision geometry is deduplicated before finalization,
                         # so build and cache its deferred SDF against that same topology.
                         sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
@@ -12929,13 +13059,13 @@ class ModelBuilder:
                     if mesh_sdf is not None:
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
-                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                            (coarse_texture.num_channels == 2) != sdf_texture_paired_samples
                         ):
-                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            mode = "paired" if sdf_texture_paired_samples else "scalar"
                             raise ValueError(
                                 f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
                                 "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
-                                f"{self.sdf_texture_paired_samples})."
+                                f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
@@ -12990,7 +13120,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
-                                    paired_samples=self.sdf_texture_paired_samples,
+                                    paired_samples=sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -13077,7 +13207,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
-                            paired_samples=self.sdf_texture_paired_samples,
+                            paired_samples=sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
@@ -13461,6 +13591,8 @@ class ModelBuilder:
             parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
+            m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
+            m.joint_mimic_coeffs = wp.array(self.joint_mimic_coeffs, dtype=wp.vec2)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -13563,7 +13695,7 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # mimic constraints
+            # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
