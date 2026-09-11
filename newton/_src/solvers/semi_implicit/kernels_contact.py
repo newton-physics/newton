@@ -533,8 +533,10 @@ def eval_body_contact(
     # Coulomb friction (smooth, but gradients are numerically unstable around |vt| = 0)
     ft = wp.vec3(0.0)
     if d < 0.0:
-        # use a smooth vector norm to avoid gradient instability at/around zero velocity
-        vs = wp.norm_huber(vt, delta=friction_smoothing)
+        # vs has to be a real norm, otherwise fr is not a unit vector and the cone is
+        # scaled by whatever |fr| happens to be. wp.norm_huber returns 0.5 * |vt|^2
+        # below its delta, which scales it by 2 / |vt|. See particle_force above.
+        vs = wp.norm_pseudo_huber(vt, delta=friction_smoothing)
         if vs > 0.0:
             fr = vt / vs
             ft = fr * wp.min(kf * vs, -mu * (fn + fd))
@@ -602,7 +604,7 @@ def eval_body_contact_forces(
     model: Model,
     state: State,
     contacts: Contacts | None,
-    friction_smoothing: float = 1.0,
+    friction_smoothing: float = 1.0e-3,
     force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
     body_q: wp.array | None = None,
