@@ -1,0 +1,1 @@
+Add the `surface_gripper` example, showing how to build a vacuum/suction end-effector: a six-DOF spring-damper seal per pad, a signed-distance seat fit that seats the gripped surface on the pads at engagement, and two interchangeable criteria for deciding when the seal fractures (demanded-versus-supplied load, or how far the surface has pulled off the pads).
