@@ -660,9 +660,13 @@ def _deformable_prepare_cable_topology(
             continue
         s0 = prim.GetRelationship("physics:src0").GetTargets()
         s1 = prim.GetRelationship("physics:src1").GetTargets()
-        if not s0 or not s1:
+        if not s0:
             continue
-        src0, src1 = str(s0[0]), str(s1[0])
+        src0 = str(s0[0])
+        src1 = str(s1[0]) if s1 else ""
+        enabled = deformable_read(prim, "attachmentEnabled")
+        if enabled is not None and not bool(enabled):
+            continue
         if src0 in curve_recs:
             attachments_per_cable[src0] = attachments_per_cable.get(src0, 0) + 1
             articulation_root = _read_cable_articulation_root(
@@ -680,9 +684,6 @@ def _deformable_prepare_cable_topology(
         if src0 not in curve_recs or src1 not in curve_recs or src0 == src1:
             continue
         if str(deformable_read(prim, "type0") or "") != "point" or str(deformable_read(prim, "type1") or "") != "point":
-            continue
-        enabled = deformable_read(prim, "attachmentEnabled")
-        if enabled is not None and not bool(enabled):
             continue
         idx0 = [int(i) for i in (deformable_read(prim, "indices0") or [])]
         idx1 = [int(i) for i in (deformable_read(prim, "indices1") or [])]
@@ -1078,10 +1079,18 @@ def _deformable_import_cable(
 
     if not (root_prim and root_prim.IsValid()):
         return
-    cable_prims = sorted(
-        ctx.prims.cables if cable_prims is None else cable_prims,
-        key=lambda prim: str(prim.GetPath()) not in cable_articulation_roots,
-    )
+
+    def cable_import_priority(prim) -> int:
+        articulation_root = cable_articulation_roots.get(str(prim.GetPath()))
+        if articulation_root is None:
+            return 2
+        if articulation_root.parent_body >= 0:
+            return 0
+        return 1
+
+    # A rigid-target cable extends the current articulation. Create it before a world-target cable
+    # starts a new articulation.
+    cable_prims = sorted(ctx.prims.cables if cable_prims is None else cable_prims, key=cable_import_priority)
     for prim in cable_prims:
         path = str(prim.GetPath())
         if path in path_cable_map:
@@ -1270,6 +1279,8 @@ def _deformable_import_cable(
             curve_point_radii = point_radii[start : start + n]
             curve_joint_radii = [*curve_point_radii[1:], curve_point_radii[0]] if closed else curve_point_radii[1:-1]
             articulation_root = cable_articulation_roots.get(path) if len(vertex_counts) == 1 and not closed else None
+            if articulation_root is not None and articulation_root.cable_point == n - 1:
+                curve_joint_radii.reverse()
             if articulation_root is None:
                 rod = Rod(
                     positions,

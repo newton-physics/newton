@@ -284,7 +284,6 @@ class _CableAttachmentCandidate:
     point_count: int
     closed: bool
     target_path: str
-    target_body_path: str
 
 
 def parse_usd(
@@ -572,6 +571,7 @@ def parse_usd(
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
+    first_imported_joint = builder.joint_count
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -2843,8 +2843,9 @@ def parse_usd(
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
+    excluded_articulation_joints: dict[str, wp.transform] = {}
 
-    cable_attachment_candidates: dict[str, _CableAttachmentCandidate] = {}
+    cable_attachments_by_body: dict[str, list[_CableAttachmentCandidate]] = {}
     if _deformable_prims.cables and _deformable_prims.attachments:
         cable_topology: dict[str, tuple[int, bool]] = {}
         cable_prims_by_path: dict[str, Usd.Prim] = {}
@@ -2863,6 +2864,9 @@ def parse_usd(
         attachments_by_cable: dict[str, list[Usd.Prim]] = {}
         attachment_count_by_cable: dict[str, int] = {}
         for attachment_prim in _deformable_prims.attachments:
+            enabled = deformable_read(attachment_prim, "attachmentEnabled")
+            if enabled is not None and not bool(enabled):
+                continue
             cable_path = _get_first_target(attachment_prim, "physics:src0")
             if cable_path in cable_topology:
                 attachments_by_cable.setdefault(cable_path, []).append(attachment_prim)
@@ -2880,6 +2884,8 @@ def parse_usd(
             if _read_cable_attachment_endpoint(attachment_prim, deformable_read, point_count, closed) is None:
                 continue
             target_path = _get_first_target(attachment_prim, "physics:src1")
+            if target_path in ("", "/"):
+                continue
             target_prim = stage.GetPrimAtPath(target_path)
             if not target_prim or not target_prim.IsValid():
                 continue
@@ -2887,13 +2893,14 @@ def parse_usd(
             while current_prim and current_prim.IsValid():
                 current_path = str(current_prim.GetPath())
                 if current_path in body_specs:
-                    cable_attachment_candidates[cable_path] = _CableAttachmentCandidate(
-                        cable_prim=cable_prims_by_path[cable_path],
-                        attachment_prim=attachment_prim,
-                        point_count=point_count,
-                        closed=closed,
-                        target_path=target_path,
-                        target_body_path=current_path,
+                    cable_attachments_by_body.setdefault(current_path, []).append(
+                        _CableAttachmentCandidate(
+                            cable_prim=cable_prims_by_path[cable_path],
+                            attachment_prim=attachment_prim,
+                            point_count=point_count,
+                            closed=closed,
+                            target_path=target_path,
+                        )
                     )
                     break
                 current_prim = current_prim.GetParent()
@@ -2930,9 +2937,13 @@ def parse_usd(
 
     def import_attached_cables(body_paths) -> None:
         """Import each eligible cable immediately after the articulation containing its target body."""
-        if not cable_attachment_candidates or not builder.articulation_count:
+        if not cable_attachments_by_body or not builder.articulation_count:
             return
-        body_paths = set(body_paths)
+        candidates = [
+            candidate for body_path in body_paths for candidate in cable_attachments_by_body.pop(body_path, ())
+        ]
+        if not candidates:
+            return
         articulation = builder.articulation_count - 1
         latest_body_ids: set[int] = set()
         for joint in range(builder.articulation_start[articulation], builder.articulation_end[articulation]):
@@ -2942,9 +2953,7 @@ def parse_usd(
 
         roots = {}
         cable_prims = []
-        for cable_path, candidate in cable_attachment_candidates.items():
-            if candidate.target_body_path not in body_paths:
-                continue
+        for candidate in candidates:
             root = _read_cable_articulation_root(
                 _deformable_ctx,
                 candidate.attachment_prim,
@@ -2954,14 +2963,12 @@ def parse_usd(
                 latest_body_ids,
             )
             if root is not None:
+                cable_path = str(candidate.cable_prim.GetPath())
                 roots[cable_path] = root
                 cable_prims.append(candidate.cable_prim)
         if not roots:
             return
         _deformable_import_cable(_deformable_ctx, set(), roots, cable_prims=cable_prims)
-        for cable_path in roots:
-            if cable_path in path_cable_map:
-                cable_attachment_candidates.pop(cable_path)
 
     authored_articulation_root_paths = [
         str(prim.GetPath())
@@ -2978,7 +2985,6 @@ def parse_usd(
 
         articulation_entries = list(zip(paths, articulation_descs, strict=False))
 
-        articulation_id = builder.articulation_count
         parent_prim = None
         body_data = {}
         for path, desc in articulation_entries:
@@ -3130,6 +3136,7 @@ def parse_usd(
                         joint_names.append(joint_path)
 
             articulation_joint_indices = []
+            articulation_ids: set[int] = set()
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
@@ -3168,6 +3175,7 @@ def parse_usd(
                             articulation_label=body_data[i]["label"],
                             custom_attributes=articulation_custom_attrs,
                         )
+                        articulation_ids.add(builder.joint_articulation[joint_id])
                         import_attached_cables([body_data[i]["label"]])
                 else:
                     for i, child_body_id in enumerate(art_bodies):
@@ -3191,6 +3199,7 @@ def parse_usd(
                             articulation_label=body_labels[i],
                             custom_attributes=articulation_custom_attrs,
                         )
+                        articulation_ids.add(builder.joint_articulation[joint_id])
                         import_attached_cables([body_labels[i]])
                 sorted_joints = []
             else:
@@ -3382,25 +3391,6 @@ def parse_usd(
                             for gp in group:
                                 processed_joints.add(gp)
 
-                # insert loop joints
-                for joint_path in joint_excluded:
-                    parent_id, _ = resolve_joint_parent_child(
-                        joint_descriptions[joint_path], path_body_map, get_transforms=False
-                    )
-                    if parent_id == -1:
-                        joint = parse_joint(
-                            joint_descriptions[joint_path],
-                            incoming_xform=root_joint_xform,
-                        )
-                    else:
-                        # localPose0 is already in the parent body's local frame;
-                        # body positions were correctly set during body parsing above.
-                        joint = parse_joint(
-                            joint_descriptions[joint_path],
-                        )
-                    if joint is not None:
-                        processed_joints.add(joint_path)
-
             # Create the articulation from all collected joints
             if articulation_joint_indices:
                 builder._finalize_imported_articulation(
@@ -3409,9 +3399,16 @@ def parse_usd(
                     articulation_label=articulation_path,
                     custom_attributes=articulation_custom_attrs,
                 )
+                articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
                 import_attached_cables(body_labels)
 
-            articulation_has_self_collision[articulation_id] = bool(
+            # Defer external constraints until later bodies and cables have extended their
+            # articulations. Reserve these paths so the orphan-joint pass does not emit them.
+            for joint_path in sorted(joint_excluded):
+                excluded_articulation_joints[joint_path] = root_joint_xform
+            processed_joints.update(joint_excluded)
+
+            self_collisions = bool(
                 R.get_value(
                     articulation_prim,
                     prim_type=PrimType.ARTICULATION,
@@ -3420,7 +3417,8 @@ def parse_usd(
                     verbose=verbose,
                 )
             )
-            articulation_id += 1
+            for articulation in articulation_ids:
+                articulation_has_self_collision[articulation] = self_collisions
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
     has_joints = any(
         (
@@ -4767,9 +4765,19 @@ def parse_usd(
             if _filter_prim and _filter_prim.IsValid():
                 _collect_filtered_pairs(_filter_prim)
 
-    # Disable contacts between bodies in articulations whose self-collision setting is off.
-    # Use final joint ranges so bodies connected after an articulation was created are included.
-    for articulation in range(builder.articulation_count):
+    for joint_path, root_xform in excluded_articulation_joints.items():
+        joint_desc = joint_descriptions[joint_path]
+        parent_id, _ = resolve_joint_parent_child(joint_desc, path_body_map, get_transforms=False)
+        if parent_id == -1:
+            parse_joint(joint_desc, incoming_xform=root_xform)
+        else:
+            parse_joint(joint_desc)
+
+    # Filter only articulations created or extended by this import, including parent_body composition.
+    imported_articulations = set(builder.joint_articulation[first_imported_joint:])
+    imported_articulations.discard(-1)
+
+    for articulation in sorted(imported_articulations):
         if articulation_has_self_collision.get(articulation, enable_self_collisions):
             continue
         bodies: set[int] = set()
