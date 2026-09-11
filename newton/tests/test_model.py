@@ -1618,8 +1618,9 @@ class TestModelMesh(unittest.TestCase):
         """Keep replicated same-body collision filters out of explicit pair storage."""
 
         source = ModelBuilder()
+        body = source.add_body()
         for _ in range(8):
-            source.add_shape_box(-1)
+            source.add_shape_box(body)
 
         builder = ModelBuilder()
         builder.replicate(source, 16)

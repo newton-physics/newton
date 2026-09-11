@@ -694,9 +694,10 @@ in the explicit filter-pair list.
     builder = newton.ModelBuilder()
     
     # Add shapes
-    body = builder.add_body()
-    shape_a = builder.add_shape_sphere(body, radius=0.5)
-    shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+    body_a = builder.add_body()
+    body_b = builder.add_body()
+    shape_a = builder.add_shape_sphere(body_a, radius=0.5)
+    shape_b = builder.add_shape_box(body_b, hx=0.5, hy=0.5, hz=0.5)
 
     # Exclude this specific pair from collision detection
     builder.add_shape_collision_filter_pair(shape_a, shape_b)
