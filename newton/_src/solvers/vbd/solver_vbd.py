@@ -767,7 +767,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``wp.config.deterministic`` mode. Body-particle contact forces
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
-                atomics in every other mode.
+                atomics in every other mode. Self-contact force
+                accumulation is excluded: its shared pair arrays have no
+                per-element record bound, so its sums stay
+                scheduling-dependent even under a deterministic mode.
             enable_fast_math: Compile the particle kernels, the rigid body
                 solve, and the joint dual update with Warp's ``fast_math``
                 (approximate division and square root). Results change at the
@@ -775,6 +778,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
+
+            Collision pipeline ownership:
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -3002,6 +3007,25 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         _Frequency = SolverBase.CollisionFrequencyType
         self._self_contact_mode_this_step, self._self_contact_freq_this_step = self._resolve_self_contact_schedule()
+
+        # Periodic self-contact overflow check (readback = device sync, so not
+        # every step); no-op during capture. Runs BEFORE this step's detection
+        # so grown arrays are refilled within the same step and no consumer --
+        # including a between-steps coupling harvest -- can observe the fresh,
+        # empty storage. Captured workflows should call
+        # check_and_grow_self_contact_buffers() between replays (and re-capture
+        # after growth) if they expect contact demand to grow.
+        if (
+            self.particle_enable_self_contact
+            and self.model.particle_count > 0
+            and self._self_contact_mode_this_step != _Frequency.NONE
+            and not self.device.is_capturing
+        ):
+            self._self_contact_steps_since_check += 1
+            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
+                self._self_contact_steps_since_check = 0
+                self.check_and_grow_self_contact_buffers()
+
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
         if self.collision_pipeline is not None:
@@ -3105,21 +3129,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
-
-        # Periodic self-contact overflow check (readback = device sync, so not
-        # every step); no-op during capture. Captured workflows should call
-        # check_and_grow_self_contact_buffers() between replays if they expect
-        # contact demand to grow.
-        if (
-            self.particle_enable_self_contact
-            and self.model.particle_count > 0
-            and self._sc_mode_this_step != _Frequency.NONE
-            and not self.device.is_capturing
-        ):
-            self._self_contact_steps_since_check += 1
-            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
-                self._self_contact_steps_since_check = 0
-                self.check_and_grow_self_contact_buffers()
 
     @override
     def reset(
