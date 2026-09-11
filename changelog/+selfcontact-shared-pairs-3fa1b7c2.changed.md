@@ -11,4 +11,12 @@ and grows the arrays automatically outside CUDA graph capture
 accumulation and the planar truncation guard run one thread per stored contact,
 which reduces self-contact memory several-fold and speeds up most self-contact
 demos. Warp's deterministic-atomics mode no longer covers the self-contact
-force scatter (its record bound relied on the fixed per-element rows).
+force scatter (its record bound relied on the fixed per-element rows), so
+self-contact forces are not bitwise reproducible run to run even under
+`deterministic=...`; all other deterministic-atomics coverage is unchanged, and
+a reproducible fixed-order summation is planned as a follow-up. The
+`CollisionPipeline`/`Contacts` self-contact `*_buffer_pre_alloc` parameters
+adopt the same average-per-element semantics and 8/16 defaults; standalone
+pipeline users (without `SolverVBD`) can poll
+`TriMeshCollisionDetector.check_self_contact_overflow()` after detection, as
+nothing grows the arrays automatically on that path.
