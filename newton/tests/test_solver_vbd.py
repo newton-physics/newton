@@ -3,6 +3,7 @@
 
 """Tests for the VBD solver."""
 
+import gc
 import math
 import unittest
 import warnings
@@ -1102,6 +1103,60 @@ def test_self_contact_barrier_c2_at_d_min(test, device):
         rtol=1e-3,
         err_msg="Self-contact barrier Hessian is not C2-continuous at d = d_min",
     )
+
+
+def test_contact_barrier_c2_at_tiny_radius(test, device):
+    """Both log-barrier laws stay C2 when ``collision_radius < 2e-5``.
+
+    ``d_min`` follows ``0.5 * tau`` for such radii, so the barrier interval
+    ``(d_min, tau)`` never empties; force and Hessian must therefore be continuous
+    across both branch boundaries, and the rigid-soft law must still match the
+    particle law.  With a fixed ``d_min = 1e-5`` the interval is empty and the
+    quadratic branch meets the extension branch with a jump at ``d = d_min``.
+    """
+    collision_radius = 1.5e-5
+    k = 1.0e4
+    tau = 0.5 * collision_radius
+    d_min = min(1.0e-5, 0.5 * tau)
+    legacy_d_min = 1.0e-5  # above tau at this radius: the unguarded law jumps here
+    rel = 1.0e-3
+    distances_np = np.array(
+        [
+            d_min * (1.0 - rel),
+            d_min * (1.0 + rel),
+            tau * (1.0 - rel),
+            tau * (1.0 + rel),
+            legacy_d_min * (1.0 - rel),
+            legacy_d_min * (1.0 + rel),
+        ],
+        dtype=np.float32,
+    )
+    distances = wp.array(distances_np, dtype=float, device=device)
+    particle_dEdD = wp.zeros(6, dtype=float, device=device)
+    particle_d2E = wp.zeros(6, dtype=float, device=device)
+    rigid_dEdD = wp.zeros(6, dtype=float, device=device)
+    rigid_d2E = wp.zeros(6, dtype=float, device=device)
+    wp.launch(
+        _eval_self_contact_norm_kernel,
+        dim=6,
+        inputs=[distances, collision_radius, k, particle_dEdD, particle_d2E],
+        device=device,
+    )
+    wp.launch(
+        _eval_rigid_soft_contact_norm_kernel,
+        dim=6,
+        inputs=[distances, collision_radius, k, True, rigid_dEdD, rigid_d2E],
+        device=device,
+    )
+    for name, dEdD, d2E in (
+        ("particle", particle_dEdD.numpy(), particle_d2E.numpy()),
+        ("rigid", rigid_dEdD.numpy(), rigid_d2E.numpy()),
+    ):
+        for lo, hi, where in ((0, 1, "d_min"), (2, 3, "tau"), (4, 5, "legacy d_min")):
+            np.testing.assert_allclose(dEdD[lo], dEdD[hi], rtol=1.0e-2, err_msg=f"{name} force jumps at {where}")
+            np.testing.assert_allclose(d2E[lo], d2E[hi], rtol=1.0e-2, err_msg=f"{name} Hessian jumps at {where}")
+    np.testing.assert_allclose(rigid_dEdD.numpy(), particle_dEdD.numpy(), rtol=1.0e-6)
+    np.testing.assert_allclose(rigid_d2E.numpy(), particle_d2E.numpy(), rtol=1.0e-6)
 
 
 def test_rigid_soft_contact_log_barrier_matches_particle(test, device):
@@ -4837,6 +4892,9 @@ add_function_test(
     devices=devices,
 )
 add_function_test(
+    TestSolverVBD, "test_contact_barrier_c2_at_tiny_radius", test_contact_barrier_c2_at_tiny_radius, devices=devices
+)
+add_function_test(
     TestSolverVBD,
     "test_rigid_contact_history_restore_from_match_index",
     _rigid_contact_history_restore_from_match_index,
@@ -6495,6 +6553,68 @@ def test_rigid_dat_sphere_drop_penetration_free(test, device):
     )
 
 
+def test_rigid_dat_graph_capture_replays_match_eager(test, device):
+    """A captured DAT step replays penetration-free and tracks the eager run.
+
+    DAT adds per-step launches, device-side reference resets and schedule-dependent
+    host branching; all of it must be capturable. Two identical sphere-drop scenes are
+    warmed up eagerly, then one keeps stepping eagerly while the other replays a graph
+    of the same two-substep sequence. The solver is not run-to-run deterministic
+    (contact ordering; two eager runs differ by ~1e-3 m on this scene), so the replay
+    must stay finite and penetration-free and agree with the eager run within an
+    envelope well above that spread, instead of bit for bit.
+    """
+
+    def make_scene():
+        model, body = _build_sphere_drop_on_cloth(device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=4,
+            rigid_compliant_alm=True,
+            rigid_soft_enable_dat=True,
+            rigid_body_particle_contact_buffer_size=1024,
+            collision_pipeline=pipeline,
+        )
+        state_a, state_b = model.state(), model.state()
+        qd = state_a.body_qd.numpy()
+        qd[body][:3] = [0.0, 0.0, -8.0]
+        state_a.body_qd.assign(qd)
+        return solver, state_a, state_b, body
+
+    dt = 1.0 / 60.0
+    frames = 20
+    eager_solver, e0, e1, body = make_scene()
+    graph_solver, g0, g1, _ = make_scene()
+    for solver, s0, s1 in ((eager_solver, e0, e1), (graph_solver, g0, g1)):
+        solver.step(s0, s1, None, None, dt)
+        solver.step(s1, s0, None, None, dt)
+
+    gc.collect()
+    with wp.ScopedCapture(device=device) as capture:
+        graph_solver.step(g0, g1, None, None, dt)
+        graph_solver.step(g1, g0, None, None, dt)
+    test.assertIsNotNone(capture.graph)
+
+    body_z_before = float(g0.body_q.numpy()[body][2])
+    for _frame in range(frames):
+        eager_solver.step(e0, e1, None, None, dt)
+        eager_solver.step(e1, e0, None, None, dt)
+        wp.capture_launch(capture.graph)
+    wp.synchronize_device(device)
+
+    q_eager, q_graph = e0.particle_q.numpy(), g0.particle_q.numpy()
+    bq_eager, bq_graph = e0.body_q.numpy(), g0.body_q.numpy()
+    test.assertTrue(np.isfinite(q_graph).all() and np.isfinite(bq_graph).all())
+    test.assertLess(float(bq_graph[body][2]), body_z_before, "graph replays must advance the simulation")
+    envelope = 1.0e-2  # ~6x the measured eager run-to-run spread on this scene
+    np.testing.assert_allclose(q_graph, q_eager, rtol=0.0, atol=envelope)
+    np.testing.assert_allclose(bq_graph, bq_eager, rtol=0.0, atol=envelope)
+    for name, q, bq in (("eager", q_eager, bq_eager), ("replayed", q_graph, bq_graph)):
+        gap = np.linalg.norm(q - bq[body][None, :3], axis=1) - 0.25
+        test.assertLessEqual(-float(gap.min()), 1.0e-4, f"{name} DAT steps must keep cloth vertices outside the sphere")
+
+
 def test_rigid_dat_requires_owned_pipeline(test, device):
     """Enabling rigid DAT without a solver-owned pipeline raises: the DAT reference poses
     must be snapshotted at the exact detection instants the solver drives."""
@@ -6942,6 +7062,12 @@ add_function_test(
     "test_rigid_phase_applies_joint_dat_truncation",
     test_rigid_phase_applies_joint_dat_truncation,
     devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_graph_capture_replays_match_eager",
+    test_rigid_dat_graph_capture_replays_match_eager,
+    devices=cuda_devices,
 )
 
 

@@ -209,7 +209,9 @@ repository examples spend tuning effort, not a shared solver API.
        slot may not be ``NONE``. ``dat_conservative_bound_relaxation`` (shared with
        soft self-contact) must lie in ``(0, 1)`` and scales the per-detection
        motion budget.
-       ``rigid_soft_dat_use_interval_arithmetic`` is experimental.
+       ``rigid_soft_dat_use_interval_arithmetic`` (Stage-2 prefix certification)
+       is experimental; the default path already relies on the module's interval
+       derivative bound.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.

@@ -855,9 +855,10 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
     dEdD = wp.float32(0.0)
     d2E_dDdD = wp.float32(0.0)
 
-    # C2 continuity calculation
+    # C2 continuity calculation; d_min follows tau for radii below 20 um so the
+    # barrier interval (d_min, tau) never empties.
     tau = collision_radius * 0.5
-    d_min = 1.0e-5
+    d_min = wp.min(1.0e-5, 0.5 * tau)
     if tau > dis > d_min:
         # Log-barrier region: E ∝ -ln(dis)
         k2 = tau * tau * k
@@ -2072,13 +2073,17 @@ def apply_planar_truncation_parallel_by_collision(
                 # certifies a separator.
                 if valid_plane:
                     t = planar_truncation_t(e1_v1_pos, delta_e1_v1, n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, e1_v1, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, e1_v1, t)
                     t = planar_truncation_t(e1_v2_pos, delta_e1_v2, n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, e1_v2, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, e1_v2, t)
                     t = planar_truncation_t(e2_v1_pos, delta_e2_v1, -n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, e2_v1, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, e2_v1, t)
                     t = planar_truncation_t(e2_v2_pos, delta_e2_v2, -n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, e2_v2, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, e2_v2, t)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
     # process vertex-triangle collisions
@@ -2125,13 +2130,17 @@ def apply_planar_truncation_parallel_by_collision(
                     t = planar_truncation_t(
                         colliding_particle_pos, colliding_particle_displacement, n, d, gamma, separation_eps
                     )
-                    wp.atomic_min(truncation_t_out, particle_idx, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, particle_idx, t)
                     t = planar_truncation_t(t1, delta_t1, -n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, tri_a, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, tri_a, t)
                     t = planar_truncation_t(t2, delta_t2, -n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, tri_b, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, tri_b, t)
                     t = planar_truncation_t(t3, delta_t3, -n, d, gamma, separation_eps)
-                    wp.atomic_min(truncation_t_out, tri_c, t)
+                    if t < 1.0:
+                        wp.atomic_min(truncation_t_out, tri_c, t)
 
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 

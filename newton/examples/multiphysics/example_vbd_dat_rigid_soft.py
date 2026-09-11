@@ -17,8 +17,21 @@
 # planes (Divide and Truncate), so the sheets always stay outside the bodies
 # while they catch them; the same truncation keeps the two sheets from
 # passing through each other (particle self-contact). Body-body contacts use
-# compliant ALM with a stiff authored material. Set ``"enable_dat": False``
-# in PARAMS to see the projectiles punch through.
+# compliant ALM with a stiff authored material. Set ``"enable_dat": False`` in
+# PARAMS to compare against penalty contacts alone: at the default 4 substeps x
+# 8 iterations both keep this scene penetration-free, while at 1-2 substeps the
+# penalty-only run lets the sheets sink 6-15 mm into the bodies and DAT still
+# holds them outside.
+#
+# Cost: with the frame replayed as a CUDA graph (the default on CUDA devices),
+# DAT adds a few percent per frame in this scene (23.8 -> 24.5 ms, median of 3
+# runs on an RTX 6000 Ada at 4 substeps x 8 iterations, within the +-1.5 ms
+# run-to-run noise), including the extra ``PRE_POST_INIT`` detection pass that
+# the ``AUTO`` schedule adds. Without graph capture the overhead is about 40 %
+# (35.9 -> 49.6 ms): DAT issues many small kernel launches per iteration and
+# body color, and their host-side launch cost then dominates. All six bodies
+# here share one color, so the per-color rigid truncation costs nothing extra;
+# scenes with several body colors pay one more truncation pass per color.
 #
 # Command: python -m newton.examples vbd_dat_rigid_soft
 ###########################################################################
@@ -173,7 +186,9 @@ class Example:
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
-    # ── model construction ──────────────────────────────────────────────
+        self.capture()
+
+        # ── model construction ──────────────────────────────────────────────
 
     def _build_cloth(self, builder):
         """Add the four-edge-pinned bottom sheet and the free top sheet to ``builder``."""
@@ -295,10 +310,26 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def capture(self):
+        """Record one frame of substeps as a CUDA graph that :meth:`step` replays.
+
+        ``simulate`` swaps the state buffers once per substep, so the recorded frame
+        only returns them to their starting roles for an even substep count; odd
+        counts run without graph capture.
+        """
+        self.graph = None
+        if wp.get_device().is_cuda and self.sim_substeps % 2 == 0:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def step(self):
         """Advance one frame."""
         self.frame += 1
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
