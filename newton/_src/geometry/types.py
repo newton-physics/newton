@@ -218,6 +218,9 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
+        # USD importers populate this so viewers can preserve the source's
+        # smoothing intent without changing programmatic mesh defaults.
+        self._subdivision_scheme: str | None = None
         self._color: Vec3 | None = None
         self.color = color
         self._opacity: float | None = None
@@ -819,6 +822,7 @@ class Mesh:
             m.mass = self.mass
             m.com = self.com
             m.has_inertia = self.has_inertia
+        m._subdivision_scheme = self._subdivision_scheme
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
         # array; reusing it after a vertex/index override would feed

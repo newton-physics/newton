@@ -1076,27 +1076,18 @@ def parse_usd(
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
-        physics_mesh = _get_mesh_cached(prim)
-        if texture is not None:
-            render_mesh = _get_mesh_cached(prim, load_uvs=True)
-            # Texture UV expansion is render-only. Preserve the collision mesh's
-            # mass/inertia so visibility changes do not perturb simulation.
-            mesh = Mesh(
-                render_mesh.vertices,
-                render_mesh.indices,
-                normals=render_mesh.normals,
-                uvs=render_mesh.uvs,
-                compute_inertia=False,
-                is_solid=physics_mesh.is_solid,
-                maxhullvert=physics_mesh.maxhullvert,
-                sdf=physics_mesh.sdf,
-            )
-            mesh.mass = physics_mesh.mass
-            mesh.com = physics_mesh.com
-            mesh.inertia = physics_mesh.inertia
-            mesh.has_inertia = physics_mesh.has_inertia
-        else:
-            mesh = physics_mesh.copy(recompute_inertia=False)
+        normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+        has_normals = bool(normals_primvar and normals_primvar.HasValue())
+        if not has_normals:
+            normals_attr = UsdGeom.Mesh(prim).GetNormalsAttr()
+            has_normals = bool(normals_attr and normals_attr.HasValue())
+
+        load_visual_attributes = texture is not None or has_normals
+        mesh = _get_mesh_cached(
+            prim,
+            load_uvs=texture is not None,
+            load_normals=load_visual_attributes,
+        ).copy(recompute_inertia=False)
         _apply_visual_material(mesh, material_props)
         if mesh.texture is not None and mesh.uvs is None:
             logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
@@ -1194,6 +1185,7 @@ def parse_usd(
             is_solid=mesh.is_solid,
             maxhullvert=mesh.maxhullvert,
         )
+        submesh._subdivision_scheme = mesh._subdivision_scheme
 
         _apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:

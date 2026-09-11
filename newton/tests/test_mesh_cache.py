@@ -56,6 +56,17 @@ class TestMeshCache(unittest.TestCase):
         copied.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         self.assertEqual(hash(copied), hash(mesh))
 
+    def test_subdivision_scheme_is_copied_without_changing_physics_hash(self):
+        """Copy render subdivision metadata without changing physical mesh identity."""
+        mesh = _make_tet_mesh()
+        physics_hash = hash(mesh)
+        mesh._subdivision_scheme = "none"
+        self.assertEqual(hash(mesh), physics_hash)
+
+        copied = mesh.copy()
+        self.assertEqual(copied._subdivision_scheme, mesh._subdivision_scheme)
+        self.assertEqual(hash(copied), hash(mesh))
+
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     """Verify finalize() reuses the cached Warp mesh only for identical arguments.

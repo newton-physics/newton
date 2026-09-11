@@ -139,6 +139,7 @@ class ViewerBase(ABC):
         # All model-dependent state is initialized by clear_model()
         self.clear_model()
         self._layer_runtime_fields = self._snapshot_layer_runtime_fields(self.layer)
+        self._active_mesh_subdivision_scheme: str | None = None
 
     def __getattr__(self, name: str) -> Any:
         """Fallback for active layer fields not yet loaded on the viewer."""
@@ -1707,7 +1708,7 @@ class ViewerBase(ABC):
             if hasattr(geo_src, "texture"):
                 texture = geo_src.texture
 
-            self.log_mesh(
+            self._log_mesh_with_subdivision_scheme(
                 name,
                 points,
                 indices,
@@ -1715,6 +1716,7 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
+                subdivision_scheme=geo_src._subdivision_scheme,
             )
             return
 
@@ -1841,6 +1843,15 @@ class ViewerBase(ABC):
             opacity: Optional display opacity in [0, 1].
         """
         pass
+
+    def _log_mesh_with_subdivision_scheme(self, *args, subdivision_scheme: str | None, **kwargs) -> None:
+        """Log a mesh while exposing imported subdivision intent to built-in backends."""
+        previous = self._active_mesh_subdivision_scheme
+        self._active_mesh_subdivision_scheme = subdivision_scheme
+        try:
+            self.log_mesh(*args, **kwargs)
+        finally:
+            self._active_mesh_subdivision_scheme = previous
 
     @abstractmethod
     def log_instances(
@@ -2395,7 +2406,7 @@ class ViewerBase(ABC):
         if transformed_uvs is not None:
             uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
-        self.log_mesh(
+        self._log_mesh_with_subdivision_scheme(
             name,
             points_wp,
             indices_wp,
@@ -2403,6 +2414,7 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
+            subdivision_scheme=src._subdivision_scheme,
         )
 
     # creates meshes and instances for each shape in the Model

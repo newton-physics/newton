@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.usd
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX, ViewerUSD
 
@@ -67,6 +68,32 @@ class TestViewerUSD(unittest.TestCase):
         shader = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
         self.assertTrue(shader)
         return shader
+
+    def test_log_mesh_authors_subdivision_scheme(self):
+        """Preserve authored subdivision state when exporting imported meshes."""
+        from pxr import Usd
+
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+
+        for scheme in (None, UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear, UsdGeom.Tokens.catmullClark):
+            with self.subTest(scheme=scheme):
+                stage = Usd.Stage.CreateInMemory()
+                source = UsdGeom.Mesh.Define(stage, "/mesh")
+                source.CreatePointsAttr([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+                source.CreateFaceVertexCountsAttr([3])
+                source.CreateFaceVertexIndicesAttr([0, 1, 2])
+                if scheme is not None:
+                    source.CreateSubdivisionSchemeAttr().Set(scheme)
+                mesh = newton.usd.get_mesh(source.GetPrim(), compute_inertia=False)
+
+                name = f"/mesh_{scheme}"
+                viewer.log_geo(name, newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh)
+
+                mesh_prim = UsdGeom.Mesh.Get(viewer.stage, f"/root{name}")
+                attr = mesh_prim.GetSubdivisionSchemeAttr()
+                self.assertEqual(attr.HasAuthoredValue(), scheme is not None)
+                self.assertEqual(attr.Get(), scheme if scheme is not None else UsdGeom.Tokens.catmullClark)
 
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()

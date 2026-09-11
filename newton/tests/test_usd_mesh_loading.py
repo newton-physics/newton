@@ -135,6 +135,24 @@ class TestUsdMeshHelpers(unittest.TestCase):
         self.assertIsInstance(mesh, newton.Mesh)
         assert_np_equal(mesh.indices, np.array([0, 1, 2], dtype=np.int32))
 
+    def test_get_mesh_preserves_subdivision_scheme(self):
+        """Preserve authored subdivision state through imports, merges, and copies."""
+        from pxr import Usd, UsdGeom
+
+        for scheme in (None, UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear, UsdGeom.Tokens.catmullClark):
+            stage = Usd.Stage.CreateInMemory()
+            for path in ("/Triangle", "/OtherTriangle"):
+                mesh_prim = _define_triangle_mesh(stage, path)
+                if scheme is not None:
+                    mesh_prim.CreateSubdivisionSchemeAttr().Set(scheme)
+
+            for source in (mesh_prim.GetPrim(), stage):
+                with self.subTest(scheme=scheme, merged=isinstance(source, Usd.Stage)):
+                    mesh = newton.usd.get_mesh(source, compute_inertia=False)
+
+                    self.assertEqual(mesh._subdivision_scheme, scheme)
+                    self.assertEqual(mesh.copy()._subdivision_scheme, scheme)
+
     def test_mesh_create_from_usd_accepts_legacy_prim_keyword(self):
         """Keep ``Mesh.create_from_usd(prim=...)`` working."""
         from pxr import Usd
