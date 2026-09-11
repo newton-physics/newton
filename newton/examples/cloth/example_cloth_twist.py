@@ -183,10 +183,9 @@ class Example:
             particle_enable_self_contact=True,
             particle_self_contact_margin=0.002,
             particle_self_contact_gap=0.0015,
-            # Tight twisting exceeds the default buffer capacities (measured
-            # peak demand: 49 vertex / 104 edge pairs); overflow drops pairs.
-            particle_vertex_contact_buffer_size=64,
-            particle_edge_contact_buffer_size=128,
+            # The shared contact pool covers the tight twist at the default
+            # budgets (measured full-run peak: 5.4 vertex-triangle pairs per
+            # vertex, 12.3 edge-edge pairs per edge on average).
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
