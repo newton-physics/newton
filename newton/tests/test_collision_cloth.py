@@ -12,12 +12,27 @@ import warp.examples
 import newton
 from newton import Mesh
 from newton._src.geometry.kernels import (
-    init_triangle_collision_data_kernel,
     triangle_closest_point,
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
+from newton._src.geometry.tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    build_tri_mesh_collision_info,
+    get_edge_colliding_edges,
+    get_edge_colliding_edges_count,
+    get_edge_collision_buffer_edge_index,
+    get_triangle_colliding_vertices,
+    get_triangle_colliding_vertices_count,
+    get_vertex_colliding_triangles,
+    get_vertex_colliding_triangles_count,
+    get_vertex_collision_buffer_vertex_index,
+)
+from newton._src.solvers.vbd.particle_vbd_kernels import (
+    accumulate_self_contact_force_and_hessian,
+    evaluate_edge_edge_contact_2_vertices,
+    evaluate_vertex_triangle_collision_force_hessian_4_vertices,
+)
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import (
@@ -91,20 +106,13 @@ def eval_triangles_contact(
 @wp.kernel
 def vertex_triangle_collision_detection_brute_force(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
-    vertex_colliding_triangles: wp.array[wp.int32],
+    # outputs
     vertex_colliding_triangles_count: wp.array[wp.int32],
-    vertex_colliding_triangles_offsets: wp.array[wp.int32],
-    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
     vertex_colliding_triangles_min_dist: wp.array[float],
-    triangle_colliding_vertices: wp.array[wp.int32],
     triangle_colliding_vertices_count: wp.array[wp.int32],
-    triangle_colliding_vertices_buffer_offsets: wp.array[wp.int32],
-    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
     triangle_colliding_vertices_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -140,16 +148,11 @@ def vertex_triangle_collision_detection_brute_force(
 @wp.kernel
 def vertex_triangle_collision_detection_brute_force_no_triangle_buffers(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
-    vertex_colliding_triangles: wp.array[wp.int32],
+    # outputs
     vertex_colliding_triangles_count: wp.array[wp.int32],
-    vertex_colliding_triangles_offsets: wp.array[wp.int32],
-    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
     vertex_colliding_triangles_min_dist: wp.array[float],
-    triangle_colliding_vertices_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -175,8 +178,6 @@ def vertex_triangle_collision_detection_brute_force_no_triangle_buffers(
             vertex_num_collisions = vertex_num_collisions + 1
             min_dis_to_tris = wp.min(dis, min_dis_to_tris)
 
-            wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dis)
-
     vertex_colliding_triangles_count[v_index] = vertex_num_collisions
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
 
@@ -184,77 +185,54 @@ def vertex_triangle_collision_detection_brute_force_no_triangle_buffers(
 @wp.kernel
 def validate_vertex_collisions(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
-    vertex_colliding_triangles: wp.array[wp.int32],
-    vertex_colliding_triangles_count: wp.array[wp.int32],
-    vertex_colliding_triangles_offsets: wp.array[wp.int32],
-    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
-    vertex_colliding_triangles_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
+    collision_info: TriMeshCollisionInfo,
 ):
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = vertex_colliding_triangles_count[v_index]
-    offset = vertex_colliding_triangles_offsets[v_index]
-    min_dis = vertex_colliding_triangles_min_dist[v_index]
-    for col in range(vertex_colliding_triangles_buffer_size[v_index]):
-        vertex_index = vertex_colliding_triangles[2 * (offset + col)]
-        tri_index = vertex_colliding_triangles[2 * (offset + col) + 1]
-        if col < num_cols:
-            t1 = tri_indices[tri_index, 0]
-            t2 = tri_indices[tri_index, 1]
-            t3 = tri_indices[tri_index, 2]
-            # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
+    num_cols = get_vertex_colliding_triangles_count(collision_info, v_index)
+    min_dis = collision_info.vertex_colliding_triangles_min_dist[v_index]
+    for col in range(num_cols):
+        tri_index = get_vertex_colliding_triangles(collision_info, v_index, col)
+        t1 = tri_indices[tri_index, 0]
+        t2 = tri_indices[tri_index, 1]
+        t3 = tri_indices[tri_index, 2]
+        wp.expect_eq(vertex_adjacent_to_triangle(v_index, t1, t2, t3), False)
 
-            u1 = pos[t1]
-            u2 = pos[t2]
-            u3 = pos[t3]
+        u1 = pos[t1]
+        u2 = pos[t2]
+        u3 = pos[t3]
 
-            closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
-            dis = wp.length(closest_p - v)
-            wp.expect_eq(dis < query_radius, True)
-            wp.expect_eq(dis >= min_dis, True)
-            wp.expect_eq(v_index == vertex_colliding_triangles[2 * (offset + col)], True)
-
-            # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
-            #           v_index, offset, num_cols, tri_index, dis)
-        else:
-            wp.expect_eq(vertex_index == -1, True)
-            wp.expect_eq(tri_index == -1, True)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+        dis = wp.length(closest_p - v)
+        wp.expect_eq(dis < query_radius, True)
+        wp.expect_eq(dis >= min_dis, True)
+        wp.expect_eq(get_vertex_collision_buffer_vertex_index(collision_info, v_index, col) == v_index, True)
 
 
 @wp.kernel
 def validate_triangle_collisions(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
-    triangle_colliding_vertices: wp.array[wp.int32],
-    triangle_colliding_vertices_count: wp.array[wp.int32],
-    triangle_colliding_vertices_buffer_offsets: wp.array[wp.int32],
-    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
-    triangle_colliding_vertices_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
+    collision_info: TriMeshCollisionInfo,
 ):
     tri_index = wp.tid()
 
     t1 = tri_indices[tri_index, 0]
     t2 = tri_indices[tri_index, 1]
     t3 = tri_indices[tri_index, 2]
-    # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
 
     u1 = pos[t1]
     u2 = pos[t2]
     u3 = pos[t3]
 
-    num_cols = triangle_colliding_vertices_count[tri_index]
-    offset = triangle_colliding_vertices_buffer_offsets[tri_index]
-    min_dis = triangle_colliding_vertices_min_dist[tri_index]
-    for col in range(wp.min(num_cols, triangle_colliding_vertices_buffer_sizes[tri_index])):
-        v_index = triangle_colliding_vertices[offset + col]
+    num_cols = get_triangle_colliding_vertices_count(collision_info, tri_index)
+    min_dis = collision_info.triangle_colliding_vertices_min_dist[tri_index]
+    for col in range(num_cols):
+        v_index = get_triangle_colliding_vertices(collision_info, tri_index, col)
         v = pos[v_index]
 
         closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
@@ -262,24 +240,16 @@ def validate_triangle_collisions(
         wp.expect_eq(dis < query_radius, True)
         wp.expect_eq(dis >= min_dis, True)
 
-        # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
-        #           v_index, offset, num_cols, tri_index, dis)
-
 
 @wp.kernel
 def edge_edge_collision_detection_brute_force(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     edge_indices: wp.array2d[wp.int32],
-    edge_colliding_edges_offsets: wp.array[wp.int32],
-    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
     # outputs
-    edge_colliding_edges: wp.array[wp.int32],
     edge_colliding_edges_count: wp.array[wp.int32],
     edge_colliding_edges_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
 ):
     e_index = wp.tid()
 
@@ -305,16 +275,7 @@ def edge_edge_collision_detection_brute_force(
         dist = std[2]
 
         if dist < query_radius:
-            edge_buffer_offset = edge_colliding_edges_offsets[e_index]
-            edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
-
-            # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
             min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-            if edge_num_collisions < edge_buffer_size:
-                edge_colliding_edges[edge_buffer_offset + edge_num_collisions] = e1_index
-            else:
-                resize_flags[1] = 1
-
             edge_num_collisions = edge_num_collisions + 1
 
     edge_colliding_edges_count[e_index] = edge_num_collisions
@@ -324,17 +285,10 @@ def edge_edge_collision_detection_brute_force(
 @wp.kernel
 def validate_edge_collisions(
     query_radius: float,
-    bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
     edge_indices: wp.array2d[wp.int32],
-    edge_colliding_edges_offsets: wp.array[wp.int32],
-    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
-    # outputs
-    edge_colliding_edges: wp.array[wp.int32],
-    edge_colliding_edges_count: wp.array[wp.int32],
-    edge_colliding_edges_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
+    collision_info: TriMeshCollisionInfo,
 ):
     e0_index = wp.tid()
 
@@ -344,35 +298,30 @@ def validate_edge_collisions(
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
 
-    num_cols = edge_colliding_edges_count[e0_index]
-    offset = edge_colliding_edges_offsets[e0_index]
-    min_dist = edge_colliding_edges_min_dist[e0_index]
-    for col in range(edge_colliding_edges_buffer_sizes[e0_index]):
-        e1_index = edge_colliding_edges[2 * (offset + col) + 1]
+    num_cols = get_edge_colliding_edges_count(collision_info, e0_index)
+    min_dist = collision_info.edge_colliding_edges_min_dist[e0_index]
+    for col in range(num_cols):
+        e1_index = get_edge_colliding_edges(collision_info, e0_index, col)
 
-        if col < num_cols:
-            e1_v0 = edge_indices[e1_index, 2]
-            e1_v1 = edge_indices[e1_index, 3]
+        e1_v0 = edge_indices[e1_index, 2]
+        e1_v1 = edge_indices[e1_index, 3]
 
-            if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-                wp.expect_eq(False, True)
+        if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+            wp.expect_eq(False, True)
 
-            e1_v0_pos = pos[e1_v0]
-            e1_v1_pos = pos[e1_v1]
+        e1_v0_pos = pos[e1_v0]
+        e1_v1_pos = pos[e1_v1]
 
-            st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-            s = st[0]
-            t = st[1]
-            c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-            c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+        st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+        s = st[0]
+        t = st[1]
+        c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
+        c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
 
-            dist = wp.length(c2 - c1)
+        dist = wp.length(c2 - c1)
 
-            wp.expect_eq(dist >= min_dist * 0.999, True)
-            wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
-        else:
-            wp.expect_eq(e1_index == -1, True)
-            wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
+        wp.expect_eq(dist >= min_dist * 0.999, True)
+        wp.expect_eq(get_edge_collision_buffer_edge_index(collision_info, e0_index, col) == e0_index, True)
 
 
 def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=False):
@@ -401,13 +350,15 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=F
         model=model,
         record_triangle_contacting_vertices=record_triangle_contacting_vertices,
         init_collision_info=True,
+        vertex_collision_buffer_pre_alloc=256,
+        edge_collision_buffer_pre_alloc=256,
     )
 
     return model, collision_detector
 
 
 def init_multiworld_model(
-    vs, fs, device, world_count=2, record_triangle_contacting_vertices=True, collision_buffer_pre_alloc=8
+    vs, fs, device, world_count=2, record_triangle_contacting_vertices=True, collision_buffer_pre_alloc=64
 ):
     vertices = [wp.vec3(v) for v in vs]
 
@@ -443,7 +394,7 @@ def init_multiworld_model(
 
 
 def init_global_multiworld_model(
-    vs, fs, device, world_count=2, record_triangle_contacting_vertices=True, collision_buffer_pre_alloc=8
+    vs, fs, device, world_count=2, record_triangle_contacting_vertices=True, collision_buffer_pre_alloc=64
 ):
     vertices = [wp.vec3(v) for v in vs]
 
@@ -497,7 +448,8 @@ def _compatible_worlds(world_a, world_b):
 def _assert_vertex_triangle_worlds_compatible(test, model, collision_detector, require_local_global=False):
     particle_world = model.particle_world.numpy()
     tri_indices = model.tri_indices.numpy()
-    collisions = collision_detector.vertex_colliding_triangles.numpy()
+    rows = collision_detector.vertex_colliding_triangles.numpy()
+    pairs = collision_detector.vt_pairs.numpy()
     counts = collision_detector.vertex_colliding_triangles_count.numpy()
     offsets = collision_detector.vertex_colliding_triangles_offsets.numpy()
 
@@ -505,12 +457,12 @@ def _assert_vertex_triangle_worlds_compatible(test, model, collision_detector, r
     total_count = 0
     for vertex_index in range(model.particle_count):
         vertex_world = particle_world[vertex_index]
-        buffer_size = int(offsets[vertex_index + 1] - offsets[vertex_index])
-        test.assertLessEqual(int(counts[vertex_index]), buffer_size)
-        for collision_index in range(int(counts[vertex_index])):
-            offset = 2 * (int(offsets[vertex_index]) + collision_index)
-            recorded_vertex = int(collisions[offset])
-            tri_index = int(collisions[offset + 1])
+        row_length = int(offsets[vertex_index + 1] - offsets[vertex_index])
+        test.assertEqual(int(counts[vertex_index]), row_length)
+        for collision_index in range(row_length):
+            pair = pairs[rows[int(offsets[vertex_index]) + collision_index]]
+            recorded_vertex = int(pair[0])
+            tri_index = int(pair[1])
             tri_world = particle_world[int(tri_indices[tri_index, 0])]
 
             total_count += 1
@@ -526,7 +478,8 @@ def _assert_vertex_triangle_worlds_compatible(test, model, collision_detector, r
 def _assert_edge_edge_worlds_compatible(test, model, collision_detector, require_local_global=False):
     particle_world = model.particle_world.numpy()
     edge_indices = model.edge_indices.numpy()
-    collisions = collision_detector.edge_colliding_edges.numpy()
+    rows = collision_detector.edge_colliding_edges.numpy()
+    pairs = collision_detector.ee_pairs.numpy()
     counts = collision_detector.edge_colliding_edges_count.numpy()
     offsets = collision_detector.edge_colliding_edges_offsets.numpy()
 
@@ -534,12 +487,12 @@ def _assert_edge_edge_worlds_compatible(test, model, collision_detector, require
     total_count = 0
     for edge_index in range(model.edge_count):
         edge_world = particle_world[int(edge_indices[edge_index, 2])]
-        buffer_size = int(offsets[edge_index + 1] - offsets[edge_index])
-        test.assertLessEqual(int(counts[edge_index]), buffer_size)
-        for collision_index in range(int(counts[edge_index])):
-            offset = 2 * (int(offsets[edge_index]) + collision_index)
-            recorded_edge = int(collisions[offset])
-            colliding_edge = int(collisions[offset + 1])
+        row_length = int(offsets[edge_index + 1] - offsets[edge_index])
+        test.assertEqual(int(counts[edge_index]), row_length)
+        for collision_index in range(row_length):
+            pair = pairs[rows[int(offsets[edge_index]) + collision_index]]
+            recorded_edge = int(pair[0])
+            colliding_edge = int(pair[1])
             colliding_world = particle_world[int(edge_indices[colliding_edge, 2])]
 
             total_count += 1
@@ -581,19 +534,16 @@ def test_vertex_triangle_collision(test, device):
         triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy()
         triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
 
+        counters = collision_detector.counters.numpy()
+        test.assertEqual(int(counters[1]), 0)  # no vertex-triangle overflow
+
         wp.launch(
             kernel=validate_vertex_collisions,
             inputs=[
                 query_radius,
-                collision_detector.bvh_tris.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.tri_indices,
-                collision_detector.vertex_colliding_triangles,
-                collision_detector.vertex_colliding_triangles_count,
-                collision_detector.vertex_colliding_triangles_offsets,
-                collision_detector.vertex_colliding_triangles_buffer_sizes,
-                collision_detector.vertex_colliding_triangles_min_dist,
-                collision_detector.resize_flags,
+                collision_detector.collision_info,
             ],
             dim=model.particle_count,
             device=device,
@@ -603,50 +553,27 @@ def test_vertex_triangle_collision(test, device):
             kernel=validate_triangle_collisions,
             inputs=[
                 query_radius,
-                collision_detector.bvh_tris.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.tri_indices,
-                collision_detector.triangle_colliding_vertices,
-                collision_detector.triangle_colliding_vertices_count,
-                collision_detector.triangle_colliding_vertices_offsets,
-                collision_detector.triangle_colliding_vertices_buffer_sizes,
-                collision_detector.triangle_colliding_vertices_min_dist,
-                collision_detector.resize_flags,
+                collision_detector.collision_info,
             ],
             dim=model.tri_count,
             device=model.device,
         )
 
-        wp.launch(
-            kernel=init_triangle_collision_data_kernel,
-            inputs=[
-                query_radius,
-                collision_detector.triangle_colliding_vertices_count,
-                collision_detector.triangle_colliding_vertices_min_dist,
-                collision_detector.resize_flags,
-            ],
-            dim=model.tri_count,
-            device=model.device,
-        )
+        collision_detector.triangle_colliding_vertices_count.zero_()
+        collision_detector.triangle_colliding_vertices_min_dist.fill_(query_radius)
 
         wp.launch(
             kernel=vertex_triangle_collision_detection_brute_force,
             inputs=[
                 query_radius,
-                collision_detector.bvh_tris.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.tri_indices,
-                collision_detector.vertex_colliding_triangles,
                 collision_detector.vertex_colliding_triangles_count,
-                collision_detector.vertex_colliding_triangles_offsets,
-                collision_detector.vertex_colliding_triangles_buffer_sizes,
                 collision_detector.vertex_colliding_triangles_min_dist,
-                collision_detector.triangle_colliding_vertices,
                 collision_detector.triangle_colliding_vertices_count,
-                collision_detector.triangle_colliding_vertices_offsets,
-                collision_detector.triangle_colliding_vertices_buffer_sizes,
                 collision_detector.triangle_colliding_vertices_min_dist,
-                collision_detector.resize_flags,
             ],
             dim=model.particle_count,
             device=model.device,
@@ -678,15 +605,9 @@ def test_vertex_triangle_collision(test, device):
             kernel=validate_vertex_collisions,
             inputs=[
                 query_radius,
-                collision_detector.bvh_tris.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.tri_indices,
-                collision_detector.vertex_colliding_triangles,
-                collision_detector.vertex_colliding_triangles_count,
-                collision_detector.vertex_colliding_triangles_offsets,
-                collision_detector.vertex_colliding_triangles_buffer_sizes,
-                collision_detector.vertex_colliding_triangles_min_dist,
-                collision_detector.resize_flags,
+                collision_detector.collision_info,
             ],
             dim=model.particle_count,
             device=device,
@@ -696,16 +617,10 @@ def test_vertex_triangle_collision(test, device):
             kernel=vertex_triangle_collision_detection_brute_force_no_triangle_buffers,
             inputs=[
                 query_radius,
-                collision_detector.bvh_tris.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.tri_indices,
-                collision_detector.vertex_colliding_triangles,
                 collision_detector.vertex_colliding_triangles_count,
-                collision_detector.vertex_colliding_triangles_offsets,
-                collision_detector.vertex_colliding_triangles_buffer_sizes,
                 collision_detector.vertex_colliding_triangles_min_dist,
-                collision_detector.triangle_colliding_vertices_min_dist,
-                collision_detector.resize_flags,
             ],
             dim=model.particle_count,
             device=model.device,
@@ -734,22 +649,17 @@ def test_edge_edge_collision(test, device):
         edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy()
         edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy()
 
+        counters = collision_detector.counters.numpy()
+        test.assertEqual(int(counters[3]), 0)  # no edge-edge overflow
+
         wp.launch(
             kernel=validate_edge_collisions,
             inputs=[
                 query_radius,
-                collision_detector.bvh_edges.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.edge_indices,
-                collision_detector.edge_colliding_edges_offsets,
-                collision_detector.edge_colliding_edges_buffer_sizes,
                 edge_edge_parallel_epsilon,
-            ],
-            outputs=[
-                collision_detector.edge_colliding_edges,
-                collision_detector.edge_colliding_edges_count,
-                collision_detector.edge_colliding_edges_min_dist,
-                collision_detector.resize_flags,
+                collision_detector.collision_info,
             ],
             dim=model.edge_count,
             device=device,
@@ -759,18 +669,13 @@ def test_edge_edge_collision(test, device):
             kernel=edge_edge_collision_detection_brute_force,
             inputs=[
                 query_radius,
-                collision_detector.bvh_edges.id,
                 collision_detector.model.particle_q,
                 collision_detector.model.edge_indices,
-                collision_detector.edge_colliding_edges_offsets,
-                collision_detector.edge_colliding_edges_buffer_sizes,
                 edge_edge_parallel_epsilon,
             ],
             outputs=[
-                collision_detector.edge_colliding_edges,
                 collision_detector.edge_colliding_edges_count,
                 collision_detector.edge_colliding_edges_min_dist,
-                collision_detector.resize_flags,
             ],
             dim=model.edge_count,
             device=device,
@@ -1169,47 +1074,34 @@ def validate_vertex_collisions_distance_filter(
     pos: wp.array[wp.vec3],
     ref_pos: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
-    vertex_colliding_triangles: wp.array[wp.int32],
-    vertex_colliding_triangles_count: wp.array[wp.int32],
-    vertex_colliding_triangles_offsets: wp.array[wp.int32],
-    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
+    collision_info: TriMeshCollisionInfo,
 ):
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = vertex_colliding_triangles_count[v_index]
-    offset = vertex_colliding_triangles_offsets[v_index]
-    for col in range(vertex_colliding_triangles_buffer_size[v_index]):
-        vertex_index = vertex_colliding_triangles[2 * (offset + col)]
-        tri_index = vertex_colliding_triangles[2 * (offset + col) + 1]
-        if col < num_cols:
-            t1 = tri_indices[tri_index, 0]
-            t2 = tri_indices[tri_index, 1]
-            t3 = tri_indices[tri_index, 2]
-            # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
+    num_cols = get_vertex_colliding_triangles_count(collision_info, v_index)
+    for col in range(num_cols):
+        tri_index = get_vertex_colliding_triangles(collision_info, v_index, col)
+        t1 = tri_indices[tri_index, 0]
+        t2 = tri_indices[tri_index, 1]
+        t3 = tri_indices[tri_index, 2]
 
-            u1 = pos[t1]
-            u2 = pos[t2]
-            u3 = pos[t3]
+        u1 = pos[t1]
+        u2 = pos[t2]
+        u3 = pos[t3]
 
-            closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
-            dis = wp.length(closest_p - v)
-            wp.expect_eq(dis < max_query_radius, True)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+        dis = wp.length(closest_p - v)
+        wp.expect_eq(dis < max_query_radius, True)
 
-            u1_ref = ref_pos[t1]
-            u2_ref = ref_pos[t2]
-            u3_ref = ref_pos[t3]
-            v_ref = ref_pos[v_index]
-            closest_p_ref, _, __ = triangle_closest_point(u1_ref, u2_ref, u3_ref, v_ref)
-            wp.expect_eq(wp.length(closest_p_ref - v_ref) >= min_query_radius, True)
+        u1_ref = ref_pos[t1]
+        u2_ref = ref_pos[t2]
+        u3_ref = ref_pos[t3]
+        v_ref = ref_pos[v_index]
+        closest_p_ref, _, __ = triangle_closest_point(u1_ref, u2_ref, u3_ref, v_ref)
+        wp.expect_eq(wp.length(closest_p_ref - v_ref) >= min_query_radius, True)
 
-            wp.expect_eq(v_index == vertex_colliding_triangles[2 * (offset + col)], True)
-
-            # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
-            #           v_index, offset, num_cols, tri_index, dis)
-        else:
-            wp.expect_eq(vertex_index == -1, True)
-            wp.expect_eq(tri_index == -1, True)
+        wp.expect_eq(get_vertex_collision_buffer_vertex_index(collision_info, v_index, col) == v_index, True)
 
 
 @wp.kernel
@@ -1219,13 +1111,8 @@ def validate_edge_collisions_distance_filter(
     pos: wp.array[wp.vec3],
     ref_pos: wp.array[wp.vec3],
     edge_indices: wp.array2d[wp.int32],
-    edge_colliding_edges_offsets: wp.array[wp.int32],
-    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
-    # outputs
-    edge_colliding_edges: wp.array[wp.int32],
-    edge_colliding_edges_count: wp.array[wp.int32],
-    edge_colliding_edges_min_dist: wp.array[float],
+    collision_info: TriMeshCollisionInfo,
 ):
     e0_index = wp.tid()
 
@@ -1235,47 +1122,42 @@ def validate_edge_collisions_distance_filter(
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
 
-    num_cols = edge_colliding_edges_count[e0_index]
-    offset = edge_colliding_edges_offsets[e0_index]
-    for col in range(edge_colliding_edges_buffer_sizes[e0_index]):
-        e1_index = edge_colliding_edges[2 * (offset + col) + 1]
+    num_cols = get_edge_colliding_edges_count(collision_info, e0_index)
+    for col in range(num_cols):
+        e1_index = get_edge_colliding_edges(collision_info, e0_index, col)
 
-        if col < num_cols:
-            e1_v0 = edge_indices[e1_index, 2]
-            e1_v1 = edge_indices[e1_index, 3]
+        e1_v0 = edge_indices[e1_index, 2]
+        e1_v1 = edge_indices[e1_index, 3]
 
-            if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-                wp.expect_eq(False, True)
+        if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+            wp.expect_eq(False, True)
 
-            e1_v0_pos = pos[e1_v0]
-            e1_v1_pos = pos[e1_v1]
+        e1_v0_pos = pos[e1_v0]
+        e1_v1_pos = pos[e1_v1]
 
-            st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-            s = st[0]
-            t = st[1]
-            c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-            c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+        st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+        s = st[0]
+        t = st[1]
+        c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
+        c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
 
-            dist = wp.length(c2 - c1)
-            wp.expect_eq(dist <= max_query_radius, True)
+        dist = wp.length(c2 - c1)
+        wp.expect_eq(dist <= max_query_radius, True)
 
-            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
-                ref_pos[e0_v0],
-                ref_pos[e0_v1],
-                ref_pos[e1_v0],
-                ref_pos[e1_v1],
-            )
-            std_ref = wp.closest_point_edge_edge(
-                e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-            )
+        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
+            ref_pos[e0_v0],
+            ref_pos[e0_v1],
+            ref_pos[e1_v0],
+            ref_pos[e1_v1],
+        )
+        std_ref = wp.closest_point_edge_edge(
+            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+        )
 
-            dist_ref = std_ref[2]
+        dist_ref = std_ref[2]
 
-            wp.expect_eq(dist_ref >= min_query_radius * 0.999, True)
-            wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
-        else:
-            wp.expect_eq(e1_index == -1, True)
-            wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
+        wp.expect_eq(dist_ref >= min_query_radius * 0.999, True)
+        wp.expect_eq(get_edge_collision_buffer_edge_index(collision_info, e0_index, col) == e0_index, True)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1411,10 +1293,7 @@ def test_collision_filtering(test, device):
             particle_q_new,
             vbd.particle_q_rest,
             model.tri_indices,
-            vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles,
-            vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_count,
-            vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_offsets,
-            vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_buffer_sizes,
+            vbd.trimesh_collision_detector.collision_info,
         ],
         device=device,
     )
@@ -1431,12 +1310,8 @@ def test_collision_filtering(test, device):
             particle_q_new,
             vbd.particle_q_rest,
             model.edge_indices,
-            vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_offsets,
-            vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_buffer_sizes,
             1e-6,
-            vbd.trimesh_collision_detector.collision_info.edge_colliding_edges,
-            vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_count,
-            vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_min_dist,
+            vbd.trimesh_collision_detector.collision_info,
         ],
         device=device,
     )
@@ -1693,7 +1568,7 @@ def test_soft_self_contact_buffer_validation(test, device):
         soft_self_contact_edge_buffer_pre_alloc=detector.edge_collision_buffer_pre_alloc,
         device=device,
     )
-    with test.assertRaisesRegex(ValueError, "vertex_colliding_triangles"):
+    with test.assertRaisesRegex(ValueError, "vt_pairs"):
         pipeline._get_soft_self_contact_detector(wrong_shape)
 
     pipeline_with_triangle_records = newton.CollisionPipeline(model, broad_phase="nxn")
@@ -1731,6 +1606,280 @@ def test_soft_self_contact_buffer_validation(test, device):
         )
         with test.assertRaisesRegex(ValueError, "detector is on"):
             pipeline._get_soft_self_contact_detector(wrong_device)
+
+
+def _build_two_layer_cloth(device, budgets=None):
+    """Two parallel cloth layers 0.02 m apart: hundreds of self-contact pairs at
+    a 0.03 query radius without any dynamics."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    # layer gap below the 0.02 contact margin so evaluators produce nonzero forces
+    grid, cell, layer_gap = 15, 0.05, 0.012
+    for layer in range(2):
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5 * grid * cell, -0.5 * grid * cell, 1.0 + layer * layer_gap),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=grid,
+            dim_y=grid,
+            cell_x=cell,
+            cell_y=cell,
+            mass=0.1,
+            tri_ke=1.0e2,
+            tri_ka=1.0e2,
+            tri_kd=1.0e-1,
+            edge_ke=1.0,
+            particle_radius=0.01,
+        )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 1.0e2
+    model.soft_contact_kd = 1.0e-3
+    model.soft_contact_mu = 0.2
+
+    kwargs = {}
+    if budgets is not None:
+        kwargs = {
+            "particle_vertex_contact_buffer_size": budgets[0],
+            "particle_edge_contact_buffer_size": budgets[1],
+        }
+    solver = SolverVBD(
+        model=model,
+        iterations=2,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.02,
+        particle_self_contact_gap=0.01,
+        **kwargs,
+    )
+    return model, solver
+
+
+def _assert_rows_partition_pairs(test, info):
+    """Every stored pair index appears in exactly one CSR row of its family."""
+    counters = info.counters.numpy()
+    for pairs, offsets, values, cursor in (
+        (info.vt_pairs, info.vertex_colliding_triangles_offsets, info.vertex_colliding_triangles, int(counters[0])),
+        (info.ee_pairs, info.edge_colliding_edges_offsets, info.edge_colliding_edges, int(counters[2])),
+    ):
+        stored = min(cursor, pairs.shape[0])
+        offsets_np = offsets.numpy()
+        test.assertEqual(int(offsets_np[-1]), stored)
+        row_values = values.numpy()[:stored]
+        test.assertEqual(len(np.unique(row_values)), stored)
+        pairs_np = pairs.numpy()
+        for element in range(offsets_np.shape[0] - 1):
+            for k in range(int(offsets_np[element]), int(offsets_np[element + 1])):
+                test.assertEqual(int(pairs_np[row_values[k]][0]), element)
+
+
+def test_self_contact_overflow_and_growth(test, device):
+    """Undersized shared pair arrays must flag overflow, warn, and grow to cover
+    the demand; after growth the stored rows exactly partition the pairs."""
+    model, solver = _build_two_layer_cloth(device, budgets=(1, 1))
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    solver.step(state_0, state_1, control, None, 1e-3)
+    wp.synchronize_device(wp.get_device(device))
+
+    detector = solver.trimesh_collision_detector
+    counters = detector.collision_info.counters.numpy()
+    test.assertTrue(counters[1] or counters[3])  # undersized budgets must overflow here
+
+    with test.assertWarns(UserWarning):
+        grew = solver.check_and_grow_self_contact_buffers()
+    test.assertTrue(grew)
+
+    solver.step(state_1, state_0, control, None, 1e-3)
+    wp.synchronize_device(wp.get_device(device))
+    info = detector.collision_info
+    counters = info.counters.numpy()
+    test.assertEqual(int(counters[1]), 0)
+    test.assertEqual(int(counters[3]), 0)
+    test.assertGreater(int(counters[0]), 100)
+    test.assertGreater(int(counters[2]), 100)
+    test.assertFalse(solver.check_and_grow_self_contact_buffers())
+
+    _assert_rows_partition_pairs(test, info)
+
+    # demand counts equal stored row lengths once nothing is dropped
+    assert_np_equal(
+        info.vertex_colliding_triangles_count.numpy(),
+        np.diff(info.vertex_colliding_triangles_offsets.numpy()),
+    )
+    assert_np_equal(
+        info.edge_colliding_edges_count.numpy(),
+        np.diff(info.edge_colliding_edges_offsets.numpy()),
+    )
+
+
+@wp.kernel
+def _accumulate_self_contact_reference_sequential(
+    dt: float,
+    current_color: int,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info: TriMeshCollisionInfo,
+    collision_radius: float,
+    soft_contact_ke: float,
+    soft_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    edge_edge_parallel_epsilon: float,
+    # outputs
+    particle_forces: wp.array[wp.vec3],
+):
+    """Single-thread reference: identical evaluators and color gating as the
+    production scatter, but a fixed sequential summation order and no atomics."""
+    ee_count = wp.min(collision_info.counters[2], collision_info.ee_pairs.shape[0])
+    for i in range(ee_count):
+        pair = collision_info.ee_pairs[i]
+        e1_v1 = edge_indices[pair[0], 2]
+        e1_v2 = edge_indices[pair[0], 3]
+        c_e1_v1 = particle_colors[e1_v1]
+        c_e1_v2 = particle_colors[e1_v2]
+        if c_e1_v1 == current_color or c_e1_v2 == current_color:
+            has_contact, force_0, force_1, _h0, _h1 = evaluate_edge_edge_contact_2_vertices(
+                pair[0],
+                pair[1],
+                pos,
+                pos_prev,
+                edge_indices,
+                collision_radius,
+                soft_contact_ke,
+                soft_contact_kd,
+                friction_mu,
+                friction_epsilon,
+                dt,
+                edge_edge_parallel_epsilon,
+            )
+            if has_contact:
+                if c_e1_v1 == current_color:
+                    particle_forces[e1_v1] = particle_forces[e1_v1] + force_0
+                if c_e1_v2 == current_color:
+                    particle_forces[e1_v2] = particle_forces[e1_v2] + force_1
+
+    vt_count = wp.min(collision_info.counters[0], collision_info.vt_pairs.shape[0])
+    for i in range(vt_count):
+        pair = collision_info.vt_pairs[i]
+        v = pair[0]
+        tri = pair[1]
+        tri_a = tri_indices[tri, 0]
+        tri_b = tri_indices[tri, 1]
+        tri_c = tri_indices[tri, 2]
+        c_v = particle_colors[v]
+        c_a = particle_colors[tri_a]
+        c_b = particle_colors[tri_b]
+        c_c = particle_colors[tri_c]
+        if c_v == current_color or c_a == current_color or c_b == current_color or c_c == current_color:
+            (
+                has_contact,
+                force_0,
+                force_1,
+                force_2,
+                force_3,
+                _h0,
+                _h1,
+                _h2,
+                _h3,
+            ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+                v,
+                tri,
+                pos,
+                pos_prev,
+                tri_indices,
+                collision_radius,
+                soft_contact_ke,
+                soft_contact_kd,
+                friction_mu,
+                friction_epsilon,
+                dt,
+            )
+            if has_contact:
+                if c_v == current_color:
+                    particle_forces[v] = particle_forces[v] + force_3
+                if c_a == current_color:
+                    particle_forces[tri_a] = particle_forces[tri_a] + force_0
+                if c_b == current_color:
+                    particle_forces[tri_b] = particle_forces[tri_b] + force_1
+                if c_c == current_color:
+                    particle_forces[tri_c] = particle_forces[tri_c] + force_2
+
+
+def test_self_contact_scatter_matches_sequential_reference(test, device):
+    """The per-contact scatter must reproduce a single-thread sequential
+    summation of the same pairs (identical evaluators; order-only differences)."""
+    model, solver = _build_two_layer_cloth(device)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    dt = 1e-3
+    solver.step(state_0, state_1, control, None, dt)
+    wp.synchronize_device(wp.get_device(device))
+
+    info = solver.trimesh_collision_detector.collision_info
+    counters = info.counters.numpy()
+    test.assertEqual(int(counters[1]), 0)
+    test.assertEqual(int(counters[3]), 0)
+    test.assertGreater(int(counters[0]) + int(counters[2]), 200)
+
+    n = model.particle_count
+    forces_production = wp.zeros(n, dtype=wp.vec3, device=device)
+    hessians_production = wp.zeros(n, dtype=wp.mat33, device=device)
+    forces_reference = wp.zeros(n, dtype=wp.vec3, device=device)
+
+    for color in range(len(model.particle_color_groups)):
+        wp.launch(
+            kernel=accumulate_self_contact_force_and_hessian,
+            dim=solver.particle_self_contact_evaluation_kernel_launch_size,
+            inputs=[
+                dt,
+                color,
+                solver.particle_q_prev,
+                state_0.particle_q,
+                model.particle_colors,
+                model.tri_indices,
+                model.edge_indices,
+                solver.trimesh_collision_info,
+                solver.particle_self_contact_margin,
+                model.soft_contact_ke,
+                model.soft_contact_kd,
+                model.soft_contact_mu,
+                solver.friction_epsilon,
+                solver._self_contact_edge_edge_parallel_epsilon,
+                solver.particle_self_contact_evaluation_kernel_launch_size,
+            ],
+            outputs=[forces_production, hessians_production],
+            device=device,
+        )
+        wp.launch(
+            kernel=_accumulate_self_contact_reference_sequential,
+            dim=1,
+            inputs=[
+                dt,
+                color,
+                solver.particle_q_prev,
+                state_0.particle_q,
+                model.particle_colors,
+                model.tri_indices,
+                model.edge_indices,
+                info,
+                solver.particle_self_contact_margin,
+                model.soft_contact_ke,
+                model.soft_contact_kd,
+                model.soft_contact_mu,
+                solver.friction_epsilon,
+                solver._self_contact_edge_edge_parallel_epsilon,
+            ],
+            outputs=[forces_reference],
+            device=device,
+        )
+
+    production = forces_production.numpy()
+    reference = forces_reference.numpy()
+    test.assertGreater(np.abs(reference).max(), 0.0)
+    np.testing.assert_allclose(production, reference, rtol=1e-4, atol=1e-6)
 
 
 devices = get_test_devices()
@@ -1840,6 +1989,18 @@ add_function_test(
     TestCollision,
     "test_soft_self_contact_buffer_validation",
     test_soft_self_contact_buffer_validation,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_self_contact_overflow_and_growth",
+    test_self_contact_overflow_and_growth,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_self_contact_scatter_matches_sequential_reference",
+    test_self_contact_scatter_matches_sequential_reference,
     devices=devices,
 )
 

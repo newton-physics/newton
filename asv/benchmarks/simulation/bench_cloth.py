@@ -89,7 +89,15 @@ class FastDeformableSelfCollision:
 
         for _ in range(self.warmup_count):
             self._detect()
-        if self.detector.resize_flags.numpy().any():
+        # asv also runs this benchmark against older revisions where overflow is
+        # reported through resize_flags instead of the pair counters
+        check_overflow = getattr(self.detector, "check_self_contact_overflow", None)
+        if check_overflow is not None:
+            _, _, vt_overflow, ee_overflow = check_overflow(warn=False)
+            overflowed = vt_overflow or ee_overflow
+        else:
+            overflowed = bool(self.detector.resize_flags.numpy().any())
+        if overflowed:
             raise RuntimeError("collision buffers overflowed; increase the pre-allocated sizes")
         with wp.ScopedCapture(device=device) as capture:
             self._detect()

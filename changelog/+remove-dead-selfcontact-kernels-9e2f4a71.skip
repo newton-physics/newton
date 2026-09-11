@@ -1,0 +1,1 @@
+Remove internal never-launched VBD self-contact kernels and an unused array; no user-facing change.

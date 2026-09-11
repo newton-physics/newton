@@ -15,6 +15,7 @@ from ...geometry import ParticleFlags
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
+    build_tri_mesh_collision_info,
 )
 from ...sim import (
     BodyFlags,
@@ -37,7 +38,6 @@ from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
-    NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
     accumulate_self_contact_force_and_hessian,
@@ -96,6 +96,13 @@ from .vbd_coupling_kernels import (
 __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+# cap for the strided per-pair self-contact launches: dims stay host-static
+# (graph-safe); threads loop when a grown pair array exceeds the cap
+_SELF_CONTACT_MAX_LAUNCH_DIM = 2**21
+# steps between automatic overflow checks (each check reads the pair counters
+# back and synchronizes, so it must not run every substep)
+_SELF_CONTACT_GROWTH_CHECK_INTERVAL = 32
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -315,8 +322,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_self_contact_margin: float | None = None,
         particle_self_contact_gap: float | None = None,
         particle_conservative_bound_relaxation: float = 0.85,
-        particle_vertex_contact_buffer_size: int = 32,
-        particle_edge_contact_buffer_size: int = 64,
+        particle_vertex_contact_buffer_size: int = 8,
+        particle_edge_contact_buffer_size: int = 16,
         particle_collision_detection_interval: int | None = None,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
@@ -382,10 +389,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 queries use ``margin + gap``, mirroring the ``ShapeConfig.margin`` / ``gap`` convention.
                 Defaults to 0. Give it ~0.5-1x the margin of slack to avoid missing contacts.
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
-            particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision
-                buffer. Pairs beyond this capacity are silently dropped during detection.
-            particle_edge_contact_buffer_size: Preallocation size for each edge's edge-edge collision buffer. Pairs
-                beyond this capacity are silently dropped during detection.
+            particle_vertex_contact_buffer_size: Average vertex-triangle contact budget per vertex: the shared
+                pair array holds ``particle_vertex_contact_buffer_size x particle_count`` records that any vertex
+                can draw from. On overflow a warning is emitted and the array grows automatically outside graph
+                capture (see :meth:`check_and_grow_self_contact_buffers`).
+            particle_edge_contact_buffer_size: Average edge-edge contact budget per edge: the shared pair array
+                holds ``particle_edge_contact_buffer_size x edge_count`` records that any edge can draw from.
+                Overflow behaves as above.
             particle_collision_detection_interval: Deprecated; use the self-contact slot of
                 ``collision_frequency`` / ``collision_frequency_type`` instead.
                 Controls how frequently particle self-contact detection is applied
@@ -539,7 +549,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
-                ``wp.config.deterministic`` mode.
+                ``wp.config.deterministic`` mode. Self-contact force
+                accumulation is excluded: its shared pair arrays have no
+                per-element record bound, so its sums stay
+                scheduling-dependent even under a deterministic mode.
 
             Collision pipeline ownership:
 
@@ -561,11 +574,12 @@ class SolverVBD(SolverBase, CouplingInterface):
               solvers. If set to True, the rigid states should be integrated externally, with `state_in` passed to `step`
               representing the previous rigid state and `state_out` representing the current one. Frictional forces are
               computed accordingly.
-            - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_body_contact_buffer_size`,
-              and `rigid_body_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
-              Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
-              contacts).
-              Setting them excessively large may increase memory usage and degrade performance.
+            - `rigid_body_contact_buffer_size` and `rigid_body_particle_contact_buffer_size` are fixed and will not be
+              dynamically resized during runtime; setting them too small may overflow rigid contacts.
+              `particle_vertex_contact_buffer_size` and `particle_edge_contact_buffer_size` size the shared self-contact
+              pair arrays as average contacts per element; on overflow the solver warns and grows them at non-captured
+              steps (see :meth:`check_and_grow_self_contact_buffers`), while captured workflows must re-check and
+              re-capture themselves. Setting any of these excessively large increases memory usage.
             - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
               ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
@@ -729,33 +743,24 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
 
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
-        particle_deterministic_max_records = 0
-        coupling_deterministic_max_records = 0
-        if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
-            edge_iterations = (
-                particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
-            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
-            vertex_iterations = (
-                particle_vertex_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
-            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
-            truncation_records = 4 * (edge_iterations + vertex_iterations)
-            force_records = 2 * edge_iterations + 4 * vertex_iterations
-            if model.shape_count > 0:
-                force_records += 1
-            particle_deterministic_max_records = max(truncation_records, force_records)
-            coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
+        # Deterministic-atomics records for self-contact were bounded by the old
+        # fixed per-element rows (a vertex received at most row_size pieces per
+        # launch). The shared pair arrays have no per-element bound, so the
+        # deterministic mode no longer covers the self-contact scatter; an
+        # atomic-free fixed-order gather is the planned replacement (its
+        # per-vertex contact table gives reproducible sums by construction).
         if model.particle_count > 0:
             self._set_module_options(
                 {
                     "deterministic": effective_deterministic,
-                    "deterministic_max_records": particle_deterministic_max_records,
+                    "deterministic_max_records": 0,
                 },
                 module=particle_vbd_kernels,
             )
         self._set_module_options(
             {
                 "deterministic": effective_deterministic,
-                "deterministic_max_records": coupling_deterministic_max_records,
+                "deterministic_max_records": 0,
             },
             module=vbd_coupling_kernels,
         )
@@ -896,7 +901,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
-            self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
             self._self_contact_edge_edge_parallel_epsilon = particle_edge_parallel_epsilon
 
             if self.collision_pipeline is not None:
@@ -916,10 +920,8 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
 
-            self.particle_self_contact_evaluation_kernel_launch_size = max(
-                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
-                self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
-            )
+            self._update_self_contact_launch_size(collision_info)
+            self._self_contact_steps_since_check = 0
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
 
@@ -937,6 +939,66 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
         self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
+
+    def _update_self_contact_launch_size(self, collision_info: TriMeshCollisionInfo) -> None:
+        """Host-static launch size for the per-pair self-contact kernels: covers
+        the larger family's pair capacity, capped so a grown pool makes threads
+        stride instead of inflating the grid. Graph-safe either way."""
+        capacity = max(collision_info.vt_pairs.shape[0], collision_info.ee_pairs.shape[0], 1)
+        self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, _SELF_CONTACT_MAX_LAUNCH_DIM)
+
+    def check_and_grow_self_contact_buffers(self) -> bool:
+        """Check self-contact pair demand and grow overflowed pair arrays.
+
+        Reads the pair counters back from the device (synchronizes). When a
+        family overflowed its shared array in the latest detection, a warning
+        is emitted and the storage is reallocated with that family's
+        per-element budget raised to cover 1.5x the measured demand; the next
+        detection uses the grown arrays. No-op (returns ``False``) during graph
+        capture -- growth reallocates arrays, so captured graphs must be
+        re-created afterwards.
+
+        Returns:
+            True if the storage was reallocated.
+        """
+        if not self.particle_enable_self_contact or self.model.particle_count == 0:
+            return False
+        if self.device.is_capturing:
+            return False
+        if self.collision_pipeline is not None:
+            detector = self.collision_pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
+        else:
+            detector = self.trimesh_collision_detector
+        vt_demand, ee_demand, vt_overflow, ee_overflow = detector.check_self_contact_overflow()
+        if not (vt_overflow or ee_overflow):
+            return False
+
+        particle_count = max(self.model.particle_count, 1)
+        edge_count = max(self.model.edge_count, 1)
+        vertex_budget = detector.vertex_collision_buffer_pre_alloc
+        edge_budget = detector.edge_collision_buffer_pre_alloc
+        if vt_overflow:
+            vertex_budget = max(vertex_budget + 1, -(-3 * vt_demand // (2 * particle_count)))
+        if ee_overflow:
+            edge_budget = max(edge_budget + 1, -(-3 * ee_demand // (2 * edge_count)))
+        detector.vertex_collision_buffer_pre_alloc = vertex_budget
+        detector.edge_collision_buffer_pre_alloc = edge_budget
+
+        collision_info = build_tri_mesh_collision_info(
+            self.model.particle_count,
+            self.model.tri_count,
+            self.model.edge_count,
+            vertex_collision_buffer_pre_alloc=vertex_budget,
+            edge_collision_buffer_pre_alloc=edge_budget,
+            record_triangle_contacting_vertices=detector.record_triangle_contacting_vertices,
+            device=self.device,
+        )
+        detector._bind_external_buffers(collision_info)
+        if self.collision_pipeline is not None:
+            self._pipeline_contacts.soft_self_contact_data = collision_info
+        self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
+        self._update_self_contact_launch_size(collision_info)
+        return True
 
     def _init_rigid_system(
         self,
@@ -1524,10 +1586,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.soft_contact_mu,
                     self.friction_epsilon,
                     self._self_contact_edge_edge_parallel_epsilon,
+                    self.particle_self_contact_evaluation_kernel_launch_size,
                     out_particle_f,
                 ],
                 device=self.device,
-                max_blocks=self.model.device.sm_count,
             )
 
     # =====================================================
@@ -2316,6 +2378,25 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         _Frequency = SolverBase.CollisionFrequencyType
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
+
+        # Periodic self-contact overflow check (readback = device sync, so not
+        # every step); no-op during capture. Runs BEFORE this step's detection
+        # so grown arrays are refilled within the same step and no consumer --
+        # including a between-steps coupling harvest -- can observe the fresh,
+        # empty storage. Captured workflows should call
+        # check_and_grow_self_contact_buffers() between replays (and re-capture
+        # after growth) if they expect contact demand to grow.
+        if (
+            self.particle_enable_self_contact
+            and self.model.particle_count > 0
+            and self._sc_mode_this_step != _Frequency.NONE
+            and not self.device.is_capturing
+        ):
+            self._self_contact_steps_since_check += 1
+            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
+                self._self_contact_steps_since_check = 0
+                self.check_and_grow_self_contact_buffers()
+
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
         if self.collision_pipeline is not None:
@@ -2625,6 +2706,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.trimesh_collision_info,
                     self._self_contact_edge_edge_parallel_epsilon,
                     self.particle_conservative_bound_relaxation,
+                    self.particle_self_contact_evaluation_kernel_launch_size,
                 ],
                 outputs=[
                     self.truncation_ts,
@@ -3310,10 +3392,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
                         self._self_contact_edge_edge_parallel_epsilon,
+                        self.particle_self_contact_evaluation_kernel_launch_size,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
-                    max_blocks=self.model.device.sm_count,
                 )
             if self.use_particle_tile_solve:
                 particle_count_in_color = self.model.particle_color_groups[color].size
