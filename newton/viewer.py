@@ -12,6 +12,7 @@ from ._src.viewer import (
     ViewerRTX,
     ViewerUSD,
     ViewerViser,
+    ViewerViserExtensionContext,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "ViewerRerun",
     "ViewerUSD",
     "ViewerViser",
+    "ViewerViserExtensionContext",
 ]
