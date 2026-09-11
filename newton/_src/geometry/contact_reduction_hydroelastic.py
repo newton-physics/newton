@@ -301,6 +301,20 @@ def _effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
 
 
 @wp.func
+def _linearize_contact(
+    stiffness: float, distance: float, pressure: float, pressure_gradient: float
+) -> tuple[float, float]:
+    """Convert a penetrating spring to a pressure tangent without changing its current force."""
+    if distance < 0.0 and pressure > 0.0 and pressure_gradient > 0.0:
+        tangent_distance = -pressure / pressure_gradient
+        if wp.isfinite(tangent_distance) and tangent_distance < 0.0:
+            tangent_stiffness = stiffness * (distance / tangent_distance)
+            if wp.isfinite(tangent_stiffness) and tangent_stiffness > 0.0:
+                return tangent_stiffness, tangent_distance
+    return stiffness, distance
+
+
+@wp.func
 def _register_voxel_contact(
     shape_a: int,
     shape_b: int,
@@ -380,6 +394,7 @@ def export_hydroelastic_contact_to_buffer(
     if contact_id >= 0:
         reducer_data.contact_area[contact_id] = area
         reducer_data.contact_pressure[contact_id] = pressure
+        reducer_data.contact_pressure_gradient[contact_id] = 0.0
 
     return contact_id
 
@@ -1051,6 +1066,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
+        contact_pressure_gradient: wp.array[wp.float32],
         shape_material_k_hydro: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
@@ -1396,6 +1412,11 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     c_stiffness = wp.static(margin_contact_area) * k_eff_first
                     c_friction_scale = 1.0
 
+                # Preserve the reducer's force allocation; only the exported spring changes.
+                c_stiffness, spring_distance = _linearize_contact(
+                    c_stiffness, depth, pressure_i, contact_pressure_gradient[contact_id]
+                )
+
                 # Transform contact to world space
                 normal_world = wp.transform_vector(transform_b, final_normal)
                 pos_world = wp.transform_point(transform_b, position)
@@ -1404,7 +1425,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data = ContactData()
                 contact_data.contact_point_center = pos_world
                 contact_data.contact_normal_a_to_b = normal_world
-                contact_data.contact_distance = depth
+                contact_data.contact_distance = spring_distance
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0
@@ -1432,12 +1453,23 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 anchor_normal_world = wp.transform_vector(transform_b, anchor_normal)
                 anchor_pos_world = wp.transform_point(transform_b, anchor_pos)
 
+                # The anchor already borrows its depth from the deepest representative.
+                anchor_id = unpack_contact_id(
+                    ht_values[wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + entry_idx], deterministic
+                )
+                anchor_stiffness, anchor_distance = _linearize_contact(
+                    shared_stiffness,
+                    -anchor_depth,
+                    contact_pressure[anchor_id],
+                    contact_pressure_gradient[anchor_id],
+                )
+
                 # Create ContactData for anchor
                 # anchor_depth is positive magnitude, so negate for standard convention
                 contact_data = ContactData()
                 contact_data.contact_point_center = anchor_pos_world
                 contact_data.contact_normal_a_to_b = anchor_normal_world
-                contact_data.contact_distance = -anchor_depth
+                contact_data.contact_distance = anchor_distance
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0
@@ -1445,7 +1477,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_a = shape_a_first
                 contact_data.shape_b = shape_b_first
                 contact_data.gap_sum = gap_sum
-                contact_data.contact_stiffness = shared_stiffness
+                contact_data.contact_stiffness = anchor_stiffness
                 contact_data.contact_friction_scale = wp.float32(anchor_friction_scale)
                 bin_id = int((ht_keys[entry_idx] >> wp.uint64(55)) & wp.uint64(0xFF))
                 contact_data.sort_sub_key = 0x400000 | bin_id
@@ -1869,6 +1901,7 @@ class HydroelasticContactReduction:
                 self.reducer.contact_fingerprints,
                 self.reducer.contact_area,
                 self.reducer.contact_pressure,
+                self.reducer.contact_pressure_gradient,
                 shape_material_k_hydro,
                 self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
