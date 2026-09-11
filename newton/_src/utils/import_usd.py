@@ -4725,7 +4725,9 @@ def parse_usd(
         collision_group_table = UsdPhysics.CollisionGroup.ComputeCollisionGroupTable(stage)
         colliders_by_groups: dict[tuple[str, ...], list[tuple[str, int]]] = collections.defaultdict(list)
         for collider_path, collision_groups in imported_rigid_collider_groups.items():
-            colliders_by_groups[collision_groups].append((collider_path, path_shape_map[collider_path]))
+            shape_id = path_shape_map[collider_path]
+            if builder.shape_flags[shape_id] & ShapeFlags.COLLIDE_SHAPES:
+                colliders_by_groups[collision_groups].append((collider_path, shape_id))
 
         inverted_groups: set[str] = set()
         groups_by_merge_name: dict[str, set[str]] = collections.defaultdict(set)
@@ -4805,7 +4807,11 @@ def parse_usd(
                 )
                 continue
             for shape1 in shapes1:
+                if not builder.shape_flags[shape1] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
                 for shape2 in shapes2:
+                    if not builder.shape_flags[shape2] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     if shape1 == shape2:
                         continue
                     pair = (shape1, shape2) if shape1 < shape2 else (shape2, shape1)
