@@ -18,6 +18,7 @@ import newton
 from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
+    DEFAULT_LIMIT_SOLREF,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -936,6 +937,161 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
             self.assertAlmostEqual(float(bodies["body_1"].get("gravcomp")), 1.0, places=5)
         finally:
             os.unlink(xml_path)
+
+
+class TestMuJoCoSolverGraphCapture(unittest.TestCase):
+    def test_joint_dof_updates_are_cuda_graph_capture_safe(self):
+        """Replay joint friction, damping, and limit updates from a CUDA graph."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+
+        with wp.ScopedDevice(device):
+            for kinematic in (False, True):
+                with self.subTest(kinematic=kinematic):
+                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    body = builder.add_link(
+                        mass=1.0,
+                        com=wp.vec3(0.0, 0.0, 0.0),
+                        inertia=wp.mat33(np.eye(3)),
+                    )
+                    joint = builder.add_joint_revolute(
+                        parent=-1,
+                        child=body,
+                        limit_lower=-1.0,
+                        limit_upper=1.0,
+                    )
+                    builder.add_articulation([joint])
+                    model = builder.finalize(device=device)
+                    if kinematic:
+                        model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                    model.mujoco.solreflimit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
+                    initial_ke = model.joint_limit_ke.numpy().copy()
+                    initial_kd = model.joint_limit_kd.numpy().copy()
+
+                    solver = SolverMuJoCo(
+                        model,
+                        use_mujoco_cpu=False,
+                        disable_contacts=True,
+                        iterations=1,
+                    )
+                    with wp.ScopedCapture(device=device) as capture:
+                        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_MJCF_DEFAULT)
+                    np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], DEFAULT_LIMIT_SOLREF)
+
+                    model.joint_friction.fill_(3.25)
+                    model.joint_damping.fill_(4.5)
+                    model.joint_limit_ke.fill_(1234.0)
+                    model.joint_limit_kd.fill_(56.0)
+                    wp.capture_launch(capture.graph)
+
+                    np.testing.assert_allclose(solver.mjw_model.dof_frictionloss.numpy(), 3.25)
+                    np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), 4.5)
+                    np.testing.assert_array_equal(
+                        model.mujoco.solreflimit_mode.numpy(),
+                        np.full(model.joint_dof_count, SOLREF_MODE_FORCE_SPACE, dtype=np.int32),
+                    )
+
+                    model.joint_limit_ke.assign(initial_ke)
+                    model.joint_limit_kd.assign(initial_kd)
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_FORCE_SPACE)
+
+                    # An explicit mode reset starts a new baseline; even a one-ULP
+                    # gain edit after that must promote on a later graph replay.
+                    model.mujoco.solreflimit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
+                    model.joint_limit_ke.fill_(2345.0)
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_MJCF_DEFAULT)
+                    np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], DEFAULT_LIMIT_SOLREF)
+                    model.joint_limit_ke.fill_(np.nextafter(np.float32(2345.0), np.float32(np.inf)))
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_FORCE_SPACE)
+
+    def test_all_model_updates_are_cuda_graph_capture_safe(self):
+        """Capture every GPU model-property branch and replay body-flag changes."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+
+        mjcf = """
+        <mujoco>
+          <worldbody>
+            <body name="a" pos="0 0 1">
+              <joint name="ja" type="hinge" range="-1 1"/>
+              <geom name="ga" type="capsule" size="0.05 0.2"/>
+              <site name="sa" pos="0 0 0.2" size="0.02"/>
+            </body>
+            <body name="b" pos="0.4 0 1">
+              <joint name="jb" type="hinge" range="-1 1"/>
+              <geom name="gb" type="sphere" size="0.08"/>
+            </body>
+          </worldbody>
+          <contact><pair geom1="ga" geom2="gb"/></contact>
+          <equality><connect body1="a" body2="b" anchor="0.2 0 1"/></equality>
+          <tendon><fixed name="t"><joint joint="ja" coef="1"/><joint joint="jb" coef="-1"/></fixed></tendon>
+          <actuator><general name="u" joint="ja" gainprm="1"/></actuator>
+        </mujoco>
+        """
+
+        with wp.ScopedDevice(device):
+            template = newton.ModelBuilder()
+            template.add_mjcf(mjcf, ctrl_direct=True)
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.replicate(template, 2)
+            model = builder.finalize(device=device)
+            model.joint_armature.fill_(0.25)
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_cpu=False,
+                disable_contacts=True,
+                separate_worlds=True,
+                iterations=1,
+            )
+
+            self.assertGreater(solver.mj_model.nsite, 0)
+            self.assertGreater(solver.mj_model.npair, 0)
+            self.assertGreater(solver.mj_model.neq, 0)
+            self.assertGreater(solver.mj_model.ntendon, 0)
+            self.assertGreater(solver.mj_model.nu, 0)
+            physical_meaninertia = solver.mjw_model.stat.meaninertia.numpy().copy()
+
+            with wp.ScopedCapture(device=device) as capture:
+                solver.notify_model_changed(ModelFlags.ALL)
+
+            model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+            model.joint_friction.fill_(3.25)
+            model.joint_damping.fill_(4.5)
+            model.shape_material_mu.fill_(0.75)
+            model.mujoco.equality_constraint_enabled.fill_(False)
+            model.mujoco.tendon_stiffness.fill_(123.0)
+            model.mujoco.actuator_gainprm.fill_(2.0)
+            wp.capture_launch(capture.graph)
+
+            np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
+            np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
+            np.testing.assert_allclose(solver.mjw_model.dof_frictionloss.numpy(), 3.25)
+            np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), 4.5)
+            np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[..., 0], 0.75)
+            np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy(), False)
+            np.testing.assert_allclose(solver.mjw_model.tendon_stiffness.numpy(), 123.0)
+            np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[..., 0], 2.0)
+
+            model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
+            np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
 
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
@@ -12689,7 +12845,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
         messages = [str(w.message) for w in caught]
         self.assertTrue(
             any("invalid components" in m and "DOF indices" in m for m in messages),
