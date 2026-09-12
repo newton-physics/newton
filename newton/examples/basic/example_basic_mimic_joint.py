@@ -10,6 +10,7 @@
 #     q_nut = pitch / (2 * pi) * q_screw
 #
 # Command: python -m newton.examples basic_mimic_joint
+# Multi-turn VBD: python -m newton.examples basic_mimic_joint --solver vbd --pitch 0.1
 #
 ###########################################################################
 
@@ -39,8 +40,8 @@ class Example:
         self.viewer = viewer
         self.solver_name = args.solver
         self.frame_dt = 1.0 / self.FPS
-        # VBD projects the mimic relationship inside each solver iteration, so
-        # this simple mechanism does not benefit from additional substeps.
+        # One VBD substep suffices at the default pitch; faster rotations below
+        # require enough substeps to distinguish successive revolutions.
         self.sim_substeps = 1 if self.solver_name == "vbd" else self.DEFAULT_SIM_SUBSTEPS
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
@@ -50,7 +51,11 @@ class Example:
             raise ValueError(f"pitch must be finite and nonzero, got {self.pitch}")
         self.coupling_ratio = self.pitch / (2.0 * math.pi)
         self.angle_amplitude = self.TRAVEL_AMPLITUDE / abs(self.coupling_ratio)
-        if self.angle_amplitude >= math.pi:
+        if self.solver_name == "vbd":
+            peak_step_angle = self.angle_amplitude * (2.0 * math.pi / self.CYCLE_TIME) * self.frame_dt
+            self.sim_substeps = max(self.sim_substeps, 1 + math.floor(peak_step_angle / math.pi))
+            self.sim_dt = self.frame_dt / self.sim_substeps
+        elif self.angle_amplitude >= math.pi:
             raise ValueError(
                 "pitch is too small for this example: the screw motion must remain below half a revolution"
             )
@@ -254,8 +259,12 @@ class Example:
 
     def _read_joint_state(self):
         """Read generalized coordinates and update coupling diagnostics."""
-        newton.eval_ik(self.model, self.state_0, self.joint_q, self.joint_qd)
-        joint_q = self.joint_q.numpy()
+        if self.solver_name == "vbd":
+            # Keep VBD's accumulated turn counts for the screw diagnostics.
+            joint_q = self.state_0.joint_q.numpy()
+        else:
+            newton.eval_ik(self.model, self.state_0, self.joint_q, self.joint_qd)
+            joint_q = self.joint_q.numpy()
         self.screw_angle = float(joint_q[self.screw_q_index])
         self.nut_travel = float(joint_q[self.nut_q_index])
         expected_travel = self.coupling_ratio * self.screw_angle
