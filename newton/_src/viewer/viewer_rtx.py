@@ -41,7 +41,7 @@ from .picking import Picking
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
-from .viewer_usd import ViewerUSD, _compute_segment_xform
+from .viewer_usd import ViewerUSD
 from .wind import Wind
 
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
@@ -107,7 +107,8 @@ class ViewerRTX(ViewerUSD):
     base class, serializes it to disk, then creates an OVRTX renderer for
     real-time path-traced rendering.  Subsequent frames update rigid-body
     transforms (and deforming-mesh vertices) via the OVRTX attribute API
-    and present the rendered image in a pyglet / OpenGL window.
+    and present the rendered image in a pyglet / OpenGL window. Debug markers
+    and custom mesh instances can also be added after rendering starts.
     """
 
     _PHASE_BUILD = 0
@@ -706,21 +707,16 @@ void main() {
             config.log_level = "error"
             self._rtx = ovrtx.Renderer(config=config)
             self._rtx.open_usd(ovrtx_usd_path)
-
-            # Flat prim-path list for a single transform binding
-            self._all_instance_paths = []
-            for paths in self._instance_prim_paths.values():
-                self._all_instance_paths.extend(paths)
-
-            if self._all_instance_paths:
-                from ovrtx import PrimMode, Semantic
-
-                self._transform_binding = self._rtx.bind_attribute(
-                    prim_paths=self._all_instance_paths,
-                    attribute_name="omni:xform",
-                    semantic=Semantic.XFORM_MAT4x4,
-                    prim_mode=PrimMode.MUST_EXIST,
+            self._runtime_prim_paths = {
+                path: path
+                for path in (
+                    *self._mesh_prim_paths.values(),
+                    *self._point_batch_paths.values(),
+                    *(self._get_path(name) for name in self._instance_prim_paths),
                 )
+            }
+
+            self._bind_ovrtx_transforms()
         except Exception as e:
             raise RuntimeError(f"Failed to create OVRTX renderer: {e}") from e
         finally:
@@ -791,6 +787,72 @@ void main() {
         self._flat_shape_scales = wp.array(np.concatenate(chunks_scales, axis=0), dtype=wp.vec3, device=dev)
         self._flat_total_shapes = len(self._flat_shape_xforms)
         self._flat_mat44_offset = flat_mat44_offset
+
+    def _bind_ovrtx_transforms(self):
+        """Refresh the transform binding after adding or resizing an instance batch."""
+        from ovrtx import PrimMode, Semantic
+
+        if self._transform_binding is not None:
+            self._transform_binding.unbind()
+            self._transform_binding = None
+        self._all_instance_paths = [path for paths in self._instance_prim_paths.values() for path in paths]
+        if self._all_instance_paths:
+            self._transform_binding = self._rtx.bind_attribute(
+                prim_paths=self._all_instance_paths,
+                attribute_name="omni:xform",
+                semantic=Semantic.XFORM_MAT4x4,
+                prim_mode=PrimMode.MUST_EXIST,
+            )
+
+    def _replace_runtime_prim(self, path: str) -> str:
+        """Publish a self-contained USD subtree, including its bound materials."""
+        from pxr import Sdf, Usd, UsdShade
+
+        flattened = self.stage.Flatten()
+        stage = Usd.Stage.CreateInMemory()
+        Sdf.CopySpec(flattened, path, stage.GetRootLayer(), "/Marker")
+        stage.SetDefaultPrim(stage.GetPrimAtPath("/Marker"))
+
+        # Material targets outside the copied subtree cannot cross a reference
+        # boundary. Copy those materials inside it and rebind the geometry.
+        materials = {}
+        for prim in list(stage.Traverse()):
+            binding = UsdShade.MaterialBindingAPI(prim).GetDirectBindingRel()
+            if not binding:
+                continue
+            for target in binding.GetTargets():
+                if target.HasPrefix(Sdf.Path("/Marker")):
+                    continue
+                if target not in materials:
+                    material_path = f"/Marker/Materials/material_{len(materials)}"
+                    self._ensure_scopes_for_path(stage, material_path)
+                    Sdf.CopySpec(flattened, target, stage.GetRootLayer(), material_path)
+                    materials[target] = material_path
+                binding.SetTargets([materials[target]])
+
+        # OVRTX consumes the current frame, not the USD export timeline.
+        for prim in stage.Traverse():
+            for attr in prim.GetAttributes():
+                if attr.GetNumTimeSamples():
+                    value = attr.Get(self._frame_index)
+                    attr.Clear()
+                    attr.Set(value)
+
+        handle = self._runtime_prim_handles.pop(path, None)
+        if handle is not None:
+            self._rtx.remove_usd(handle)
+        elif path in self._runtime_prim_paths:
+            self._rtx.write_attribute(prim_paths=[path], attribute_name="visibility", tensor=["invisible"])
+        # OVRTX rejects references at existing prim paths. Keep the original
+        # build-phase batch hidden and publish replacements at fresh sibling paths.
+        self._runtime_prim_serial += 1
+        runtime_path = f"{path}_rtx_{self._runtime_prim_serial}"
+        self._runtime_prim_handles[path] = self._rtx.add_usd_reference_from_string(
+            stage.GetRootLayer().ExportToString(), prefix_path=runtime_path
+        )
+        self._runtime_prim_paths[path] = runtime_path
+        self._runtime_scene_changed = True
+        return runtime_path
 
     # ------------------------------------------------ ViewerUSD overrides
 
@@ -904,14 +966,6 @@ void main() {
 
         self._instance_prim_paths[self._PICKING_LINE_NAME] = [path]
 
-    def _remove_runtime_line_batch_layer(self, name: str):
-        if self._rtx is None:
-            return
-
-        handle = self._line_batch_handles.pop(name, None)
-        if handle is not None:
-            self._rtx.remove_usd(handle)
-
     def _ensure_point_batch_primitive(self, name: str):
         if Gf is None or UsdGeom is None:
             return None
@@ -986,82 +1040,6 @@ void main() {
 
         return positions, scales, proto_indices, ids, colors_np, color_indices
 
-    def _rebuild_runtime_line_batch_layer(self, name: str, starts, ends, colors, width: float, hidden: bool) -> bool:
-        if self._rtx is None or Gf is None or UsdGeom is None:
-            return False
-
-        self._remove_runtime_line_batch_layer(name)
-
-        (
-            positions,
-            orientations,
-            scales,
-            _proto_indices,
-            _ids,
-            colors_np,
-            color_indices,
-        ) = self._build_line_batch_arrays(starts, ends, colors, hidden)
-
-        if hidden or len(positions) == 0:
-            return True
-
-        try:
-            from pxr import Sdf as _Sdf
-            from pxr import Usd as _Usd
-            from pxr import UsdGeom as _UsdGeom
-            from pxr import UsdShade as _UsdShade
-        except ImportError:
-            return False
-
-        target_path = self._get_path(name)
-        prim_name = target_path.rsplit("/", 1)[-1]
-        stage = _Usd.Stage.CreateInMemory()
-        root = _UsdGeom.Xform.Define(stage, f"/{prim_name}")
-        stage.SetDefaultPrim(root.GetPrim())
-
-        # OVRTX reliably renders fully authored runtime capsule prims, whereas
-        # runtime PointInstancer color updates fell back to gray.
-        material_paths: dict[tuple[float, float, float], str] = {}
-
-        for i in range(len(positions)):
-            color_index = int(color_indices[i]) if len(color_indices) > i else min(i, len(colors_np) - 1)
-            color = colors_np[color_index].astype(np.float32)
-            color_key = (float(color[0]), float(color[1]), float(color[2]))
-
-            seg_path = f"/{prim_name}/seg_{i}"
-            xform = _UsdGeom.Xform.Define(stage, seg_path)
-            xform.ClearXformOpOrder()
-            xform.AddTranslateOp().Set(Gf.Vec3d(*positions[i].astype(np.float64).tolist()))
-            orient = orientations[i].astype(np.float32)
-            xform.AddOrientOp().Set(Gf.Quatf(float(orient[3]), float(orient[0]), float(orient[1]), float(orient[2])))
-            xform.AddScaleOp().Set(Gf.Vec3d(*scales[i].astype(np.float64).tolist()))
-
-            capsule = _UsdGeom.Capsule.Define(stage, f"{seg_path}/capsule")
-            capsule.GetAxisAttr().Set(_UsdGeom.Tokens.z)
-            capsule.GetRadiusAttr().Set(float(width))
-            capsule.GetHeightAttr().Set(1.0)
-            capsule.GetDisplayColorAttr().Set([Gf.Vec3f(*color.tolist())])
-
-            mat_path = material_paths.get(color_key)
-            if mat_path is None:
-                mat_path = f"/{prim_name}/Materials/mat_{len(material_paths)}"
-                material_paths[color_key] = mat_path
-                material = _UsdShade.Material.Define(stage, mat_path)
-                surface = _UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
-                surface.CreateIdAttr("UsdPreviewSurface")
-                surface.CreateInput("diffuseColor", _Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color.tolist()))
-                surface.CreateInput("emissiveColor", _Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color.tolist()))
-                surface.CreateInput("roughness", _Sdf.ValueTypeNames.Float).Set(1.0)
-                surface.CreateInput("metallic", _Sdf.ValueTypeNames.Float).Set(0.0)
-                material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
-
-            _UsdShade.MaterialBindingAPI.Apply(capsule.GetPrim())
-            _UsdShade.MaterialBindingAPI(capsule).Bind(_UsdShade.Material.Get(stage, mat_path))
-
-        handle = self._rtx.add_usd_reference_from_string(stage.GetRootLayer().ExportToString(), prefix_path=target_path)
-        self._line_batch_handles[name] = handle
-        return True
-
     @staticmethod
     def _build_line_instance_buffers(
         starts_np: np.ndarray, ends_np: np.ndarray, capacity: int
@@ -1112,88 +1090,6 @@ void main() {
             np.zeros((1, 3), dtype=np.float32),
             np.zeros((1, 3), dtype=np.float32),
         )
-
-    def _build_line_batch_arrays(
-        self, starts, ends, colors, hidden: bool
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        empty_positions = np.zeros((0, 3), dtype=np.float32)
-        empty_orientations = np.zeros((0, 4), dtype=np.float16)
-        empty_scales = np.zeros((0, 3), dtype=np.float32)
-        empty_proto_indices = np.zeros(0, dtype=np.int32)
-        empty_ids = np.zeros(0, dtype=np.int64)
-        empty_colors = np.zeros((0, 3), dtype=np.float32)
-        empty_color_indices = np.zeros(0, dtype=np.int32)
-
-        if hidden or starts is None or ends is None or colors is None or Gf is None:
-            return (
-                empty_positions,
-                empty_orientations,
-                empty_scales,
-                empty_proto_indices,
-                empty_ids,
-                empty_colors,
-                empty_color_indices,
-            )
-
-        starts_np = (
-            starts.numpy().astype(np.float32) if isinstance(starts, wp.array) else np.asarray(starts, dtype=np.float32)
-        )
-        ends_np = ends.numpy().astype(np.float32) if isinstance(ends, wp.array) else np.asarray(ends, dtype=np.float32)
-        num_lines = min(len(starts_np), len(ends_np))
-        if num_lines == 0:
-            return (
-                empty_positions,
-                empty_orientations,
-                empty_scales,
-                empty_proto_indices,
-                empty_ids,
-                empty_colors,
-                empty_color_indices,
-            )
-
-        colors_np = self._promote_colors_to_array(colors, num_lines)
-        colors_np = np.asarray(colors_np, dtype=np.float32)
-        if colors_np.ndim == 1:
-            if colors_np.shape[0] != 3:
-                raise ValueError("Line colors must be an RGB triplet or an array of RGB triplets.")
-            colors_np = np.tile(colors_np, (num_lines, 1))
-        elif colors_np.shape[0] == 1 and num_lines > 1:
-            colors_np = np.repeat(colors_np, num_lines, axis=0)
-        elif colors_np.shape[0] != num_lines:
-            raise ValueError("Number of line colors must match the number of lines.")
-
-        positions = np.zeros((num_lines, 3), dtype=np.float32)
-        orientations = np.zeros((num_lines, 4), dtype=np.float16)
-        orientations[:, 3] = np.float16(1.0)
-        scales = np.zeros((num_lines, 3), dtype=np.float32)
-
-        for i in range(num_lines):
-            pos0 = starts_np[i]
-            pos1 = ends_np[i]
-            delta = pos1 - pos0
-            if float(np.linalg.norm(delta)) <= 1.0e-8:
-                positions[i] = 0.5 * (pos0 + pos1)
-                continue
-
-            pos, rot, scale = _compute_segment_xform(
-                Gf.Vec3f(float(pos0[0]), float(pos0[1]), float(pos0[2])),
-                Gf.Vec3f(float(pos1[0]), float(pos1[1]), float(pos1[2])),
-            )
-            imag = rot.GetImaginary()
-            positions[i] = (float(pos[0]), float(pos[1]), float(pos[2]))
-            # quath memory layout is imaginary xyz first, then real w.
-            orientations[i] = (
-                np.float16(imag[0]),
-                np.float16(imag[1]),
-                np.float16(imag[2]),
-                np.float16(rot.GetReal()),
-            )
-            scales[i] = (float(scale[0]), float(scale[1]), float(scale[2]))
-
-        proto_indices = np.zeros(num_lines, dtype=np.int32)
-        ids = np.arange(num_lines, dtype=np.int64)
-        color_indices = np.arange(num_lines, dtype=np.int32)
-        return positions, orientations, scales, proto_indices, ids, colors_np, color_indices
 
     @override
     def is_key_down(self, key: str | int) -> bool:
@@ -1376,7 +1272,6 @@ void main() {
             self._pending_mesh_normals.clear()
             self._pending_mesh_topology.clear()
             self._pending_mesh_visibility.clear()
-            self._pending_line_batches.clear()
             self._pending_point_batches.clear()
             self._gizmo_log = {}
 
@@ -1416,9 +1311,12 @@ void main() {
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
             self._update_ovrtx_instance_visibility()
-            self._update_ovrtx_line_batches()
             self._update_ovrtx_point_batches()
             self._update_ovrtx_mesh_points()
+            if self._runtime_scene_changed:
+                # Discard accumulated samples of removed geometry and old colors.
+                self._rtx.reset(time=self._frame_index / self.fps)
+                self._runtime_scene_changed = False
             self._render_and_display()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
@@ -1482,7 +1380,7 @@ void main() {
         """
         name = self._qualify(name)
 
-        if self._phase == self._PHASE_BUILD:
+        if self._phase == self._PHASE_BUILD or name not in self._mesh_prim_paths:
             super().log_mesh(
                 name,
                 points,
@@ -1499,6 +1397,8 @@ void main() {
                 dynamic=dynamic,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
+            if self._phase == self._PHASE_RENDER:
+                self._mesh_prim_paths[name] = self._replace_runtime_prim(self._get_path(name))
         elif name in self._mesh_prim_paths:
             pts = (
                 points.numpy().astype(np.float32)
@@ -1551,7 +1451,19 @@ void main() {
         name = self._qualify(name)
         mesh = self._qualify(mesh)
 
-        if self._phase == self._PHASE_BUILD:
+        count = len(xforms) if xforms is not None else 0
+        previous = self._instance_specs.get(name)
+        appearance = tuple(
+            value.numpy().copy() if value is not None else None for value in (colors, materials, opacities)
+        )
+        changed = previous is None or previous[0] != mesh or previous[1] != count
+        if previous is not None:
+            appearance = tuple(old if new is None else new for old, new in zip(previous[2], appearance, strict=True))
+            changed |= any(not np.array_equal(old, new) for old, new in zip(previous[2], appearance, strict=True))
+
+        if self._phase == self._PHASE_BUILD or (xforms is not None and changed):
+            if previous is not None and (previous[0] != mesh or previous[1] != count):
+                self.stage.RemovePrim(self._get_path(name))
             super().log_instances(
                 name,
                 mesh,
@@ -1562,16 +1474,23 @@ void main() {
                 opacities=opacities,
                 hidden=hidden,
             )
-            if xforms is not None:
-                count = len(xforms)
-                paths = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
-                self._instance_prim_paths[name] = paths
-        else:
-            self._pending_instance_visibility[name] = not hidden
-            if xforms is not None:
-                if scales is None:
-                    scales = wp.ones(len(xforms), dtype=wp.vec3, device=xforms.device)
-                self._pending_xforms[name] = (xforms, scales)
+            self._instance_specs[name] = (mesh, count, appearance)
+            self._instance_prim_paths[name] = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
+            if self._phase == self._PHASE_RENDER:
+                if self._transform_binding is not None:
+                    self._transform_binding.unbind()
+                    self._transform_binding = None
+                runtime_path = self._replace_runtime_prim(self._get_path(name))
+                self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(count)]
+                self._bind_ovrtx_transforms()
+                if not self._use_layered_transform_updates:
+                    self._build_flat_shape_arrays()
+
+        self._pending_instance_visibility[name] = not hidden and count > 0
+        if xforms is not None:
+            if scales is None:
+                scales = wp.ones(count, dtype=wp.vec3, device=xforms.device)
+            self._pending_xforms[name] = (xforms, scales)
 
     @override
     def log_lines(
@@ -1590,22 +1509,78 @@ void main() {
             starts: Array of line start positions [m], shape ``[N, 3]``, or ``None`` for empty.
             ends: Array of line end positions [m], shape ``[N, 3]``, or ``None`` for empty.
             colors: Array of per-line RGB colors, a single RGB triplet, or ``None`` for empty.
-            width: Line width [m].
+            width: Line radius [m].
             hidden: Whether the lines are initially hidden.
         """
-        name = self._qualify(name)
+        self._log_segments(name, starts, ends, colors, width, hidden, arrow=False)
 
-        if self._phase == self._PHASE_BUILD:
-            super().log_lines(name, starts, ends, colors, width, hidden)
-            self._line_batch_paths[name] = self._get_path(name)
-            self._line_batch_proto_paths[name] = self._get_path(name) + "/capsule"
-            self._line_batch_widths[name] = float(width)
+    @override
+    def log_arrows(
+        self,
+        name: str,
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
+        width: float = 0.01,
+        hidden: bool = False,
+    ) -> None:
+        """Log arrows as cylinder shafts with cone heads.
+
+        Args:
+            name: Unique identifier for the arrow batch.
+            starts: Arrow start positions [m], shape ``[N, 3]``, or ``None`` for empty.
+            ends: Arrow tip positions [m], shape ``[N, 3]``, or ``None`` for empty.
+            colors: Per-arrow RGB colors, a single RGB triplet, or ``None`` for empty.
+            width: Shaft radius [m]. The head radius is twice this value.
+            hidden: Whether the arrows are hidden.
+        """
+        self._log_segments(name, starts, ends, colors, width, hidden, arrow=True)
+
+    def _log_segments(self, name, starts, ends, colors, width, hidden, *, arrow: bool):
+        name = self._qualify(name)
+        mesh_name = self._qualify("/geometry/rtx_arrow" if arrow else "/geometry/rtx_line")
+        if hidden or starts is None or ends is None or colors is None or len(starts) == 0 or len(ends) == 0:
+            self._pending_instance_visibility[name] = False
             return
 
-        if name not in self._line_batch_paths:
-            self._rebuild_runtime_line_batch_layer(name, starts, ends, colors, float(width), bool(hidden))
-        elif name in self._line_batch_paths:
-            self._pending_line_batches[name] = (starts, ends, colors, float(width), bool(hidden))
+        if mesh_name not in self._segment_meshes:
+            mesh = (
+                newton.Mesh.create_arrow(
+                    1.0, 0.8, cap_radius=2.0, cap_height=0.2, up_axis=Axis.Z, compute_inertia=False
+                )
+                if arrow
+                else newton.Mesh.create_cylinder(1.0, 0.5, up_axis=Axis.Z, compute_inertia=False)
+            )
+            self.log_mesh(
+                mesh_name,
+                wp.array(mesh.vertices, dtype=wp.vec3, device=self.device),
+                wp.array(mesh.indices, dtype=wp.int32, device=self.device),
+                normals=wp.array(mesh.normals, dtype=wp.vec3, device=self.device),
+                hidden=True,
+            )
+            self._segment_meshes[mesh_name] = float(mesh.vertices[:, 2].max()) if arrow else 1.0
+
+        starts_np = starts.numpy()
+        ends_np = ends.numpy()
+        count = min(len(starts_np), len(ends_np))
+        xforms, scales = self._build_line_instance_buffers(starts_np, ends_np, capacity=count)
+        scales[:, :2] *= float(width)
+        if arrow:
+            xforms[:, :3] = starts_np[:count]
+            scales[:, 2] /= self._segment_meshes[mesh_name]
+        colors_np = np.asarray(self._promote_colors_to_array(colors, count), dtype=np.float32).reshape(-1, 3)
+        if len(colors_np) == 1:
+            colors_np = np.repeat(colors_np, count, axis=0)
+        if len(colors_np) != count:
+            raise ValueError("Number of segment colors must match the number of segments.")
+        self.log_instances(
+            name,
+            mesh_name,
+            wp.array(xforms, dtype=wp.transform, device=self.device),
+            wp.array(scales, dtype=wp.vec3, device=self.device),
+            wp.array(colors_np, dtype=wp.vec3, device=self.device),
+            None,
+        )
 
     @override
     def log_points(
@@ -1627,7 +1602,7 @@ void main() {
         """
         name = self._qualify(name)
 
-        if self._phase == self._PHASE_BUILD:
+        if self._phase == self._PHASE_BUILD or name not in self._point_batch_paths:
             if points is None:
                 return None
 
@@ -1657,7 +1632,9 @@ void main() {
                 "inherited" if not hidden and len(positions) > 0 else "invisible",
                 self._frame_index,
             )
-            return instancer.GetPath()
+            if self._phase == self._PHASE_RENDER:
+                self._point_batch_paths[name] = self._replace_runtime_prim(str(instancer.GetPath()))
+            return self._point_batch_paths[name]
 
         if name in self._point_batch_paths:
             self._pending_point_batches[name] = (points, radii, colors, bool(hidden))
@@ -1739,6 +1716,15 @@ void main() {
 
         for name, visible in self._pending_instance_visibility.items():
             paths = self._instance_prim_paths.get(name)
+            if paths is None:
+                continue
+            # The group may have been hidden before its first rendered frame.
+            group_path = self._get_path(name)
+            self._rtx.write_attribute(
+                prim_paths=[self._runtime_prim_paths.get(group_path, group_path)],
+                attribute_name="visibility",
+                tensor=["inherited" if visible else "invisible"],
+            )
             if not paths:
                 continue
             self._rtx.write_attribute(
@@ -1827,64 +1813,6 @@ void main() {
                     attribute_name="visibility",
                     tensor=["inherited" if visible else "invisible"],
                 )
-
-    def _update_ovrtx_line_batches(self):
-        if self._rtx is None or not self._pending_line_batches:
-            return
-
-        with wp.ScopedTimer("ViewerRTX::update_line_batches", active=PROFILE_ENABLED, use_nvtx=True):
-            for name, (starts, ends, colors, width, hidden) in self._pending_line_batches.items():
-                prim_path = self._line_batch_paths.get(name)
-                proto_path = self._line_batch_proto_paths.get(name)
-                if prim_path is None or proto_path is None:
-                    continue
-
-                if self._line_batch_widths.get(name) != width:
-                    self._rtx.write_attribute(
-                        prim_paths=[proto_path],
-                        attribute_name="radius",
-                        tensor=np.asarray([width], dtype=np.float32),
-                    )
-                    self._line_batch_widths[name] = width
-
-                (
-                    positions,
-                    orientations,
-                    scales,
-                    proto_indices,
-                    ids,
-                    colors_np,
-                    color_indices,
-                ) = self._build_line_batch_arrays(starts, ends, colors, hidden)
-
-                is_visible = not hidden and len(positions) > 0
-                self._rtx.write_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="visibility",
-                    tensor=["inherited" if is_visible else "invisible"],
-                )
-                if not is_visible:
-                    continue
-
-                self._rtx.write_array_attribute(
-                    [prim_path], "positions", [self._make_laned_array_dltensor(positions.astype(np.float32), lanes=3)]
-                )
-                self._rtx.write_array_attribute(
-                    [prim_path],
-                    "orientations",
-                    [self._make_laned_array_dltensor(orientations.astype(np.float16), lanes=4)],
-                )
-                self._rtx.write_array_attribute(
-                    [prim_path], "scales", [self._make_laned_array_dltensor(scales.astype(np.float32), lanes=3)]
-                )
-                self._rtx.write_array_attribute([prim_path], "protoIndices", [proto_indices])
-                self._rtx.write_array_attribute([prim_path], "ids", [ids])
-                self._rtx.write_array_attribute(
-                    [prim_path],
-                    "primvars:displayColor",
-                    [self._make_laned_array_dltensor(colors_np.astype(np.float32), lanes=3)],
-                )
-                self._rtx.write_array_attribute([prim_path], "primvars:displayColor:indices", [color_indices])
 
     def _update_ovrtx_point_batches(self):
         if self._rtx is None or not self._pending_point_batches:
@@ -2126,12 +2054,14 @@ void main() {
 
         # Reset build-phase state
         self._instance_prim_paths = {}
+        self._instance_specs = {}
+        self._runtime_prim_handles = {}
+        self._runtime_prim_paths = {}
+        self._runtime_prim_serial = 0
+        self._runtime_scene_changed = False
+        self._segment_meshes = {}
         self._all_instance_paths = []
         self._mesh_prim_paths = {}
-        self._line_batch_paths = {}
-        self._line_batch_proto_paths = {}
-        self._line_batch_widths = {}
-        self._line_batch_handles = {}
         self._point_batch_paths = {}
         self._point_batch_colors = {}
         self._point_batch_synced_counts = {}
@@ -2142,7 +2072,6 @@ void main() {
         self._pending_mesh_normals = {}
         self._pending_mesh_topology = {}
         self._pending_mesh_visibility = {}
-        self._pending_line_batches = {}
         self._pending_point_batches = {}
 
         self._flat_shape_xforms = None
