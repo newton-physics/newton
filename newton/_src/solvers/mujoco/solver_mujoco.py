@@ -6309,7 +6309,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Convexity verdict per unique mesh asset, populated on first GeoType.MESH
         # use: True (convex), False (non-convex), or None (unverifiable). A key
         # missing from this dict means the verdict has not been evaluated yet.
-        mesh_convexity_cache: dict[tuple[int, tuple[float, float, float]], bool | None] = {}
+        # Keyed by id(mesh) alone: convexity is affine-invariant, so one verdict
+        # covers every scaled shape sharing the asset.
+        mesh_convexity_cache: dict[int, bool | None] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -6429,11 +6431,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         mesh_export_cache[key] = mesh_export
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
-                    if stype == GeoType.MESH and key not in mesh_convexity_cache:
-                        # Compute once per unique mesh; convexity is scale-invariant so
-                        # the cached verdict is valid for every shape sharing this asset.
-                        mesh_convexity_cache[key] = _is_mesh_convex(vertices, indices)
-                    is_convex = mesh_convexity_cache.get(key)
+                    mesh_asset_key = id(mesh_src)
+                    if (
+                        stype == GeoType.MESH
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and mesh_asset_key not in mesh_convexity_cache
+                    ):
+                        # Compute once per unique mesh asset from its raw geometry.
+                        # Convexity is affine-invariant, so the verdict does not
+                        # depend on the per-shape scale, and this check is only
+                        # ever consulted when MuJoCo contacts are active.
+                        mesh_convexity_cache[mesh_asset_key] = _is_mesh_convex(
+                            mesh_src.vertices, mesh_src.indices
+                        )
+                    is_convex = mesh_convexity_cache.get(mesh_asset_key)
                     uses_mujoco_contacts = (
                         bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
                         and (
