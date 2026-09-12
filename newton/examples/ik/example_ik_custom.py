@@ -138,6 +138,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
         self.viewer.show_particles = True
 
         # ------------------------------------------------------------------

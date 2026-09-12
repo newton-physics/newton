@@ -48,8 +48,15 @@ def set_viewer_camera(
     if show_joints is not None and hasattr(viewer, "show_joints"):
         viewer.show_joints = show_joints
 
-    if hasattr(viewer, "set_camera"):
-        viewer.set_camera(pos=pos, pitch=0.0, yaw=0.0)
+    if hasattr(viewer, "set_camera_look_at"):
+        viewer.set_camera_look_at(pos=pos, target=target, fov=fov)
+    elif hasattr(viewer, "set_camera"):
+        position = np.asarray(tuple(pos), dtype=np.float64)
+        direction = np.asarray(tuple(target), dtype=np.float64) - position
+        horizontal = float(np.hypot(direction[0], direction[1]))
+        pitch = float(np.degrees(np.arctan2(direction[2], horizontal)))
+        yaw = float(np.degrees(np.arctan2(direction[1], direction[0])))
+        viewer.set_camera(pos=pos, pitch=pitch, yaw=yaw)
         if hasattr(viewer, "camera"):
             viewer.camera.look_at(target)
             viewer.camera.fov = fov
