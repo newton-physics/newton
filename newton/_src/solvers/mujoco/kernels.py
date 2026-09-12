@@ -1530,6 +1530,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
+CTRL_TYPE_DCMOTOR = wp.constant(3)
 
 
 @wp.func
@@ -2109,6 +2110,7 @@ def update_axis_properties_kernel(
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
+    newton_actuator_ctrl_type: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
     newton_actuator_dynprm: wp.array[vec10],
@@ -2136,6 +2138,7 @@ def update_actuator_properties_kernel(
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_actuator_idx: Index into Newton's mujoco:actuator arrays
+        newton_actuator_ctrl_type: Intrinsic actuator shortcut type
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
@@ -2157,6 +2160,11 @@ def update_actuator_properties_kernel(
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
 
     if source != CTRL_SOURCE_CTRL_DIRECT:
+        return
+
+    # High-level MJCF DC-motor rows keep placeholder general-actuator arrays;
+    # preserve the parameters compiled by MjsActuator.set_to_dcmotor().
+    if newton_actuator_ctrl_type[world_newton_idx] == CTRL_TYPE_DCMOTOR:
         return
 
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
