@@ -23,6 +23,7 @@ import sys
 import tempfile
 import unittest
 from typing import Any
+from unittest.mock import call, create_autospec
 
 import warp as wp
 
@@ -45,7 +46,7 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
     r"GPU execution will not be available\."
     r"|"
-    r"Warp CUDA error 100: no CUDA-capable device is detected "
+    r"Warp CUDA error \d+(?:: [^\n]*)? "
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
@@ -97,7 +98,6 @@ _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
 )
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
@@ -159,7 +159,8 @@ def add_example_test(
         test_options_cuda = {}
 
     def run(test, device):
-        if wp.get_device(device).is_cuda:
+        is_cuda = wp.get_device(device).is_cuda
+        if is_cuda:
             options = _merge_options(test_options, test_options_cuda)
         else:
             options = _merge_options(test_options, test_options_cpu)
@@ -258,7 +259,7 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
-            _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
+            _register_example_allow_output_regexes(test, is_cuda=is_cuda)
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -297,18 +298,50 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
+def _register_example_allow_output_regexes(test: NewtonTestCase, *, is_cuda: bool) -> None:
+    _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
+    if not is_cuda:
+        test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
+
+
 class TestExampleOutputRegexes(unittest.TestCase):
+    def test_warp_cuda_unavailable_output_is_registered_only_for_cpu(self):
+        """Register CUDA driver initialization diagnostics only for CPU examples."""
+        cpu_test = create_autospec(NewtonTestCase, instance=True)
+        cuda_test = create_autospec(NewtonTestCase, instance=True)
+
+        _register_example_allow_output_regexes(cpu_test, is_cuda=False)
+        _register_example_allow_output_regexes(cuda_test, is_cuda=True)
+
+        warp_cuda_call = call(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
+        self.assertIn(warp_cuda_call, cpu_test.allowOutputRegex.call_args_list)
+        self.assertNotIn(warp_cuda_call, cuda_test.allowOutputRegex.call_args_list)
+
     def test_warp_cuda_unavailable_output_is_allowed(self):
+        """Allow CUDA driver initialization diagnostics emitted on CPU-only systems."""
         outputs = (
             "Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.\n",
             "Warp CUDA error 100: no CUDA-capable device is detected "
             "(in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:319)\n",
+            "Warp CUDA error 999: unknown error "
+            "(in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:333)\n",
         )
 
         for output in outputs:
             with self.subTest(output=output):
                 unmatched_output = re.sub(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "", output, flags=re.MULTILINE)
                 self.assertEqual(unmatched_output, "")
+
+    def test_warp_cuda_non_initialization_output_is_not_allowed(self):
+        """Keep CUDA diagnostics outside driver initialization visible to tests."""
+        output = (
+            "Warp CUDA error 999: unknown error "
+            "(in function wp_cuda_graphics_register_gl_buffer, /builds/omniverse/warp/warp/native/warp.cu:4419)\n"
+        )
+
+        unmatched_output = re.sub(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, output)
 
     def test_basic_plotting_output_does_not_consume_trailing_output(self):
         unexpected_output = "unexpected output\n"
@@ -380,6 +413,15 @@ add_basic_example_test(
     test_options={"solver": "vbd"},
     test_suffix="vbd",
 )
+
+for mimic_solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd"):
+    add_basic_example_test(
+        name="basic.example_basic_mimic_joint",
+        devices=test_devices,
+        use_viewer=True,
+        test_options={"num-frames": 120, "solver": mimic_solver},
+        test_suffix=mimic_solver,
+    )
 
 add_basic_example_test(
     name="basic.example_basic_shapes",
@@ -655,6 +697,14 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_g1",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 500, "world-count": 4, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -871,7 +921,6 @@ def add_diffsim_example_test(**kwargs: Any) -> None:
     extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
     allow_output_regexes = [
         (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-        (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
         *extra_allow_output_regexes,
     ]
     add_example_test(TestDiffSimExamples, allow_output_regexes=allow_output_regexes, **kwargs)
@@ -1058,7 +1107,6 @@ class TestContactsExamples(NewtonTestCase):
 
 _CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
 ]
 
 

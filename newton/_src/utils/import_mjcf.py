@@ -50,6 +50,10 @@ from .import_utils import (
 )
 from .mesh import load_meshes_from_file
 
+# Inertia helpers are evaluated at 1 kg/m³, so this is the reference mass
+# of a cube measuring 0.1 mm on each side.
+_MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
+
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     """Default path resolver - joins base_dir with file_path.
@@ -1455,7 +1459,7 @@ def parse_mjcf(
                 if geom_type == "sphere":
                     r = geom_size[0]
                     m_computed, com, inertia_tensor = compute_inertia_sphere(1.0, r)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "box":
@@ -1466,18 +1470,18 @@ def parse_mjcf(
                     inertia_computed = True
                 elif geom_type == "cylinder":
                     m_computed, com, inertia_tensor = compute_inertia_cylinder(1.0, geom_radius, geom_height)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "capsule":
                     m_computed, com, inertia_tensor = compute_inertia_capsule(1.0, geom_radius, geom_height)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 elif geom_type == "ellipsoid":
                     rx, ry, rz = geom_size[0], geom_size[1], geom_size[2]
                     m_computed, com, inertia_tensor = compute_inertia_ellipsoid(1.0, rx, ry, rz)
-                    if m_computed > 1e-6:
+                    if m_computed >= _MIN_EXPLICIT_MASS_REFERENCE_MASS:
                         inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
                         inertia_computed = True
                 else:
@@ -2024,6 +2028,14 @@ def parse_mjcf(
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
+                # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
+                # SolverMuJoCo adds ref back when it builds jnt_range.
+                if has_range:
+                    joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular and use_degrees:
+                        joint_ref_value = np.deg2rad(joint_ref_value)
+                    limit_lower -= joint_ref_value
+                    limit_upper -= joint_ref_value
 
                 # ``solreflimit`` is a native MuJoCo solver parameter, not a
                 # force-space gain. Preserve it through the custom attribute and
@@ -3308,8 +3320,14 @@ def parse_mjcf(
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
                 if inheritrange > 0 and joint_name and qd_start >= 0:
-                    lower = builder.joint_limit_lower[qd_start]
-                    upper = builder.joint_limit_upper[qd_start]
+                    # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
+                    # Add ref back so the derived ctrlrange matches native MuJoCo.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
                     if lower < upper:
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange

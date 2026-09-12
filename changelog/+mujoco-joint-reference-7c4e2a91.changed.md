@@ -1,0 +1,1 @@
+Keep Newton scalar joint coordinates, limits, and position targets relative to the authored pose for MuJoCo joints with a nonzero reference value (MJCF `ref` / `mujoco.dof_ref`). The solver converts these values to and from absolute MuJoCo `qpos` coordinates. Correct USD import of revolute `mjc:springref` to respect `mjc:compiler:angle`, including its default degree units.

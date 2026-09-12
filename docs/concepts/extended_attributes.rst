@@ -109,7 +109,8 @@ The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_AT
    * - Attribute
      - Description
    * - :attr:`~newton.State.body_qdd`
-     - Rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
+     - Rigid-body center-of-mass spatial accelerations in the world frame (used by
+       :class:`~newton.sensors.SensorIMU`)
    * - :attr:`~newton.State.body_parent_f`
      - Rigid-body parent interaction wrenches
    * - ``State.mujoco.qfrc_actuator``
@@ -122,4 +123,16 @@ Notes
 
 - Some components transparently request attributes they need. For example, :class:`~newton.sensors.SensorIMU` requests ``body_qdd`` and :class:`~newton.sensors.SensorContact` requests ``force``.
   Create sensors before allocating State/Contacts for this to work automatically.
-- Solvers populate extended attributes they support. :class:`~newton.solvers.SolverMuJoCo` populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``. :class:`~newton.solvers.SolverFeatherstone` populates ``body_parent_f`` directly from its RNEA backward pass. :class:`~newton.solvers.SolverXPBD` populates ``body_parent_f`` and ``force``; XPBD's reported wrenches are approximate (it applies relaxation factors to each constraint correction and is not momentum-conserving), so they should be treated as the *applied* constraint reaction rather than an exact analytic value. For simple decoupled cases (e.g. a single dynamic body suspended from a kinematic or world parent) the XPBD values converge to within the integrator's first-order time-stepping bias.
+- Solvers populate extended attributes they support. :class:`~newton.solvers.SolverMuJoCo`
+  populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``.
+  :class:`~newton.solvers.SolverFeatherstone` populates ``body_parent_f`` directly
+  from its RNEA backward pass. :class:`~newton.solvers.SolverXPBD` populates
+  ``body_parent_f`` and ``force``; XPBD's reported wrenches are approximate (it
+  applies relaxation factors to each constraint correction and is not
+  momentum-conserving), so they should be treated as the *applied* constraint
+  reaction rather than an exact analytic value. For simple decoupled cases (e.g. a
+  single dynamic body suspended from a kinematic or world parent) the XPBD values
+  converge to within the integrator's first-order time-stepping bias.
+  :class:`~newton.solvers.SolverKamino` populates ``body_qdd`` as the discrete
+  step-average acceleration ``(body_qd_out - body_qd_in) / dt``; across an
+  impact, this includes the velocity impulse divided by ``dt``.

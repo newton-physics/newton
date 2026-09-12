@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 import warp.examples
 
-from newton import ModelBuilder
+from newton import ModelBuilder, Rod
 from newton._src.sim.graph_coloring import (
     ColoringAlgorithm,
     color_graph,
@@ -341,11 +341,10 @@ def test_coloring_rigid_body_cable_chain(test, device):
         # Create orientation (align capsule +Z with +X direction)
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
+        rod = Rod(points, quaternions=edge_q, radius=0.05)
 
         _rod_bodies, _rod_joints = builder.add_rod(
-            positions=points,
-            quaternions=edge_q,
-            radius=0.05,
+            rod=rod,
             bend_stiffness=1.0e2,
             bend_damping=1.0e-2,
             stretch_stiffness=1.0e6,
@@ -414,12 +413,11 @@ def test_coloring_rigid_body_color_algorithms(test, device):
 
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
+        rod = Rod(points, quaternions=edge_q, radius=0.05)
 
         for b in (builder_mcs, builder_greedy):
             b.add_rod(
-                positions=points,
-                quaternions=edge_q,
-                radius=0.05,
+                rod=rod,
                 bend_stiffness=1.0e2,
                 bend_damping=1.0e-2,
                 stretch_stiffness=1.0e6,

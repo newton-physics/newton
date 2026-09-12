@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
@@ -50,7 +53,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
-        - Equality and mimic constraints are not supported.
+        - Joint-owned mimic relationships are enforced as penalty springs for PRISMATIC, REVOLUTE, and D6 joints.
+          Their stability and accuracy depend on ``joint_mimic_ke``, ``joint_mimic_kd``, and the simulation time step.
+          Equality constraints and the deprecated sparse mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -76,6 +81,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
+        joint_mimic_ke: float = 1.0e2,
+        joint_mimic_kd: float = 1.0,
         enable_tri_contact: bool = True,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -86,6 +93,12 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`). Defaults to 1.0.
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
+            joint_mimic_ke: Global position-error gain for joint mimic penalty springs. The units are
+                N/m for linear follower coordinates and N·m/rad for angular follower coordinates.
+                Defaults to 1.0e2.
+            joint_mimic_kd: Global velocity-error gain for joint mimic penalty springs. The units are
+                N·s/m for linear follower coordinates and N·m·s/rad for angular follower coordinates.
+                Defaults to 1.0.
             enable_tri_contact: Enable triangle contact. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
@@ -112,7 +125,14 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self.friction_smoothing = friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
+        for name, value in (("joint_mimic_ke", joint_mimic_ke), ("joint_mimic_kd", joint_mimic_kd)):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative, got {value}")
+        self.joint_mimic_ke = float(joint_mimic_ke)
+        self.joint_mimic_kd = float(joint_mimic_kd)
         self.enable_tri_contact = enable_tri_contact
+
+        has_supported_joint_mimics(model, "SolverSemiImplicit")
 
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
@@ -179,7 +199,16 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
-            eval_body_joint_forces(model, state_in, control, body_f_work, self.joint_attach_ke, self.joint_attach_kd)
+            eval_body_joint_forces(
+                model,
+                state_in,
+                control,
+                body_f_work,
+                self.joint_attach_ke,
+                self.joint_attach_kd,
+                self.joint_mimic_ke,
+                self.joint_mimic_kd,
+            )
 
             # muscles
             if False:
