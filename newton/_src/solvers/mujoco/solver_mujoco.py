@@ -19,6 +19,7 @@ import warp as wp
 
 from ...core.types import MAXVAL, override, vec5, vec10
 from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry.utils import _is_mesh_convex
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -6362,6 +6363,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
+        # Convexity verdict per unique mesh asset, populated on first GeoType.MESH
+        # use: True (convex), False (non-convex), or None (unverifiable). A key
+        # missing from this dict means the verdict has not been evaluated yet.
+        # Keyed by id(mesh) alone: convexity is affine-invariant, so one verdict
+        # covers every scaled shape sharing the asset.
+        mesh_convexity_cache: dict[int, bool | None] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -6481,6 +6488,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         mesh_export_cache[key] = mesh_export
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
+                    mesh_asset_key = id(mesh_src)
+                    if (
+                        stype == GeoType.MESH
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and mesh_asset_key not in mesh_convexity_cache
+                    ):
+                        # Compute once per unique mesh asset from its raw geometry.
+                        # Convexity is affine-invariant, so the verdict does not
+                        # depend on the per-shape scale, and this check is only
+                        # ever consulted when MuJoCo contacts are active.
+                        mesh_convexity_cache[mesh_asset_key] = _is_mesh_convex(
+                            mesh_src.vertices, mesh_src.indices
+                        )
+                    is_convex = mesh_convexity_cache.get(mesh_asset_key)
                     uses_mujoco_contacts = (
                         bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
                         and (
@@ -6497,6 +6519,33 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
                             "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
                         )
+                    if (
+                        stype == GeoType.MESH
+                        and self._use_mujoco_contacts
+                        and not disable_contacts
+                        and uses_mujoco_contacts
+                    ):
+                        if is_convex is False:
+                            warnings.warn(
+                                f"Mesh collider {model.shape_label[shape]!r} (shape {shape}) is non-convex, but the "
+                                "MuJoCo solver compiles every mesh geom as a convex hull: its cavities are not "
+                                "simulated and bodies may come to rest on the hull surface. Approximate concave "
+                                "meshes with ModelBuilder.approximate_meshes('coacd'), or pass "
+                                "use_mujoco_contacts=False so Newton's collision pipeline handles the exact triangles.",
+                                stacklevel=2,
+                            )
+                        elif is_convex is None:
+                            # The exactness budget was exceeded, so convexity is
+                            # unverified: state the uncertainty instead of asserting
+                            # that cavities are lost.
+                            warnings.warn(
+                                f"Mesh collider {model.shape_label[shape]!r} (shape {shape}) has too many faces and "
+                                "vertices to verify convexity, and the MuJoCo solver compiles every mesh geom as a "
+                                "convex hull: cavities it may have are not simulated. If the mesh is concave, "
+                                "approximate it with ModelBuilder.approximate_meshes('coacd'), or pass "
+                                "use_mujoco_contacts=False so Newton's collision pipeline handles the exact triangles.",
+                                stacklevel=2,
+                            )
                     spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),
