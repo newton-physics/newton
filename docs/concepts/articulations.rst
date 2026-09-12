@@ -205,7 +205,7 @@ dynamics solve and transfers their forces and inertia to the reference joint.
 directly through its joint equality constraints.
 
 Multi-turn motion in VBD
-~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 VBD remembers the accumulated angle of every revolute joint and every angular
 D6 coordinate, whether or not the joint belongs to a mimic relationship.

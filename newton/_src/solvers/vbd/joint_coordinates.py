@@ -171,7 +171,8 @@ class JointCoordinates:
         self.joints = wp.array(joints, dtype=int, device=model.device)
         self.data.history = wp.clone(model.joint_q) if joints else wp.empty(0, dtype=float, device=model.device)
 
-    def begin_step(self, state: State, rebaseline_mask: wp.array[bool], mimic_multipliers: wp.array[float] | None):
+    # Quote host-side array unions because Warp array annotations are not types on Python 3.10.
+    def begin_step(self, state: State, rebaseline_mask: wp.array[bool], mimic_multipliers: "wp.array[float] | None"):
         if self.joints.size:
             wp.launch(
                 _begin_step,
@@ -198,7 +199,7 @@ class JointCoordinates:
             )
 
     def reset_coordinates(
-        self, joint_q: wp.array[float] | None, joint_qd: wp.array[float] | None, world_mask: wp.array[bool] | None
+        self, joint_q: "wp.array[float] | None", joint_qd: "wp.array[float] | None", world_mask: "wp.array[bool] | None"
     ):
         if self.joints.size:
             wp.launch(

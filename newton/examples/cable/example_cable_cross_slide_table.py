@@ -200,7 +200,8 @@ def add_pulley(
             parent_xform=wp.transform(center - parent_position, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             armature=1.0e-4,
-            friction=1.0,
+            # VBD now honors axle friction; keep these pulleys free-spinning.
+            friction=0.0,
             label=f"{label}_free_axle" if label else None,
         )
 
