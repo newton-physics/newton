@@ -524,6 +524,9 @@ class Model:
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
+        AttributeFrequency.CONTACT: "contact_max",
+        AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
+        AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
     }
 
     class AttributeNamespace:
@@ -1764,12 +1767,7 @@ class Model:
             Model.AttributeFrequency.CONTACT_RIGID,
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
-            rigid_max, soft_max = self._get_contact_capacity()
-            if frequency == Model.AttributeFrequency.CONTACT_RIGID:
-                return rigid_max
-            if frequency == Model.AttributeFrequency.CONTACT_SOFT:
-                return soft_max
-            return rigid_max + soft_max
+            self._get_contact_capacity()
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")
@@ -1864,6 +1862,17 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    @property
+    def contact_max(self) -> int | None:
+        """Combined rigid and soft-rigid contact buffer capacity, or ``None`` before collision setup.
+
+        This is the row count for :attr:`AttributeFrequency.CONTACT`, not the
+        number of active contacts. It excludes soft self-contact.
+        """
+        if self.rigid_contact_max is None or self.soft_contact_max is None:
+            return None
+        return self.rigid_contact_max + self.soft_contact_max
 
     @property
     def rigid_contact_max(self) -> int | None:

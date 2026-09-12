@@ -305,12 +305,24 @@ class TestSolverObservables(unittest.TestCase):
     def test_contact_frequency_counts(self):
         """Resolve each contact domain from capacity rather than live counts."""
         frequency = newton.Model.AttributeFrequency
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            self.model._attribute_frequency_count(frequency.CONTACT_SOFT)
-        newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        for domain, count in ((frequency.CONTACT_RIGID, 5), (frequency.CONTACT_SOFT, 3), (frequency.CONTACT, 8)):
+        for domain in (frequency.CONTACT, frequency.CONTACT_RIGID, frequency.CONTACT_SOFT):
             with self.subTest(domain=domain):
-                self.assertEqual(self.model._attribute_frequency_count(domain), count)
+                count_attr = self.model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS[domain]
+                self.assertIsNone(getattr(self.model, count_attr))
+                with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+                    self.model._attribute_frequency_count(domain)
+
+        for rigid_max, soft_max in ((5, 3), (0, 3), (5, 0), (0, 0)):
+            newton.CollisionPipeline(self.model, rigid_contact_max=rigid_max, soft_contact_max=soft_max)
+            for domain, count in (
+                (frequency.CONTACT_RIGID, rigid_max),
+                (frequency.CONTACT_SOFT, soft_max),
+                (frequency.CONTACT, rigid_max + soft_max),
+            ):
+                with self.subTest(domain=domain, rigid_max=rigid_max, soft_max=soft_max):
+                    count_attr = self.model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS[domain]
+                    self.assertEqual(getattr(self.model, count_attr), count)
+                    self.assertEqual(self.model._attribute_frequency_count(domain), count)
 
     def test_custom_soft_contact_frequency(self):
         """Require contact binding for a soft-only diagnostic without standard forces."""

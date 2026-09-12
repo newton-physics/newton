@@ -34,7 +34,7 @@ def _make_free_body_scene(
     enable_contacts=False,
     with_imu=False,
 ):
-    """Build one free body with requested acceleration or an IMU."""
+    """Build one free body with an optional IMU."""
     builder = newton.ModelBuilder()
     builder.begin_world(gravity=gravity)
     body_xform = wp.transform(wp.vec3(0.0, 0.0, 10.0), wp.quat_identity()) if enable_contacts else None
@@ -44,8 +44,6 @@ def _make_free_body_scene(
         builder.add_shape_sphere(body, radius=0.1)
         builder.add_ground_plane()
     builder.end_world()
-    if not with_imu:
-        builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
     sensor = SensorIMU(model, sites=[site]) if site is not None else None
     return model, body, sensor
@@ -84,22 +82,23 @@ def test_free_fall_body_acceleration_and_imu(test, device, integrator):
     np.testing.assert_allclose(sensor.gyroscope.numpy()[0], 0.0, rtol=0.0, atol=2.0e-4)
 
 
-def test_body_acceleration_state_ownership(test, device):
-    """Preserve input acceleration and support ping-pong and in-place stepping."""
+def test_body_acceleration_observable_ownership(test, device):
+    """Keep acceleration outside state during ping-pong and in-place stepping."""
     model, _, _ = _make_free_body_scene(device)
     solver = _make_solver(model)
     control = model.control()
     state_a = model.state()
     state_b = model.state()
     observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
-    state_a.body_qdd.fill_(17.0)
+    observables.body_qdd.fill_(17.0)
 
     velocity_a = state_a.body_qd.numpy().copy()
     solver.step(state_a, state_b, control, None, DT, observables=observables)
-    np.testing.assert_array_equal(state_a.body_qdd.numpy(), 17.0)
-    np.testing.assert_array_equal(observables.body_qdd.numpy(), state_b.body_qdd.numpy())
+    test.assertIsNone(state_a.body_qdd)
+    test.assertIsNone(state_b.body_qdd)
+    np.testing.assert_array_equal(state_a.body_qd.numpy(), velocity_a)
     np.testing.assert_allclose(
-        state_b.body_qdd.numpy(),
+        observables.body_qdd.numpy(),
         (state_b.body_qd.numpy() - velocity_a) / DT,
         rtol=0.0,
         atol=2.0e-5,
@@ -107,9 +106,11 @@ def test_body_acceleration_state_ownership(test, device):
 
     velocity_b = state_b.body_qd.numpy().copy()
     solver.step(state_b, state_a, control, None, DT, observables=observables)
-    np.testing.assert_array_equal(observables.body_qdd.numpy(), state_a.body_qdd.numpy())
+    test.assertIsNone(state_a.body_qdd)
+    test.assertIsNone(state_b.body_qdd)
+    np.testing.assert_array_equal(state_b.body_qd.numpy(), velocity_b)
     np.testing.assert_allclose(
-        state_a.body_qdd.numpy(),
+        observables.body_qdd.numpy(),
         (state_a.body_qd.numpy() - velocity_b) / DT,
         rtol=0.0,
         atol=2.0e-5,
@@ -118,9 +119,9 @@ def test_body_acceleration_state_ownership(test, device):
     state_in_place = model.state()
     velocity_in_place = state_in_place.body_qd.numpy().copy()
     solver.step(state_in_place, state_in_place, control, None, DT, observables=observables)
-    np.testing.assert_array_equal(observables.body_qdd.numpy(), state_in_place.body_qdd.numpy())
+    test.assertIsNone(state_in_place.body_qdd)
     np.testing.assert_allclose(
-        state_in_place.body_qdd.numpy(),
+        observables.body_qdd.numpy(),
         (state_in_place.body_qd.numpy() - velocity_in_place) / DT,
         rtol=0.0,
         atol=2.0e-5,
@@ -140,9 +141,9 @@ def test_heterogeneous_world_step_isolation(test, device):
     body_1 = _add_free_body(builder, label="body_1")
     builder.end_world()
 
-    builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
     solver = _make_solver(model)
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     initial_velocity = np.array(
@@ -162,7 +163,7 @@ def test_heterogeneous_world_step_isolation(test, device):
         ]
     )
 
-    solver.step(state_in, state_out, model.control(), None, DT)
+    solver.step(state_in, state_out, model.control(), None, DT, observables=observables)
 
     expected_acceleration = np.array(
         [
@@ -174,7 +175,7 @@ def test_heterogeneous_world_step_isolation(test, device):
     )
     np.testing.assert_array_equal(model.body_world.numpy(), [0, 0, 1])
     test.assertEqual((leading_body, body_0, body_1), (0, 1, 2))
-    np.testing.assert_allclose(state_out.body_qdd.numpy(), expected_acceleration, rtol=0.0, atol=3.0e-4)
+    np.testing.assert_allclose(observables.body_qdd.numpy(), expected_acceleration, rtol=0.0, atol=3.0e-4)
     np.testing.assert_allclose(
         state_out.body_qd.numpy(),
         initial_velocity + expected_acceleration * DT,
@@ -187,15 +188,16 @@ def test_rotating_body_acceleration(test, device):
     """Report angular acceleration for a rotating body."""
     model, _, _ = _make_free_body_scene(device, gravity=(0.0, 0.0, 0.0))
     solver = _make_solver(model)
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     state_in.body_qd.assign([[0.0, 0.0, 0.0, 0.0, 0.0, 2.0]])
     state_in.body_f.assign([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
 
-    solver.step(state_in, state_out, model.control(), None, DT)
+    solver.step(state_in, state_out, model.control(), None, DT, observables=observables)
 
-    np.testing.assert_allclose(state_out.body_qdd.numpy()[0, :3], 0.0, rtol=0.0, atol=3.0e-4)
-    np.testing.assert_allclose(state_out.body_qdd.numpy()[0, 3:], [0.0, 0.0, 1.0], rtol=0.0, atol=3.0e-4)
+    np.testing.assert_allclose(observables.body_qdd.numpy()[0, :3], 0.0, rtol=0.0, atol=3.0e-4)
+    np.testing.assert_allclose(observables.body_qdd.numpy()[0, 3:], [0.0, 0.0, 1.0], rtol=0.0, atol=3.0e-4)
 
 
 def test_contact_body_acceleration(test, device):
@@ -211,12 +213,12 @@ def test_contact_body_acceleration(test, device):
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
     builder.add_ground_plane(cfg=cfg)
     builder.end_world()
-    builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverKamino(
         model,
         config=newton.solvers.SolverKamino.Config(use_collision_detector=True),
     )
+    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -224,23 +226,24 @@ def test_contact_body_acceleration(test, device):
 
     for _ in range(180):
         state_in.clear_forces()
-        solver.step(state_in, state_out, control, None, DT)
-        saw_impact_acceleration |= np.linalg.norm(state_out.body_qdd.numpy()[body, :3]) > 20.0
+        solver.step(state_in, state_out, control, None, DT, observables=observables)
+        saw_impact_acceleration |= np.linalg.norm(observables.body_qdd.numpy()[body, :3]) > 20.0
         state_in, state_out = state_out, state_in
 
     test.assertTrue(saw_impact_acceleration)
     np.testing.assert_allclose(state_in.body_qd.numpy()[body], 0.0, rtol=0.0, atol=2.0e-2)
-    np.testing.assert_allclose(state_in.body_qdd.numpy()[body], 0.0, rtol=0.0, atol=3.0e-1)
+    np.testing.assert_allclose(observables.body_qdd.numpy()[body], 0.0, rtol=0.0, atol=3.0e-1)
 
 
 def test_body_acceleration_partial_reset(test, device):
-    """Clear acceleration only in reset worlds and clear all worlds on full reset."""
+    """Retain partial and full resets of deprecated state acceleration."""
     builder = newton.ModelBuilder()
     for world_index in range(2):
         builder.begin_world(label=f"world_{world_index}")
         _add_free_body(builder, label=f"body_{world_index}")
         builder.end_world()
-    builder.request_state_attributes("body_qdd")
+    with test.assertWarnsRegex(DeprecationWarning, r"ModelBuilder\.request_state_attributes.*1\.7"):
+        builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
     solver = _make_solver(model)
     state = model.state()
@@ -295,8 +298,8 @@ def test_body_acceleration_cuda_graph(test, device):
     wp.capture_launch(capture.graph)
     wp.capture_launch(capture.graph)
 
-    np.testing.assert_allclose(state.body_qdd.numpy()[0, :3], [0.0, 0.0, -9.81], rtol=0.0, atol=2.0e-4)
-    np.testing.assert_array_equal(observables.body_qdd.numpy(), state.body_qdd.numpy())
+    test.assertIsNone(state.body_qdd)
+    np.testing.assert_allclose(observables.body_qdd.numpy()[0, :3], [0.0, 0.0, -9.81], rtol=0.0, atol=2.0e-4)
     test.assertEqual(observables.body_qdd.ptr, pointer)
 
 
@@ -318,8 +321,8 @@ for _integrator in ("euler", "moreau"):
 
 add_function_test(
     TestKaminoBodyAcceleration,
-    "test_body_acceleration_state_ownership",
-    test_body_acceleration_state_ownership,
+    "test_body_acceleration_observable_ownership",
+    test_body_acceleration_observable_ownership,
     devices=devices,
     check_output=False,
 )

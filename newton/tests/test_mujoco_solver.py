@@ -8087,12 +8087,13 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
     def test_disable_sensors_rejects_rne_state_attributes(self):
-        """Reject disabled sensors when RNE-derived state attributes are requested."""
+        """Retain rejection of deprecated RNE state requests with disabled sensors."""
         for attribute in ("body_qdd", "body_parent_f"):
             with self.subTest(attribute=attribute):
                 model = self._create_multiworld_model(world_count=1)
                 solver = SolverMuJoCo(model, disable_sensors=True)
-                model.request_state_attributes(attribute)
+                with self.assertWarnsRegex(DeprecationWarning, r"Model\.request_state_attributes.*1\.7"):
+                    model.request_state_attributes(attribute)
                 state = model.state()
                 with self.assertRaisesRegex(ValueError, "disable_sensors"):
                     solver.step(state, state, None, None, 0.01)
