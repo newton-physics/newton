@@ -37,6 +37,29 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
+def _add_deprecated_mimic_constraint(
+    builder: newton.ModelBuilder,
+    *,
+    joint0: int,
+    joint1: int,
+    coef0: float = 0.0,
+    coef1: float = 1.0,
+    enabled: bool = True,
+    label: str | None = None,
+) -> int:
+    """Add a sparse mimic constraint while acknowledging its deprecation."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return builder.add_constraint_mimic(
+            joint0=joint0,
+            joint1=joint1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+            label=label,
+        )
+
+
 def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
     direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
     direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
@@ -3456,7 +3479,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         np.testing.assert_allclose(eq_data[:3], np.array(anchor1), atol=1.0e-6)
         np.testing.assert_allclose(eq_data[3:6], np.array(expected_anchor2), atol=1.0e-5)
 
-        ref_q = SolverMuJoCo._copy_dof_ref_to_qref(model)
+        ref_q = SolverMuJoCo._build_ref_q(model)
         np.testing.assert_allclose(ref_q.numpy(), model.joint_q.numpy(), atol=1.0e-6)
         ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(model, ref_q).numpy()
         assert_np_equal(ref_body_q[body1], np.array(body1_xform), tol=1.0e-5)
@@ -8401,7 +8424,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = main.add_joint_revolute(-1, b0)
         j1 = main.add_joint_revolute(b0, b1)
         main.add_articulation([j0, j1])
-        main.add_constraint_mimic(joint0=j1, joint1=j0)
+        _add_deprecated_mimic_constraint(main, joint0=j1, joint1=j0)
 
         source = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(source)
@@ -8410,7 +8433,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj0 = source.add_joint_revolute(-1, s0)
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
-        sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
+        sm = _add_deprecated_mimic_constraint(source, joint0=sj1, joint1=sj0)
         _add_equality_constraint(
             source,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -9415,7 +9438,14 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        _add_deprecated_mimic_constraint(
+            builder,
+            joint0=j2,
+            joint1=j1,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=enabled,
+        )
         return builder.finalize()
 
     def test_mimic_constraint_conversion(self):
@@ -9435,6 +9465,85 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
         mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
         self.assertEqual(mimic_map[0, 0], 0)
+
+    def test_joint_mimic_conversion_and_runtime_update(self):
+        """Verify MuJoCo lowers and updates joint-owned mimic metadata."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = builder.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = builder.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
+        self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (1.0, -3.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+
+    def test_joint_mimic_d6_conversion(self):
+        """Verify MuJoCo lowers multi-axis D6 mimic metadata componentwise."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y)]
+        reference = builder.add_joint_d6(-1, body0, linear_axes=axes)
+        follower = builder.add_joint_d6(body0, body1, linear_axes=axes)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        np.testing.assert_allclose(
+            solver.mjw_model.eq_data.numpy()[0, :, :5],
+            [[0.5, 2.0, 0.0, 0.0, 0.0], [0.5, 2.0, 0.0, 0.0, 0.0]],
+        )
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[0], [follower, follower])
+
+    def test_joint_mimic_multi_world_mapping(self):
+        """Verify dense mimic mappings and coefficients remain per world."""
+        template = newton.ModelBuilder()
+        body0 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = template.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = template.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_articulation([reference, follower])
+        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[:, 0], [1, 3])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [0.5, 2.0]])
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[3] = (-0.25, -4.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [-0.25, -4.0]])
 
     def test_mimic_constraint_runtime_update(self):
         """Test that mimic constraint properties can be updated at runtime."""
@@ -9486,7 +9595,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
             builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j1, j2])
-            mimic = builder.add_constraint_mimic(
+            mimic = _add_deprecated_mimic_constraint(
+                builder,
                 joint0=j2,
                 joint1=j1,
                 coef0=10.0 + world,
@@ -9545,7 +9655,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        mimic = builder.add_constraint_mimic(
+        mimic = _add_deprecated_mimic_constraint(
+            builder,
             joint0=j2,
             joint1=j1,
             coef0=10.0,
@@ -9623,7 +9734,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
         # Add a mimic constraint
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -9682,7 +9793,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1, j2])
-        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+        _add_deprecated_mimic_constraint(template_builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         world_count = 3
         builder = newton.ModelBuilder()
@@ -10710,6 +10821,192 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             )
 
 
+class TestMuJoCoRefCoordinates(unittest.TestCase):
+    """Verify the joint-reference (MJCF ``ref``) coordinate convention.
+
+    Newton joint coordinates, limits, and position targets are relative to the authored pose; MuJoCo's qpos,
+    jnt_range, and position-actuator ctrl are absolute. The importer subtracts ref from authored ranges, and the
+    solver adds it back at the MuJoCo boundary.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco model="refmodel">
+        <compiler angle="radian"/>
+        <option gravity="0 0 0"/>
+        <worldbody>
+            <body name="base" pos="0 0 0">
+                <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                <body name="child" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="drive" joint="hinge" kp="500" kv="50" inheritrange="1"/>
+        </actuator>
+    </mujoco>
+    """
+
+    def _make_sim(self, *, ctrl_direct=False, **solver_kwargs):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF, ctrl_direct=ctrl_direct)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True, **solver_kwargs)
+        return model, solver
+
+    def test_jnt_range_is_absolute(self):
+        """Exported jnt_range matches the authored absolute range."""
+        model, solver = self._make_sim()
+
+        # Newton stores the range relative to the authored pose.
+        self.assertAlmostEqual(float(model.joint_limit_lower.numpy()[0]), 0.1 - 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_limit_upper.numpy()[0]), 0.9 - 0.5, places=5)
+
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+
+    def test_runtime_limit_and_ref_updates(self):
+        """Preserve jnt_range = limits + ref across runtime updates."""
+        model, solver = self._make_sim()
+
+        model.joint_limit_lower.assign([-0.3])
+        model.joint_limit_upper.assign([0.3])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.2, 0.8], atol=1e-5)
+
+        # Changing ref relabels the MuJoCo coordinates: joint_q and its limits
+        # keep their meaning, while jnt_range and qpos0 shift with the new ref.
+        model.mujoco.dof_ref.assign([0.2])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [-0.1, 0.5], atol=1e-5)
+        self.assertAlmostEqual(float(solver.mjw_model.qpos0.numpy()[0][0]), 0.2, places=5)
+
+    def test_runtime_ref_update_preserves_compiled_ctrlrange(self):
+        """Keep compiled ctrlrange fixed when ref changes."""
+        model, solver = self._make_sim(use_mujoco_cpu=True)
+
+        model.mujoco.dof_ref.assign([1.5])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [1.1, 1.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+
+    def test_runtime_ref_update_preserves_direct_compiled_ctrlrange(self):
+        """Keep CTRL_DIRECT compiled ctrlrange fixed when ref changes."""
+        model, solver = self._make_sim(ctrl_direct=True, use_mujoco_cpu=True)
+
+        model.mujoco.dof_ref.assign([1.5])
+        solver.notify_model_changed(ModelFlags.ALL)
+
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+
+    def test_multiworld_runtime_refs_preserve_compiled_ctrlranges(self):
+        """Keep per-world compiled ctrlranges fixed when refs change."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(self.MJCF)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        model.mujoco.dof_ref.assign([0.5, 1.5])
+        solver.notify_model_changed(ModelFlags.ALL)
+
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[:, 0], [[0.1, 0.9], [1.1, 1.9]], atol=1e-5)
+        np.testing.assert_allclose(
+            solver.mjw_model.actuator_ctrlrange.numpy()[:, 0], [[0.1, 0.9], [0.1, 0.9]], atol=1e-5
+        )
+
+    def test_multiworld_inheritrange_factors_resolve_independently(self):
+        """Resolve each world's inheritrange factor independently."""
+        half_range = newton.ModelBuilder()
+        half_range.add_mjcf(self.MJCF.replace('inheritrange="1"', 'inheritrange="0.5"'))
+        full_range = newton.ModelBuilder()
+        full_range.add_mjcf(self.MJCF)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(half_range)
+        builder.add_world(full_range)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        expected = [[0.3, 0.7], [0.1, 0.9]]
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), expected, atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[:, 0], expected, atol=1e-5)
+
+    def test_runtime_ctrlrange_overrides_compiled_inheritrange(self):
+        """Apply explicit runtime ctrlrange edits after inheritrange compilation."""
+        for ctrl_direct in (False, True):
+            with self.subTest(ctrl_direct=ctrl_direct):
+                model, solver = self._make_sim(ctrl_direct=ctrl_direct, use_mujoco_cpu=True)
+                model.mujoco.actuator_ctrlrange.assign([[0.3, 0.7]])
+
+                solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+
+                np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, 0], [0.3, 0.7], atol=1e-5)
+                np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.3, 0.7], atol=1e-5)
+
+    def test_position_target_matches_joint_q(self):
+        """A position target of x must drive joint_q to x regardless of ref."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        control.joint_target_q.assign([0.2])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.2, delta=1e-3)
+
+    def test_limit_clamps_joint_q(self):
+        """Driving past the limit clamps joint_q at its upper bound."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        # Target beyond the upper joint_q limit (0.9 - 0.5 = 0.4).
+        control.joint_target_q.assign([0.8])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.4, delta=0.02)
+
+    def test_inheritrange_ctrlrange_is_absolute(self):
+        """Verify that inheritrange control ranges use absolute MuJoCo coordinates."""
+        mjcf = """<?xml version="1.0" ?>
+        <mujoco model="inheritrange">
+            <compiler angle="radian" autolimits="true"/>
+            <worldbody>
+                <body name="base" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <body name="child" pos="0 0 0">
+                        <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="drive" joint="hinge" kp="500" inheritrange="1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        # Newton stores limits relative to the authored pose; MuJoCo uses absolute coordinates.
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
+
+
 class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
@@ -11154,12 +11451,6 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
     ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where midpoint
     and half_width come from the transmission target's joint range.
 
-    The asserted ctrlrange/ctrllimited values come from the parsed model row
-    (``model.mujoco.actuator_*``). USD MjcActuator position-shortcut rows are
-    promoted to ``CtrlSource.JOINT_TARGET`` (matching MJCF), so the compiled
-    MuJoCo actuator built by :class:`SolverMuJoCo` is rebuilt from
-    ``joint_target_*`` and intentionally does not carry the input ctrlrange.
-    Inputs are driven via ``Control.joint_target_q`` instead.
     """
 
     JOINT_LO_DEG = -90.0
@@ -11167,7 +11458,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
     CASES = (0.8, 1.0, 1.2)
 
-    def _build_model(self, inherit_range_value):
+    def _build_model(self, inherit_range_value, *, dof_ref=0.0, compiler_angle=None):
         from pxr import Sdf, Vt
 
         lo, hi = self.JOINT_LO_DEG, self.JOINT_HI_DEG
@@ -11175,6 +11466,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
         def set_joint_limits(joint):
             joint.CreateLowerLimitAttr().Set(lo)
             joint.CreateUpperLimitAttr().Set(hi)
+            joint.GetPrim().CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float, True).Set(dof_ref)
 
         def set_actuator_attrs(act):
             act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("fixed")
@@ -11191,6 +11483,10 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
             extra_joint_attrs=set_joint_limits,
             extra_actuator_attrs=set_actuator_attrs,
         )
+        if compiler_angle is not None:
+            stage.GetPrimAtPath("/physicsScene").CreateAttribute(
+                "mjc:compiler:angle", Sdf.ValueTypeNames.Token, True
+            ).Set(compiler_angle)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
@@ -11212,6 +11508,43 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
                 np.testing.assert_allclose(cr, [mean - radius, mean + radius], atol=1e-4)
 
                 self.assertEqual(int(model.mujoco.actuator_ctrllimited.numpy()[0]), 1)
+
+    def test_inheritrange_ctrlrange_with_joint_ref(self):
+        """Normalize a default-degree ref and retain absolute control ranges."""
+        dof_ref_degrees = 30.0
+        dof_ref = np.deg2rad(dof_ref_degrees)
+        model = self._build_model(1.0, dof_ref=dof_ref_degrees)
+
+        lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
+        hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
+        expected = [lo_rad, hi_rad]
+        np.testing.assert_allclose(model.mujoco.dof_ref.numpy()[-1], dof_ref, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], lo_rad - dof_ref, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], hi_rad - dof_ref, atol=1e-5)
+        cr = model.mujoco.actuator_ctrlrange.numpy()[0]
+        np.testing.assert_allclose(cr, expected, atol=1e-4)
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[-1], expected, atol=1e-4)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], expected, atol=1e-4)
+
+    def test_converter_degree_ref_uses_absolute_limits(self):
+        """Normalize converter-authored degree refs and absolute USD limits."""
+        dof_ref_degrees = 30.0
+        model = self._build_model(1.0, dof_ref=dof_ref_degrees, compiler_angle="degree")
+
+        lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
+        hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
+        ref_rad = dof_ref_degrees * np.pi / 180.0
+        np.testing.assert_allclose(model.mujoco.dof_ref.numpy()[-1], ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_lower.numpy()[-1], lo_rad - ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.joint_limit_upper.numpy()[-1], hi_rad - ref_rad, atol=1e-5)
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy()[0], [lo_rad, hi_rad], atol=1e-5)
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.qpos0[-1], ref_rad, atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[-1], [lo_rad, hi_rad], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [lo_rad, hi_rad], atol=1e-5)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

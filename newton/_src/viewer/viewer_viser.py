@@ -355,7 +355,10 @@ class ViewerViser(ViewerBase):
         """Create a trimesh object with texture visuals (if trimesh is available)."""
         try:
             import trimesh
-        except Exception:
+            from PIL import Image
+            from trimesh.visual.material import PBRMaterial
+            from trimesh.visual.texture import TextureVisuals
+        except ImportError:
             return None
 
         if len(uvs) != len(points):
@@ -364,17 +367,14 @@ class ViewerViser(ViewerBase):
         faces = indices.astype(np.int64)
         mesh = trimesh.Trimesh(vertices=points, faces=faces, process=False)
 
-        try:
-            from PIL import Image
-            from trimesh.visual.texture import TextureVisuals
-
-            image = Image.fromarray(texture)
-            mesh.visual = TextureVisuals(uv=uvs, image=image)
-        except Exception:
-            visual_mod = getattr(trimesh, "visual", None)
-            TextureVisuals = getattr(visual_mod, "TextureVisuals", None) if visual_mod is not None else None
-            if TextureVisuals is not None:
-                mesh.visual = TextureVisuals(uv=uvs, image=texture)
+        # SimpleMaterial tints textures gray and leaves glTF's metallic default enabled.
+        material = PBRMaterial(
+            baseColorTexture=Image.fromarray(texture),
+            baseColorFactor=(255, 255, 255, 255),
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        mesh.visual = TextureVisuals(uv=uvs, material=material)
 
         return mesh
 
@@ -595,6 +595,9 @@ class ViewerViser(ViewerBase):
         layer._packed_shape_colors_host = None
         layer._packed_shape_colors_device = None
         layer._shape_colors_changed_device = None
+        layer._packed_shape_opacities_host = None
+        layer._packed_shape_opacities_device = None
+        layer._shape_opacities_changed_device = None
 
     @override
     def set_model(self, model: newton.Model | None):
@@ -645,6 +648,9 @@ class ViewerViser(ViewerBase):
         self._packed_shape_colors_host = None
         self._packed_shape_colors_device = None
         self._shape_colors_changed_device = None
+        self._packed_shape_opacities_host = None
+        self._packed_shape_opacities_device = None
+        self._shape_opacities_changed_device = None
         if total == 0:
             return
 
@@ -659,6 +665,9 @@ class ViewerViser(ViewerBase):
         if self.model_shape_color is not None:
             self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
             self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
+        if self.model_shape_opacity is not None:
+            self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
+            self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
@@ -2258,9 +2267,10 @@ class ViewerViser(ViewerBase):
             return
 
         self._sync_shape_colors_from_model()
+        self._sync_shape_opacities_from_model()
 
         from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
@@ -2307,12 +2317,38 @@ class ViewerViser(ViewerBase):
             if self._packed_shape_colors_device is None:
                 self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
             wp.copy(self._packed_shape_colors_device, self.model_shape_color)
+
+        opacities_changed = self.model_changed or self._packed_shape_opacities_host is None
+        if (
+            self.model_shape_opacity is not None
+            and not opacities_changed
+            and self._packed_shape_opacities_device is not None
+            and self._shape_opacities_changed_device is not None
+        ):
+            self._shape_opacities_changed_device.fill_(0)
+            wp.launch(
+                kernel=detect_shape_opacity_changes,
+                dim=len(self.model_shape_opacity),
+                inputs=[self.model_shape_opacity, self._packed_shape_opacities_device],
+                outputs=[self._shape_opacities_changed_device],
+                device=self.device,
+                record_tape=False,
+            )
+            opacities_changed = bool(self._shape_opacities_changed_device.numpy()[0])
+        if self.model_shape_opacity is not None and opacities_changed:
+            self._packed_shape_opacities_host = to_numpy(self.model_shape_opacity).copy()
+            if self._packed_shape_opacities_device is None:
+                self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
+            wp.copy(self._packed_shape_opacities_device, self.model_shape_opacity)
+        packed_opacities = self._packed_shape_opacities_host
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
             visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
             xforms = packed_xforms[offset : offset + count]
             colors = packed_colors[offset : offset + count] if packed_colors is not None and colors_changed else None
+            # Keep explicit opacities on unchanged frames instead of falling back to mesh opacity.
+            opacities = packed_opacities[offset : offset + count] if packed_opacities is not None else None
             materials = shapes.materials if self.model_changed else None
 
             if shapes.geo_type == newton.GeoType.CAPSULE:
@@ -2323,6 +2359,7 @@ class ViewerViser(ViewerBase):
                     shapes.scales,
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
             else:
@@ -2333,9 +2370,11 @@ class ViewerViser(ViewerBase):
                     shapes.scales,
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
             shapes.colors_changed = False
+            shapes.opacities_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)

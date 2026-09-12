@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import sys
 import unittest
 from types import SimpleNamespace
@@ -850,6 +852,42 @@ class TestViewerViserInteraction(unittest.TestCase):
         warp_transfers = [call.args[0] for call in to_numpy_mock.call_args_list if isinstance(call.args[0], wp.array)]
         self.assertEqual(len(warp_transfers), 2)
 
+    def test_model_shape_opacities_use_packed_host_transfers(self):
+        """Update model opacities without resending unchanged packed arrays."""
+        device = "cuda:0" if sys.platform == "win32" and wp.is_cuda_available() else "cpu"
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1)
+        builder.add_shape_capsule(-1)
+        model = builder.finalize(device=device)
+        model.shape_opacity.fill_(0.25)
+        self.viewer.set_model(model)
+        self.viewer._log_non_shape_state = Mock()
+        state = model.state()
+
+        self.viewer.log_state(state)
+        handles = [self.viewer._scene_handles[batch.name] for batch, _, _ in self.viewer._packed_shape_groups]
+        self.assertEqual(len(handles), 2)
+        for handle in handles:
+            self.assertIsNotNone(handle.batched_opacities)
+            np.testing.assert_allclose(handle.batched_opacities, (0.25,))
+            handle.property_updates.clear()
+
+        with patch.object(viewer_viser, "to_numpy", wraps=viewer_viser.to_numpy) as to_numpy_mock:
+            self.viewer.log_state(state)
+        warp_transfers = [call.args[0] for call in to_numpy_mock.call_args_list if isinstance(call.args[0], wp.array)]
+        self.assertEqual(len(warp_transfers), 1)
+        for handle in handles:
+            self.assertNotIn("batched_opacities", handle.property_updates)
+
+        model.shape_opacity.fill_(0.75)
+        with patch.object(viewer_viser, "to_numpy", wraps=viewer_viser.to_numpy) as to_numpy_mock:
+            self.viewer.log_state(state)
+        warp_transfers = [call.args[0] for call in to_numpy_mock.call_args_list if isinstance(call.args[0], wp.array)]
+        self.assertEqual(len(warp_transfers), 2)
+        for handle in handles:
+            np.testing.assert_allclose(handle.batched_opacities, (0.75,))
+            self.assertEqual(handle.property_updates.get("batched_opacities"), 1)
+
     def test_gizmo_disappears_when_not_logged(self):
         """Remove a persistent Viser gizmo after a frame stops logging it."""
         transform = wp.transform_identity()
@@ -950,6 +988,39 @@ class TestViewerViserInteraction(unittest.TestCase):
         np.testing.assert_allclose(x, (0.0, 1.0))
         np.testing.assert_allclose(y, (4.5, 14.5))
         self.assertTrue(np.all(np.isfinite(y)))
+
+
+@unittest.skipUnless(importlib.util.find_spec("trimesh") is not None, "Requires trimesh")
+@unittest.skipUnless(importlib.util.find_spec("PIL") is not None, "Requires Pillow")
+class TestViewerViserTextures(unittest.TestCase):
+    def _roundtrip_textured_mesh(self, channels):
+        import trimesh
+
+        points = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([[0, 1, 2]], dtype=np.uint32)
+        uvs = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+        texture = np.arange(2 * 2 * channels, dtype=np.uint8).reshape(2, 2, channels) * 16
+        mesh = ViewerViser._build_trimesh_mesh(points, indices, uvs, texture)
+        self.assertIsNotNone(mesh)
+
+        # Exercise the actual glTF export/import used by Viser, including glTF defaults.
+        scene = trimesh.load_scene(io.BytesIO(mesh.export(file_type="glb")), file_type="glb", process=False)
+        loaded = next(iter(scene.geometry.values()))
+        np.testing.assert_array_equal(loaded.visual.material.baseColorTexture, texture)
+        np.testing.assert_allclose(loaded.visual.uv, uvs)
+        return loaded.visual.material
+
+    def test_textured_mesh_preserves_texture_brightness(self):
+        """Export RGB and RGBA textures without an unintended gray multiplier."""
+        for channels in (3, 4):
+            with self.subTest(channels=channels):
+                material = self._roundtrip_textured_mesh(channels)
+                np.testing.assert_array_equal(material.baseColorFactor, [255, 255, 255, 255])
+
+    def test_textured_mesh_is_nonmetallic(self):
+        """Keep textured meshes nonmetallic after glTF applies material defaults."""
+        material = self._roundtrip_textured_mesh(3)
+        self.assertEqual(material.metallicFactor, 0.0)
 
 
 if __name__ == "__main__":

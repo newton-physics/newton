@@ -648,7 +648,7 @@ def parse_usd(
     has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
     has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
+    # The native rigid/joint descriptor parser remains authoritative, so this
     # pre-pass supplies its deformable exclusions before it runs. The same walk also
     # collects static visual leaves when requested, avoiding a third stage traversal.
     root_prim = stage.GetPrimAtPath(root_path)
@@ -662,7 +662,7 @@ def parse_usd(
     native_exclude_paths = list(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
+    ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
@@ -1869,6 +1869,15 @@ def parse_usd(
             limit_solref_mode=_joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),
         )
 
+    def shift_joint_limits_for_reference(dof: _DofParams, joint_custom_attrs: dict[str, Any]) -> None:
+        """Convert absolute MuJoCo joint limits to Newton joint coordinates."""
+        ref_key = "mujoco:dof_ref"
+        if ref_key not in joint_custom_attrs:
+            return
+        ref = float(joint_custom_attrs[ref_key])
+        dof.limit_lower -= ref
+        dof.limit_upper -= ref
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1891,7 +1900,9 @@ def parse_usd(
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
-            joint_prim, builder_custom_attr_joint, context={"builder": builder}
+            joint_prim,
+            builder_custom_attr_joint,
+            context={"builder": builder, "physics_scene_prim": physics_scene_prim},
         )
         joint_params = {
             "parent": parent_id,
@@ -1910,6 +1921,7 @@ def parse_usd(
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
             is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
             dof = resolve_dof_params(joint_prim, joint_desc, is_revolute)
+            shift_joint_limits_for_reference(dof, joint_custom_attrs)
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
             if _should_write_solreflimit_gain_baseline():
@@ -1944,6 +1956,19 @@ def parse_usd(
             joint_params["damping"] = joint_damping
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
+            unsupported_ref_keys = ("mujoco:dof_ref", "mujoco:dof_springref")
+            unsupported_ref_attrs = [key for key in unsupported_ref_keys if key in joint_custom_attrs]
+            if unsupported_ref_attrs:
+                usd_attrs = ", ".join(
+                    "mjc:ref" if key == "mujoco:dof_ref" else "mjc:springref" for key in unsupported_ref_attrs
+                )
+                warnings.warn(
+                    f"Ignoring {usd_attrs} on native D6 joint {joint_path}: "
+                    "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
+                    stacklevel=2,
+                )
+                for attr_key in unsupported_ref_attrs:
+                    del joint_custom_attrs[attr_key]
             joint_armature = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
             )
@@ -2317,7 +2342,11 @@ def parse_usd(
             for a in builder_custom_attr_joint
             if a.frequency in (AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD)
         ]
-        joint_custom_attrs = usd.get_custom_attribute_values(first_prim, joint_freq_attrs, context={"builder": builder})
+        joint_custom_attrs = usd.get_custom_attribute_values(
+            first_prim,
+            joint_freq_attrs,
+            context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+        )
         # Per-DOF custom attributes accumulated separately for linear / angular
         # so we can reorder to D6 DOF order (linear first, then angular).
         linear_dof_custom: list[dict[str, Any]] = []
@@ -2346,6 +2375,19 @@ def parse_usd(
             dof = resolve_dof_params(jp_prim, jd, is_revolute)
             initial_position = dof.initial_position
             initial_velocity = dof.initial_velocity
+
+            # Collect per-DOF custom attributes before constructing the D6
+            # axis so MuJoCo reference offsets can be applied to its limits.
+            sibling_dof_attrs = usd.get_custom_attribute_values(
+                jp_prim,
+                dof_freq_attrs,
+                context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+            )
+            shift_joint_limits_for_reference(dof, sibling_dof_attrs)
+            if _should_write_solreflimit_mode():
+                sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
+            if _should_write_solreflimit_gain_baseline():
+                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             # Compute the DOF axis in the representative joint's frame.
             # Each USD joint may have a different localRot that orients its fixed axis
@@ -2387,13 +2429,6 @@ def parse_usd(
                 velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
                 actuator_mode=dof.actuator_mode,
             )
-
-            # Collect per-DOF custom attributes from this sibling prim
-            sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
-            if _should_write_solreflimit_mode():
-                sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
-            if _should_write_solreflimit_gain_baseline():
-                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             if is_revolute:
                 angular_axes.append(ax)
@@ -3554,7 +3589,11 @@ def parse_usd(
             _load_visual_shapes_impl(-1, prim, recurse=False)
 
     no_collision_shapes = set()
-    collision_group_ids = {}
+    # OpenUSD groups are allow-by-default filters and cannot be represented by Newton's
+    # equality-based collision group IDs, so their disabled pairs are lowered explicitly after
+    # all rigid shapes exist. Preserve the builder default on every imported shape so callers can
+    # still disable collisions with zero or a shared negative group.
+    imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
     rigid_body_mass_info_map = {}
     rigid_body_mass_fallback_density = {}
     rigid_body_fallback_collider_paths = collections.defaultdict(list)
@@ -3659,13 +3698,7 @@ def parse_usd(
                 body_id = path_body_map.get(body_path, -1)
                 scale = usd.get_scale(prim, local=False)
                 collision_group = builder.default_shape_cfg.collision_group
-
-                if len(shape_spec.collisionGroups) > 0:
-                    cgroup_name = str(shape_spec.collisionGroups[0])
-                    if cgroup_name not in collision_group_ids:
-                        # Start from 1 to avoid collision_group = 0 (which means "no collisions")
-                        collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
-                    collision_group = collision_group_ids[cgroup_name]
+                collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
@@ -3956,6 +3989,8 @@ def parse_usd(
                     inertia_margin = margin_val
 
                 if shape_already_added:
+                    builder.shape_collision_group[path_shape_map[path]] = collision_group
+                    imported_rigid_collider_groups[path] = collision_groups
                     _record_fallback_collider_mass_information(
                         path,
                         prim,
@@ -4149,6 +4184,7 @@ def parse_usd(
 
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
+                imported_rigid_collider_groups[path] = collision_groups
 
                 # Restore the real collision margin when shell thickness was substituted.
                 # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
@@ -4687,6 +4723,67 @@ def parse_usd(
             return [], "the target path does not exist"
         return [], "it produced no collision participant (it may be disabled, ignored, malformed, or non-colliding)"
 
+    # Lower OpenUSD collision groups to explicit Newton filter pairs. Group colliders by their
+    # complete membership signature so table queries scale with the number of distinct group
+    # combinations, while materializing only the pairs that OpenUSD actually disables.
+    if imported_rigid_collider_groups:
+        collision_group_table = UsdPhysics.CollisionGroup.ComputeCollisionGroupTable(stage)
+        colliders_by_groups: dict[tuple[str, ...], list[tuple[str, int]]] = collections.defaultdict(list)
+        for collider_path, collision_groups in imported_rigid_collider_groups.items():
+            colliders_by_groups[collision_groups].append((collider_path, path_shape_map[collider_path]))
+
+        inverted_groups: set[str] = set()
+        groups_by_merge_name: dict[str, set[str]] = collections.defaultdict(set)
+        group_merge_names: dict[str, str] = {}
+        for prim in stage.Traverse():
+            if not prim.IsA(UsdPhysics.CollisionGroup):
+                continue
+            group = UsdPhysics.CollisionGroup(prim)
+            group_path = str(prim.GetPath())
+            if group.GetInvertFilteredGroupsAttr().Get():
+                inverted_groups.add(group_path)
+            merge_name = group.GetMergeGroupNameAttr().Get() or ""
+            group_merge_names[group_path] = merge_name
+            if merge_name:
+                groups_by_merge_name[merge_name].add(group_path)
+
+        def _groups_collide(groups_a: tuple[str, ...], groups_b: tuple[str, ...]) -> bool:
+            if groups_a and groups_b:
+                return all(
+                    collision_group_table.IsCollisionEnabled(Sdf.Path(group_a), Sdf.Path(group_b))
+                    for group_a in groups_a
+                    for group_b in groups_b
+                )
+            groups = groups_a or groups_b
+            for group_path in groups:
+                merge_name = group_merge_names.get(group_path, "")
+                effective_groups = groups_by_merge_name[merge_name] if merge_name else (group_path,)
+                if any(effective_group in inverted_groups for effective_group in effective_groups):
+                    return False
+            return True
+
+        existing_filter_pairs = set(builder._materialized_filter_template())
+        group_classes = sorted(colliders_by_groups.items())
+        for class_index_a, (groups_a, colliders_a) in enumerate(group_classes):
+            for class_index_b in range(class_index_a, len(group_classes)):
+                groups_b, colliders_b = group_classes[class_index_b]
+                if class_index_a == class_index_b:
+                    if len(colliders_a) < 2:
+                        continue
+                    collider_pairs = itertools.combinations(colliders_a, 2)
+                else:
+                    collider_pairs = itertools.product(colliders_a, colliders_b)
+
+                if _groups_collide(groups_a, groups_b):
+                    continue
+                for (_, shape_a), (_, shape_b) in collider_pairs:
+                    if shape_a == shape_b:
+                        continue
+                    pair = (shape_a, shape_b) if shape_a < shape_b else (shape_b, shape_a)
+                    if pair not in existing_filter_pairs:
+                        existing_filter_pairs.add(pair)
+                        builder.add_shape_collision_filter_pair(*pair)
+
     # physics:filteredPairs may also be authored on a rigid-body prim (UsdPhysics allows
     # collider, body, or articulation endpoints); the collider loop never visits body prims.
     # path_body_map covers every imported body regardless of which creation path added it.
@@ -4700,7 +4797,7 @@ def parse_usd(
     # here on (collapse_fixed_joints only remaps bodies). Seed the dedup set from the builder
     # so pairs the element-filter pass already added are not appended again.
     if authored_filtered_path_pairs:
-        existing_filter_pairs = set(builder.shape_collision_filter_pairs)
+        existing_filter_pairs = set(builder._materialized_filter_template())
         for filter_path1, filter_path2 in sorted(authored_filtered_path_pairs):
             shapes1, reason1 = _resolve_collision_shape_ids(filter_path1)
             shapes2, reason2 = _resolve_collision_shape_ids(filter_path2)
@@ -5099,14 +5196,7 @@ def parse_usd(
             offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
             offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
 
-            builder.add_constraint_mimic(
-                joint0=joint_idx,
-                joint1=leader_idx,
-                coef0=-offset,
-                coef1=-gearing,
-                enabled=True,
-                label=joint_path,
-            )
+            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
 
             if verbose:
                 print(
@@ -5142,14 +5232,14 @@ def parse_usd(
         follower_is_revolute = joint_prim.IsA(UsdPhysics.RevoluteJoint)
         follower_is_prismatic = joint_prim.IsA(UsdPhysics.PrismaticJoint)
         if not follower_is_revolute and not follower_is_prismatic:
-            # Spherical and D6 followers hold more than one DOF, and a ball joint's
-            # coordinates are a quaternion rather than a scalar angle, so a single offset
-            # has no defined unit. NewtonMimicAPI says as much: multi-DOF behavior is
-            # undefined. _resolve_newton_mimic passes the value through; say so here.
+            # Spherical and D6 followers hold more than one coordinate, and a ball
+            # joint's coordinates are a quaternion rather than a scalar angle, so a
+            # single offset has no defined unit. _resolve_newton_mimic passes the
+            # value through; say so here.
             warnings.warn(
                 f"NewtonMimicAPI on {joint_path}: newton:mimicCoef0 has no defined unit for a "
                 f"{joint_prim.GetTypeName()} follower, which is not a single-DOF joint. Using the "
-                f"authored value unconverted; the offset is applied to every DOF.",
+                f"authored value unconverted; the offset is applied to every coordinate.",
                 stacklevel=2,
             )
         # Independent of units: a single-DOF prim merged into a D6 is constrained on every
@@ -5157,18 +5247,11 @@ def parse_usd(
         if (follower_is_revolute or follower_is_prismatic) and builder.joint_type[joint_idx] == JointType.D6:
             warnings.warn(
                 f"NewtonMimicAPI on {joint_path}: follower was merged into a multi-DOF joint, so the "
-                f"mimic constraint applies to every DOF of that joint, not only the authored axis.",
+                f"mimic relationship applies to every coordinate of that joint, not only the authored axis.",
                 stacklevel=2,
             )
         leader_idx = path_joint_map[leader_path_str]
-        builder.add_constraint_mimic(
-            joint0=joint_idx,
-            joint1=leader_idx,
-            coef0=coef0,
-            coef1=coef1,
-            enabled=True,
-            label=joint_path,
-        )
+        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415

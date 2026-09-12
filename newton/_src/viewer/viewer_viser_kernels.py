@@ -18,3 +18,15 @@ def detect_shape_color_changes(
     previous = previous_shape_colors[tid]
     if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
         wp.atomic_add(changed, 0, 1)
+
+
+@wp.kernel
+def detect_shape_opacity_changes(
+    shape_opacities: wp.array[wp.float32],
+    previous_shape_opacities: wp.array[wp.float32],
+    changed: wp.array[wp.int32],
+):
+    """Set a device flag when any packed shape opacity changed."""
+    tid = wp.tid()
+    if shape_opacities[tid] != previous_shape_opacities[tid]:
+        wp.atomic_add(changed, 0, 1)
