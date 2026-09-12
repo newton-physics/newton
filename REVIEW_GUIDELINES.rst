@@ -103,10 +103,12 @@ schema disposition: reuse an existing USD schema; add or track a USD schema
 with lifecycle ownership, importer coverage, and runtime coverage; or explain
 why the concept is intentionally runtime-only or non-authorable.
 
-Confirm that each schema the importer reads comes from a source the
-:ref:`source-code-guidelines` permit. Treat new parsing of a proprietary
-shading system, such as MDL or OmniPBR, as a Fit failure about ownership and
-durable cost rather than as an implementation detail.
+Confirm that schemas the change newly reads, authors, or models come from
+sources the :ref:`source-code-guidelines` permit. Pre-existing sources are out
+of scope for this policy review unless their removal or migration is an
+explicit part of the task. Treat new support for a proprietary shading system,
+such as MDL or OmniPBR, as a Fit failure about ownership and durable cost
+rather than as an implementation detail.
 
 Return one explicit verdict:
 
@@ -177,8 +179,12 @@ Check the repository obligations relevant to the change, including:
 - focused regression coverage and documentation;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
-- USD schema sources, including whether new importer parsing stays within the
-  supported OpenUSD, Newton, and bounded solver-fallback tiers;
+- USD schemas the change newly reads, authors, or models, including whether
+  they stay within the supported OpenUSD, Newton, and bounded solver-fallback
+  tiers. Existing proposal schemas are grandfathered, as are legacy
+  compatibility paths during their deprecation windows, including the
+  ``omniphysics:`` and ``physxDeformableBody:`` deformable fallbacks on the
+  default import path. Do not treat these as policy violations;
 - packaging, supported platforms, workflows, and downstream compatibility;
   and
 - release-visible semantic changes, including numerical behavior that changes
