@@ -1,0 +1,1 @@
+Improve Kamino DVI convergence, stability, and sparse-contact scheduling; add an experimental opt-in Schur-complement path through `use_schur_complement=True`; and enable the tuned path in the G1 example. The alternating path remains the default with its historical relaxation and warm-start settings.

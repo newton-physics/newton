@@ -74,6 +74,37 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+Joint reference values (``ref``)
+--------------------------------
+
+MuJoCo scalar joints (hinge and slide) may carry a reference value
+(MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
+authored body poses correspond to ``qpos = ref``, and MuJoCo interprets
+limits, position-actuator controls, and keyframes as absolute ``qpos``
+values. Newton has no reference concept — its scalar joint coordinates
+are relative to the authored pose — so the two conventions are reconciled
+at the solver boundary:
+
+* In Newton, ``joint_q``, joint limits
+  (``joint_limit_lower`` / ``joint_limit_upper``), and position targets
+  (``Control.joint_target_q``) are relative to the authored pose. The MJCF
+  importer and MuJoCo-converter USD importer shift authored joint ranges by
+  ``-ref`` accordingly. ``joint_qd`` is unaffected because ``ref`` changes
+  position coordinates only.
+* MuJoCo-side quantities keep MuJoCo's absolute convention: the solver
+  adds ``ref`` back when it writes ``qpos``, ``jnt_range``, and
+  position-actuator ``ctrl``, so the compiled MuJoCo model and its
+  runtime observables (``qpos``, sensors) match the authored MJCF and
+  native MuJoCo exactly.
+* Attributes in the ``mujoco.*`` custom-attribute namespace (for example
+  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
+  data and remain in MuJoCo's absolute units.
+
+Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
+``qpos0``, ``jnt_range``, and position controls with the new reference.
+Native MuJoCo attributes remain absolute and are not shifted.
+
 
 Geometry types
 --------------
@@ -381,10 +412,11 @@ array; slot layout depends on the constraint type.
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
      - ``mjEQ_JOINT``
-     - Added via :meth:`~newton.ModelBuilder.add_constraint_mimic`. Maps
-       ``coef0`` / ``coef1`` to polynomial coefficients. Only
-       :attr:`~newton.JointType.REVOLUTE` and
-       :attr:`~newton.JointType.PRISMATIC` joints are supported.
+     - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
+       offset / multiplier in :attr:`~newton.Model.joint_mimic_coeffs` to
+       polynomial coefficients. Revolute, prismatic, and D6 joints are
+       supported. Multi-axis D6 relationships produce one equality per
+       matching pair of scalar axes.
 
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them through the MuJoCo
@@ -610,7 +642,7 @@ all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic constraints cannot have
+Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
 raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.

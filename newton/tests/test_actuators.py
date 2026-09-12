@@ -13,6 +13,7 @@ import types
 import unittest
 import warnings
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
@@ -35,7 +36,7 @@ from newton.actuators import (
     DriveNeuralMLP,
     DrivePD,
     DrivePID,
-    ResponseOracle,
+    JointSpaceResponse,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
@@ -381,15 +382,15 @@ def _make_implicit_actuator(
     kd: wp.array[float],
     max_effort: Sequence[float] | np.ndarray | None = None,
     **kwargs: Any,
-) -> tuple[Actuator, ResponseOracle]:
+) -> tuple[Actuator, JointSpaceResponse]:
     """Build an implicit PD Actuator over all DOFs, with an optional max-effort clamp.
 
-    Returns the actuator together with the response oracle driving its solve.
+    Returns the actuator together with the response provider driving its solve.
     """
     clamping = None
     if max_effort is not None:
         clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
-    oracle = kwargs.setdefault("response", ResponseOracle(model))
+    response = kwargs.setdefault("response", JointSpaceResponse(model))
     actuator = Actuator(
         indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
         drive=DrivePD(kp=kp, kd=kd),
@@ -398,18 +399,18 @@ def _make_implicit_actuator(
         control_target_vel_attr="joint_target_qd",
     )
     actuator.set_effort_mode_implicit(**kwargs)
-    return actuator, oracle
+    return actuator, response
 
 
 def _refresh_and_step(
     actuator: Actuator,
-    oracle: ResponseOracle,
+    response: JointSpaceResponse,
     state: newton.State,
     control: newton.Control,
     dt: float,
 ) -> None:
-    """Refresh the response oracle at *state*, then step the actuator — the simulation order."""
-    oracle.refresh(state)
+    """Refresh the response at *state*, then step the actuator — the simulation order."""
+    response.refresh(state)
     actuator.step(state, control, dt=dt)
 
 
@@ -771,17 +772,17 @@ class TestDriveNeuralMLP(unittest.TestCase):
             np.array([[w0, w1]], dtype=np.float32), np.array([b], dtype=np.float32), filename="implicit_linear.onnx"
         )
         drive = DriveNeuralMLP(model_path=path)
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
             drive=drive,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
         self.assertTrue(actuator.is_graphable())
 
-        oracle.refresh(state)
+        response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, state_a, state_b, dt=h)
@@ -801,7 +802,7 @@ class TestDriveNeuralMLP(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            captured.set_effort_mode_implicit(response=oracle)
+            captured.set_effort_mode_implicit(response=response)
             cap_a, cap_b = captured.state(), captured.state()
             control.joint_f.zero_()
             with wp.ScopedCapture() as capture:
@@ -839,22 +840,22 @@ class TestDriveNeuralMLP(unittest.TestCase):
             np.array([bias], dtype=np.float32),
             filename="implicit_multidof.onnx",
         )
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0, 1], dtype=wp.uint32, device=device),
             drive=DriveNeuralMLP(model_path=path),
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
 
-        oracle.refresh(state)
+        response.refresh(state)
         state_a, state_b = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, state_a, state_b, dt=h)
 
-        response = _response_at_state(model, state)
-        alpha = np.diag(response)
+        response_matrix = _response_at_state(model, state)
+        alpha = np.diag(response_matrix)
         # Guard: slope = a*dt + b is capped to (1 - margin) / (dt * alpha_i).
         slope = -w0 * h + w1
         limit = (1.0 - margin) / (h * alpha)
@@ -864,7 +865,7 @@ class TestDriveNeuralMLP(unittest.TestCase):
 
         # Affine law: (I - h*diag(b_capped) @ A) p = h*tau0, and effort = p/h.
         tau0 = w1 * qd0 + bias
-        p = np.linalg.solve(np.eye(2) - h * (b_capped[:, None] * response), h * tau0)
+        p = np.linalg.solve(np.eye(2) - h * (b_capped[:, None] * response_matrix), h * tau0)
         np.testing.assert_allclose(control.joint_f.numpy(), p / h, rtol=2e-3, atol=1e-4)
 
     def test_neural_mlp_implicit_nonlinear_linearized(self):
@@ -921,15 +922,15 @@ class TestDriveNeuralMLP(unittest.TestCase):
         path = os.path.join(self._tmp_dir, "implicit_nonlinear.onnx")
         _build_elu_mlp_onnx(path, w1, b1, w2, b2)
         drive = DriveNeuralMLP(model_path=path)
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
             drive=drive,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(response=oracle)
-        oracle.refresh(state)
+        actuator.set_effort_mode_implicit(response=response)
+        response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, sa, sb, dt=h)
@@ -1031,7 +1032,7 @@ class TestDriveNeuralLSTM(unittest.TestCase):
 
         path = self._save_lstm(filename="implicit_lstm.onnx", metadata={"effort_scale": 10.0})
         drive = DriveNeuralLSTM(model_path=path)
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
             drive=drive,
@@ -1039,8 +1040,8 @@ class TestDriveNeuralLSTM(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
 
-        actuator.set_effort_mode_implicit(response=oracle)
-        oracle.refresh(state)
+        actuator.set_effort_mode_implicit(response=response)
+        response.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, sa, sb, dt=h)
@@ -1664,7 +1665,7 @@ class TestDriveNeuralLSTMLegacyTorchScript(unittest.TestCase):
         )
         self.assertIsNone(drive.bind_params())
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
 
 # ---------------------------------------------------------------------------
@@ -1837,7 +1838,7 @@ class TestClampingDCMotor(unittest.TestCase):
                 velocity_limit=wp.array([vel_lim], dtype=float, device=device),
                 max_motor_effort=wp.array([20.0], dtype=float, device=device),
             )
-            oracle = ResponseOracle(model)
+            response = JointSpaceResponse(model)
             actuator = Actuator(
                 indices=wp.array([0], dtype=wp.uint32, device=device),
                 drive=DrivePD(
@@ -1849,12 +1850,12 @@ class TestClampingDCMotor(unittest.TestCase):
                 control_target_vel_attr="joint_target_qd",
             )
             if implicit:
-                actuator.set_effort_mode_implicit(response=oracle)
+                actuator.set_effort_mode_implicit(response=response)
             # Retune through the (possibly view-backed) parameter array.
             clamp.max_motor_effort.assign(np.array([max_e], dtype=np.float32))
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
-            return float(control.joint_f.numpy()[0]), float(oracle.inverse_blocks.numpy()[0, 0, 0])
+            _refresh_and_step(actuator, response, state, control, h)
+            return float(control.joint_f.numpy()[0]), float(response.inverse_blocks.numpy()[0, 0, 0])
 
         # Explicit mode clamps at the measured velocity, so the envelope is exact:
         #   corner = vel_lim * (1 + max_e/sat); vel = clip(qd0, +/-corner)
@@ -2047,7 +2048,7 @@ class TestActuatorStep(unittest.TestCase):
         """Run the actuator pipeline for one drive / clamp / effort-mode combination.
 
         Each step follows the order a simulation uses: zero the forces, refresh
-        the response oracle at the step-start pose, step the actuator, then step
+        the response at the step-start pose, step the actuator, then step
         the solver. Every effort is compared against a NumPy reference built from
         the dense response ``A = inv(H)``. Without a clamp the law is linear, so
         the reference solves ``(I + dt*diag(dt*kp + kd)*A) tau = f0`` directly and
@@ -2122,7 +2123,7 @@ class TestActuatorStep(unittest.TestCase):
         else:
             raise ValueError(f"unknown drive kind: {drive}")
 
-        oracle = ResponseOracle(model)
+        response = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array(act_all, dtype=wp.uint32, device=device),
             drive=control_law,
@@ -2131,7 +2132,7 @@ class TestActuatorStep(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         if implicit:
-            actuator.set_effort_mode_implicit(response=oracle)
+            actuator.set_effort_mode_implicit(response=response)
         self.assertTrue(actuator.is_graphable())
 
         def reference(
@@ -2156,15 +2157,15 @@ class TestActuatorStep(unittest.TestCase):
 
             # Only the driven DOFs are solved, coupled through their submatrix of
             # inv(H). Inverting first leaves the undriven DOFs free to move.
-            response = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
+            response_matrix = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
             if clamp is None:
                 gain = dt * kp_now[act] + kd_now[act]
-                jacobian = np.eye(driven) + dt * np.diag(gain) @ response
+                jacobian = np.eye(driven) + dt * np.diag(gain) @ response_matrix
                 rhs = kp_now[act] * (target[act] - q[act] - dt * qd[act]) - kd_now[act] * qd[act] + feedforward[act]
                 out[act] = np.linalg.solve(jacobian, rhs)
                 return out
 
-            alpha = float(response[0, 0])
+            alpha = float(response_matrix[0, 0])
             j = act[0]
 
             def residual(tau: float) -> float:
@@ -2195,7 +2196,7 @@ class TestActuatorStep(unittest.TestCase):
         if use_graph:
             # Module loading and lazy allocation have to happen before a capture.
             control.joint_f.zero_()
-            oracle.refresh(state_in)
+            response.refresh(state_in)
             actuator.step(state_in, control, act_a, act_b, dt=dt)
             if stateful:
                 act_a.drive_state.integral.zero_()
@@ -2210,14 +2211,14 @@ class TestActuatorStep(unittest.TestCase):
             """
             if not use_graph:
                 control.joint_f.zero_()
-                oracle.refresh(state_in)
+                response.refresh(state_in)
                 actuator.step(state_in, control, act_a, act_b, dt=dt)
                 return
             key = (id(state_in), id(act_a))
             if key not in graphs:
                 with wp.ScopedCapture(device) as capture:
                     control.joint_f.zero_()
-                    oracle.refresh(state_in)
+                    response.refresh(state_in)
                     actuator.step(state_in, control, act_a, act_b, dt=dt)
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
@@ -2382,7 +2383,7 @@ class TestActuatorStep(unittest.TestCase):
             state.joint_q.assign(q0)
             control = model.control()
             control.joint_target_q.assign(target)
-            actuators, oracles = [], []
+            actuators, responses = [], []
             for group in dof_groups:
                 dofs = np.asarray(group)
                 actuator = Actuator(
@@ -2394,14 +2395,14 @@ class TestActuatorStep(unittest.TestCase):
                     control_target_pos_attr="joint_target_q",
                     control_target_vel_attr="joint_target_qd",
                 )
-                oracle = ResponseOracle(model)
+                response = JointSpaceResponse(model)
                 if implicit:
-                    actuator.set_effort_mode_implicit(response=oracle)
+                    actuator.set_effort_mode_implicit(response=response)
                 actuators.append(actuator)
-                oracles.append(oracle)
+                responses.append(response)
             control.joint_f.zero_()
-            for oracle in oracles:
-                oracle.refresh(state)
+            for response in responses:
+                response.refresh(state)
             for actuator in actuators:
                 actuator.step(state, control, dt=h)
             return control.joint_f.numpy().copy()
@@ -2585,26 +2586,26 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array([kp_val], dtype=float, device=device),
             kd=wp.array([kd_val], dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         implicit_tau = float(control.joint_f.numpy()[0])
 
         actuator.set_effort_mode_explicit()
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         explicit_tau = float(control.joint_f.numpy()[0])
         self.assertAlmostEqual(explicit_tau, kp_val * (target - q0), delta=1e-3)
         self.assertLess(implicit_tau, explicit_tau)
 
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
 
 
@@ -2641,10 +2642,10 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
     def test_validation_errors(self):
-        """A non-ResponseOracle inverse mass and a missing dt raise clearly."""
+        """A non-JointSpaceResponse inverse mass and a missing dt raise clearly."""
         device = wp.get_device()
         model = _build_pendulum(device)
         indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
@@ -2657,7 +2658,7 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        with self.assertRaisesRegex(ValueError, "ResponseOracle"):
+        with self.assertRaisesRegex(ValueError, "JointSpaceResponse"):
             actuator.set_effort_mode_implicit(response=None)
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -2707,18 +2708,18 @@ class TestActuatorImplicit(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(target)
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state_in, control, h)
+        _refresh_and_step(actuator, response, state_in, control, h)
         tau = control.joint_f.numpy().copy()
 
         # What the solve assumed the step would do.
-        A = oracle.inverse_blocks.numpy()[0, :n, :n]
+        A = response.inverse_blocks.numpy()[0, :n, :n]
         qd_pred = A @ (h * tau)
         q_pred = q0 + h * qd_pred
 
@@ -2755,14 +2756,14 @@ class TestActuatorImplicit(unittest.TestCase):
         A = _response_at(model, q0, np.zeros(2, dtype=np.float32))
 
         # Unclamped block solve, to size a binding limit on DOF 0.
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         unclamped = control.joint_f.numpy().copy()
         limit = 0.5 * abs(unclamped[0])
 
@@ -2772,10 +2773,10 @@ class TestActuatorImplicit(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
             max_effort=np.array([limit, 1.0e6], dtype=np.float32),
-            response=oracle,
+            response=response,
         )
         control.joint_f.zero_()
-        _refresh_and_step(clamped, oracle, state, control, h)
+        _refresh_and_step(clamped, response, state, control, h)
         joint_f = control.joint_f.numpy()
 
         # DOF 0 binds exactly at the limit (same sign as the unclamped force).
@@ -2832,7 +2833,7 @@ class TestActuatorImplicit(unittest.TestCase):
                 control_target_pos_attr="joint_target_q",
                 control_target_vel_attr="joint_target_qd",
             )
-            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
         for kind in ("revolute", "d6"):
             install(build(kind))  # must not raise
@@ -2867,7 +2868,7 @@ class TestActuatorImplicit(unittest.TestCase):
             state.joint_qd.assign(qd0.astype(np.float32))
             control = model.control()
             control.joint_target_q.assign(target.astype(np.float32))
-            oracle = ResponseOracle(model)
+            response = JointSpaceResponse(model)
             actuator = Actuator(
                 indices=wp.array([0, 1], dtype=wp.uint32, device=device),
                 drive=DrivePD(
@@ -2885,19 +2886,19 @@ class TestActuatorImplicit(unittest.TestCase):
                 control_target_vel_attr="joint_target_qd",
             )
             actuator.set_effort_mode_implicit(
-                response=oracle,
+                response=response,
                 options=newton.actuators.Actuator.ImplicitOptions(max_iters=max_iters, warm_start="zero"),
             )
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
+            _refresh_and_step(actuator, response, state, control, h)
             return control.joint_f.numpy().copy(), _response_at_state(model, state)
 
-        converged, response = run(8)
+        converged, response_matrix = run(8)
 
         # Independent reference: damped fixed point on p = h*g(q(p), qd(p)).
         p = np.zeros(2)
         for _ in range(200000):
-            qd_p = qd0 + response @ p
+            qd_p = qd0 + response_matrix @ p
             q_p = q0 + h * qd_p
             bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
             f = np.clip(kp * (target - q_p), bounds[:, 0], bounds[:, 1])
@@ -2928,7 +2929,7 @@ class TestActuatorImplicit(unittest.TestCase):
             state.joint_qd.assign(np.array([0.5, 0.25], dtype=np.float32))
             control = model.control()
             control.joint_target_q.assign(np.array([0.8, 0.4], dtype=np.float32))
-            actuator, oracle = _make_implicit_actuator(
+            actuator, response = _make_implicit_actuator(
                 model,
                 device,
                 kp=wp.array([kp_val, kp_val], dtype=float, device=device),
@@ -2936,7 +2937,7 @@ class TestActuatorImplicit(unittest.TestCase):
                 options=newton.actuators.Actuator.ImplicitOptions(warm_start=warm_start),
             )
             control.joint_f.zero_()
-            _refresh_and_step(actuator, oracle, state, control, h)
+            _refresh_and_step(actuator, response, state, control, h)
             return control.joint_f.numpy().copy()
 
         np.testing.assert_allclose(run("zero"), run("explicit"), rtol=1e-5, atol=1e-6)
@@ -2960,7 +2961,7 @@ class TestActuatorImplicit(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.zeros(model.joint_dof_count, dtype=float, device=device),
@@ -2968,28 +2969,28 @@ class TestActuatorImplicit(unittest.TestCase):
             options=newton.actuators.Actuator.ImplicitOptions(derivative_floor=1.0e-8),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         np.testing.assert_allclose(control.joint_f.numpy(), 0.0, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------
-# 6. Response oracle — the per-articulation inv(H) the implicit solve reads
+# 6. Joint-space response — the per-articulation inv(H) the implicit solve reads
 # ---------------------------------------------------------------------------
 
 
-class TestResponseOracle(unittest.TestCase):
-    """ResponseOracle: the per-articulation inv(H) the implicit solve reads."""
+class TestJointSpaceResponse(unittest.TestCase):
+    """JointSpaceResponse: the per-articulation inv(H) the implicit solve reads."""
 
     def test_singular_one_dof_mass_matrix_uses_float32_floor(self):
         """Bound the inverse of a singular one-DOF mass matrix by float32 epsilon."""
         model = _build_pendulum(wp.get_device())
-        oracle = ResponseOracle(model)
-        oracle._H.zero_()
+        response = JointSpaceResponse(model)
+        response._H.zero_()
 
-        oracle._invert_blocks()
+        response._invert_blocks()
 
         expected = 1.0 / np.finfo(np.float32).eps
-        self.assertAlmostEqual(float(oracle.inverse_blocks.numpy()[0, 0, 0]), expected)
+        self.assertAlmostEqual(float(response.inverse_blocks.numpy()[0, 0, 0]), expected)
 
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
@@ -3003,10 +3004,10 @@ class TestResponseOracle(unittest.TestCase):
         state = model.state()
         _set_arm(model, state.joint_q, np.tile(q0, model.world_count))
 
-        oracle = ResponseOracle(model)
-        oracle.refresh(state)
+        response = JointSpaceResponse(model)
+        response.refresh(state)
 
-        blocks = oracle.inverse_blocks.numpy()
+        blocks = response.inverse_blocks.numpy()
         dofs = len(_arm_dofs(model))
         Hinv = _response_at(model, np.tile(q0, model.world_count), np.zeros(dofs, dtype=np.float32))
         np.testing.assert_allclose(blocks[0, :n, :n], Hinv, rtol=1e-4, atol=1e-6)
@@ -3023,7 +3024,7 @@ class TestResponseOracle(unittest.TestCase):
             m = _two_link_builder(armature=armature).finalize(device=device)
             st = m.state()
             st.joint_q.assign(q0)
-            o = ResponseOracle(m)
+            o = JointSpaceResponse(m)
             o.refresh(st)
             return np.diag(o.inverse_blocks.numpy()[0, :2, :2]).copy()
 
@@ -3057,7 +3058,7 @@ class TestResponseOracle(unittest.TestCase):
         body_q[:, 0] += 5.0
         state.body_q.assign(body_q)
 
-        ResponseOracle(model).refresh(state)
+        JointSpaceResponse(model).refresh(state)
         np.testing.assert_allclose(state.body_q.numpy(), body_q, rtol=0, atol=0)
 
     def test_multi_articulation_indexing(self):
@@ -3087,17 +3088,17 @@ class TestResponseOracle(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(target)
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
 
         # Each articulation is its own 2x2 coupled solve.
-        blocks = oracle.inverse_blocks.numpy()
+        blocks = response.inverse_blocks.numpy()
         expected = np.zeros(n, dtype=np.float64)
         for a in range(2):
             sl = slice(2 * a, 2 * a + 2)
@@ -3110,7 +3111,7 @@ class TestResponseOracle(unittest.TestCase):
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
-        Deliberately captures straight after constructing the oracle, so the whole
+        Deliberately captures straight after constructing the response, so the whole
         path -- scratch setup, the per-column solves and the scatter -- has to be
         capture-safe. Where the device has no memory pool, allocating on a
         capturing stream would fail here.
@@ -3127,28 +3128,28 @@ class TestResponseOracle(unittest.TestCase):
         solver.step(state, model.state(), model.control(), None, 0.01)
         solve_inverse = _mujoco_solve(solver)
 
-        oracle = ResponseOracle(model)  # fresh: nothing allocated by a prior call
+        response = JointSpaceResponse(model)  # fresh: nothing allocated by a prior call
         with wp.ScopedCapture(device) as capture:
-            oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
         wp.capture_launch(capture.graph)
 
-        reference = ResponseOracle(model)
+        reference = JointSpaceResponse(model)
         reference.refresh(state)
         np.testing.assert_allclose(
-            oracle.inverse_blocks.numpy()[0, :n, :n],
+            response.inverse_blocks.numpy()[0, :n, :n],
             reference.inverse_blocks.numpy()[0, :n, :n],
             rtol=2e-3,
             atol=1e-6,
         )
 
     def test_response_from_mujoco_factorization(self):
-        """Fill the oracle response from MuJoCo's per-step factorized inertia.
+        """Fill the response from MuJoCo's per-step factorized inertia.
 
         MuJoCo refactorizes its inertia at the step-start pose every step, so --
         unlike the compile-time, diagonal-only ``dof_invweight0`` -- the recovered
         inverse tracks inertial coupling at the current configuration. Checks
-        :meth:`ResponseOracle.refresh_from_solve` against a host-side
-        inverse-and-remap of that inertia, against the built-in oracle, and by
+        :meth:`JointSpaceResponse.refresh_from_solve` against a host-side
+        inverse-and-remap of that inertia, against the built-in dense recompute, and by
         driving the coupled implicit solve with it.
         """
         device = wp.get_device()
@@ -3173,24 +3174,24 @@ class TestResponseOracle(unittest.TestCase):
         n = len(_arm_dofs(model)) // worlds
         self.assertEqual(solver.mj_model.nv * worlds, model.joint_dof_count)
 
-        mjc_oracle = ResponseOracle(model)
-        mjc_oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
-        response_newton = mjc_oracle.inverse_blocks.numpy()[0, :n, :n]
+        mjc_response = JointSpaceResponse(model)
+        mjc_response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        response_newton = mjc_response.inverse_blocks.numpy()[0, :n, :n]
 
-        # The solver's mass matrix must agree with the oracle's own dense recompute.
-        oracle_ref = ResponseOracle(model)
-        oracle_ref.refresh(state)
-        np.testing.assert_allclose(response_newton, oracle_ref.inverse_blocks.numpy()[0, :n, :n], rtol=1e-4)
+        # The solver's mass matrix must agree with the response's own dense recompute.
+        response_ref = JointSpaceResponse(model)
+        response_ref.refresh(state)
+        np.testing.assert_allclose(response_newton, response_ref.inverse_blocks.numpy()[0, :n, :n], rtol=1e-4)
 
         # Drive the implicit solve with the solver-provided values (no refresh()).
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array(np.tile(kp, worlds), dtype=float, device=device),
             kd=wp.array(np.tile(kd, worlds), dtype=float, device=device),
         )
-        oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
-        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
+        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
 
@@ -3203,9 +3204,9 @@ class TestResponseOracle(unittest.TestCase):
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
-        Runs the same simulation twice, updating the oracle response every step
+        Runs the same simulation twice, updating the response every step
         either from the solver's own factorization (``refresh_from_solve`` --
-        the "solver-owned oracle" path) or with the built-in ``oracle.refresh()``.
+        the "solver-owned response" path) or with the built-in ``response.refresh()``.
         The refresh is scheduled at the same one-step-stale phase as the
         factorization, so the trajectories must coincide. On CUDA the
         whole step (actuator + solver + response update) is graph-captured, which
@@ -3226,7 +3227,7 @@ class TestResponseOracle(unittest.TestCase):
             _set_arm(model, control.joint_target_q, target)
 
             solver = _mujoco_solver(self, model)
-            actuator, oracle = _make_implicit_actuator(
+            actuator, response = _make_implicit_actuator(
                 model,
                 device,
                 kp=wp.array(kp, dtype=float, device=device),
@@ -3240,9 +3241,9 @@ class TestResponseOracle(unittest.TestCase):
                 if use_qm:
                     # Full inverse response from the solver's factorization at the
                     # pose of the step that just ran — same staleness as refresh().
-                    oracle.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
+                    response.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
                 else:
-                    oracle.refresh(state_prev)
+                    response.refresh(state_prev)
 
             def two_steps():
                 for _ in range(2):  # even count: state buffers line up for graph replay
@@ -3256,7 +3257,7 @@ class TestResponseOracle(unittest.TestCase):
                 _set_arm(model, states[0].joint_q, q_init)
                 states[0].joint_qd.zero_()
                 newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
-                oracle.refresh(states[0])  # prime the response at the initial pose
+                response.refresh(states[0])  # prime the response at the initial pose
 
             reset()
             two_steps()  # warm-up: module loads and lazy allocations before capture
@@ -3743,7 +3744,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
 
-        actuator, oracle = _make_implicit_actuator(
+        actuator, response = _make_implicit_actuator(
             model,
             device,
             kp=wp.array([kp1], dtype=float, device=device),
@@ -3756,17 +3757,17 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         np.testing.assert_allclose(actuator.drive.kp.numpy(), [kp2])
 
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         expected = _expected_implicit_pd(model, state, kp2, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
         # Re-installing must keep the same pack, so a direct assign still lands.
         pack = actuator.drive._param_pack
-        actuator.set_effort_mode_implicit(response=oracle)
+        actuator.set_effort_mode_implicit(response=response)
         self.assertIs(actuator.drive._param_pack, pack)
         actuator.drive.kp.assign(np.array([kp1], dtype=np.float32))
         control.joint_f.zero_()
-        _refresh_and_step(actuator, oracle, state, control, h)
+        _refresh_and_step(actuator, response, state, control, h)
         expected = _expected_implicit_pd(model, state, kp1, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
@@ -4086,6 +4087,254 @@ class TestDelayGraphCapture(unittest.TestCase):
                 rtol=1e-4,
                 err_msg=f"Cycle {ci}: graph should match eager with device-side write_idx",
             )
+
+
+class TestActuatorStateAssign(unittest.TestCase):
+    """Cover the :meth:`Actuator.State.assign` copy contract."""
+
+    def test_assign_copies_built_in_state(self):
+        """Copy every array in the built-in delay and PID drive state."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=1.0, kd=0.0, delay_steps=2)
+        actuator = builder.finalize(device=device).actuators[0]
+        current, advanced = actuator.state(), actuator.state()
+
+        delay_fields = ("buffer_pos", "buffer_vel", "buffer_act", "num_pushes", "write_idx")
+        for value, name in enumerate(delay_fields, start=1):
+            getattr(advanced.delay_state, name).fill_(value)
+        advanced.drive_state.integral.fill_(6.0)
+
+        current.assign(advanced)
+
+        for value, name in enumerate(delay_fields, start=1):
+            with self.subTest(name=name):
+                np.testing.assert_array_equal(getattr(current.delay_state, name).numpy(), value)
+        np.testing.assert_array_equal(current.drive_state.integral.numpy(), 6.0)
+
+    def test_assign_delegates_to_custom_drive_state(self):
+        """Delegate nested and slotted storage to the custom drive state."""
+
+        class _CustomState(DriveBase.State):
+            __slots__ = ("nested",)
+
+            def __init__(self, num_actuators: int, device: wp.Device):
+                self.nested = types.SimpleNamespace(value=wp.zeros(num_actuators, dtype=wp.float32, device=device))
+
+            def assign(self, other: DriveBase.State) -> None:
+                self.nested.value.assign(other.nested.value)
+
+        device = wp.get_device()
+        current, advanced = _CustomState(1, device), _CustomState(1, device)
+        advanced.nested.value.fill_(1.0)
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertEqual(current.nested.value.numpy()[0], 1.0)
+        self.assertIsNot(current.nested, advanced.nested)
+
+    def test_assign_copies_slotted_dataclass_state(self):
+        """Copy a custom slotted dataclass through the default implementation."""
+
+        @dataclass(slots=True)
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        destination = current.value
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIs(current.value, destination)
+        self.assertEqual(current.value.numpy()[0], 1.0)
+
+    def test_assign_copies_neural_warp_state_in_place(self):
+        """Copy neural Warp arrays while preserving destination storage."""
+        device = wp.get_device()
+        cases = (
+            (
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.zeros((2, 1), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralMLP.State(
+                    pos_error_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                    vel_history=wp.ones((2, 1), dtype=wp.float32, device=device),
+                ),
+                ("pos_error_history", "vel_history"),
+            ),
+            (
+                DriveNeuralLSTM.State(
+                    hidden=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.zeros((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                DriveNeuralLSTM.State(
+                    hidden=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                    cell=wp.ones((1, 1, 2), dtype=wp.float32, device=device),
+                ),
+                ("hidden", "cell"),
+            ),
+        )
+
+        for current, advanced, fields in cases:
+            destinations = {name: getattr(current, name) for name in fields}
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+            for name in fields:
+                destination = destinations[name]
+                self.assertIs(getattr(current, name), destination)
+                np.testing.assert_array_equal(destination.numpy(), 1.0)
+
+    def test_assign_rejects_undecorated_custom_drive_state(self):
+        """Reject an undeclared custom state rather than silently skipping it."""
+
+        class _CustomState(DriveBase.State):
+            def __init__(self, device: wp.Device):
+                self.value = wp.zeros(1, dtype=wp.float32, device=device)
+
+        current = _CustomState(wp.get_device())
+        advanced = _CustomState(wp.get_device())
+        with self.assertRaisesRegex(NotImplementedError, "decorated with @dataclass or implement assign"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    def test_assign_rejects_undeclared_attribute(self):
+        """Reject an attribute present on only one otherwise compatible state."""
+
+        @dataclass
+        class _CustomState(DriveBase.State):
+            value: wp.array | None = None
+
+        device = wp.get_device()
+        current = _CustomState(wp.zeros(1, dtype=wp.float32, device=device))
+        advanced = _CustomState(wp.ones(1, dtype=wp.float32, device=device))
+        current.extra = None
+
+        with self.assertRaisesRegex(ValueError, "undeclared state attributes: extra"):
+            Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+    @unittest.skipUnless(_HAS_TORCH, "PyTorch is required")
+    def test_assign_copies_torch_state_without_aliasing(self):
+        """Copy Torch-backed drive state without aliasing the source tensors."""
+        with _torch.inference_mode():
+            current = DriveNeuralLSTM.State(hidden=_torch.zeros((1, 1, 1)), cell=_torch.zeros((1, 1, 1)))
+            advanced = DriveNeuralLSTM.State(hidden=_torch.ones((1, 1, 1)), cell=_torch.ones((1, 1, 1)))
+
+        Actuator.State(drive_state=current).assign(Actuator.State(drive_state=advanced))
+
+        self.assertIsNot(current.hidden, advanced.hidden)
+        self.assertIsNot(current.cell, advanced.cell)
+        with _torch.inference_mode():
+            advanced.hidden.zero_()
+            advanced.cell.zero_()
+        self.assertEqual(current.hidden.item(), 1.0)
+        self.assertEqual(current.cell.item(), 1.0)
+
+    def test_assign_rejects_mismatched_components(self):
+        """Raise rather than silently skip when only one state holds a component."""
+        state = DrivePID.State(integral=wp.zeros(1, dtype=wp.float32, device=wp.get_device()))
+        with self.assertRaisesRegex(ValueError, "drive_state"):
+            Actuator.State(drive_state=state).assign(Actuator.State())
+
+
+@unittest.skipUnless(
+    wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
+    "CUDA graph capture requires CUDA device with memory pools",
+)
+class TestDriveStateGraphCapture(unittest.TestCase):
+    """Drive state must advance per replay, not only for an even captured step count.
+
+    A PID with only ``ki`` set, held at a constant position error by a model no
+    solver moves, accumulates exactly ``ki * error * dt`` per actuator step
+    however the loop is chunked.  A graph cannot re-point its state buffers
+    between replays, so an odd-length captured region needs either a boundary
+    :meth:`Actuator.State.assign` or a second graph of the opposite parity.
+    """
+
+    DT = 0.01
+    KI = 1.0
+    TARGET = 1.0
+    STEPS = 12
+
+    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None, parity_graphs: bool) -> float:
+        """Run :attr:`STEPS` actuator steps and return the resulting PID integral.
+
+        Args:
+            implicit: Solve the control law implicitly instead of explicitly.
+                Both effort modes advance the integral through the same state.
+            steps_per_graph: Steps per captured region, or ``None`` to run eagerly.
+            parity_graphs: Capture one graph per state-buffer orientation and
+                alternate them, instead of assigning at the region boundary.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        # Mass and inertia only matter to the implicit response.
+        body = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        builder.add_articulation([joint])
+        builder.add_actuator(DrivePID, index=builder.joint_qd_start[joint], kp=0.0, ki=self.KI, kd=0.0)
+        model = builder.finalize(device=device)
+
+        actuator = model.actuators[0]
+        response = JointSpaceResponse(model) if implicit else None
+        if response is not None:
+            actuator.set_effort_mode_implicit(response=response)
+        state, control = model.state(), model.control()
+        control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
+        s0, s1 = actuator.state(), actuator.state()
+
+        def run(s0, s1, steps, boundary_assign=False):
+            """Step the actuator, swapping state as the documented loop does."""
+            for i in range(steps):
+                control.joint_f.zero_()
+                if response is not None:
+                    response.refresh(state)
+                actuator.step(state, control, s0, s1, dt=self.DT)
+                if boundary_assign and steps % 2 == 1 and i == steps - 1:
+                    s0.assign(s1)  # keeps a single odd-length graph correct
+                else:
+                    s0, s1 = s1, s0
+            return s0, s1
+
+        if steps_per_graph is None:
+            s0, s1 = run(s0, s1, self.STEPS)
+        else:
+            # Module loading and lazy allocation have to happen before a capture.
+            s0, s1 = run(s0, s1, 1)
+            s0.drive_state.integral.zero_()
+            s1.drive_state.integral.zero_()
+            graphs = {}
+            for _ in range(self.STEPS // steps_per_graph):
+                # Keying on the current buffer builds one graph per orientation.
+                key = id(s0) if parity_graphs else None
+                if key not in graphs:
+                    with wp.ScopedCapture(device) as capture:
+                        after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
+                    graphs[key] = (capture.graph, after)
+                graph, (s0, s1) = graphs[key]
+                wp.capture_launch(graph)
+            self.assertLessEqual(len(graphs), 2, msg="alternating parity needs at most two graphs")
+        return float(s0.drive_state.integral.numpy()[0])
+
+    def test_pid_integral_advances_per_replay_boundary_assign(self):
+        """Assign at an odd-length region's boundary and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for implicit in (False, True):
+            for steps_per_graph in (None, 1, 2, 3):
+                with self.subTest(implicit=implicit, steps_per_graph=steps_per_graph):
+                    got = self._integral_after_all_steps(implicit, steps_per_graph, parity_graphs=False)
+                    self.assertAlmostEqual(got, expected, places=6)
+
+    def test_pid_integral_advances_per_replay_parity_graphs(self):
+        """Alternate one graph per buffer orientation and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for steps_per_graph in (1, 2, 3):
+            with self.subTest(steps_per_graph=steps_per_graph):
+                got = self._integral_after_all_steps(False, steps_per_graph, parity_graphs=True)
+                self.assertAlmostEqual(got, expected, places=6)
 
 
 # ---------------------------------------------------------------------------

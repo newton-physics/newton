@@ -470,10 +470,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
 
     def test_ball_joint_target_ranges_applied_to_all_axes(self):
-        """A ball-joint position actuator expands to one mj_model actuator per axis.
-
-        The single authored ctrl/force range must apply to every per-axis actuator.
-        """
+        """Ball-joint axes share the actuator-range row stored at the joint's base DOF."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="ball">
     <option gravity="0 0 0"/>
@@ -485,6 +482,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     </worldbody>
     <actuator>
         <position name="p" joint="bj" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+        <velocity name="v" joint="bj" kv="10" forcerange="-3 3" forcelimited="true" ctrlrange="-5 5" ctrllimited="true"/>
     </actuator>
 </mujoco>
 """
@@ -494,12 +492,23 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
-        self.assertEqual(mj_model.nu, 3)  # one actuator per ball DOF
+        self.assertEqual(mj_model.nu, 6)
+        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
         for mj_idx in range(mj_model.nu):
-            np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
-            np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            if mjc_to_newton[mj_idx] >= 0:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            else:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
             self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
             self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+
+        model.mujoco.actuator_ctrlrange.assign([[-4.0, 4.0], [-6.0, 6.0]])
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        for mj_idx in range(mj_model.nu):
+            expected = [-4.0, 4.0] if mjc_to_newton[mj_idx] >= 0 else [-6.0, 6.0]
+            np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, mj_idx], expected)
 
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""

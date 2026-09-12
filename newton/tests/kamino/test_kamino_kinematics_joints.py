@@ -9,14 +9,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton import JointTargetMode, ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType, compute_joints_data
-from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.utils.testing import build_unary_revolute_joint_test
 
 ###
 # Module configs
@@ -157,11 +157,11 @@ class TestKinematicsJoints(unittest.TestCase):
             msg.reset_log_level()
 
     def test_01_single_revolute_joint(self):
-        # Construct the model description using the ModelBuilderKamino
+        # Construct the model description
         builder = build_unary_revolute_joint_test()
 
         # Create the model and state
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data(device=self.default_device)
 
         # Set the state of the Follower body to a known state
@@ -200,11 +200,12 @@ class TestKinematicsJoints(unittest.TestCase):
         np.testing.assert_allclose(dq_j_np, dq_j_expected, atol=1e-6)
 
     def test_02_multiple_revolute_joints(self):
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(num_worlds=4, build_fn=build_unary_revolute_joint_test)
+        # Construct the model description
+        builder = ModelBuilder()
+        builder.replicate(builder=build_unary_revolute_joint_test(), world_count=4)
 
         # Create the model and state
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data(device=self.default_device)
 
         # Set the state of the Follower body to a known state
@@ -233,10 +234,10 @@ class TestKinematicsJoints(unittest.TestCase):
         dq_j_expected = np.array([J_DOMEGA_J[0]], dtype=np.float32)
 
         # Tile expected values for all joints
-        r_j_expected = np.tile(r_j_expected, builder.num_worlds)
-        dr_j_expected = np.tile(dr_j_expected, builder.num_worlds)
-        q_j_expected = np.tile(q_j_expected, builder.num_worlds)
-        dq_j_expected = np.tile(dq_j_expected, builder.num_worlds)
+        r_j_expected = np.tile(r_j_expected, builder.world_count)
+        dr_j_expected = np.tile(dr_j_expected, builder.world_count)
+        q_j_expected = np.tile(q_j_expected, builder.world_count)
+        dq_j_expected = np.tile(dq_j_expected, builder.world_count)
         msg.info("[expected]:  r_j: %s", r_j_expected)
         msg.info("[expected]: dr_j: %s", dr_j_expected)
         msg.info("[expected]:  q_j: %s", q_j_expected)
@@ -251,15 +252,23 @@ class TestKinematicsJoints(unittest.TestCase):
     def test_03_single_dynamic_revolute_joint(self):
         # Loop over all actuation types to test dynamic joint with different modes
         for act_type in JointActuationType:
-            # Construct the model description using the ModelBuilderKamino
-            builder = build_unary_revolute_joint_test(dynamic=True, implicit_pd=True)
-            # Set actuation type
-            for joint in builder.all_joints:
-                if joint.act_type != JointActuationType.PASSIVE:
-                    joint.dof_act_types = [act_type] * joint.num_dofs
+            # Convert Kamino actuation type to Newton target mode.
+            # Unmapped types (e.g., POSITION_VELOCITY_FORCE) are mapped to POSITION_VELOCITY.
+            try:
+                target_mode = JointActuationType.to_newton(act_type)
+            except ValueError:
+                target_mode = JointTargetMode.POSITION_VELOCITY
+
+            # Construct the model description, without effort limits to ensure
+            # we're on the unbounded path.
+            builder = build_unary_revolute_joint_test(
+                dynamic=True, implicit_pd=True, actuator_mode=target_mode, effort_limit=None
+            )
 
             # Create the model and state
-            model = builder.finalize(device=self.default_device)
+            model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+            model.joints.act_type.fill_(wp.int32(act_type))
+            model.joints.dof_act_types.fill_(wp.int32(act_type))
             data = model.data(device=self.default_device)
             model.time.set_uniform_timestep(0.01)
 
@@ -380,16 +389,18 @@ class TestKinematicsJoints(unittest.TestCase):
             np.testing.assert_allclose(dq_b_j_np, dq_b_j_expected, atol=1e-6)
 
     def test_04_multiple_dynamic_revolute_joints(self):
-        # Construct the model description using the ModelBuilderKamino
-        builder = make_homogeneous_builder(
-            num_worlds=4, build_fn=build_unary_revolute_joint_test, dynamic=True, implicit_pd=True
+        # Construct the model description, without effort limits to ensure we're
+        # on the unbounded path.
+        builder = ModelBuilder()
+        builder.replicate(
+            builder=build_unary_revolute_joint_test(dynamic=True, implicit_pd=True, effort_limit=None),
+            world_count=4,
         )
-        for joint in builder.all_joints:
-            if joint.act_type == JointActuationType.POSITION_VELOCITY:
-                joint.dof_act_types = [JointActuationType.POSITION_VELOCITY_FORCE] * joint.num_dofs
 
         # Create the model and data
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        model.joints.act_type.fill_(wp.int32(JointActuationType.POSITION_VELOCITY_FORCE))
+        model.joints.dof_act_types.fill_(wp.int32(JointActuationType.POSITION_VELOCITY_FORCE))
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
@@ -472,14 +483,14 @@ class TestKinematicsJoints(unittest.TestCase):
         dq_b_j_expected = np.array([dq_b_j_exp_val], dtype=np.float32)
 
         # Tile expected values for all joints
-        r_j_expected = np.tile(r_j_expected, builder.num_worlds)
-        dr_j_expected = np.tile(dr_j_expected, builder.num_worlds)
-        q_j_expected = np.tile(q_j_expected, builder.num_worlds)
-        dq_j_expected = np.tile(dq_j_expected, builder.num_worlds)
-        m_j_expected = np.tile(m_j_expected, builder.num_worlds)
-        h_j_expected = np.tile(h_j_expected, builder.num_worlds)
-        inv_m_j_expected = np.tile(inv_m_j_expected, builder.num_worlds)
-        dq_b_j_expected = np.tile(dq_b_j_expected, builder.num_worlds)
+        r_j_expected = np.tile(r_j_expected, builder.world_count)
+        dr_j_expected = np.tile(dr_j_expected, builder.world_count)
+        q_j_expected = np.tile(q_j_expected, builder.world_count)
+        dq_j_expected = np.tile(dq_j_expected, builder.world_count)
+        m_j_expected = np.tile(m_j_expected, builder.world_count)
+        h_j_expected = np.tile(h_j_expected, builder.world_count)
+        inv_m_j_expected = np.tile(inv_m_j_expected, builder.world_count)
+        dq_b_j_expected = np.tile(dq_b_j_expected, builder.world_count)
         msg.info("[expected]:  r_j: %s", r_j_expected)
         msg.info("[expected]: dr_j: %s", dr_j_expected)
         msg.info("[expected]:  q_j: %s", q_j_expected)
@@ -507,7 +518,7 @@ class TestKinematicsJoints(unittest.TestCase):
         )
 
         # Create the model and data
-        model = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 

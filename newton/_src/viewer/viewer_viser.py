@@ -56,7 +56,10 @@ class ViewerViser(ViewerBase):
         """Create a trimesh object with texture visuals (if trimesh is available)."""
         try:
             import trimesh
-        except Exception:
+            from PIL import Image
+            from trimesh.visual.material import PBRMaterial
+            from trimesh.visual.texture import TextureVisuals
+        except ImportError:
             return None
 
         if len(uvs) != len(points):
@@ -65,17 +68,14 @@ class ViewerViser(ViewerBase):
         faces = indices.astype(np.int64)
         mesh = trimesh.Trimesh(vertices=points, faces=faces, process=False)
 
-        try:
-            from PIL import Image
-            from trimesh.visual.texture import TextureVisuals
-
-            image = Image.fromarray(texture)
-            mesh.visual = TextureVisuals(uv=uvs, image=image)
-        except Exception:
-            visual_mod = getattr(trimesh, "visual", None)
-            TextureVisuals = getattr(visual_mod, "TextureVisuals", None) if visual_mod is not None else None
-            if TextureVisuals is not None:
-                mesh.visual = TextureVisuals(uv=uvs, image=texture)
+        # SimpleMaterial tints textures gray and leaves glTF's metallic default enabled.
+        material = PBRMaterial(
+            baseColorTexture=Image.fromarray(texture),
+            baseColorFactor=(255, 255, 255, 255),
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        mesh.visual = TextureVisuals(uv=uvs, material=material)
 
         return mesh
 

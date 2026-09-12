@@ -169,6 +169,8 @@ reusable from a custom simulator or test harness:
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
+.. _stateful-actuators:
+
 Stateful Actuators
 ------------------
 
@@ -189,6 +191,51 @@ after each step:
        control.joint_f.zero_()  # zero output before stepping actuators
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
+
+The swap rebinds Python names, while a CUDA graph records fixed buffer
+addresses. A captured region with an odd number of actuator steps therefore
+cannot carry its final state into the next replay through the ordinary swap. A
+single-step region updates its destination buffer, but does not advance state
+across replays. Even-length regions end with the original buffer orientation
+and need no special handling.
+
+For an odd-length region, choose between assigning the state at the region
+boundary or alternating graphs for the two buffer orientations.
+
+Boundary assignment
+^^^^^^^^^^^^^^^^^^^
+
+Call :meth:`Actuator.State.assign` in place of the final swap. This uses one
+graph and copies the actuator state once at the boundary of each replay.
+
+.. code-block:: python
+
+   with wp.ScopedCapture() as capture:
+       for i in range(steps):
+           control.joint_f.zero_()
+           model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
+           if steps % 2 == 1 and i == steps - 1:
+               state_0.assign(state_1)
+           else:
+               state_0, state_1 = state_1, state_0
+
+Alternating graphs
+^^^^^^^^^^^^^^^^^^
+
+Key captured graphs by the current state buffer and alternate between them.
+This avoids the boundary copy and keeps at most two graphs.
+
+.. code-block:: python
+
+   graphs = {}
+   for _ in range(replays):
+       key = id(state_0)  # one entry per buffer orientation
+       if key not in graphs:
+           with wp.ScopedCapture() as capture:
+               after = run_region(state_0, state_1)  # ordinary swapping inside
+           graphs[key] = (capture.graph, after)
+       graph, (state_0, state_1) = graphs[key]
+       wp.capture_launch(graph)
 
 Stateless actuators (e.g. a plain PD drive without delay) do not require
 state objects — simply omit them:
@@ -259,18 +306,18 @@ other applied force, other actuators driving the same articulation, and joint
 drive applied without the actuator are all absent from it.
 
 The implicit effort mode necessarily requires the joint-space inverse mass
-matrix. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which
+matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
 
 .. code-block:: python
 
-   from newton.actuators import ResponseOracle
+   from newton.actuators import JointSpaceResponse
 
-   oracle = ResponseOracle(model)
-   actuator.set_effort_mode_implicit(response=oracle)
+   response = JointSpaceResponse(model)
+   actuator.set_effort_mode_implicit(response=response)
 
    # Simulation loop
-   oracle.refresh(sim_state)
+   response.refresh(sim_state)
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
@@ -282,13 +329,13 @@ together as one coupled system.
 
 The inverse mass matrix, called *the response* below, is computed for a whole
 articulation. The actuator then reads only the entries for the DOFs it drives.
-:class:`~newton.actuators.ResponseOracle` is responsible for providing that
+:class:`~newton.actuators.JointSpaceResponse` is responsible for providing that
 matrix, and there are two ways to obtain it: compute it from scratch
-(:meth:`ResponseOracle.refresh <newton.actuators.ResponseOracle.refresh>`), or
-reuse what the solver already has (:meth:`ResponseOracle.refresh_from_solve
-<newton.actuators.ResponseOracle.refresh_from_solve>`).
+(:meth:`JointSpaceResponse.refresh <newton.actuators.JointSpaceResponse.refresh>`), or
+reuse what the solver already has (:meth:`JointSpaceResponse.refresh_from_solve
+<newton.actuators.JointSpaceResponse.refresh_from_solve>`).
 
-:meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
+:meth:`~newton.actuators.JointSpaceResponse.refresh` builds the mass matrix itself,
 from :func:`~newton.eval_mass_matrix` and joint armature. This comes with
 approximations. First, joint damping, joint limits, friction, contacts and
 constraint regularization are absent. All of those resist motion, so the
@@ -297,13 +344,13 @@ the control law and so yields a smaller effort than would have been evaluated
 without the simplifications listed above. Second, kinematic loop closures are
 also ignored.
 
-The approximations inherent in :meth:`ResponseOracle.refresh
-<newton.actuators.ResponseOracle.refresh>` may be avoided when working with a
+The approximations inherent in :meth:`JointSpaceResponse.refresh
+<newton.actuators.JointSpaceResponse.refresh>` may be avoided when working with a
 solver that is able to evaluate the inverse mass matrix more directly, with the
 exception of loop closure effects. To this end,
-:meth:`ResponseOracle.refresh_from_solve
-<newton.actuators.ResponseOracle.refresh_from_solve>` takes a callable that
-computes ``x = M^-1 y``. The oracle recovers the response one column at a time,
+:meth:`JointSpaceResponse.refresh_from_solve
+<newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
+computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
 Newton solver that provides one.
 
@@ -313,8 +360,8 @@ Newton solver that provides one.
        # x = M^-1 y, using the factorization the solver already built
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-   # Simulation loop, in place of oracle.refresh(sim_state)
-   oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   # Simulation loop, in place of response.refresh(sim_state)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
@@ -347,6 +394,12 @@ graphable.  For neural-network drives it depends on the checkpoint
 backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
 to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
 when all components can be captured in a CUDA graph.
+
+:meth:`Actuator.is_graphable` describes the components, not the captured region.
+A stateful actuator also needs the region's state exchange to be graph-safe.  See
+:ref:`stateful-actuators` for the two patterns that keep an odd-length region
+correct. Torch-backed neural drives are not graphable and cannot be used in a
+captured region.
 
 Available Components
 --------------------
@@ -424,6 +477,12 @@ For example, a custom drive needs to implement
 ``resolve_arguments`` maps user-provided keyword arguments (from
 :meth:`~newton.ModelBuilder.add_actuator` or USD schemas) to constructor
 parameters, filling in defaults where needed.
+
+A stateful custom drive also defines a dataclass subclass of
+:class:`DriveBase.State` and implements :meth:`~DriveBase.State.reset`. The
+default :meth:`Actuator.State.assign` behavior copies direct Warp array and
+Torch tensor fields without replacing their storage. States with other field
+types or nested storage implement ``assign()`` to define that copy.
 
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve
