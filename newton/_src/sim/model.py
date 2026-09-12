@@ -203,6 +203,22 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+        CONTACT = 16
+        """Packed rigid and soft-rigid contact slots, sized by the sum of their capacities.
+
+        The soft segment starts at ``rigid_contact_max``, not the live rigid count.
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_RIGID = 17
+        """Rigid-rigid contact slots, sized by ``rigid_contact_max``.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
+        CONTACT_SOFT = 18
+        """Soft-rigid contact slots, sized by ``soft_contact_max``; excludes soft self-contact.
+
+        Experimental: currently supported for solver observables, not builder attributes.
+        """
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -508,6 +524,9 @@ class Model:
         AttributeFrequency.SPRING: "spring_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
+        AttributeFrequency.CONTACT: "contact_max",
+        AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
+        AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
     }
 
     class AttributeNamespace:
@@ -1142,8 +1161,10 @@ class Model:
         self.soft_contact_restitution: float = 0.0
         """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
-        self.rigid_contact_max: int = 0
-        """Number of potential contact points between rigid bodies."""
+        self._rigid_contact_max: int | None = None
+        self._soft_contact_max: int | None = None
+        self._contact_capacity_initialized = False
+        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1281,8 +1302,8 @@ class Model:
 
         self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
 
-        # Extended state attributes live on State and are allocated only when
-        # explicitly requested via request_state_attributes().
+        # Deprecated solver-produced State attributes remain registered for
+        # compatibility with request_state_attributes().
         for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
             self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
@@ -1741,6 +1762,12 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
+        if frequency in (
+            Model.AttributeFrequency.CONTACT,
+            Model.AttributeFrequency.CONTACT_RIGID,
+            Model.AttributeFrequency.CONTACT_SOFT,
+        ):
+            self._get_contact_capacity()
         count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")
@@ -1835,6 +1862,67 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    @property
+    def contact_max(self) -> int | None:
+        """Combined rigid and soft-rigid contact buffer capacity, or ``None`` before collision setup.
+
+        This is the row count for :attr:`AttributeFrequency.CONTACT`, not the
+        number of active contacts. It excludes soft self-contact.
+        """
+        if self.rigid_contact_max is None or self.soft_contact_max is None:
+            return None
+        return self.rigid_contact_max + self.soft_contact_max
+
+    @property
+    def rigid_contact_max(self) -> int | None:
+        """Rigid contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
+        valid capacity. Contact-indexed solver observables freeze both capacities
+        for the lifetime of this model.
+        """
+        return self._rigid_contact_max
+
+    @rigid_contact_max.setter
+    def rigid_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(value, self._soft_contact_max)
+        if value != self._rigid_contact_max:
+            self._contact_capacity_initialized = False
+        self._rigid_contact_max = value
+
+    @property
+    def soft_contact_max(self) -> int | None:
+        """Soft contact buffer capacity, or ``None`` before collision setup.
+
+        :class:`CollisionPipeline` publishes its resolved capacity, including
+        any enabled edge/face contact passes. Zero disables soft contacts.
+        """
+        return self._soft_contact_max
+
+    @soft_contact_max.setter
+    def soft_contact_max(self, value: int | None) -> None:
+        self._validate_contact_capacity(self._rigid_contact_max, value)
+        if value != self._soft_contact_max:
+            self._contact_capacity_initialized = False
+        self._soft_contact_max = value
+
+    def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
+        """Reject invalid capacities or changes that invalidate solver observables."""
+        if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
+            raise ValueError("Contact capacities must be nonnegative or None.")
+        frozen = self._solver_observable_contact_capacity
+        if frozen is not None and (rigid_max, soft_max) != frozen:
+            raise ValueError(
+                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
+                "create a new model and results to change capacities."
+            )
+
+    def _get_contact_capacity(self) -> tuple[int, int]:
+        """Return capacities published by a successfully initialized pipeline."""
+        if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
+            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver observables.")
+        return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """
@@ -1952,24 +2040,52 @@ class Model:
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific state attributes be allocated when creating a State object.
+        """Request optional solver-produced state attributes.
 
-        See :ref:`extended_state_attributes` for details and usage.
+        .. deprecated:: 1.7
+
+            Request :class:`newton.solvers.SolverObservables` from the solver
+            instead.
+
+        See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_state_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._request_state_attributes(*attributes)
+
+    def _request_state_attributes(self, *attributes: str) -> None:
+        """Register legacy state fields after the entry point emits its warning."""
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def request_contact_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific contact attributes be allocated when creating a Contacts object.
+        """Request optional solver-produced contact attributes.
+
+        .. deprecated:: 1.7
+
+            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            the solver instead.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_contact_attributes() is deprecated in Newton 1.7; "
+            "request SolverObservables from the solver instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._request_contact_attributes(*attributes)
+
+    def _request_contact_attributes(self, *attributes: str) -> None:
+        """Register legacy contact fields after the entry point emits its warning."""
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 
@@ -2147,7 +2263,7 @@ class Model:
         """
         Get the list of requested state attribute names that have been requested on the model.
 
-        See :ref:`extended_state_attributes` for details.
+        See :doc:`Solver Observables </concepts/solver_observables>` for details.
 
         Returns:
             The list of requested state attributes.

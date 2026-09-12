@@ -1,0 +1,1 @@
+Add `SolverObservables.select(flags)` for reusable, same-type subsets sharing preallocated arrays, and `is_requested(flag)` for explicit request checks. Schedule individual diagnostics across substeps without mutating array fields or adding arguments to `solver.step()`. Propagate selections through coupled solvers and share contact bindings across subsets.

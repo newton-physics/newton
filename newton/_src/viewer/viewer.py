@@ -601,8 +601,8 @@ class ViewerBase(ABC):
         layer.show_particles = False
         layer.show_contacts = False
         layer.show_contact_normals = True
-        layer.show_contact_disks = True  # Note: requires the ``"force"`` extended contact attribute.
-        layer.show_contact_forces = True  # Note: requires the ``"force"`` extended contact attribute.
+        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver observable when available.
+        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
         layer.show_gaussians = False
@@ -1231,7 +1231,13 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
-    def log_contacts(self, contacts: newton.Contacts, state: newton.State):
+    def log_contacts(
+        self,
+        contacts: newton.Contacts,
+        state: newton.State,
+        *,
+        solver_observables: newton.solvers.SolverObservables | None = None,
+    ):
         """Render contact visualizations.
 
         The visualization is split into three layers, each of which can be
@@ -1240,12 +1246,12 @@ class ViewerBase(ABC):
         * ``"/contacts/normals"`` — arrows along ``rigid_contact_normal``
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
-          coded by inferred contact mode (open / stick / slip) when
-          ``contacts.force`` is allocated, else by a uniform default color
+          coded by inferred contact mode (open / stick / slip) when contact
+          force output is available, else by a uniform default color
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
-          ``contacts.force`` (gated on :attr:`show_contact_forces`; hidden if
-          ``contacts.force is None``).
+          the contact-force output (gated on :attr:`show_contact_forces`;
+          hidden if no output is available).
 
         Sub-toggles are themselves gated by the master :attr:`show_contacts`
         flag; setting it to ``False`` hides everything.  When sub-toggles are
@@ -1257,7 +1263,15 @@ class ViewerBase(ABC):
             state: The current state of the simulation.  Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
+            solver_observables: Optional solver observables containing ``contact_f``. If
+                omitted, the deprecated ``contacts.force`` array is used.
         """
+
+        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
+        if solver_observables is not None and solver_observables.contacts is not contacts:
+            raise ValueError(
+                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
+            )
 
         if not self.show_contacts or self._layer_force_hidden():
             self.log_arrows(self._qualify("/contacts/normals"), None, None, None)
@@ -1366,7 +1380,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    contacts.force,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel falls back to default color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1394,7 +1408,7 @@ class ViewerBase(ABC):
             )
 
         # ---- Layer C: contact force arrows --------------------------------
-        if self.show_contact_forces and contacts.force is not None:
+        if self.show_contact_forces and contact_f is not None:
             if self._contact_force_starts is None or len(self._contact_force_starts) < max_contacts:
                 self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
                 self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
@@ -1416,7 +1430,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
-                    contacts.force,
+                    contact_f,
                     contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
@@ -2880,7 +2894,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Results are written into *target* (keyed by shape index).
+        Observables are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return

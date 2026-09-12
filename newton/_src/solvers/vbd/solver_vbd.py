@@ -32,7 +32,7 @@ from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverObservables
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
@@ -2283,6 +2283,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
@@ -2305,11 +2307,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                 If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
                 depend on this argument.
             dt: Time step size.
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
 
         Raises:
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during graph capture.
         """
+        contacts = self._resolve_step_contacts(contacts)
+        self._validate_observables(observables, contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
@@ -2319,7 +2324,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
         if self.collision_pipeline is not None:
-            contacts = self._resolve_step_contacts(contacts)
             rigid_slot = SolverBase.CollisionSlot.RIGID
             rigid_mode = self._resolved_collision_frequency_type(rigid_slot)
             self._rigid_mode_this_step = rigid_mode

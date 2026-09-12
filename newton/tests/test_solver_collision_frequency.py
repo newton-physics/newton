@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -182,9 +183,12 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
         collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
     state_a, state_b = model.state(), model.state()
+    observables = solver.observables(set())
 
     pipeline.collide(state_a, solver.contacts)
-    solver.step(state_a, state_b, None, None, 1e-3)
+    with patch.object(solver, "_validate_observables", wraps=solver._validate_observables) as validate:
+        solver.step(state_a, state_b, None, None, 1e-3, observables=observables)
+    validate.assert_called_once_with(observables, solver.contacts)
     test.assertGreater(int(solver.body_body_contact_counts.numpy().sum()), 0)
 
     solver.contacts.clear()

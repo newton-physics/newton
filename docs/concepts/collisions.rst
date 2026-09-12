@@ -1018,6 +1018,13 @@ and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to selec
 memory budget and silence the warning. Optional collision features and solvers may
 allocate additional per-contact memory.
 
+Pipeline construction publishes the resolved rigid and soft capacities as
+``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
+setup these are ``None``; zero is a valid empty capacity. Contact-indexed
+:ref:`solver_observables` use these capacities for eager allocation and freeze them
+once allocated. Construct the pipeline before calling ``solver.observables()`` for
+contact diagnostics; the live contact counts are not needed during allocation.
+
 .. _Mesh Collisions:
 
 Mesh Collision Handling
@@ -1622,23 +1629,24 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``soft_contact_normal``
      - Contact normal.
 
-**Extended contact attributes** (see :ref:`extended_contact_attributes`):
+**Contact-force solver observable** (see :ref:`solver_observables`):
 
 .. list-table::
    :header-rows: 1
    :widths: 22 78
 
-   * - Attribute
+   * - Observable
      - Description
-   * - :attr:`~Contacts.force`
+   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+       Bind the observable allocation to the contacts buffer and pass it to the
+       solver step.
 
 .. note::
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   forces written to ``SolverObservables.contact_f`` are
    approximate -- see that method's documentation for details.
 
 Example usage:

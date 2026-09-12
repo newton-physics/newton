@@ -18,11 +18,9 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Sensors automatically request any :doc:`extended attributes <extended_attributes>` they need
-   (e.g. ``body_qdd``, ``Contacts.force``) at init, so ``State`` and ``Contacts`` objects created afterwards will
-   include them.
-
-   ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
+   Solver-dependent sensors expose ``solver_observable_flags``. Combine these sets,
+   allocate :doc:`solver observables <solver_observables>` once, and pass the
+   container to the solver and sensor updates.
 
    ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
    attributes.
@@ -46,15 +44,16 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
+   observables = solver.observables(imu.solver_observable_flags)
    state = model.state()
 
    # Simulation loop
    for _ in range(100):
        state.clear_forces()
-       solver.step(state, state, None, None, dt=1.0 / 60.0)
+       solver.step(state, state, None, None, dt=1.0 / 60.0, observables=observables)
 
        # 2. Compute measurements from the current state
-       imu.update(state)
+       imu.update(state, solver_observables=observables)
 
        # 3. Results stored on sensor attributes
        acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
@@ -154,23 +153,33 @@ For fisheye cameras, extract the calibration values from your chosen USD attribu
 :meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
 rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
-Extended Attributes
--------------------
+Solver Observables
+------------------
 
-Some sensors depend on extended attributes that are not allocated by default:
+``SensorIMU`` requires ``SolverObservableFlags.BODY_QDD`` and ``SensorContact``
+requires ``SolverObservableFlags.CONTACT_F``. Their ``solver_observable_flags``
+properties provide these requirements without mutating the model. Union the
+sets when both sensors are present. Construct the collision pipeline before
+requesting contact-indexed observables, then pass its contacts buffer to the solver
+step and sensor. The first step binds the observable container to that storage:
 
-- ``SensorIMU`` requires ``State.body_qdd`` (rigid-body accelerations). By
-  default it requests this from the model at construction, so subsequent
-  ``model.state()`` calls allocate it automatically. Both
-  :class:`~newton.solvers.SolverKamino` and
-  :class:`~newton.solvers.SolverMuJoCo` populate this attribute. Kamino reports
-  the discrete step-average center-of-mass acceleration in the world frame;
-  impact steps therefore include the velocity impulse divided by the step
-  duration.
-- ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
-  wrenches). By default it requests this from the model at construction, so
-  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
-  must also support populating contact forces.
+.. code-block:: python
+
+   flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
+   observables = solver.observables(flags)
+
+   solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+   imu.update(state_out, solver_observables=observables)
+   contact_sensor.update(state_out, contacts, solver_observables=observables)
+
+Contact observables are allocated from the model's resolved rigid and soft contact
+capacities, not the current number of contacts. See :ref:`solver_observables` for
+pipeline setup with native collision backends and graph capture.
+
+Both :class:`~newton.solvers.SolverKamino` and
+:class:`~newton.solvers.SolverMuJoCo` populate ``body_qdd``. Kamino reports
+the discrete step-average center-of-mass acceleration in the world frame;
+impact steps therefore include the velocity impulse divided by the step duration.
 
 Performance Considerations
 --------------------------
@@ -180,17 +189,15 @@ parallel where possible. Create each sensor once during setup and reuse it
 every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
-Sensors that depend on extended attributes (e.g. ``body_qdd``,
-``Contacts.force``) may add nontrivial cost to the solver step itself, since
-the solver must compute and store these additional quantities regardless of
-whether the sensor is evaluated after each step.
+Requested solver observables may add nontrivial cost to the solver step itself.
+Request only the flags consumed by the application and reuse the allocation.
 
 See Also
 --------
 
 * :doc:`sites` -- using sites as sensor attachment points and reference frames
 * :doc:`../api/newton_sensors` -- full sensor API reference
-* :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
+* :doc:`solver_observables` -- optional arrays produced by solvers
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example

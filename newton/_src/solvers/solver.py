@@ -3,15 +3,198 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from enum import IntEnum
-from typing import Any
+from collections.abc import Iterable, Mapping
+from copy import copy
+from enum import Enum, IntEnum
+from typing import Any, ClassVar
 
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, CollisionPipeline, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+
+
+class SolverObservableFlags(Enum):
+    """Standard observable quantities that may be requested from a solver.
+
+    Requests are composed as a :class:`set` rather than a bit mask so that
+    solver-specific enums can add entries without coordinating integer bits
+    with Newton or other solver implementations.
+
+    Each member's string value names its observable array. The container
+    declares that array's row frequency in ``ATTRIBUTE_FREQUENCIES``.
+
+    .. experimental::
+
+        The solver observable API may change while additional solvers and observable
+        categories are migrated to it.
+    """
+
+    BODY_QDD = "body_qdd"
+    """Rigid-body spatial accelerations."""
+
+    BODY_PARENT_F = "body_parent_f"
+    """Incoming parent-joint wrenches on rigid bodies."""
+
+    CONTACT_F = "contact_f"
+    """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
+
+
+class SolverObservables:
+    """Arrays populated by a solver in addition to the simulation state.
+
+    Instances are allocated by :meth:`SolverBase.observables` and may be reused
+    across steps. Solver implementations can derive from this class to add
+    solver-specific arrays while retaining the standard Newton observables.
+
+    .. experimental::
+
+        The solver observable API may change while additional solvers and observable
+        categories are migrated to it.
+    """
+
+    ATTRIBUTE_FREQUENCIES: ClassVar[Mapping[str, Model.AttributeFrequency | str]] = {
+        "body_qdd": Model.AttributeFrequency.BODY,
+        "body_parent_f": Model.AttributeFrequency.BODY,
+        "contact_f": Model.AttributeFrequency.CONTACT,
+    }
+    """Row domains of observable arrays, keyed by field name.
+
+    Derived containers declare only their additional fields; frequency lookup
+    follows the class inheritance order. Every requested flag must have a
+    string value naming a field with a declared frequency. Custom string
+    frequencies use the model's custom-frequency ownership metadata for selection.
+    """
+
+    def __init__(self, flags: Iterable[Enum] = ()) -> None:
+        """Initialize an unallocated observable container.
+
+        Args:
+            flags: Observable flags represented by this container.
+        """
+        self._flags: frozenset[Enum] = frozenset(flags)
+
+        self.body_qdd: wp.array[wp.spatial_vector] | None = None
+        """Rigid-body accelerations [m/s², rad/s²], shape ``(body_count,)``."""
+
+        self.body_parent_f: wp.array[wp.spatial_vector] | None = None
+        """Incoming parent-joint wrenches [N, N·m], shape ``(body_count,)``."""
+
+        self.contact_f: wp.array[wp.spatial_vector] | None = None
+        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)``."""
+
+        self._solver: SolverBase | None = None
+        self._contacts: Contacts | None = None
+        self._contact_capacity: tuple[int, int] | None = None
+        self._source: SolverObservables | None = None
+
+    @property
+    def flags(self) -> frozenset[Enum]:
+        """Observable flags requested by this container or selected subset."""
+        return self._flags
+
+    def is_requested(self, flag: Enum) -> bool:
+        """Return whether this container requests an observable on the current call.
+
+        This checks the request, not whether its values are fresh. It also
+        returns True for requested zero-length arrays and during allocation.
+
+        Args:
+            flag: A standard or solver-specific observable enum member.
+        """
+        return flag in self._flags
+
+    def __contains__(self, flag: Enum) -> bool:
+        """Return whether an observable is requested, like :meth:`is_requested`."""
+        return self.is_requested(flag)
+
+    def select(self, flags: Iterable[Enum]) -> SolverObservables:
+        """Return a reusable subset sharing this container's allocated arrays.
+
+        The result has the same concrete type, solver owner, and selected
+        array objects, including gradients. Fields omitted from the selection
+        are None in the result; this container is not modified. Stepping a
+        subset therefore leaves the source's omitted arrays unchanged.
+
+        Create selections before graph capture and reuse them across substeps.
+        Only Python containers are created; no array allocation or copying is
+        performed. Selections share the source's contact-storage binding.
+
+        Derived containers with nested observable containers should override
+        this method, call super(), and select their children in the result.
+        Other solver-specific metadata is shallow-copied.
+
+        Args:
+            flags: Subset of :attr:`flags` to request. An empty set requests
+                no observables. Selecting a selection can only narrow it.
+
+        Returns:
+            A same-type container referencing the selected arrays.
+
+        Raises:
+            ValueError: If this container was not allocated by a solver or a
+                flag is not requested by this container.
+        """
+        if self._solver is None:
+            raise ValueError("Solver observables must be allocated by a solver before selecting fields.")
+        requested = frozenset(flags)
+        missing = requested.difference(self.flags)
+        if missing:
+            raise ValueError(f"Cannot select observable flags not requested by this container: {missing}.")
+        selected = copy(self)
+        selected._flags = requested
+        selected._source = self._source if self._source is not None else self
+        for flag in self.flags.difference(requested):
+            setattr(selected, flag.value, None)
+        if not selected._has_contact_observables():
+            selected._contact_capacity = None
+        return selected
+
+    def _has_contact_observables(self) -> bool:
+        """Validate row frequencies and identify contact-indexed requests."""
+        frequencies = {self.get_attribute_frequency(flag.value) for flag in self.flags}
+        return bool(
+            frequencies.intersection(
+                (
+                    Model.AttributeFrequency.CONTACT,
+                    Model.AttributeFrequency.CONTACT_RIGID,
+                    Model.AttributeFrequency.CONTACT_SOFT,
+                )
+            )
+        )
+
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
+        """Return an array's row domain, including inherited declarations.
+
+        Args:
+            name: Observable array field name.
+
+        Raises:
+            KeyError: If no frequency is declared for the field.
+            TypeError: If the declaration is not an attribute frequency or string.
+        """
+        for cls in type(self).__mro__:
+            frequencies = cls.__dict__.get("ATTRIBUTE_FREQUENCIES", {})
+            if name in frequencies:
+                frequency = frequencies[name]
+                if not isinstance(frequency, (Model.AttributeFrequency, str)):
+                    raise TypeError(f"Invalid observable frequency for '{name}': {frequency!r}.")
+                return frequency
+        raise KeyError(f"No observable frequency declared for '{name}'.")
+
+    @property
+    def model(self) -> Model | None:
+        """Model whose indexing this container uses, or ``None`` before allocation."""
+        return None if self._solver is None else self._solver.model
+
+    @property
+    def contacts(self) -> Contacts | None:
+        """Shared contact storage, or None before binding or without contact requests."""
+        if self._contact_capacity is None:
+            return None
+        source = self._source if self._source is not None else self
+        return source._contacts
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -235,6 +418,11 @@ class SolverBase:
     """
 
     _module_options_revision = 0
+    OBSERVABLES_TYPE: ClassVar[type[SolverObservables]] = SolverObservables
+    """Container type returned by :meth:`observables`."""
+
+    SUPPORTED_OBSERVABLE_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
+    """Observable flags accepted by :meth:`observables`."""
 
     def __init__(
         self,
@@ -396,6 +584,130 @@ class SolverBase:
     def _run_rigid_collision(self, state: State, dt: float | None = None) -> None:
         """Run the owned pipeline into the owned contacts buffer."""
         self.collision_pipeline.collide(state, self._pipeline_contacts, dt=dt)
+
+    @property
+    def supported_observable_flags(self) -> frozenset[Enum]:
+        """Observable flags supported by this solver instance."""
+        return self.SUPPORTED_OBSERVABLE_FLAGS
+
+    def observables(
+        self,
+        flags: Iterable[Enum],
+        *,
+        requires_grad: bool | None = None,
+    ) -> SolverObservables:
+        """Allocate reusable arrays for requested solver observables.
+
+        A container is owned by the solver that allocates it and can be passed
+        to that solver's :meth:`step` method on every time step. Derived
+        solvers add custom flags to :attr:`SUPPORTED_OBSERVABLE_FLAGS`, derive a
+        container from :class:`SolverObservables`, and override
+        :meth:`_allocate_observables` for their custom arrays.
+
+        Args:
+            flags: Set or other iterable of standard and solver-specific observable
+                enum members.
+            requires_grad: Whether allocated arrays require gradients. If
+                ``None``, use the model's setting.
+
+        Returns:
+            A solver-owned observable container with requested arrays allocated.
+
+        Raises:
+            TypeError: If a request is not a plain enum member or the
+                configured observable type does not derive from
+                :class:`SolverObservables`.
+            ValueError: If this solver does not support a requested observable
+                or its container does not declare the observable's row frequency.
+            RuntimeError: If contact-indexed observables are requested before
+                constructing :class:`~newton.CollisionPipeline` for the model.
+
+        All requested arrays are allocated before this method returns; ``None``
+        always means unrequested. Contact arrays use the model's resolved rigid
+        and soft capacities, not the live contact count. Allocate before graph
+        capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
+
+        .. experimental::
+
+            The solver observable API may change while additional solvers and
+            observable categories are migrated to it.
+        """
+        requested = frozenset(flags)
+        invalid = [flag for flag in requested if not isinstance(flag, Enum) or isinstance(flag, (int, str))]
+        if invalid:
+            values = ", ".join(repr(flag) for flag in invalid)
+            raise TypeError(
+                "Solver observable flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
+                f"or string-mixin enum members; got: {values}."
+            )
+        if any(not isinstance(flag.value, str) or not flag.value.isidentifier() for flag in requested):
+            raise TypeError("Each solver observable flag's value must be a string naming its array field.")
+
+        unsupported = requested.difference(self.supported_observable_flags)
+        if unsupported:
+            names = ", ".join(self._format_observable_flag(flag) for flag in unsupported)
+            raise ValueError(f"{type(self).__name__} does not support solver observable(s): {names}.")
+
+        if not issubclass(self.OBSERVABLES_TYPE, SolverObservables):
+            raise TypeError("OBSERVABLES_TYPE must derive from SolverObservables.")
+        observables = self.OBSERVABLES_TYPE(requested)
+        observables._solver = self
+        if requires_grad is None:
+            requires_grad = self.model.requires_grad
+        try:
+            has_contact_observables = observables._has_contact_observables()
+        except KeyError as error:
+            raise ValueError(error.args[0]) from error
+        if has_contact_observables:
+            observables._contact_capacity = self.model._get_contact_capacity()
+        self._allocate_observables(observables, requires_grad=requires_grad)
+        if observables._contact_capacity is not None:
+            self.model._solver_observable_contact_capacity = observables._contact_capacity
+        return observables
+
+    @staticmethod
+    def _format_observable_flag(flag: Enum) -> str:
+        """Format an observable flag for diagnostics."""
+        return f"{type(flag).__name__}.{flag.name}"
+
+    def _allocate_observables(self, observables: SolverObservables, *, requires_grad: bool) -> None:
+        """Allocate standard arrays requested in an observable container."""
+        for flag in SolverObservableFlags:
+            if not observables.is_requested(flag):
+                continue
+            frequency = observables.get_attribute_frequency(flag.value)
+            setattr(
+                observables,
+                flag.value,
+                wp.zeros(
+                    self.model._attribute_frequency_count(frequency),
+                    dtype=wp.spatial_vector,
+                    device=self.model.device,
+                    requires_grad=requires_grad,
+                ),
+            )
+
+    def _validate_observables(self, observables: SolverObservables | None, contacts: Contacts | None = None) -> None:
+        """Validate that an observable container belongs to this solver."""
+        if observables is None:
+            return
+        if not isinstance(observables, self.OBSERVABLES_TYPE):
+            raise TypeError(f"'observables' must be an instance of {self.OBSERVABLES_TYPE.__name__}.")
+        if observables._solver is not self:
+            raise ValueError("Solver observables must be passed to the solver instance that allocated them.")
+        if observables._contact_capacity is not None:
+            if contacts is None:
+                raise ValueError("Pass Contacts to solver.step() when using contact-indexed solver observables.")
+            if contacts.device != self.model.device:
+                raise ValueError("Solver observables and Contacts must be on the solver device.")
+            if (contacts.rigid_contact_max, contacts.soft_contact_max) != observables._contact_capacity:
+                raise ValueError(f"Contacts capacities must match solver observables: {observables._contact_capacity}.")
+            if observables.contacts is not None and observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables must be used with the Contacts instance bound on the first step."
+                )
+            source = observables._source if observables._source is not None else observables
+            source._contacts = contacts
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)
@@ -569,7 +881,14 @@ class SolverBase:
         self._normalize_reset_world_mask(world_mask)
 
     def step(
-        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -582,6 +901,7 @@ class SolverBase:
                 :class:`Model` are used.
             contacts: The contact information.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
         """
         raise NotImplementedError()
 
@@ -623,9 +943,12 @@ class SolverBase:
         pass
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """
-        Update a Contacts object with forces from the solver state. Where the solver state contains
-        other contact data, convert that data to the Contacts format.
+        """Update a legacy Contacts object with forces from the solver state.
+
+        .. deprecated:: 1.7
+
+            Request :attr:`SolverObservableFlags.CONTACT_F` using :meth:`observables`
+            and pass the resulting container to :meth:`step` instead.
 
         Args:
             contacts: The object to update from the solver state.

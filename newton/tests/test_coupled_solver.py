@@ -351,6 +351,28 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _BodyObservableCopySolver(_StepCountingCopySolver):
+    """Copy solver that fills body-indexed solver observables."""
+
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+        {
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+        }
+    )
+
+    def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
+        self._validate_observables(observables, contacts)
+        super().step(state_in, state_out, control, contacts, dt)
+        if observables is None:
+            return
+        value = 1.0 if self.model.name == "left" else 2.0
+        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_QDD):
+            observables.body_qdd.fill_(value)
+        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_PARENT_F):
+            observables.body_parent_f.fill_(value + 10.0)
+
+
 class _ResetRecordingCopySolver(_StepCountingCopySolver):
     """Copy solver that records validated reset calls."""
 
@@ -612,7 +634,8 @@ class TestModelView(unittest.TestCase):
 
     def test_state_creation_respects_view_count_overrides(self):
         """view.state() should size state arrays from view-local counts."""
-        self.model.request_state_attributes("body_qdd", "body_parent_f")
+        with self.assertWarns(DeprecationWarning):
+            self.model.request_state_attributes("body_qdd", "body_parent_f")
         view = ModelView(self.model, "test")
         view.body_count = 1
 
@@ -872,7 +895,8 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 builder.add_world(world)
                 builder.add_world(world)
                 model = builder.finalize(device="cpu")
-                model.request_state_attributes("body_qdd", "body_parent_f")
+                with self.assertWarns(DeprecationWarning):
+                    model.request_state_attributes("body_qdd", "body_parent_f")
                 coupled = SolverCoupled(
                     model,
                     [SolverCoupled.Entry("recording", _ResetRecordingCopySolver, bodies=range(3), substeps=2)],
@@ -1105,6 +1129,63 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_shape_sphere(body=1, radius=0.2)
 
         self.model = builder.finalize(device="cpu")
+
+    def test_routes_body_solver_observables(self):
+        """Gather entry-local body observables into parent-model order."""
+        coupled = SolverCoupled(
+            self.model,
+            [
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
+                SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
+            ],
+        )
+        flags = {
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+        }
+        observables = coupled.observables(flags)
+        state_in, state_out = self.model.state(), self.model.state()
+
+        coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
+
+        np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
+        np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
+        self.assertEqual(set(observables.entry_observables), {"left", "right"})
+
+    def test_select_routes_only_requested_observables(self):
+        """Propagate subsets to child solvers and preserve skipped global and local arrays."""
+        coupled = SolverCoupled(
+            self.model,
+            [
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0], substeps=2),
+                SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
+            ],
+        )
+        flags = newton.solvers.SolverObservableFlags
+        observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
+        observables.body_parent_f.fill_(-1.0)
+        for entry in observables.entry_observables.values():
+            entry.body_parent_f.fill_(-2.0)
+        selected = observables.select({flags.BODY_QDD})
+        self.assertIs(type(selected), SolverCoupled.Observables)
+        self.assertIsNot(selected.entry_observables, observables.entry_observables)
+        for name, entry in selected.entry_observables.items():
+            self.assertIs(entry.body_qdd, observables.entry_observables[name].body_qdd)
+            self.assertIsNone(entry.body_parent_f)
+
+        state_in, state_out = self.model.state(), self.model.state()
+        coupled.step(state_in, state_out, None, None, 0.01, observables=selected)
+        np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
+        np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((2, 6), -1.0))
+        for entry in observables.entry_observables.values():
+            np.testing.assert_array_equal(entry.body_parent_f.numpy(), np.full(entry.body_parent_f.numpy().shape, -2.0))
+
+        empty = selected.select(set())
+        observables.body_qdd.fill_(-3.0)
+        coupled.step(state_in, state_out, None, None, 0.01, observables=empty)
+        np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((2, 6), -3.0))
+        coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
+        np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
 
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
