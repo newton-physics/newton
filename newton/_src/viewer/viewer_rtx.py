@@ -38,6 +38,7 @@ except ImportError:
 
 from .camera import Camera
 from .picking import Picking
+from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
@@ -142,6 +143,8 @@ class ViewerRTX(ViewerUSD):
         scaling: float = 1.0,
         environment: Literal["default", "studio", "none"] = "default",
         async_rendering: bool = True,
+        *,
+        plot_history_size: int = 250,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
 
@@ -161,7 +164,11 @@ class ViewerRTX(ViewerUSD):
             async_rendering: Submit OVRTX render work asynchronously and
                 present the previous frame while the next one is still in
                 flight.
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
+
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
         # OVRTX 0.3+ ships with namespaced USD builds that should be safe to use in conjunction with
         # `usd-core`, but the check wasn't removed yet. Upcoming OVRTX releases should remove the check,
@@ -2077,6 +2084,47 @@ void main() {
     # ----------------------------------------------------------- viewer API
 
     @override
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray | None):
+        """
+        Log a numeric array as a live heatmap.
+
+        Scalars appear as a single cell, 1-D arrays as a single row, and
+        2-D arrays as a grid. Higher-dimensional arrays are not supported.
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data to visualize, or ``None`` to remove a previously
+                logged array.
+        """
+        self._plot_logger.log_array(self._qualify(name), array)
+
+    @override
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
+        """
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate line plot displayed in an
+        auto-generated "Plots" window.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
+        """
+        self._plot_logger.log_scalar(self._qualify(name), value, clear=clear, smoothing=smoothing)
+
+    @override
     def clear_all_layers(self) -> None:
         """Reset the RTX viewer as one complete layered scene."""
         for layer_id in [lid for lid in self._layers if lid != _DEFAULT_LAYER_ID]:
@@ -2098,6 +2146,9 @@ void main() {
                 "ViewerRTX cannot clear one layer while other user layers are still live; "
                 "create a new ViewerRTX for a different layered scene."
             )
+
+        if getattr(self, "_plot_logger", None) is not None:
+            self._plot_logger.clear_matching(self._is_layer_owned_path)
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -2289,6 +2340,9 @@ void main() {
 
         # release ovrtx renderer
         self._rtx = None
+
+        if getattr(self, "_plot_logger", None) is not None:
+            self._plot_logger.clear()
 
         if self.ui:
             self.ui.shutdown()

@@ -88,13 +88,13 @@ from .kernels import (
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
     sync_worldbody_geom_xposes_kernel,
+    update_actuator_properties_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_body_properties_kernel,
     update_connect_constraint_anchors_kernel,
     update_connect_constraint_rel_body_poses_at_qref_kernel,
-    update_ctrl_direct_actuator_properties_kernel,
     update_dof_properties_kernel,
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
@@ -984,6 +984,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return SOLREF_MODE_RAW
             return SOLREF_MODE_MJCF_DEFAULT
 
+        def parse_joint_angle_usd(value: Any, context: dict[str, Any]) -> float:
+            """Convert a revolute MuJoCo joint coordinate to radians.
+
+            ``mjc:ref`` and ``mjc:springref`` use the units declared by ``mjc:compiler:angle``; the mjcPhysics
+            schema defaults an unauthored value to degrees.
+            """
+            angle = float(value)
+            prim = context.get("prim")
+            physics_scene_prim = context.get("physics_scene_prim")
+            if prim is None or prim.GetTypeName() != "PhysicsRevoluteJoint":
+                return angle
+            if physics_scene_prim is None:
+                return angle * (np.pi / 180.0)
+            angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle")
+            if not angle_attr or not angle_attr.HasAuthoredValue() or str(angle_attr.Get()) == "degree":
+                return angle * (np.pi / 180.0)
+            return angle
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -1308,6 +1326,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
+                usd_value_transformer=parse_joint_angle_usd,
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
@@ -1321,6 +1340,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:ref",
                 mjcf_attribute_name="ref",
+                usd_value_transformer=parse_joint_angle_usd,
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
@@ -1868,8 +1888,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dof_idx = b.joint_qd_start[joint_idx]
             if dof_idx < 0 or dof_idx >= len(b.joint_limit_lower):
                 return None
-            lower = b.joint_limit_lower[dof_idx]
-            upper = b.joint_limit_upper[dof_idx]
+            # Newton limits are relative to the authored pose, while
+            # ``actuator_ctrlrange`` is native MuJoCo data in absolute qpos.
+            dof_ref_value = 0.0
+            ref_attr = b.custom_attributes.get("mujoco:dof_ref")
+            if ref_attr is not None and isinstance(ref_attr.values, dict):
+                dof_ref_value = float(ref_attr.values.get(dof_idx, ref_attr.default))
+            lower = b.joint_limit_lower[dof_idx] + dof_ref_value
+            upper = b.joint_limit_upper[dof_idx] + dof_ref_value
             if lower >= upper:
                 return None
             mean = (upper + lower) / 2.0
@@ -4861,6 +4887,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
+            if flags & ModelFlags.ACTUATOR_PROPERTIES:
+                self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
@@ -4868,9 +4896,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # factors; ``jnt_solimp`` was already written by
                 # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
-            # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
-            # without accounting for Newton's dof_ref, so we overwrite with the
-            # correctly computed values.
+            # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
             self._notify_connect_constraints_changed(
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
                 update_connect_constraint_anchors,
@@ -4899,9 +4925,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         # ``jnt_solimp`` was already written by
                         # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
-                    # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
-                    # without accounting for Newton's dof_ref, so we overwrite with the
-                    # correctly computed values.
+                    # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
                     self._notify_connect_constraints_changed(
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
                         update_connect_constraint_anchors,
@@ -5036,6 +5060,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mujoco_ctrl = getattr(mujoco_ctrl_ns, "ctrl", None) if mujoco_ctrl_ns is not None else None
                 ctrls_per_world = mujoco_ctrl.shape[0] // nworld if mujoco_ctrl is not None and nworld > 0 else 0
 
+                mujoco_attrs = getattr(model, "mujoco", None)
+                dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+
                 wp.launch(
                     apply_mjc_control_kernel,
                     dim=(nworld, nu),
@@ -5050,6 +5077,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         control.joint_target_qd,
                         state.joint_q,
                         mujoco_ctrl,
+                        dof_ref,
                         target_q_per_world,
                         coords_per_world,
                         dofs_per_world,
@@ -6627,6 +6655,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if dof < 0:
                     continue
                 info = {
+                    "actuator_idx": row,
                     "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
                     "ctrlrange": tuple(jt_ctrlrange[row]) if jt_ctrlrange is not None else None,
                     "ctrllimited": int(jt_ctrllimited[row]) if jt_ctrllimited is not None else None,
@@ -6914,8 +6943,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         joint_params["limited"] = True
 
+                    # Newton limits are relative to the authored pose;
+                    # MuJoCo's jnt_range is absolute qpos, so shift by ref.
+                    dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
-                    joint_params["range"] = (lower, upper)
+                    joint_params["range"] = (lower + dof_ref_value, upper + dof_ref_value)
                     if joint_params["limited"] and joint_has_raw_limit_solref(ai):
                         # RAW solref_limit values are authored MuJoCo data and
                         # must survive the spec → ``MjModel`` → save_to_mjcf
@@ -7033,8 +7065,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else:
                         joint_params["limited"] = True
 
+                    # Newton limits are relative to the authored pose;
+                    # MuJoCo's jnt_range is absolute qpos, so shift by ref.
+                    dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
-                    joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                    joint_params["range"] = (np.rad2deg(lower + dof_ref_value), np.rad2deg(upper + dof_ref_value))
                     if joint_params["limited"] and joint_has_raw_limit_solref(ai):
                         # See the matching block above for the linear-DOF
                         # joint type: only ``SOLREF_MODE_RAW`` joints seed the
@@ -7445,6 +7480,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             site_mapping,
         )
 
+        actuator_custom_attr_idx = np.full(len(mjc_actuator_ctrl_source_list), -1, dtype=np.int32)
+        for actuator, (ctrl_source, newton_idx) in enumerate(
+            zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
+        ):
+            if ctrl_source == int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
+                is_position = newton_idx >= 0
+                dof = newton_idx if is_position else -(newton_idx + 2)
+                ball_joint = mjc_actuator_to_newton_ball_jnt_list[actuator]
+                if ball_joint >= 0:
+                    dof = int(joint_qd_start[ball_joint])
+                info = joint_target_ranges.get((dof, is_position))
+                if info is not None:
+                    actuator_custom_attr_idx[actuator] = info["actuator_idx"]
+            elif newton_idx >= 0:
+                actuator_custom_attr_idx[actuator] = newton_idx
+
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:
             self.mjc_actuator_ctrl_source = wp.array(
@@ -7472,12 +7523,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=model.device,
             )
+            self.mjc_actuator_to_newton_actuator_idx = wp.array(
+                actuator_custom_attr_idx,
+                dtype=wp.int32,
+                device=model.device,
+            )
         else:
             self.mjc_actuator_ctrl_source = None
             self.mjc_actuator_to_newton_idx = None
             self.mjc_actuator_to_newton_target_q_idx = None
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
+            self.mjc_actuator_to_newton_actuator_idx = None
 
         dampratio_actuators = [
             (actuator.id, actuator.biasprm[2])
@@ -8433,6 +8490,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
 
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         njnt = self.mjc_jnt_to_newton_dof.shape[1]
         wp.launch(
             update_jnt_properties_kernel,
@@ -8445,6 +8503,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 solimplimit,
                 joint_stiffness,
                 joint_dof_limit_margin,
+                dof_ref,
             ],
             outputs=[
                 self.mjw_model.jnt_solimp,
@@ -8543,13 +8602,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
     @staticmethod
-    def _copy_dof_ref_to_qref(model: Model) -> wp.array:
-        """Build reference joint coordinates from model data and ``dof_ref``.
+    def _build_ref_q(model: Model) -> wp.array:
+        """Build the joint coordinates of the reference pose.
 
-        Launches ``build_ref_q_kernel`` to produce joint coordinates in
-        Newton convention (xyzw quaternions). FREE/DISTANCE joints copy
-        position and orientation from ``joint_q``, BALL
-        joints use identity, and hinge/slide/D6 joints use ``dof_ref``.
+        MuJoCo references are applied at the solver boundary (``qpos = joint_q + ref``), so hinge, slide, and D6
+        coordinates are zero here regardless of ``dof_ref``. FREE/DISTANCE joints retain their model coordinates,
+        and BALL joints use the identity quaternion.
 
         Args:
             model: The Newton :class:`Model`.
@@ -8558,9 +8616,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             Reference joint coordinates [m or rad],
             ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
         """
-        mujoco_attrs = getattr(model, "mujoco", None)
-        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-
         ref_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=model.device)
         wp.launch(
             kernel=build_ref_q_kernel,
@@ -8569,9 +8624,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.joint_type,
                 model.joint_q,
                 model.joint_q_start,
-                model.joint_qd_start,
                 model.joint_dof_dim,
-                dof_ref,
             ],
             outputs=[
                 ref_q,
@@ -8751,12 +8804,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             update_anchor_rel_xform_at_ref_pose: Recompute ``(q_rel, t_rel)``
-                from ``dof_ref`` / joint properties.
+                from the joint properties.
             update_anchors: Recompute anchors from
                 ``model.mujoco.equality_constraint_anchor``.
         """
         if update_anchor_rel_xform_at_ref_pose:
-            ref_q = SolverMuJoCo._copy_dof_ref_to_qref(self.model)
+            ref_q = SolverMuJoCo._build_ref_q(self.model)
             ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(self.model, ref_q)
             self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
                 SolverMuJoCo._compute_connect_constraint_rel_xform_at_qref(self.model, ref_body_q)
@@ -9450,12 +9503,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _update_actuator_properties(self):
-        """Update CTRL_DIRECT actuator properties in the MuJoCo model.
+        """Update actuator properties in the MuJoCo model.
 
-        Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
-        updated via _update_joint_dof_properties() using joint_target_ke/kd.
+        JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
+        corresponding MuJoCo actuator custom attributes.
         """
-        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
+        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
 
         nu = self.mjc_actuator_ctrl_source.shape[0]
@@ -9490,11 +9543,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actuators_per_world = actuator_gainprm.shape[0] // nworld if nworld > 0 else actuator_gainprm.shape[0]
 
         wp.launch(
-            update_ctrl_direct_actuator_properties_kernel,
+            update_actuator_properties_kernel,
             dim=(nworld, nu),
             inputs=[
                 self.mjc_actuator_ctrl_source,
-                self.mjc_actuator_to_newton_idx,
+                self.mjc_actuator_to_newton_actuator_idx,
                 actuator_gainprm,
                 actuator_biasprm,
                 actuator_dynprm,

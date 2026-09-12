@@ -33,7 +33,7 @@
 - Add `total_controlled_dofs` to `ControllerJointImpedance` and `ControllerJointImpedanceModelFree` to report the size of their compact ports, and add `q_start` and `qd_start` to `ControllerJointImpedance` to expose each controlled joint's resolved coordinate and DOF indices.
 - Add broadcast or per-triangle display color and opacity to cloth and soft-body surfaces, display opacity to rigid shapes and viewer mesh instances, and preserve appearance through asset import. Use triangle coloring to add deformation and rotation cues to the cloth stretch and roller examples and distinguish individual poker cards.
 - Add opt-in circular-arc barrel profiles for cylinder collision, mass properties, and viewer geometry.
-- Add opt-in speculative rigid contacts through the `CollisionPipeline(speculative_contact_gap_max=...)` constructor argument and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction, and reject unsupported hydroelastic combinations.
+- Add opt-in speculative rigid contacts through the `CollisionPipeline(speculative_contact_gap_max=...)` constructor argument and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction. Existing broad-phase and narrow-phase extension contracts remain unchanged when speculative contacts are disabled, reduced mesh-SDF contacts remain prioritized in dense scenes, and unsupported hydroelastic combinations are rejected.
 - Add opt-out controls for adjacent-X SDF texture packing through `ModelBuilder.sdf_texture_paired_samples` and `Mesh.build_sdf(paired_samples=False)` to trade sampling speed for half the texture storage.
 - Add solver-owned collision pipelines with configurable rigid and soft self-contact detection schedules keyed by `SolverBase.CollisionSlot`. `SolverVBD` supports scheduled mid-solve detection, and `Contacts` can store reusable triangle-mesh self-contact results.
 - Add support for body flags (kinematic/dynamic/proxy) in Kamino.
@@ -154,6 +154,11 @@
 - Speed up `SolverMuJoCo` initialization for replicated models by querying collision filters only for the selected MuJoCo template shapes.
 - Use supported NumPy ufunc names when building anisotropic Style3D cloth.
 
+## [1.5.2] - 2026-09-09
+
+### Added
+
+- Add `Actuator.State.assign()` for preserving actuator state across odd-length CUDA graph replays with a single captured graph. ([#4098](https://github.com/newton-physics/newton/issues/4098))
 
 ## [1.5.1] - 2026-08-27
 
