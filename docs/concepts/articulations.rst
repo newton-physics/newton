@@ -208,6 +208,8 @@ After editing joint-owned mimic properties, call
 :meth:`newton.solvers.SolverBase.notify_model_changed` with
 :attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh solver caches. VBD and
 XPBD also require this notification after changing joint enable flags.
+If VBD or XPBD was constructed without supported mimics, rebuild it after
+adding the first supported mimic relationship.
 MuJoCo supports refreshing mimic coefficients; rebuild the MuJoCo solver
 after changing mimic references.
 

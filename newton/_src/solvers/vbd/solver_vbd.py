@@ -204,6 +204,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           After changing mimic references, call :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh cached mimic participation counts.
+          If the solver was constructed without supported mimics, rebuild it after adding the first one.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
