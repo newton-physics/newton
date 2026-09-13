@@ -204,6 +204,13 @@ dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
 
+After editing joint-owned mimic properties, call
+:meth:`newton.solvers.SolverBase.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh solver caches. VBD and
+XPBD also require this notification after changing joint enable flags.
+MuJoCo supports refreshing mimic coefficients; rebuild the MuJoCo solver
+after changing mimic references.
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::

@@ -7,6 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.xpbd.kernels import count_joint_mimics_per_body, project_joint_mimics
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -187,6 +188,154 @@ def test_vbd_mimic(test, device):
     _test_solver_mimic(test, device, "vbd")
 
 
+def _test_mimic_shared_reference(test, device, solver_name, *, compliant=False):
+    """Keep shared-reference mimic motion bounded and transfer momentum to every follower."""
+    for joint_type in (newton.JointType.PRISMATIC, newton.JointType.REVOLUTE, newton.JointType.D6):
+        for follower_count in (1, 2, 3, 5):
+            with test.subTest(joint_type=joint_type, followers=follower_count, compliant=compliant):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                joints = []
+                for _ in range(follower_count + 1):
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    if joint_type == newton.JointType.PRISMATIC:
+                        joint = builder.add_joint_prismatic(-1, body, axis=newton.Axis.Z)
+                    elif joint_type == newton.JointType.REVOLUTE:
+                        joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
+                    else:
+                        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+                        joint = builder.add_joint_d6(
+                            -1, body, linear_axes=[axis(newton.Axis.X)], angular_axes=[axis(newton.Axis.Z)]
+                        )
+                    joints.append(joint)
+                builder.add_articulation(joints)
+                for follower in joints[1:]:
+                    builder.set_joint_mimic(follower, joints[0])
+                builder.color()
+                model = builder.finalize(device=device)
+                state_in, state_out = model.state(), model.state()
+                # A small leader-only velocity excites the constraint from a consistent pose.
+                dof_count = 2 if joint_type == newton.JointType.D6 else 1
+                state_in.joint_qd[:dof_count].fill_(0.01)
+                newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                model.body_q.assign(state_in.body_q)
+                if solver_name == "vbd":
+                    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=compliant)
+                else:
+                    solver = newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0)
+
+                initial_energy = float(np.sum(state_in.body_qd.numpy() ** 2))
+                for _ in range(32):
+                    solver.step(state_in, state_out, None, None, 1.0 / 960.0)
+                    state_in, state_out = state_out, state_in
+                    # All bodies have unit mass and inertia, so this is twice kinetic energy.
+                    energy = float(np.sum(state_in.body_qd.numpy() ** 2))
+                    test.assertLessEqual(energy, initial_energy * 1.001)
+
+                newton.eval_ik(model, state_in, state_in.joint_q, state_in.joint_qd)
+                q = state_in.joint_q.numpy().reshape(-1, dof_count)
+                qd = state_in.joint_qd.numpy().reshape(-1, dof_count)
+                np.testing.assert_allclose(q[1:] - q[0], 0.0, atol=1.0e-6)
+                np.testing.assert_allclose(qd, 0.01 / (follower_count + 1), atol=1.0e-5)
+
+                if follower_count == 5 and joint_type == newton.JointType.PRISMATIC:
+                    if device.is_cuda:
+                        # Capture before modifying the model so replay must use refreshed counts.
+                        with wp.ScopedCapture(device=device) as capture:
+                            solver.step(state_in, state_out, None, None, 1.0 / 960.0)
+                            solver.step(state_out, state_in, None, None, 1.0 / 960.0)
+
+                    # Disabled relationships must stop diluting the remaining pair's response.
+                    enabled = model.joint_enabled.numpy()
+                    enabled[2:] = False
+                    model.joint_enabled.assign(enabled)
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+
+                    for remove_references in (False, True):
+                        if remove_references:
+                            # Re-enable the joints, then remove their mimic references instead.
+                            model.joint_enabled.fill_(True)
+                            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                            references = model.joint_mimic_joint.numpy()
+                            references[2:] = -1
+                            model.joint_mimic_joint.assign(references)
+                            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                        for _ in range(3):
+                            velocities = state_in.body_qd.numpy()
+                            velocities[0, 2] += 0.01
+                            state_in.body_qd.assign(velocities)
+                            expected = (velocities[0, 2] + velocities[1, 2]) * 0.5
+                            if device.is_cuda:
+                                wp.capture_launch(capture.graph)
+                            else:
+                                solver.step(state_in, state_out, None, None, 1.0 / 960.0)
+                                state_in, state_out = state_out, state_in
+                            updated = state_in.body_qd.numpy()
+                            np.testing.assert_allclose(updated[:2, 2], expected, atol=2.0e-5)
+                            np.testing.assert_allclose(updated[2:], velocities[2:], atol=1.0e-6)
+
+
+def test_vbd_mimic_shared_reference(test, device):
+    """Stabilize multiple followers sharing one reference in both VBD formulations."""
+    for compliant in (False, True):
+        _test_mimic_shared_reference(test, device, "vbd", compliant=compliant)
+
+
+def test_xpbd_mimic_shared_reference(test, device):
+    """Stabilize multiple followers sharing one reference in XPBD."""
+    _test_mimic_shared_reference(test, device, "xpbd")
+
+
+def test_mimic_shared_parent(test, device):
+    """Reduce projection error without injecting energy when mimic pairs share a light parent."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    parent = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * 0.01))
+    root = builder.add_joint_prismatic(-1, parent, axis=newton.Axis.X)
+    joints = [root]
+    pairs = []
+    for i in range(5):
+        reference_body = builder.add_link(mass=1.0 + i, inertia=wp.mat33(np.eye(3)))
+        follower_body = builder.add_link(mass=0.5 + i, inertia=wp.mat33(np.eye(3)))
+        reference = builder.add_joint_prismatic(parent, reference_body, axis=newton.Axis.X)
+        follower = builder.add_joint_prismatic(parent, follower_body, axis=newton.Axis.X)
+        multiplier = 1.5 if i % 2 else -1.0
+        builder.set_joint_mimic(follower, reference, coeffs=(0.0, multiplier))
+        joints.extend((reference, follower))
+        pairs.append((reference, follower, multiplier))
+    builder.add_articulation(joints)
+    model = builder.finalize(device=device)
+    state = model.state()
+    dt = 1.0 / 960.0
+    qd = model.joint_qd.numpy()
+    qd[root] = 0.01
+    for reference, follower, _ in pairs:
+        qd[reference] = -0.01
+        qd[follower] = -0.01
+    # Predict a small parent displacement before applying the shared solver kernel.
+    state.joint_q.assign(qd * dt)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    counts = wp.zeros(model.body_count, dtype=int, device=device)
+    deltas = wp.zeros_like(state.body_qd)
+    count_joint_mimics_per_body(model, counts)
+    masses = model.body_mass.numpy()
+    velocities = state.body_qd.numpy()[:, 0]
+    energy = float(np.dot(masses, velocities**2))
+    momentum = float(np.dot(masses, velocities))
+    for _ in range(10):
+        project_joint_mimics(
+            model, state.body_q, state.body_qd, model.body_inv_mass, model.body_inv_inertia, deltas, counts, dt
+        )
+        velocities = state.body_qd.numpy()[:, 0]
+        updated_energy = float(np.dot(masses, velocities**2))
+        test.assertLessEqual(updated_energy, energy * 1.00001 + 1.0e-12)
+        test.assertAlmostEqual(float(np.dot(masses, velocities)), momentum, delta=1.0e-8)
+        energy = updated_energy
+    q = _read_joint_q(model, state, False)
+    for reference, follower, multiplier in pairs:
+        initial_error = abs(float(qd[follower] - multiplier * qd[reference])) * dt
+        test.assertLess(abs(float(q[follower] - multiplier * q[reference])), initial_error)
+
+
 class TestSolverMimic(unittest.TestCase):
     pass
 
@@ -207,6 +356,11 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+add_function_test(TestSolverMimic, "test_vbd_mimic_shared_reference", test_vbd_mimic_shared_reference, devices=devices)
+add_function_test(
+    TestSolverMimic, "test_xpbd_mimic_shared_reference", test_xpbd_mimic_shared_reference, devices=devices
+)
+add_function_test(TestSolverMimic, "test_mimic_shared_parent", test_mimic_shared_parent, devices=devices)
 
 
 if __name__ == "__main__":

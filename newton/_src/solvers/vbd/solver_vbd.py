@@ -34,7 +34,7 @@ from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
+from ..xpbd.kernels import apply_joint_forces, count_joint_mimics_per_body, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -181,7 +181,7 @@ class SolverVBD(SolverBase, CouplingInterface):
           is read live. After changing enable flags, call
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
-          conditioning. Structural-slot material (``rigid_joint_linear_ke``/
+          conditioning and mimic participation counts. Structural-slot material (``rigid_joint_linear_ke``/
           ``rigid_joint_angular_ke``), constraint layout, and rest-angle offsets are
           captured at construction; rebuild ``SolverVBD`` after changing them.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
@@ -202,6 +202,8 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          After changing mimic references, call :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh cached mimic participation counts.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -823,8 +825,11 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
+        self._body_mimic_count = None
         if self._has_joint_mimics:
             self._mimic_body_deltas = wp.zeros_like(model.body_qd)
+            self._body_mimic_count = wp.zeros(model.body_count, dtype=int, device=model.device)
+            count_joint_mimics_per_body(model, self._body_mimic_count)
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -1242,6 +1247,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
             self._refresh_rod_rest_bend_twist_cache()
+        if self._has_joint_mimics and flags & ModelFlags.JOINT_PROPERTIES:
+            count_joint_mimics_per_body(self.model, self._body_mimic_count)
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -3612,6 +3619,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.body_inv_mass_effective,
                 self.body_inv_inertia_effective,
                 self._mimic_body_deltas,
+                self._body_mimic_count,
                 dt,
             )
 

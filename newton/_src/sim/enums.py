@@ -14,7 +14,7 @@ class ModelFlags(IntEnum):
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_enabled, joint_mimic_joint, joint_mimic_coeffs."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
     """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
@@ -32,7 +32,7 @@ class ModelFlags(IntEnum):
     """Indicates model property updates: gravity and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
