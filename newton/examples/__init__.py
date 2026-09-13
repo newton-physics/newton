@@ -354,9 +354,6 @@ class _ExampleBrowser:
         # what Reset restores.
         self._initial_args = copy.deepcopy(args) if args is not None else None
 
-        if not hasattr(viewer, "register_ui_callback"):
-            return
-
         examples = get_examples()
         tree: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for name, module_path in examples.items():
@@ -364,6 +361,18 @@ class _ExampleBrowser:
             category = parts[2] if len(parts) > 2 else "other"
             tree[category].append((name, module_path))
         self._tree = dict(sorted(tree.items()))
+
+        if hasattr(viewer, "configure_example_browser"):
+            viewer.configure_example_browser(
+                self._tree,
+                lambda module_path: setattr(self, "switch_target", module_path),
+            )
+            if hasattr(viewer, "set_reset_callback"):
+                viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+            return
+
+        if not hasattr(viewer, "register_ui_callback"):
+            return
 
         def _browser_ui(imgui):
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
