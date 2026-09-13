@@ -9477,33 +9477,22 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([reference, follower])
         builder.set_joint_mimic(follower, reference, (0.5, 2.0))
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                model = builder.finalize()
-                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+        model = builder.finalize()
 
-                self.assertEqual(model.constraint_mimic_count, 0)
-                self.assertEqual(solver.mj_model.neq, 1)
-                np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
-                self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
-                self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-                coeffs = model.joint_mimic_coeffs.numpy()
-                coeffs[follower] = (1.0, -3.0)
-                model.joint_mimic_coeffs.assign(coeffs)
-                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
+        self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
 
-                np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
-                if use_mujoco_cpu:
-                    np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (1.0, -3.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
-                # Constraint notifications must not refresh joint-owned mimic coefficients.
-                coeffs[follower] = (0.25, 4.0)
-                model.joint_mimic_coeffs.assign(coeffs)
-                solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
-                np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
-                if use_mujoco_cpu:
-                    np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
 
     def test_joint_mimic_d6_conversion(self):
         """Verify MuJoCo lowers multi-axis D6 mimic metadata componentwise."""
@@ -9529,15 +9518,6 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         )
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[0], [follower, follower])
 
-        coeffs = model.joint_mimic_coeffs.numpy()
-        coeffs[follower] = (1.0, -3.0)
-        model.joint_mimic_coeffs.assign(coeffs)
-        solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
-        np.testing.assert_allclose(
-            solver.mjw_model.eq_data.numpy()[0, :, :5],
-            [[1.0, -3.0, 0.0, 0.0, 0.0], [1.0, -3.0, 0.0, 0.0, 0.0]],
-        )
-
     def test_joint_mimic_multi_world_mapping(self):
         """Verify dense mimic mappings and coefficients remain per world."""
         template = newton.ModelBuilder()
@@ -9561,7 +9541,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         coeffs = model.joint_mimic_coeffs.numpy()
         coeffs[3] = (-0.25, -4.0)
         model.joint_mimic_coeffs.assign(coeffs)
-        solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [-0.25, -4.0]])
 

@@ -596,8 +596,8 @@ class SolverBase:
         internal buffers without having to recreate the whole solver object.
         Valid flags are:
 
-        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, coordinates,
-          enable flags, or joint-owned mimic references or coefficients have changed.
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+          have changed.
         * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
           modes, DOF state, or force buffers have changed.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers

@@ -1,1 +1,1 @@
-Prevent unstable mimic corrections in SolverVBD and SolverXPBD when multiple follower relationships share a reference or parent body, while preserving equal-and-opposite reactions.
+Prevent unstable mimic corrections in SolverVBD when multiple follower relationships share a reference or parent body, while preserving equal-and-opposite reactions. Refresh cached mimic participation with `notify_model_changed(ModelFlags.JOINT_PROPERTIES)` after changing mimic references or joint enable flags.

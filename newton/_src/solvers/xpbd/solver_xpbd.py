@@ -22,7 +22,6 @@ from .kernels import (
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
-    count_joint_mimics_per_body,
     solve_body_contact_positions,
     solve_body_joints,
     solve_joint_mimics,
@@ -100,9 +99,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
-          After changing joint enable flags or mimic references, call :meth:`notify_model_changed` with
-          :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh cached mimic participation counts.
-          If the solver was constructed without supported mimics, rebuild it after adding the first one.
           Equality constraints and the deprecated sparse mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
@@ -207,11 +203,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self._compute_body_velocity_from_position_delta = False
 
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
-        self._body_mimic_count = (
-            wp.zeros(model.body_count, dtype=int, device=model.device) if self._has_joint_mimics else None
-        )
-        if self._has_joint_mimics:
-            count_joint_mimics_per_body(model, self._body_mimic_count)
 
         self._init_kinematic_state()
 
@@ -243,11 +234,10 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Refresh cached solver data after model properties change.
+        """Refresh cached body data after model properties change.
 
         Effective inverse masses and inertia tensors are refreshed for body-property changes. The cached restitution
-        state is refreshed for shape-property changes. Mimic participation counts are refreshed for joint-property
-        changes. Other flags are ignored.
+        state is refreshed for shape-property changes. Other flags are ignored.
 
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
@@ -259,8 +249,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
             self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
-        if self._has_joint_mimics and flags & ModelFlags.JOINT_PROPERTIES:
-            count_joint_mimics_per_body(self.model, self._body_mimic_count)
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
@@ -878,7 +866,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     model.joint_axis,
                                     model.joint_mimic_joint,
                                     model.joint_mimic_coeffs,
-                                    self._body_mimic_count,
+                                    None,  # body_mimic_count
                                     self.joint_angular_relaxation,
                                     self.joint_linear_relaxation,
                                     dt,

@@ -4822,7 +4822,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_const_0 = True
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
-            self._update_joint_mimic_properties()
         if flags & ModelFlags.BODY_PROPERTIES:
             self._update_body_properties()
             self._invalidate_contact_fast_path()
@@ -4902,7 +4901,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
                 update_connect_constraint_anchors,
             )
-            if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.CONSTRAINT_PROPERTIES):
+            if flags & ModelFlags.CONSTRAINT_PROPERTIES:
                 self._sync_equality_properties_to_mujoco_cpu()
 
         else:
@@ -9389,7 +9388,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _update_mimic_eq_properties(self):
-        """Update deprecated sparse mimic equality data and active state in the MuJoCo model.
+        """Update mimic properties in the MuJoCo model.
+
+        Updates:
+
+        - Joint-owned equality data from :attr:`Model.joint_mimic_coeffs`.
+        - Deprecated constraint equality data and active state from the sparse
+          ``constraint_mimic_*`` arrays.
 
         Maps mimic relationships to MuJoCo mjEQ_JOINT equality constraints
         using the polycoef representation: q1 = coef0 + coef1 * q2.
@@ -9416,22 +9421,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _update_joint_mimic_properties(self):
-        """Update joint-owned mimic coefficients using the equality mapping built at construction."""
-        if self.mj_model.neq == 0 or self.mjc_eq_to_newton_joint_mimic is None:
-            return
-
-        world_count = self.mjc_eq_to_newton_joint_mimic.shape[0]
-        wp.launch(
-            update_joint_mimic_eq_data_kernel,
-            dim=(world_count, self.mj_model.neq),
-            inputs=[
-                self.mjc_eq_to_newton_joint_mimic,
-                self.model.joint_mimic_coeffs,
-            ],
-            outputs=[self.mjw_model.eq_data],
-            device=self.model.device,
-        )
+        if self.mjc_eq_to_newton_joint_mimic is not None:
+            world_count = self.mjc_eq_to_newton_joint_mimic.shape[0]
+            wp.launch(
+                update_joint_mimic_eq_data_kernel,
+                dim=(world_count, neq),
+                inputs=[
+                    self.mjc_eq_to_newton_joint_mimic,
+                    self.model.joint_mimic_coeffs,
+                ],
+                outputs=[self.mjw_model.eq_data],
+                device=self.model.device,
+            )
 
     def _update_tendon_properties(self):
         """Update fixed tendon properties in the MuJoCo model.

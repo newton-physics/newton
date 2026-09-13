@@ -2156,7 +2156,7 @@ def _joint_mimic_effective_mass(
     body_inv_I: wp.array[wp.mat33],
     body_mimic_count: wp.array[int],
 ):
-    """Split a body's mass among the mimic relationships projected in parallel."""
+    """Return inverse effective mass, optionally splitting it among parallel mimic relationships."""
     if body < 0:
         return float(0.0)
     linear = wp.spatial_top(gradient)
@@ -2164,7 +2164,9 @@ def _joint_mimic_effective_mass(
     body_rotation = wp.transform_get_rotation(body_q[body])
     angular_body = wp.quat_rotate_inv(body_rotation, angular)
     inverse_mass = body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
-    return float(body_mimic_count[body]) * inverse_mass
+    if body_mimic_count:
+        inverse_mass *= float(body_mimic_count[body])
+    return inverse_mass
 
 
 @wp.kernel
@@ -2279,9 +2281,9 @@ def solve_joint_mimics(
                 gradient_2 += gradient_3
                 body_3 = -1
 
-        # Mass splitting prevents parallel constraints from each consuming the
-        # same body's full response. Scale the constraint impulse as a whole to
-        # preserve equal-and-opposite reactions across bodies with different counts.
+        # VBD supplies participation counts to split the effective mass while
+        # preserving equal-and-opposite reactions. XPBD passes no counts and
+        # retains its original effective mass.
         effective_mass = _joint_mimic_effective_mass(
             body_0, gradient_0, body_q, body_inv_m, body_inv_I, body_mimic_count
         )

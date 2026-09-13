@@ -188,7 +188,7 @@ def test_vbd_mimic(test, device):
     _test_solver_mimic(test, device, "vbd")
 
 
-def _test_mimic_shared_reference(test, device, solver_name, *, compliant=False):
+def _test_vbd_mimic_shared_reference(test, device, *, compliant=False):
     """Keep shared-reference mimic motion bounded and transfer momentum to every follower."""
     for joint_type in (newton.JointType.PRISMATIC, newton.JointType.REVOLUTE, newton.JointType.D6):
         for follower_count in (1, 2, 3, 5):
@@ -218,10 +218,7 @@ def _test_mimic_shared_reference(test, device, solver_name, *, compliant=False):
                 state_in.joint_qd[:dof_count].fill_(0.01)
                 newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
                 model.body_q.assign(state_in.body_q)
-                if solver_name == "vbd":
-                    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=compliant)
-                else:
-                    solver = newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0)
+                solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=compliant)
 
                 initial_energy = float(np.sum(state_in.body_qd.numpy() ** 2))
                 for _ in range(32):
@@ -277,15 +274,10 @@ def _test_mimic_shared_reference(test, device, solver_name, *, compliant=False):
 def test_vbd_mimic_shared_reference(test, device):
     """Stabilize multiple followers sharing one reference in both VBD formulations."""
     for compliant in (False, True):
-        _test_mimic_shared_reference(test, device, "vbd", compliant=compliant)
+        _test_vbd_mimic_shared_reference(test, device, compliant=compliant)
 
 
-def test_xpbd_mimic_shared_reference(test, device):
-    """Stabilize multiple followers sharing one reference in XPBD."""
-    _test_mimic_shared_reference(test, device, "xpbd")
-
-
-def test_mimic_shared_parent(test, device):
+def test_vbd_mimic_shared_parent(test, device):
     """Reduce projection error without injecting energy when mimic pairs share a light parent."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     parent = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * 0.01))
@@ -310,7 +302,7 @@ def test_mimic_shared_parent(test, device):
     for reference, follower, _ in pairs:
         qd[reference] = -0.01
         qd[follower] = -0.01
-    # Predict a small parent displacement before applying the shared solver kernel.
+    # Predict a small parent displacement before applying the VBD mimic projection.
     state.joint_q.assign(qd * dt)
     state.joint_qd.assign(qd)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -357,10 +349,7 @@ add_function_test(
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
 add_function_test(TestSolverMimic, "test_vbd_mimic_shared_reference", test_vbd_mimic_shared_reference, devices=devices)
-add_function_test(
-    TestSolverMimic, "test_xpbd_mimic_shared_reference", test_xpbd_mimic_shared_reference, devices=devices
-)
-add_function_test(TestSolverMimic, "test_mimic_shared_parent", test_mimic_shared_parent, devices=devices)
+add_function_test(TestSolverMimic, "test_vbd_mimic_shared_parent", test_vbd_mimic_shared_parent, devices=devices)
 
 
 if __name__ == "__main__":
