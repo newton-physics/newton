@@ -5663,6 +5663,67 @@ class TestMuJoCoContactForce(unittest.TestCase):
     BOX_MASS = 8.0  # density=1000 kg/m³ * volume=(0.2*0.2*0.2) m³
     GRAVITY = 9.81
 
+    def test_legacy_geometry_export_without_force_buffer(self):
+        """Retain geometry-only callers of the deprecated contact export API."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        self.assertIsNone(contacts.force)
+        solver.step(model.state(), model.state(), None, None, 0.002)
+        with self.assertWarnsRegex(DeprecationWarning, r"SolverMuJoCo.update_contacts.*1\.7"):
+            solver.update_contacts(contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.isfinite(contacts.rigid_contact_point0.numpy()[:count]).all())
+        self.assertIsNone(contacts.force)
+
+    def test_external_contact_observables_preserve_input_geometry(self):
+        """Keep collision rows stable across substeps and map forces past culled rows."""
+        model, _ = self._build_box_on_ground()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        contacts = pipeline.contacts()
+        state_in, state_out = model.state(), model.state()
+        joint_q = state_in.joint_q.numpy()
+        joint_q[2] = 0.09  # Start in contact, rather than waiting for gravity to close the gap.
+        state_in.joint_q.assign(joint_q)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        pipeline.collide(state_in, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 1)
+        # An invalid first row is culled during Newton -> MuJoCo conversion,
+        # making the compacted MuJoCo indices differ from the input row indices.
+        shapes = contacts.rigid_contact_shape0.numpy()
+        shapes[0] = -1
+        contacts.rigid_contact_shape0.assign(shapes)
+        fields = (
+            "rigid_contact_count",
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+            "contact_generation",
+        )
+        snapshots = {field: getattr(contacts, field).numpy().copy() for field in fields}
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        for _ in range(3):
+            observables.contact_f.fill_(float("nan"))
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            for field, expected in snapshots.items():
+                np.testing.assert_array_equal(getattr(contacts, field).numpy(), expected, err_msg=field)
+            forces = observables.contact_f.numpy()
+            np.testing.assert_array_equal(forces[0], 0.0)
+            np.testing.assert_array_equal(forces[count:], 0.0)
+            self.assertTrue(np.isfinite(forces).all())
+            self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
+            state_in, state_out = state_out, state_in
+
     def _build_box_on_ground(self, *, friction: float = 1.0):
         """Create a box resting on a ground plane with the given friction."""
         builder = newton.ModelBuilder()
@@ -8137,6 +8198,22 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver.step(state_in, state_out, model.control(), None, 0.01, observables=selected)
         np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((model.body_count, 6), -1.0))
         self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
+
+    def test_native_cpu_observable_capabilities(self):
+        """Reject unsupported body/contact exports while retaining native actuator forces."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        for flag in newton.solvers.SolverObservableFlags:
+            with self.subTest(flag=flag):
+                self.assertNotIn(flag, solver.supported_observable_flags)
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({flag})
+        flag = SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR
+        observables = solver.observables({flag})
+        observables.qfrc_actuator.fill_(float("nan"))
+        solver.mjw_data.qfrc_actuator.fill_(1234.0)
+        solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""

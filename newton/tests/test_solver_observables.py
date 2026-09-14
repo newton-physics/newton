@@ -515,6 +515,7 @@ class TestSolverObservables(unittest.TestCase):
         mujoco.mjw_data = SimpleNamespace(naconmax=3)
         kamino = object.__new__(newton.solvers.SolverKamino)
         newton.solvers.SolverBase.__init__(kamino, self.model)
+        kamino._contact_observable_state = None
         kamino._collision_detector_kamino = object()
         kamino._contacts_kamino = SimpleNamespace(model_max_contacts_host=3)
         for solver in (mujoco, kamino):

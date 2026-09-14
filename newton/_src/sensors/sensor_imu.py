@@ -133,13 +133,13 @@ class SensorIMU:
         sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
-        request_state_attributes: bool = False,
+        request_state_attributes: bool = True,
     ):
         """Initialize SensorIMU.
 
-        Set ``request_state_attributes=True`` to retain the deprecated
-        ``State.body_qdd`` allocation path. By default, allocate
-        :attr:`solver_observable_flags` through the solver.
+        The legacy ``State.body_qdd`` allocation path remains the default during
+        the deprecation period. Set ``request_state_attributes=False`` and
+        allocate :attr:`solver_observable_flags` through the solver instead.
 
         Args:
             model: The model to use.
@@ -149,13 +149,15 @@ class SensorIMU:
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True, request the deprecated extended
-                state attribute ``body_qdd`` from the model. Defaults to False;
-                :meth:`update` must receive solver observables containing ``body_qdd``.
+                state attribute ``body_qdd`` from the model. Defaults to True for
+                backward compatibility. If False, :meth:`update` must receive
+                solver observables containing ``body_qdd`` or a state allocated
+                through a separate legacy request.
 
                 .. deprecated:: 1.7
-                    Passing True is deprecated. Allocate :attr:`solver_observable_flags`
-                    through the solver and pass :class:`~newton.solvers.SolverObservables`
-                    to :meth:`update` instead.
+                    Passing True (including the default) is deprecated. Pass False,
+                    allocate :attr:`solver_observable_flags` through the solver and
+                    pass :class:`~newton.solvers.SolverObservables` to :meth:`update` instead.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -170,18 +172,19 @@ class SensorIMU:
                 raise ValueError("'sites' must not be empty")
             raise ValueError(f"No sites matched the given pattern {original_sites!r}")
 
-        # Retain an explicit compatibility path during the deprecation period.
+        self._validate_sensor_sites(sites)
+
+        # Preserve legacy callers throughout the deprecation period.
         if request_state_attributes:
             warnings.warn(
                 "SensorIMU(request_state_attributes=True) is deprecated in Newton 1.7; "
-                "allocate SolverObservables with solver.observables(sensor.solver_observable_flags) "
+                "pass request_state_attributes=False, allocate SolverObservables with "
+                "solver.observables(sensor.solver_observable_flags), pass them to solver.step(observables=...), "
                 "and pass them to update(..., solver_observables=...).",
                 DeprecationWarning,
                 stacklevel=2,
             )
             self.model._request_state_attributes("body_qdd")
-
-        self._validate_sensor_sites(sites)
 
         self.sensor_sites_arr = wp.array(sites, dtype=int, device=model.device)
         self.n_sensors: int = len(sites)
@@ -208,8 +211,15 @@ class SensorIMU:
         Args:
             state: The state to update the sensor from.
             solver_observables: Solver observables containing rigid-body accelerations. If
-                ``None``, use the legacy ``state.body_qdd`` attribute.
+                ``None``, use the legacy ``state.body_qdd`` attribute. Must be allocated
+                by a solver for this sensor's model.
+
+        Raises:
+            ValueError: If solver observables belong to a different model or the
+                required body acceleration array is missing.
         """
+        if solver_observables is not None and solver_observables.model is not self.model:
+            raise ValueError("Solver observables must belong to the sensor's model.")
         body_qdd = solver_observables.body_qdd if solver_observables is not None else state.body_qdd
         if body_qdd is None:
             raise ValueError(

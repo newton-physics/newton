@@ -40,7 +40,7 @@ Most Newton sensors follow a common pattern:
    model = builder.finalize()
 
    # 1. Create sensor and specify what to measure
-   imu = SensorIMU(model, sites="imu_*")
+   imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
@@ -92,10 +92,10 @@ link filters are matched against the final path component of each label.
    import re
 
    # single pattern: all shapes whose label starts with "foot_"
-   SensorIMU(model, sites="foot_*")
+   SensorIMU(model, sites="foot_*", request_state_attributes=False)
 
    # compiled regular expression: full-match an environment and object label
-   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"), request_state_attributes=False)
 
    # list of patterns: union of two groups
    SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])

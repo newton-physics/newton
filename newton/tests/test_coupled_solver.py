@@ -1135,8 +1135,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         coupled = SolverCoupled(
             self.model,
             [
-                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
                 SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
             ],
         )
         flags = {
@@ -1151,6 +1151,31 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0, 2.0))
         np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
         self.assertEqual(set(observables.entry_observables), {"left", "right"})
+
+    def test_body_observable_scatter_preserves_gradients(self):
+        """Backpropagate parent-indexed seeds to the matching entry-local buffers."""
+        coupled = SolverCoupled(
+            self.model,
+            [
+                SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
+            ],
+        )
+        flags = newton.solvers.SolverObservableFlags
+        observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
+        seeds = np.arange(12, dtype=np.float32).reshape(2, 6)
+        with wp.Tape() as tape:
+            coupled._reconcile_observables(observables)
+        tape.backward(
+            grads={
+                observables.body_qdd: wp.array(seeds, dtype=wp.spatial_vector, device=self.model.device),
+                observables.body_parent_f: wp.array(seeds + 12, dtype=wp.spatial_vector, device=self.model.device),
+            }
+        )
+        for name, body in (("left", 0), ("right", 1)):
+            entry = observables.entry_observables[name]
+            np.testing.assert_array_equal(entry.body_qdd.grad.numpy(), seeds[body : body + 1])
+            np.testing.assert_array_equal(entry.body_parent_f.grad.numpy(), seeds[body : body + 1] + 12)
 
     def test_select_routes_only_requested_observables(self):
         """Propagate subsets to child solvers and preserve skipped global and local arrays."""

@@ -1915,7 +1915,7 @@ class Model:
         if frozen is not None and (rigid_max, soft_max) != frozen:
             raise ValueError(
                 f"Contact capacities are frozen at {frozen} by allocated solver observables; "
-                "create a new model and results to change capacities."
+                "create a new model and solver observables to change capacities."
             )
 
     def _get_contact_capacity(self) -> tuple[int, int]:

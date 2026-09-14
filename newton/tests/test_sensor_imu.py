@@ -6,6 +6,7 @@
 import inspect
 import unittest
 import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -48,18 +49,48 @@ class TestSensorIMU(unittest.TestCase):
         self.assertIsNotNone(model.state().body_qdd)
 
     def test_observable_path_does_not_request_state_attributes(self):
-        """Keep default and explicit False construction warning-free and solver-driven."""
+        """Keep explicit False construction warning-free and solver-driven."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body, label="imu_site")
         model = builder.finalize(device="cpu")
 
-        for kwargs in ({}, {"request_state_attributes": False}):
-            with self.subTest(kwargs=kwargs), warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                SensorIMU(model, sites=[site], **kwargs)
-            self.assertEqual(caught, [])
-            self.assertIsNone(model.state().body_qdd)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SensorIMU(model, sites=[site], request_state_attributes=False)
+        self.assertEqual(caught, [])
+        self.assertIsNone(model.state().body_qdd)
+
+    def test_default_preserves_legacy_state_allocation(self):
+        """Keep unchanged IMU callers working throughout the deprecation period."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body)
+        model = builder.finalize(device="cpu")
+        with self.assertWarnsRegex(DeprecationWarning, r"SensorIMU.*1\.7"):
+            sensor = SensorIMU(model, sites=[site])
+        state = model.state()
+        self.assertIsNotNone(state.body_qdd)
+        state.body_qdd.zero_()
+        sensor.update(state)
+        np.testing.assert_allclose(sensor.accelerometer.numpy()[0], -model.gravity.numpy()[-1])
+
+    def test_observables_must_belong_to_sensor_model(self):
+        """Reject foreign or unowned arrays before launching the sensor kernel."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        site = builder.add_site(body)
+        model = builder.finalize(device="cpu")
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
+        foreign_models = (builder.finalize(device="cpu"), newton.ModelBuilder().finalize(device="cpu"))
+        for foreign_model in foreign_models:
+            observables = self._observables(foreign_model, sensor)
+            with self.subTest(body_count=foreign_model.body_count):
+                with mock.patch.object(wp, "launch") as launch, self.assertRaisesRegex(ValueError, "model"):
+                    sensor.update(model.state(), solver_observables=observables)
+                launch.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "model"):
+            sensor.update(model.state(), solver_observables=newton.solvers.SolverObservables())
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""
@@ -68,7 +99,7 @@ class TestSensorIMU(unittest.TestCase):
         site = builder.add_site(body, label="imu_site")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[site])
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
 
         self.assertEqual(sensor.n_sensors, 1)
         self.assertEqual(sensor.accelerometer.shape[0], 1)
@@ -83,7 +114,7 @@ class TestSensorIMU(unittest.TestCase):
         site3 = builder.add_site(body, label="site3")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[site1, site2, site3])
+        sensor = SensorIMU(model, sites=[site1, site2, site3], request_state_attributes=False)
 
         self.assertEqual(sensor.n_sensors, 3)
         self.assertEqual(sensor.accelerometer.shape[0], 3)
@@ -126,7 +157,7 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         state = model.state()
-        sensor = SensorIMU(model, sites=[site])
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
 
         with self.assertRaises(ValueError):
             sensor.update(state)
@@ -139,7 +170,7 @@ class TestSensorIMU(unittest.TestCase):
         site = builder.add_site(body, label="imu", xform=wp.transform(wp.vec3(0, 0, 0), rot))
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[site])
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
         results = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -181,7 +212,7 @@ class TestSensorIMU(unittest.TestCase):
         site = builder.add_site(body, label="imu")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[site])
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
         results = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -202,7 +233,7 @@ class TestSensorIMU(unittest.TestCase):
         world_site = builder.add_site(-1, label="world_imu")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[world_site])
+        sensor = SensorIMU(model, sites=[world_site], request_state_attributes=False)
         results = self._observables(model, sensor)
         state = model.state()
 
@@ -233,7 +264,7 @@ class TestSensorIMU(unittest.TestCase):
         global_body_site = builder.add_site(global_body)
 
         model = builder.finalize()
-        sensor = SensorIMU(model, sites=[site_0, site_1, global_site, global_body_site])
+        sensor = SensorIMU(model, sites=[site_0, site_1, global_site, global_body_site], request_state_attributes=False)
         results = self._observables(model, sensor)
         state = model.state()
 
@@ -255,7 +286,7 @@ class TestSensorIMU(unittest.TestCase):
         site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), rot_90_z), label="imu")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites=[site])
+        sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
         results = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -276,7 +307,7 @@ class TestSensorIMU(unittest.TestCase):
         builder.add_site(body, label="imu_site")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites="imu_site")
+        sensor = SensorIMU(model, sites="imu_site", request_state_attributes=False)
         self.assertEqual(sensor.n_sensors, 1)
 
     def test_sensor_wildcard_pattern(self):
@@ -288,7 +319,7 @@ class TestSensorIMU(unittest.TestCase):
         builder.add_site(body, label="other")
         model = builder.finalize()
 
-        sensor = SensorIMU(model, sites="imu_*")
+        sensor = SensorIMU(model, sites="imu_*", request_state_attributes=False)
         self.assertEqual(sensor.n_sensors, 2)
 
     def test_sensor_no_match_raises(self):

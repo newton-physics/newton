@@ -41,7 +41,7 @@ import newton
 import newton.examples
 import newton.solvers
 import newton.utils
-from newton import Contacts, JointTargetMode
+from newton import JointTargetMode
 from newton.controllers import ControllerOperationalSpace
 from newton.sensors import SensorContact
 
@@ -232,18 +232,18 @@ class Example:
         # contacts/constraints need more headroom than one.
         self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=400, njmax=400)
 
-        # SensorContact + Contacts is Newton's contact-force readback API (see
+        # SensorContact consumes solver contact observables (see
         # example_sensor_contact.py) -- reads back the actual contact force
         # each tool's ball exerts on its table, fed into the controller as
         # wrench feedback and shown in the GUI alongside the commanded
         # force. One sensor covers both robots; total_force's rows are
         # ordered to match sensing_bodies below (Franka's ball, then UR10's).
         self.force_sensor = SensorContact(self.model, sensing_bodies=[franka_tool_body, ur10_tool_body])
-        self.contacts = Contacts(
-            self.solver.get_max_contact_count(),
-            0,
-            requested_attributes=self.model.get_requested_contact_attributes(),
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(self.force_sensor.solver_observable_flags)
 
         # The tool site's world pose, not the raw body's -- the two only
         # coincide when the site's own body-local transform is identity
@@ -538,17 +538,23 @@ class Example:
         """Pure GPU work: controller step + physics substeps. Safe to graph-capture."""
         self.controller.step(inputs=self._input, outputs=self._output, dt=self.sim_dt)
 
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         # Force feedback needs last frame's measured contact force before
         # this frame's controller.step() runs; SensorContact.update() isn't
         # graph-capturable, so it has to happen here in Python, first.
-        self.force_sensor.update(self.state_0, self.contacts)
+        self.force_sensor.update(self.state_1, self.contacts, solver_observables=self.solver_observables)
         # One sensing body per robot (Franka's ball, then UR10's), matching
         # sensing_bodies' order above.
         per_robot_force_world = self.force_sensor.total_force.numpy()

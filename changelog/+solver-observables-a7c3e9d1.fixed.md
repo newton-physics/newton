@@ -1,0 +1,3 @@
+Validate IMU observable ownership, preserve its legacy allocation default during the 1.7 deprecation period, and reject unsupported native MuJoCo CPU body observable requests instead of returning stale values. Use the input poses when exporting Kamino contact points and world-frame wrenches, including in-place stepping, and preserve gradients when scattering coupled solver observables into parent-model order.
+
+Preserve external collision geometry and row order when exporting MuJoCo contact forces across substeps. Complete the hybrid force-control and Kamino G1 example migrations to solver observables.

@@ -441,13 +441,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     """
 
     class ObservableFlags(Enum):
-        """MuJoCo-specific solver observables."""
+        """MuJoCo-specific solver observables.
+
+        .. experimental::
+            The solver observable API may change without prior notice.
+        """
 
         QFRC_ACTUATOR = "qfrc_actuator"
         """Actuator forces in Newton generalized-coordinate order."""
 
     class Observables(SolverObservables):
-        """Standard and MuJoCo-specific observable arrays."""
+        """Standard and MuJoCo-specific observable arrays.
+
+        The native CPU backend (``use_mujoco_cpu=True``) supports only
+        ``QFRC_ACTUATOR``. MuJoCo Warp supports the standard body and contact
+        fields; body fields require sensors to remain enabled. Contact storage
+        must cover :meth:`SolverMuJoCo.get_max_contact_count` and be allocated
+        after constructing a compatible :class:`~newton.CollisionPipeline`.
+
+        .. experimental::
+            The solver observable API may change without prior notice.
+        """
 
         ATTRIBUTE_FREQUENCIES: ClassVar = {"qfrc_actuator": AttributeFrequency.JOINT_DOF}
 
@@ -469,10 +483,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @property
     def supported_observable_flags(self):
-        """Return results available for the configured MuJoCo backend."""
+        """Return observables available for the configured MuJoCo backend."""
         flags = super().supported_observable_flags
         if self.use_mujoco_cpu:
-            return flags.difference({SolverObservableFlags.CONTACT_F})
+            # Body exports currently read MuJoCo Warp's RNE buffers, which the
+            # native CPU step does not update. Do not expose stale diagnostics.
+            return flags.difference(
+                {
+                    SolverObservableFlags.BODY_QDD,
+                    SolverObservableFlags.BODY_PARENT_F,
+                    SolverObservableFlags.CONTACT_F,
+                }
+            )
         return flags
 
     def _allocate_observables(self, observables: Observables, *, requires_grad: bool) -> None:
@@ -4281,7 +4303,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     observable_contacts = observables.contacts
                     if observable_contacts is None:
                         raise ValueError("Contact storage is missing from solver observables.")
-                    self._populate_contact_observables(observable_contacts, observables.contact_f)
+                    self._populate_contact_observables(
+                        observable_contacts,
+                        observables.contact_f,
+                        preserve_geometry=not self.mjw_model.opt.run_collision_detection,
+                    )
                     if (
                         observable_contacts.force is not None
                         and observable_contacts.force.ptr != observables.contact_f.ptr
@@ -5654,7 +5680,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update legacy contact-force storage from MuJoCo contacts.
+        """Update contact geometry and optional legacy force storage from MuJoCo.
+
+        Geometry-only export remains supported when ``contacts.force`` is ``None``.
 
         .. deprecated:: 1.7
             Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and
@@ -5668,8 +5696,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         self._populate_contact_observables(contacts, contacts.force)
 
-    def _populate_contact_observables(self, contacts: Contacts, contact_f: wp.array[wp.spatial_vector] | None) -> None:
-        """Populate contact metadata and an optional force output from MuJoCo."""
+    def _populate_contact_observables(
+        self,
+        contacts: Contacts,
+        contact_f: wp.array[wp.spatial_vector] | None,
+        *,
+        preserve_geometry: bool = False,
+    ) -> None:
+        """Export native geometry, or map forces to unchanged external collision rows."""
         self._apply_module_options()
         if self.use_mujoco_cpu:
             raise NotImplementedError()
@@ -5686,6 +5720,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"rigid_contact_max={mj_data.naconmax}."
             )
 
+        if contact_f is not None:
+            contact_f.zero_()
         wp.launch(
             self._convert_mjw_contacts_to_newton_kernel,
             dim=mj_data.naconmax,
@@ -5706,6 +5742,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mj_data.xpos,
                 mj_data.xquat,
                 mj_data.njmax,
+                self._contact_tid_to_cid if preserve_geometry else None,
             ],
             outputs=[
                 contacts.rigid_contact_count,
@@ -5718,7 +5755,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        contacts.n_contacts = mj_data.nacon
+        if not preserve_geometry:
+            contacts.n_contacts = mj_data.nacon
 
     def _convert_to_mjc(
         self,

@@ -2288,7 +2288,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 src = getattr(entry_observables, flag.value)
                 dst = getattr(observables, flag.value)
                 wp.launch(
-                    _scatter_spatial_state_mapped,
+                    _scatter_spatial_observables_mapped,
                     dim=entry.body_indices.shape[0],
                     inputs=[entry.body_indices, entry.body_global_to_local, src, dst],
                     device=self.model.device,
@@ -3543,6 +3543,20 @@ def _scatter_spatial_state_mapped(
     if local_id < 0:
         return
     dst[global_id] = src[local_id]
+
+
+@wp.kernel
+def _scatter_spatial_observables_mapped(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    src: wp.array[wp.spatial_vector],
+    dst: wp.array[wp.spatial_vector],
+):
+    # Unlike state reconciliation, observable export preserves entry gradients.
+    global_id = indices[wp.tid()]
+    local_id = global_to_local[global_id]
+    if local_id >= 0:
+        dst[global_id] = src[local_id]
 
 
 @wp.kernel(enable_backward=False)

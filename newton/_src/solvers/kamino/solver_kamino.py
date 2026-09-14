@@ -750,6 +750,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         # Initialize the base solver
         super().__init__(model=model)
+        self._contact_observable_state: State | None = None
 
         # Import all Kamino dependencies and cache them
         # as class variables if not already done
@@ -1040,9 +1041,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             if native_max > self.model.rigid_contact_max:
                 raise ValueError(
                     f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact results."
+                    f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
                 )
         super()._allocate_observables(observables, requires_grad=requires_grad)
+        if observables.is_requested(SolverObservableFlags.CONTACT_F) and self._contact_observable_state is None:
+            # Preserve the input body frames even when step() overwrites state_in.
+            # Allocate here, never during stepping or graph capture.
+            self._contact_observable_state = State()
+            self._contact_observable_state.body_q = wp.empty(
+                self.model.body_count, dtype=wp.transform, device=self.device
+            )
 
     @override
     def step(
@@ -1076,8 +1084,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 Required when passing contact-indexed ``observables``.
             dt: The time step (typically in seconds).
             observables: Optional solver observable arrays allocated by :meth:`observables`.
+                Contact points use ``state_in`` body frames; wrenches are world-frame
+                values about the input centers of mass, including with native collision
+                detection. Consumers reconstructing world-space contact points must
+                retain these input poses.
         """
         self._validate_observables(observables, contacts)
+        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+            wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents
         # NOTE: These should produce zero-copy views/references
         # to the arrays of the source Newton containers.
@@ -1152,11 +1166,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                 wp.copy(state_out.body_qdd, body_qdd)
 
         # Convert back from Kamino CoM-frame to Newton body-frame poses
-        self._kamino.convert_body_com_to_origin(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q_com=state_in_kamino.q_i,
-            body_q=state_in_kamino.q_i,
-        )
+        if state_in_kamino.q_i.ptr != state_out_kamino.q_i.ptr:
+            self._kamino.convert_body_com_to_origin(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_in_kamino.q_i,
+                body_q=state_in_kamino.q_i,
+            )
         self._kamino.convert_body_com_to_origin(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_out_kamino.q_i,
@@ -1167,7 +1182,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             observable_contacts = observables.contacts
             if observable_contacts is None:
                 raise ValueError("Contact storage is missing from solver observables.")
-            self._populate_contact_observables(observable_contacts, state_out, observables.contact_f)
+            self._populate_contact_observables(
+                observable_contacts, self._contact_observable_state, observables.contact_f
+            )
             if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
                 observable_contacts.force.assign(observables.contact_f)
 

@@ -978,7 +978,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 class TestSensorContactKamino(unittest.TestCase):
     """End-to-end contact-sensor tests using the Kamino solver.
 
-    Regression coverage that the Kamino->Newton conversion populates ``Contacts.force`` so
+    Regression coverage that the Kamino->Newton conversion populates ``observables.contact_f`` so
     ``SensorContact.total_force`` matches ``ContactAggregation``.
     """
 
@@ -991,7 +991,7 @@ class TestSensorContactKamino(unittest.TestCase):
         basics.build_box_on_plane(builder=builder)
         model = builder.finalize(skip_validation_joints=True)
 
-        # Use Kamino's internal collision detector (steps run with ``contacts=None``).
+        # Use Kamino's internal detector and export to the Newton contacts buffer.
         config = SolverKamino.Config.from_model(model)
         config.use_collision_detector = True
         config.collision_detector.max_contacts = 200
@@ -1022,7 +1022,7 @@ class TestSensorContactKamino(unittest.TestCase):
         for _ in range(avg_steps):
             solver.step(state_in, state_out, control, contacts, sim_dt, observables=observables)
             state_in, state_out = state_out, state_in
-            sensor.update(state_in, contacts, solver_observables=observables)
+            sensor.update(state_out, contacts, solver_observables=observables)
             aggregation.compute(skip_if_no_contacts=False)
             sensor_acc += sensor.total_force.numpy()
             # The box is body 0 of world 0.

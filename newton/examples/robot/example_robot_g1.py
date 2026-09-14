@@ -114,7 +114,8 @@ class Example:
             self.contacts = self.collision_pipeline.contacts()
         else:
             self.collision_pipeline = newton.CollisionPipeline(
-                self.model, rigid_contact_max=self.solver.get_max_contact_count()
+                self.model,
+                rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
             )
             self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})

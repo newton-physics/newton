@@ -1260,11 +1260,17 @@ class ViewerBase(ABC):
 
         Args:
             contacts: The contacts to render.
-            state: The current state of the simulation.  Required to compute
+            state: The state in whose body frames the contact points are expressed.
+                For contacts detected before a solver step, pass its input state.
+                Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
             solver_observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
+                Must be bound to the same ``contacts`` instance passed to ``solver.step()``.
+
+                .. experimental::
+                    The solver observable API may change without prior notice.
         """
 
         contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
@@ -2894,7 +2900,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Observables are written into *target* (keyed by shape index).
+        Wireframe edge data are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return

@@ -1551,7 +1551,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
         s1 = contacts.rigid_contact_shape1.numpy()[:nc]
 
         for ci in range(nc):
-            # ``outputs.contact_f`` is force on body0 by body1. Sum into a "force-on-ground"
+            # ``observables.contact_f`` is force on body0 by body1. Sum into a "force-on-ground"
             # bucket regardless of which side ground was recorded as: flip sign when
             # ground is shape1 so the final values consistently match -mg downward.
             if s0[ci] == ground_shape:

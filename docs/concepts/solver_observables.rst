@@ -117,11 +117,11 @@ Standard observables
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
      - Rigid-body center-of-mass spatial accelerations in the world frame
-     - :class:`~newton.solvers.SolverMuJoCo` and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp and
        :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
-     - :class:`~newton.solvers.SolverMuJoCo`,
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
        :class:`~newton.solvers.SolverFeatherstone`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
@@ -135,6 +135,15 @@ step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this include
 the velocity impulse divided by ``dt``. MuJoCo Warp requires sensors to remain
 enabled when requesting ``BODY_QDD`` or ``BODY_PARENT_F``; stepping with
 ``disable_sensors=True`` and either observable raises an error.
+The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
+``SolverMuJoCo.ObservableFlags.QFRC_ACTUATOR``; body and contact observable
+requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.
+
+Kamino exports contact points in the step's input body frames and world-frame
+wrenches about the input centers of mass.
+Use the input state when consuming those contacts, including for native contact
+detection. In-place callers must preserve the input poses separately if a
+consumer needs to transform the contact points back to world coordinates.
 
 :class:`~newton.solvers.experimental.coupled.SolverCoupled` exposes a body
 observable when every entry that owns bodies supports that flag. It allocates an
@@ -280,7 +289,7 @@ container, and pass it through the step:
 
 .. code-block:: python
 
-   imu = newton.sensors.SensorIMU(model, sites="imu_*")
+   imu = newton.sensors.SensorIMU(model, sites="imu_*", request_state_attributes=False)
    contact_sensor = newton.sensors.SensorContact(model, sensing_shapes="foot_*")
 
    flags = imu.solver_observable_flags | contact_sensor.solver_observable_flags
@@ -289,13 +298,13 @@ container, and pass it through the step:
 
    solver.step(state_in, state_out, control, contacts, dt, observables=observables)
    imu.update(state_out, solver_observables=observables)
-   contact_sensor.update(state_out, contacts, solver_observables=observables)
+   contact_sensor.update(state_in, contacts, solver_observables=observables)
 
 The viewer follows the same pattern:
 
 .. code-block:: python
 
-   viewer.log_contacts(contacts, state_out, solver_observables=observables)
+   viewer.log_contacts(contacts, state_in, solver_observables=observables)
 
 Substep scheduling
 ------------------
@@ -396,13 +405,13 @@ The following compatibility paths remain available for a deprecation period:
    * - ``solver.update_contacts()``
      - Pass contact observables to ``solver.step(..., observables=observables)``
 
-The request methods and ``update_contacts()`` emit
-:class:`DeprecationWarning`. ``SensorIMU`` and ``SensorContact`` no longer
-request extended attributes by default. Set their respective
-``request_state_attributes=True`` or ``request_contact_attributes=True`` only
-while migrating legacy code. These options are deprecated in Newton 1.7 and
-emit one sensor-specific warning at the caller's location. Leaving the options
-at their default ``False`` does not emit a warning or request legacy fields.
+The request methods and ``update_contacts()`` emit :class:`DeprecationWarning`.
+``SensorIMU`` retains its legacy ``request_state_attributes=True`` default
+during the deprecation period; explicitly pass ``False`` when using solver
+observables. ``SensorContact`` defaults to ``request_contact_attributes=False``.
+Setting either option to ``True`` is deprecated in Newton 1.7 and emits one
+sensor-specific warning at the caller's location. Passing ``False`` does not
+emit a warning or request legacy fields.
 
 ``Contacts.EXTENDED_ATTRIBUTES`` and direct ``requested_attributes={"force"}``
 remain compatibility APIs. New integrations should not allocate

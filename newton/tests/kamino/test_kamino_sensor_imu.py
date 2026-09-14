@@ -45,7 +45,7 @@ def _make_free_body_scene(
         builder.add_ground_plane()
     builder.end_world()
     model = builder.finalize(device=device)
-    sensor = SensorIMU(model, sites=[site]) if site is not None else None
+    sensor = SensorIMU(model, sites=[site], request_state_attributes=False) if site is not None else None
     return model, body, sensor
 
 
