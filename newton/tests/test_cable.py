@@ -3580,6 +3580,35 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
+def _rod_articulation_has_free_root_joint_impl(test: unittest.TestCase, _device):
+    """A rod articulation has one free joint to the world."""
+    builder = newton.ModelBuilder()
+    rod = newton.Rod(
+        [
+            wp.vec3(0.0, 0.0, 1.0),
+            wp.vec3(0.1, 0.0, 1.0),
+            wp.vec3(0.2, 0.0, 1.0),
+        ],
+        radius=0.01,
+    )
+    rod_bodies, rod_joints = builder.add_rod(
+        rod=rod,
+        label="rooted_rod",
+        wrap_in_articulation=True,
+        body_frame_origin="com",
+    )
+
+    test.assertEqual(builder.articulation_count, 1)
+    articulation_joints = [joint for joint, articulation in enumerate(builder.joint_articulation) if articulation == 0]
+    root_joints = [joint for joint in articulation_joints if builder.joint_parent[joint] == -1]
+    test.assertEqual(len(root_joints), 1)
+    test.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+    test.assertEqual(builder.joint_child[root_joints[0]], rod_bodies[0])
+    test.assertNotIn(root_joints[0], rod_joints)
+    test.assertTrue(all(builder.joint_articulation[joint] == 0 for joint in rod_joints))
+    test.assertTrue(builder.validate_joint_ordering())
+
+
 def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
     """Reconstruct Rod body state with FK and round-trip through IK."""
     test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
@@ -3607,7 +3636,8 @@ def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
     state = model.state()
 
     joint_types = model.joint_type.numpy()
-    test.assertTrue(np.all(joint_types == int(newton.JointType.ROD)), msg="expected only ROD joints")
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.FREE)), 1)
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.ROD)), len(rod_joints))
 
     child_body = int(rod_bodies[1])
 
@@ -7622,9 +7652,11 @@ class TestCable(unittest.TestCase):
                         np.array([20.0, 20.0, 10.0, 30.0, 30.0, 40.0]) / dual_length,
                     )
                     q_start = builder.joint_q_start[joint]
+                    q_wp_rest = frames[parent_edge] * wp.transform_get_rotation(builder.joint_X_p[joint])
+                    q_wc_rest = frames[child_edge] * wp.transform_get_rotation(builder.joint_X_c[joint])
                     np.testing.assert_allclose(
                         builder.joint_target_q[q_start + 3 : q_start + 7],
-                        np.asarray(wp.quat_inverse(frames[parent_edge]) * frames[child_edge]),
+                        np.asarray(wp.quat_inverse(q_wp_rest) * q_wc_rest),
                         atol=1.0e-6,
                     )
                 np.testing.assert_array_equal(rod.points, initial_points)
@@ -7901,6 +7933,12 @@ add_function_test(
     "test_cable_graph_y_junction_spanning_tree",
     _cable_graph_y_junction_spanning_tree_impl,
     devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_rod_articulation_has_free_root_joint",
+    _rod_articulation_has_free_root_joint_impl,
+    devices=None,
 )
 add_function_test(
     TestCable,
