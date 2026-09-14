@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...geometry.kernels import EE_PAIR_CURSOR, VT_PAIR_CURSOR
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
 )
@@ -403,12 +402,12 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     collision_info = collision_info_array[0]
 
     # one thread per stored contact pair, strided over both shared pair arrays
-    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
     i = t_id
     while i < ee_count:
-        pair = collision_info.ee_pairs[i]
-        e1_idx = pair[0]
-        e2_idx = pair[1]
+        e1_idx = collision_info.edge_colliding_edges[2 * i]
+        e2_idx = collision_info.edge_colliding_edges[2 * i + 1]
 
         e1_v1 = edge_indices[e1_idx, 2]
         e1_v2 = edge_indices[e1_idx, 3]
@@ -447,12 +446,12 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
                 _vbd_add_proxy_particle_force(e1_v2, collision_force_1, particle_local_to_proxy_global, out_particle_f)
         i += stride
 
-    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
     i = t_id
     while i < vt_count:
-        pair = collision_info.vt_pairs[i]
-        particle_idx = pair[0]
-        tri_idx = pair[1]
+        particle_idx = collision_info.vertex_colliding_triangles[2 * i]
+        tri_idx = collision_info.vertex_colliding_triangles[2 * i + 1]
 
         tri_a = tri_indices[tri_idx, 0]
         tri_b = tri_indices[tri_idx, 1]

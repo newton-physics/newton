@@ -31,8 +31,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import (
-    EE_PAIR_CURSOR,
-    VT_PAIR_CURSOR,
     triangle_closest_point,
 )
 from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
@@ -1474,12 +1472,12 @@ def accumulate_self_contact_force_and_hessian(
     collision_info = collision_info_array[0]
 
     # edge-edge pairs: handle the e1 side only; the reverse direction is its own record
-    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
     i = t_id
     while i < ee_count:
-        pair = collision_info.ee_pairs[i]
-        e1_idx = pair[0]
-        e2_idx = pair[1]
+        e1_idx = collision_info.edge_colliding_edges[2 * i]
+        e2_idx = collision_info.edge_colliding_edges[2 * i + 1]
 
         e1_v1 = edge_indices[e1_idx, 2]
         e1_v2 = edge_indices[e1_idx, 3]
@@ -1514,12 +1512,12 @@ def accumulate_self_contact_force_and_hessian(
         i += stride
 
     # vertex-triangle pairs
-    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
     i = t_id
     while i < vt_count:
-        pair = collision_info.vt_pairs[i]
-        particle_idx = pair[0]
-        tri_idx = pair[1]
+        particle_idx = collision_info.vertex_colliding_triangles[2 * i]
+        tri_idx = collision_info.vertex_colliding_triangles[2 * i + 1]
 
         tri_a = tri_indices[tri_idx, 0]
         tri_b = tri_indices[tri_idx, 1]
@@ -1820,12 +1818,12 @@ def apply_planar_truncation_parallel_by_collision(
     # edge-edge pairs: both directions are stored, each record certifies its
     # own separation plane (n toward its e1 side) and truncates all four
     # involved vertices
-    ee_count = wp.min(collision_info.counters[EE_PAIR_CURSOR], collision_info.ee_pairs.shape[0])
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
     i = t_id
     while i < ee_count:
-        pair = collision_info.ee_pairs[i]
-        e1_idx = pair[0]
-        e2_idx = pair[1]
+        e1_idx = collision_info.edge_colliding_edges[2 * i]
+        e2_idx = collision_info.edge_colliding_edges[2 * i + 1]
 
         e1_v1 = edge_indices[e1_idx, 2]
         e1_v2 = edge_indices[e1_idx, 3]
@@ -1878,12 +1876,12 @@ def apply_planar_truncation_parallel_by_collision(
         i += stride
 
     # vertex-triangle pairs
-    vt_count = wp.min(collision_info.counters[VT_PAIR_CURSOR], collision_info.vt_pairs.shape[0])
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
     i = t_id
     while i < vt_count:
-        pair = collision_info.vt_pairs[i]
-        particle_idx = pair[0]
-        tri_idx = pair[1]
+        particle_idx = collision_info.vertex_colliding_triangles[2 * i]
+        tri_idx = collision_info.vertex_colliding_triangles[2 * i + 1]
 
         colliding_particle_pos = pos[particle_idx]
         colliding_particle_displacement = displacement_in[particle_idx]
