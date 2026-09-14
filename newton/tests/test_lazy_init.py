@@ -18,12 +18,12 @@ class TestLazyInit(unittest.TestCase):
         # (--strict-warnings); otherwise keep the import lenient so a dependency
         # deprecation does not fail a consumer's install check.
         env.pop("PYTHONWARNINGS", None)
-        if newton.tests.unittest_utils.strict_warnings:
-            env["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        warning_args = newton.tests.unittest_utils.get_strict_warning_args()
 
         result = subprocess.run(
             [
                 sys.executable,
+                *warning_args,
                 "-c",
                 "import newton; import warp._src.context as wpc; import sys; sys.exit(0 if wpc.runtime is None else 1)",
             ],

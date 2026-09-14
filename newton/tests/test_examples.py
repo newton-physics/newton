@@ -5,9 +5,10 @@
 
 Currently, this script mainly checks that the examples can run. When the test
 runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
-treat deprecation warnings as failures so examples do not regress onto deprecated
-APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
-``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
+treat non-allowlisted deprecation warnings as failures so examples do not regress
+onto deprecated APIs; otherwise deprecations are non-fatal. (The broader newton.*
+escalation of ``--strict-warnings`` applies to the in-process tests, not example
+subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -191,13 +192,9 @@ def add_example_test(
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
         # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
         # environment cannot turn a lenient run strict; govern the policy solely
-        # through the -W flag below.
+        # through the -W flags below.
         env_vars.pop("PYTHONWARNINGS", None)
-
-        # Escalate deprecations from interpreter startup for strict runs.
-        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
-        # so this governs instead of the helper's lenient "default" filter.
-        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
+        warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory

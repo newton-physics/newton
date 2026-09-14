@@ -35,11 +35,26 @@ coverage_temp_dir = None
 coverage_branch = None
 
 # Set by the test runner from the --strict-warnings flag. When True, the example
-# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
-# (the in-process tests additionally escalate any warning attributed to a newton.*
-# module). Off by default so verifying an installation does not fail on warnings
-# the user cannot act on.
+# subprocesses spawned by test_examples.py escalate non-allowlisted
+# DeprecationWarnings to errors (the in-process tests additionally escalate any
+# warning attributed to a newton.* module). Off by default so verifying an
+# installation does not fail on warnings the user cannot act on.
 strict_warnings = False
+# Literal message prefixes loaded from --deprecation-allowlist and translated to
+# Python -W options for subprocesses.
+allowed_deprecation_warnings: tuple[str, ...] = ()
+
+
+def get_strict_warning_args() -> list[str]:
+    """Return Python interpreter arguments for the active warning policy."""
+    if not strict_warnings:
+        return []
+
+    arguments = ["-W", "error::DeprecationWarning"]
+    for message in allowed_deprecation_warnings:
+        arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
+    return arguments
+
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []

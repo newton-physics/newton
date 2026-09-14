@@ -28,10 +28,9 @@ def _run_isolated(test, function_name, *args):
 
     env = os.environ.copy()
     env.pop("PYTHONWARNINGS", None)
-    warning_args = []
+    warning_args = newton.tests.unittest_utils.get_strict_warning_args()
     if newton.tests.unittest_utils.strict_warnings:
-        warning_args = ["-W", "error::DeprecationWarning"]
-        code = f"import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)'); {code}"
+        code = f"import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)', append=True); {code}"
 
     result = subprocess.run(
         [sys.executable, *warning_args, "-c", code],
