@@ -158,7 +158,11 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
             with self.subTest(load_visual_shapes=load_visual_shapes):
                 builder = newton.ModelBuilder()
                 builder.add_usd(stage, load_visual_shapes=load_visual_shapes)
-                enabled = {builder.shape_label.index(f"/{name}") for name in ("EnabledA", "EnabledB")}
+                shape_ids = {
+                    name: builder.shape_label.index(f"/{name}")
+                    for name in ("EnabledA", "DisabledA", "EnabledB", "DisabledB")
+                }
+                enabled = {shape_ids[name] for name in ("EnabledA", "EnabledB")}
                 self.assertEqual(
                     {i for i, flags in enumerate(builder.shape_flags) if flags & newton.ShapeFlags.COLLIDE_SHAPES},
                     enabled,
@@ -190,7 +194,12 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
 
                     builder = newton.ModelBuilder()
                     builder.add_usd(stage, load_visual_shapes=load_visual_shapes)
-                    enabled = {builder.shape_label.index(f"/{name}/Enabled") for name in ("A", "B")}
+                    shape_ids = {
+                        f"/{body_name}/{shape_name}": builder.shape_label.index(f"/{body_name}/{shape_name}")
+                        for body_name in ("A", "B")
+                        for shape_name in ("Enabled", "Disabled")
+                    }
+                    enabled = {shape_ids[f"/{body_name}/Enabled"] for body_name in ("A", "B")}
                     self.assertEqual(
                         {i for i, flags in enumerate(builder.shape_flags) if flags & newton.ShapeFlags.COLLIDE_SHAPES},
                         enabled,
