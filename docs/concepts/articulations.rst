@@ -191,23 +191,24 @@ maximal-coordinate body poses should reflect the mimic relationship.
 penalty spring and damping forces. Configure the global gains with
 ``joint_mimic_ke`` and ``joint_mimic_kd`` on the solver. As with other explicit
 springs, stronger gains may require a smaller simulation time step.
-:class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverVBD` enforce
-relationships between revolute, prismatic, and D6 joints with coupled
-maximal-coordinate corrections. Both approaches act on the follower and the
-reference joint, so forces applied to the follower also affect the reference.
-VBD performs one mimic correction after each rigid-body iteration. Increase
-the solver's ``iterations`` setting when mimic relationships need tighter
-convergence.
+:class:`newton.solvers.SolverXPBD` enforces relationships between revolute,
+prismatic, and D6 joints with coupled maximal-coordinate corrections.
+:class:`newton.solvers.SolverVBD` includes these relationships as implicit
+finite-stiffness rows in its rigid-body solve. Their forces and Hessians are
+solved together with structural joints and contacts. Linear and angular mimic
+coordinates use ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``,
+respectively, in both VBD formulations. Increase the solver's ``iterations``
+setting when tighter convergence is needed. Both solvers act on the follower
+and reference joints, so forces applied to the follower also affect the reference.
 :class:`newton.solvers.SolverFeatherstone` applies the same relationships in
 generalized coordinates. It removes follower degrees of freedom from the
 dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
 
-:class:`newton.solvers.SolverVBD` caches each body's mimic participation count.
 After editing mimic properties or joint enable flags, call
 :meth:`newton.solvers.SolverVBD.notify_model_changed` with
-:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh those counts.
+:attr:`newton.ModelFlags.JOINT_PROPERTIES` to clear the affected solver history.
 If VBD was constructed without supported mimics, rebuild it after adding
 the first supported mimic relationship.
 

@@ -1,1 +1,1 @@
-Prevent unstable mimic corrections in SolverVBD when multiple follower relationships share a reference or parent body, while preserving equal-and-opposite reactions. Refresh cached mimic participation with `notify_model_changed(ModelFlags.JOINT_PROPERTIES)` after changing mimic references or joint enable flags.
+Prevent articulated mimic instability in SolverVBD by solving mimic forces and stiffness together with structural joints and contacts. Use `notify_model_changed(ModelFlags.JOINT_PROPERTIES)` after changing mimic properties or joint enable flags.

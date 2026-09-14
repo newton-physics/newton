@@ -866,7 +866,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     model.joint_axis,
                                     model.joint_mimic_joint,
                                     model.joint_mimic_coeffs,
-                                    None,  # body_mimic_count
                                     self.joint_angular_relaxation,
                                     self.joint_linear_relaxation,
                                     dt,

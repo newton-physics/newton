@@ -7,7 +7,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.xpbd.kernels import count_joint_mimics_per_body, project_joint_mimics
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -73,8 +72,7 @@ def _test_solver_mimic(test, device, solver_name):
     """Enforce scalar and vectorized mimic relationships with one solver."""
     for vectorized in (False, True):
         with test.subTest(vectorized=vectorized):
-            # VBD performs one local mimic projection per solver iteration. Keep
-            # its initial pose within the projection's intended convergence basin;
+            # Keep the VBD initial pose within the local solve's convergence basin;
             # large authored inconsistencies should be resolved with eval_mimic()
             # followed by eval_fk() before simulation.
             model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
@@ -188,6 +186,24 @@ def test_vbd_mimic(test, device):
     _test_solver_mimic(test, device, "vbd")
 
 
+def test_vbd_mimic_preserves_kinematic_reference(test, device):
+    """Keep a prescribed reference pose fixed while solving its follower implicitly."""
+    model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
+        device, False, kinematic_reference=True, small_mismatch=True
+    )
+    reference_body = int(model.joint_child.numpy()[reference])
+    reference_pose = state_in.body_q.numpy()[reference_body].copy()
+    reference_velocity = state_in.body_qd.numpy()[reference_body].copy()
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+    for _ in range(96):
+        solver.step(state_in, state_out, None, None, 1.0 / 960.0)
+        state_in, state_out = state_out, state_in
+    np.testing.assert_allclose(state_in.body_q.numpy()[reference_body], reference_pose, atol=1.0e-7)
+    # VBD reconstructs angular velocity from poses, including float32 quaternion roundoff.
+    np.testing.assert_allclose(state_in.body_qd.numpy()[reference_body], reference_velocity, atol=1.0e-5)
+    _assert_mimic_relation(model, _read_joint_q(model, state_in, False), reference, follower, offset, multiplier)
+
+
 def _test_vbd_mimic_shared_reference(test, device, *, compliant=False):
     """Keep shared-reference mimic motion bounded and transfer momentum to every follower."""
     for joint_type in (newton.JointType.PRISMATIC, newton.JointType.REVOLUTE, newton.JointType.D6):
@@ -221,7 +237,7 @@ def _test_vbd_mimic_shared_reference(test, device, *, compliant=False):
                 solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=compliant)
 
                 initial_energy = float(np.sum(state_in.body_qd.numpy() ** 2))
-                for _ in range(32):
+                for _ in range(96):
                     solver.step(state_in, state_out, None, None, 1.0 / 960.0)
                     state_in, state_out = state_out, state_in
                     # All bodies have unit mass and inertia, so this is twice kinetic energy.
@@ -236,12 +252,12 @@ def _test_vbd_mimic_shared_reference(test, device, *, compliant=False):
 
                 if follower_count == 5 and joint_type == newton.JointType.PRISMATIC:
                     if device.is_cuda:
-                        # Capture before modifying the model so replay must use refreshed counts.
+                        # Capture before modifying the model so replay must read the new relationships.
                         with wp.ScopedCapture(device=device) as capture:
                             solver.step(state_in, state_out, None, None, 1.0 / 960.0)
                             solver.step(state_out, state_in, None, None, 1.0 / 960.0)
 
-                    # Disabled relationships must stop diluting the remaining pair's response.
+                    # Disabled relationships must stop contributing to the body solve.
                     enabled = model.joint_enabled.numpy()
                     enabled[2:] = False
                     model.joint_enabled.assign(enabled)
@@ -261,11 +277,14 @@ def _test_vbd_mimic_shared_reference(test, device, *, compliant=False):
                             velocities[0, 2] += 0.01
                             state_in.body_qd.assign(velocities)
                             expected = (velocities[0, 2] + velocities[1, 2]) * 0.5
-                            if device.is_cuda:
-                                wp.capture_launch(capture.graph)
-                            else:
-                                solver.step(state_in, state_out, None, None, 1.0 / 960.0)
-                                state_in, state_out = state_out, state_in
+                            # VBD's finite-stiffness mimic rows settle the new
+                            # velocity mismatch over time, like structural rows.
+                            for _ in range(48):
+                                if device.is_cuda:
+                                    wp.capture_launch(capture.graph)
+                                else:
+                                    solver.step(state_in, state_out, None, None, 1.0 / 960.0)
+                                    solver.step(state_out, state_in, None, None, 1.0 / 960.0)
                             updated = state_in.body_qd.numpy()
                             np.testing.assert_allclose(updated[:2, 2], expected, atol=2.0e-5)
                             np.testing.assert_allclose(updated[2:], velocities[2:], atol=1.0e-6)
@@ -278,7 +297,7 @@ def test_vbd_mimic_shared_reference(test, device):
 
 
 def test_vbd_mimic_shared_parent(test, device):
-    """Reduce projection error without injecting energy when mimic pairs share a light parent."""
+    """Keep mimic motion bounded when several pairs share a light parent."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     parent = builder.add_link(mass=0.01, inertia=wp.mat33(np.eye(3) * 0.01))
     root = builder.add_joint_prismatic(-1, parent, axis=newton.Axis.X)
@@ -294,6 +313,7 @@ def test_vbd_mimic_shared_parent(test, device):
         joints.extend((reference, follower))
         pairs.append((reference, follower, multiplier))
     builder.add_articulation(joints)
+    builder.color()
     model = builder.finalize(device=device)
     state = model.state()
     dt = 1.0 / 960.0
@@ -302,30 +322,25 @@ def test_vbd_mimic_shared_parent(test, device):
     for reference, follower, _ in pairs:
         qd[reference] = -0.01
         qd[follower] = -0.01
-    # Predict a small parent displacement before applying the VBD mimic projection.
-    state.joint_q.assign(qd * dt)
     state.joint_qd.assign(qd)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-    counts = wp.zeros(model.body_count, dtype=int, device=device)
-    deltas = wp.zeros_like(state.body_qd)
-    count_joint_mimics_per_body(model, counts)
+    model.body_q.assign(state.body_q)
+    other = model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
     masses = model.body_mass.numpy()
     velocities = state.body_qd.numpy()[:, 0]
     energy = float(np.dot(masses, velocities**2))
     momentum = float(np.dot(masses, velocities))
-    for _ in range(10):
-        project_joint_mimics(
-            model, state.body_q, state.body_qd, model.body_inv_mass, model.body_inv_inertia, deltas, counts, dt
-        )
+    for _ in range(96):
+        solver.step(state, other, None, None, dt)
+        state, other = other, state
         velocities = state.body_qd.numpy()[:, 0]
         updated_energy = float(np.dot(masses, velocities**2))
-        test.assertLessEqual(updated_energy, energy * 1.00001 + 1.0e-12)
-        test.assertAlmostEqual(float(np.dot(masses, velocities)), momentum, delta=1.0e-8)
-        energy = updated_energy
+        test.assertLessEqual(updated_energy, energy * 1.001 + 1.0e-12)
+    test.assertAlmostEqual(float(np.dot(masses, velocities)), momentum, delta=1.0e-5)
     q = _read_joint_q(model, state, False)
     for reference, follower, multiplier in pairs:
-        initial_error = abs(float(qd[follower] - multiplier * qd[reference])) * dt
-        test.assertLess(abs(float(q[follower] - multiplier * q[reference])), initial_error)
+        test.assertAlmostEqual(float(q[follower] - multiplier * q[reference]), 0.0, delta=1.0e-6)
 
 
 class TestSolverMimic(unittest.TestCase):
@@ -348,6 +363,12 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic,
+    "test_vbd_mimic_preserves_kinematic_reference",
+    test_vbd_mimic_preserves_kinematic_reference,
+    devices=devices,
+)
 add_function_test(TestSolverMimic, "test_vbd_mimic_shared_reference", test_vbd_mimic_shared_reference, devices=devices)
 add_function_test(TestSolverMimic, "test_vbd_mimic_shared_parent", test_vbd_mimic_shared_parent, devices=devices)
 

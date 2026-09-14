@@ -2089,84 +2089,21 @@ def solve_body_joints(
 
 
 @wp.func
-def _joint_mimic_is_active(
-    follower: int,
-    joint_type: wp.array[int],
-    joint_enabled: wp.array[bool],
-    joint_mimic_joint: wp.array[int],
-):
-    """Use the same support and enable checks for counting and projection."""
-    reference = joint_mimic_joint[follower]
-    if reference < 0 or not joint_enabled[follower] or not joint_enabled[reference]:
-        return False
-    follower_type = joint_type[follower]
-    reference_type = joint_type[reference]
-    return (
-        follower_type == JointType.PRISMATIC or follower_type == JointType.REVOLUTE or follower_type == JointType.D6
-    ) and (
-        reference_type == JointType.PRISMATIC or reference_type == JointType.REVOLUTE or reference_type == JointType.D6
-    )
-
-
-@wp.kernel
-def _count_joint_mimics_per_body(
-    joint_type: wp.array[int],
-    joint_enabled: wp.array[bool],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_mimic_joint: wp.array[int],
-    body_mimic_count: wp.array[int],
-):
-    """Count each active mimic relationship once per participating body."""
-    follower = wp.tid()
-    if not _joint_mimic_is_active(follower, joint_type, joint_enabled, joint_mimic_joint):
-        return
-    reference = joint_mimic_joint[follower]
-    bodies = wp.vec4i(joint_parent[follower], joint_child[follower], joint_parent[reference], joint_child[reference])
-    for i in range(4):
-        body = bodies[i]
-        if body < 0:
-            continue
-        repeated = bool(False)
-        for j in range(i):
-            if bodies[j] == body:
-                repeated = True
-        if not repeated:
-            wp.atomic_add(body_mimic_count, body, 1)
-
-
-def count_joint_mimics_per_body(model: Model, body_mimic_count: wp.array[int]) -> None:
-    """Refresh mimic participation counts from the live joint enable flags and references."""
-    body_mimic_count.zero_()
-    wp.launch(
-        _count_joint_mimics_per_body,
-        dim=model.joint_count,
-        inputs=[model.joint_type, model.joint_enabled, model.joint_parent, model.joint_child, model.joint_mimic_joint],
-        outputs=[body_mimic_count],
-        device=model.device,
-    )
-
-
-@wp.func
 def _joint_mimic_effective_mass(
     body: int,
     gradient: wp.spatial_vector,
     body_q: wp.array[wp.transform],
     body_inv_m: wp.array[float],
     body_inv_I: wp.array[wp.mat33],
-    body_mimic_count: wp.array[int],
 ):
-    """Return inverse effective mass, optionally splitting it among parallel mimic relationships."""
+    """Return the inverse effective mass for one maximal-coordinate gradient."""
     if body < 0:
         return float(0.0)
     linear = wp.spatial_top(gradient)
     angular = wp.spatial_bottom(gradient)
     body_rotation = wp.transform_get_rotation(body_q[body])
     angular_body = wp.quat_rotate_inv(body_rotation, angular)
-    inverse_mass = body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
-    if body_mimic_count:
-        inverse_mass *= float(body_mimic_count[body])
-    return inverse_mass
+    return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
 
 
 @wp.kernel
@@ -2186,7 +2123,6 @@ def solve_joint_mimics(
     joint_axis: wp.array[wp.vec3],
     joint_mimic_joint: wp.array[int],
     joint_mimic_coeffs: wp.array[wp.vec2],
-    body_mimic_count: wp.array[int],
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
@@ -2195,9 +2131,20 @@ def solve_joint_mimics(
 ):
     """Solve joint-owned mimic relationships as coupled maximal-coordinate constraints."""
     follower = wp.tid()
-    if not _joint_mimic_is_active(follower, joint_type, joint_enabled, joint_mimic_joint):
-        return
     reference = joint_mimic_joint[follower]
+    if reference < 0 or not joint_enabled[follower] or not joint_enabled[reference]:
+        return
+
+    follower_type = joint_type[follower]
+    reference_type = joint_type[reference]
+    follower_supported = (
+        follower_type == JointType.PRISMATIC or follower_type == JointType.REVOLUTE or follower_type == JointType.D6
+    )
+    reference_supported = (
+        reference_type == JointType.PRISMATIC or reference_type == JointType.REVOLUTE or reference_type == JointType.D6
+    )
+    if not follower_supported or not reference_supported:
+        return
 
     follower_parent = joint_parent[follower]
     follower_child = joint_child[follower]
@@ -2281,21 +2228,10 @@ def solve_joint_mimics(
                 gradient_2 += gradient_3
                 body_3 = -1
 
-        # VBD supplies participation counts to split the effective mass while
-        # preserving equal-and-opposite reactions. XPBD passes no counts and
-        # retains its original effective mass.
-        effective_mass = _joint_mimic_effective_mass(
-            body_0, gradient_0, body_q, body_inv_m, body_inv_I, body_mimic_count
-        )
-        effective_mass += _joint_mimic_effective_mass(
-            body_1, gradient_1, body_q, body_inv_m, body_inv_I, body_mimic_count
-        )
-        effective_mass += _joint_mimic_effective_mass(
-            body_2, gradient_2, body_q, body_inv_m, body_inv_I, body_mimic_count
-        )
-        effective_mass += _joint_mimic_effective_mass(
-            body_3, gradient_3, body_q, body_inv_m, body_inv_I, body_mimic_count
-        )
+        effective_mass = _joint_mimic_effective_mass(body_0, gradient_0, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_1, gradient_1, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_2, gradient_2, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_3, gradient_3, body_q, body_inv_m, body_inv_I)
         if effective_mass == 0.0:
             continue
 
@@ -2363,7 +2299,6 @@ def project_joint_mimics(
     body_inv_m: wp.array[float],
     body_inv_I: wp.array[wp.mat33],
     deltas: wp.array[wp.spatial_vector],
-    body_mimic_count: wp.array[int],
     dt: float,
 ) -> None:
     """Perform one maximal-coordinate projection of supported mimic relationships."""
@@ -2387,7 +2322,6 @@ def project_joint_mimics(
             model.joint_axis,
             model.joint_mimic_joint,
             model.joint_mimic_coeffs,
-            body_mimic_count,
             1.0,
             1.0,
             dt,
