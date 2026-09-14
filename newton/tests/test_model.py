@@ -1658,6 +1658,26 @@ class TestModelMesh(unittest.TestCase):
                 contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
                 self.assertEqual(contact_pairs, expected_pairs)
 
+    def test_world_contact_pairs_with_out_of_world_body_attachment(self):
+        """Preserve contacts when a world's shape references a global body."""
+
+        builder = ModelBuilder()
+        global_body = builder.add_body()
+
+        builder.begin_world()
+        builder.add_shape_box(body=-1)
+        builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        builder.begin_world()
+        shape_a = builder.add_shape_box(body=global_body)
+        shape_b = builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(shape_a, shape_b)})
+
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
         """Keep large replicated filters compact and read-only while preserving contacts."""
 

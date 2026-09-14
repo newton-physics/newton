@@ -14313,6 +14313,14 @@ class ModelBuilder:
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
                 use_world_templates = np.array_equal(segment_worlds, shape_world_np)
+                if use_world_templates:
+                    shape_body_np = np.asarray(self.shape_body, dtype=np.int64)
+                    body_world_np = np.asarray(self.body_world, dtype=np.int32)
+                    attached = shape_body_np >= 0
+                    # Body-relative template keys are valid only when shapes and their bodies share a world.
+                    use_world_templates = np.array_equal(
+                        shape_world_np[attached], body_world_np[shape_body_np[attached]]
+                    )
 
         if use_world_templates:
             blocks_by_world = {}
@@ -14363,7 +14371,6 @@ class ModelBuilder:
             if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
-                shape_body_np = np.asarray(self.shape_body, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
                     (int(shape_idx), self.shape_collision_group[shape_idx])
