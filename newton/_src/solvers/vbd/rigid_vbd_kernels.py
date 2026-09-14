@@ -2798,7 +2798,8 @@ def evaluate_joint_force_hessian(
     joint_penalty_k: wp.array[float],
     joint_rho: wp.array[float],
     joint_material_k: wp.array[float],
-    joint_structural_ke: wp.vec2,
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
@@ -3255,7 +3256,7 @@ def evaluate_joint_force_hessian(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
-            joint_structural_ke[1],
+            joint_structural_angular_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3371,7 +3372,7 @@ def evaluate_joint_force_hessian(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
-            joint_structural_ke[0],
+            joint_structural_linear_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3543,7 +3544,7 @@ def evaluate_joint_force_hessian(
                         joint_limit_ke,
                         joint_limit_kd,
                         joint_penalty_k,
-                        joint_structural_ke[0],
+                        joint_structural_linear_ke,
                         joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3608,7 +3609,7 @@ def evaluate_joint_force_hessian(
                         joint_limit_ke,
                         joint_limit_kd,
                         joint_penalty_k,
-                        joint_structural_ke[1],
+                        joint_structural_angular_ke,
                         joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -5663,7 +5664,8 @@ def solve_rigid_body(
     joint_penalty_k: wp.array[float],
     joint_rho: wp.array[float],
     joint_material_k: wp.array[float],
-    joint_structural_ke: wp.vec2,
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_penalty_kd: wp.array[float],
     # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
     joint_sigma_start: wp.array[wp.vec3],
@@ -5841,7 +5843,8 @@ def solve_rigid_body(
             joint_penalty_k,
             joint_rho,
             joint_material_k,
-            joint_structural_ke,
+            joint_structural_linear_ke,
+            joint_structural_angular_ke,
             joint_penalty_kd,
             joint_sigma_start,
             joint_C_fric,
@@ -5935,7 +5938,8 @@ def update_duals_joint(
     joint_is_hard: wp.array[wp.int32],
     stab_alpha: float,
     joint_material_k: wp.array[float],
-    joint_structural_ke: wp.vec2,
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_rho: wp.array[float],
     joint_compliant_alm: int,
     beta_lin: float,
@@ -6230,7 +6234,7 @@ def update_duals_joint(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
-            joint_structural_ke[1],
+            joint_structural_angular_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
@@ -6327,7 +6331,7 @@ def update_duals_joint(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
-            joint_structural_ke[0],
+            joint_structural_linear_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
@@ -6438,7 +6442,7 @@ def update_duals_joint(
                     joint_limit_ke,
                     joint_limit_kd,
                     joint_penalty_k,
-                    joint_structural_ke[0],
+                    joint_structural_linear_ke,
                     joint_compliant_alm,
                 )
                 has_drive = _drive_row_needs_state_update(
@@ -6482,7 +6486,7 @@ def update_duals_joint(
                     joint_limit_ke,
                     joint_limit_kd,
                     joint_penalty_k,
-                    joint_structural_ke[1],
+                    joint_structural_angular_ke,
                     joint_compliant_alm,
                 )
                 has_drive = _drive_row_needs_state_update(
