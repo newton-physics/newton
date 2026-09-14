@@ -700,9 +700,9 @@ def _is_mesh_convex(
     """Test whether a triangle mesh is geometrically convex.
 
     A mesh is convex when every vertex lies on the same side of (or on) every
-    face plane. The test is exact, independent of face winding, and runs in
-    O(faces x vertices): a face plane is violating when it separates the vertex
-    set into points strictly on both of its sides.
+    face plane. The test is exact, independent of face winding and uniform
+    scale, and runs in O(faces x vertices): a face plane is violating when it
+    separates the vertex set into points strictly on both of its sides.
 
     Use it to detect geometry whose cavities will disappear when a backend
     compiles the mesh through a convex-hull path (e.g. the MuJoCo solver, which
@@ -740,8 +740,23 @@ def _is_mesh_convex(
         # Skipped check; report unknown instead of pretending convex.
         return None
 
+    # Translate onto the first vertex before any product: plane distances are
+    # translation-invariant, and differencing first keeps full double
+    # precision when the coordinates dwarf the features. Without it, a small
+    # mesh far from the origin turns the distance subtraction into pure
+    # cancellation noise that can swallow or fabricate violations.
+    verts = verts - verts[0]
+
     extent = float(np.max(np.max(verts, axis=0) - np.min(verts, axis=0)))
-    eps = 1e-6 * max(extent, 1.0)
+    # Purely relative tolerance, in the same true point-to-plane units the
+    # distances below use: clamping the extent to 1.0 made eps absolute and
+    # read micro-scale non-convex meshes as convex, because their separating
+    # distances sit below the 1e-6 floor (see the micro-scale regression
+    # test). Doubles carry ~10 orders of magnitude of headroom below
+    # 1e-6 * extent, so no absolute floor is needed; a zero extent yields
+    # zero normals, skips every chunk, and answers "convex" for a mesh whose
+    # hull loses nothing.
+    eps = 1e-6 * extent
 
     # Process faces in chunks so the (chunk_faces, num_verts) distance matrix
     # stays bounded; bail out on the first violating face.

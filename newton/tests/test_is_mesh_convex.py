@@ -13,6 +13,8 @@ The helper reports a three-valued result:
 Covers:
 - convex closed meshes (box, tetrahedron) with both windings
 - non-convex closed meshes (U-channel built from three boxes)
+- scale invariance of the verdict (enlarged, downscaled, micro-scale, and
+  small meshes far from the origin)
 - open/planar meshes (no volume, not a violation)
 - degenerate and trivial inputs
 - skipped checks reporting ``None`` instead of ``True``
@@ -98,6 +100,25 @@ class TestIsMeshConvex(unittest.TestCase):
         # non-convex mesh entirely.
         verts, faces = u_channel_mesh()
         self.assertFalse(_is_mesh_convex(verts * 1e-3, faces))
+
+    def test_microscale_u_channel_is_not_convex(self):
+        """Return False for a non-convex mesh at micro-meter scales."""
+        # The tolerance is purely relative to the extent. An absolute floor
+        # (eps clamped at 1e-6) sits above the true point-to-plane distances
+        # of a micro-scale mesh and reads its cavity as convex.
+        verts, faces = u_channel_mesh()
+        self.assertFalse(_is_mesh_convex(verts * 1e-6, faces))
+        self.assertFalse(_is_mesh_convex(verts * 1e-7, faces))
+
+    def test_small_distant_mesh_is_not_convex(self):
+        """Return False for a tiny non-convex mesh far from the origin."""
+        # Vertices are centered before any product, so plane distances stay
+        # exact when the coordinates dwarf the features; without that, the
+        # distance subtraction is cancellation noise of the same magnitude
+        # as the tolerance. float64 input: float32 cannot represent the
+        # 1e-6 features next to a 1e4 offset at all (ulp ~1e-3 there).
+        verts, faces = u_channel_mesh()
+        self.assertFalse(_is_mesh_convex(verts.astype(np.float64) * 1e-6 + 1e4, faces))
 
     def test_enlarged_box_is_convex(self):
         """Return True for a convex mesh at large scales."""
