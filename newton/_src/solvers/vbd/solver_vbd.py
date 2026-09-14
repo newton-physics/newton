@@ -1024,7 +1024,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Host-static launch size for the per-pair self-contact kernels: covers
         the larger family's pair capacity, capped so a grown pool makes threads
         stride instead of inflating the grid. Graph-safe either way."""
-        capacity = max(collision_info.vt_pairs.shape[0], collision_info.ee_pairs.shape[0], 1)
+        capacity = max(
+            collision_info.vertex_colliding_triangles.shape[0] // 2,
+            collision_info.edge_colliding_edges.shape[0] // 2,
+            1,
+        )
         self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, _SELF_CONTACT_MAX_LAUNCH_DIM)
 
     def check_and_grow_self_contact_buffers(self) -> bool:

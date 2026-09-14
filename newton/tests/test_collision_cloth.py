@@ -449,7 +449,6 @@ def _assert_vertex_triangle_worlds_compatible(test, model, collision_detector, r
     particle_world = model.particle_world.numpy()
     tri_indices = model.tri_indices.numpy()
     rows = collision_detector.vertex_colliding_triangles.numpy()
-    pairs = collision_detector.vt_pairs.numpy()
     counts = collision_detector.vertex_colliding_triangles_count.numpy()
     offsets = collision_detector.vertex_colliding_triangles_offsets.numpy()
 
@@ -460,9 +459,9 @@ def _assert_vertex_triangle_worlds_compatible(test, model, collision_detector, r
         row_length = int(offsets[vertex_index + 1] - offsets[vertex_index])
         test.assertEqual(int(counts[vertex_index]), row_length)
         for collision_index in range(row_length):
-            pair = pairs[rows[int(offsets[vertex_index]) + collision_index]]
-            recorded_vertex = int(pair[0])
-            tri_index = int(pair[1])
+            entry = 2 * (int(offsets[vertex_index]) + collision_index)
+            recorded_vertex = int(rows[entry])
+            tri_index = int(rows[entry + 1])
             tri_world = particle_world[int(tri_indices[tri_index, 0])]
 
             total_count += 1
@@ -479,7 +478,6 @@ def _assert_edge_edge_worlds_compatible(test, model, collision_detector, require
     particle_world = model.particle_world.numpy()
     edge_indices = model.edge_indices.numpy()
     rows = collision_detector.edge_colliding_edges.numpy()
-    pairs = collision_detector.ee_pairs.numpy()
     counts = collision_detector.edge_colliding_edges_count.numpy()
     offsets = collision_detector.edge_colliding_edges_offsets.numpy()
 
@@ -490,9 +488,9 @@ def _assert_edge_edge_worlds_compatible(test, model, collision_detector, require
         row_length = int(offsets[edge_index + 1] - offsets[edge_index])
         test.assertEqual(int(counts[edge_index]), row_length)
         for collision_index in range(row_length):
-            pair = pairs[rows[int(offsets[edge_index]) + collision_index]]
-            recorded_edge = int(pair[0])
-            colliding_edge = int(pair[1])
+            entry = 2 * (int(offsets[edge_index]) + collision_index)
+            recorded_edge = int(rows[entry])
+            colliding_edge = int(rows[entry + 1])
             colliding_world = particle_world[int(edge_indices[colliding_edge, 2])]
 
             total_count += 1
@@ -1376,15 +1374,23 @@ def test_collision_info_injection(test, device):
     vertices, faces = get_data()
     model, detector_self = init_model(vertices, faces, device)
 
+    # budgets must match the reference detector: stored counts (and rows) are
+    # capacity-dependent once the pool overflows
     info = build_tri_mesh_collision_info(
         model.particle_count,
         model.tri_count,
         model.edge_count,
+        vertex_collision_buffer_pre_alloc=256,
+        edge_collision_buffer_pre_alloc=256,
         record_triangle_contacting_vertices=True,
         device=device,
     )
     detector_injected = TriMeshCollisionDetector(
-        model=model, record_triangle_contacting_vertices=True, collision_info=info
+        model=model,
+        record_triangle_contacting_vertices=True,
+        vertex_collision_buffer_pre_alloc=256,
+        edge_collision_buffer_pre_alloc=256,
+        collision_info=info,
     )
     test.assertIs(detector_injected.collision_info, info)
 
@@ -1435,7 +1441,15 @@ def test_pipeline_soft_self_contact(test, device):
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     test.assertIsNone(pipeline._soft_self_contact_detector)  # nothing eager on the pipeline itself
-    pipeline.init_soft_self_contact(margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0)
+    pipeline.init_soft_self_contact(
+        margin=1e-2,
+        gap=query_radius - 1e-2,
+        topological_filter_threshold=0,
+        # match the reference detector's budgets: stored counts are
+        # capacity-dependent once the pool overflows
+        vertex_buffer_pre_alloc=256,
+        edge_buffer_pre_alloc=256,
+    )
     # The explicit opt-in creates the detector, with no result buffers yet —
     # the first bound Contacts supplies them.
     test.assertIsNotNone(pipeline._soft_self_contact_detector)
@@ -1568,7 +1582,7 @@ def test_soft_self_contact_buffer_validation(test, device):
         soft_self_contact_edge_buffer_pre_alloc=detector.edge_collision_buffer_pre_alloc,
         device=device,
     )
-    with test.assertRaisesRegex(ValueError, "vt_pairs"):
+    with test.assertRaisesRegex(ValueError, "vertex_colliding_triangles"):
         pipeline._get_soft_self_contact_detector(wrong_shape)
 
     pipeline_with_triangle_records = newton.CollisionPipeline(model, broad_phase="nxn")
@@ -1654,21 +1668,30 @@ def _build_two_layer_cloth(device, budgets=None):
 
 
 def _assert_rows_partition_pairs(test, info):
-    """Every stored pair index appears in exactly one CSR row of its family."""
+    """Rows hold exactly the stored contacts: totals match the clamped cursor
+    and every row entry names its owning element."""
     counters = info.counters.numpy()
-    for pairs, offsets, values, cursor in (
-        (info.vt_pairs, info.vertex_colliding_triangles_offsets, info.vertex_colliding_triangles, int(counters[0])),
-        (info.ee_pairs, info.edge_colliding_edges_offsets, info.edge_colliding_edges, int(counters[2])),
+    for capacity_x2, offsets, values, cursor in (
+        (
+            info.vertex_colliding_triangles.shape[0],
+            info.vertex_colliding_triangles_offsets,
+            info.vertex_colliding_triangles,
+            int(counters[0]),
+        ),
+        (
+            info.edge_colliding_edges.shape[0],
+            info.edge_colliding_edges_offsets,
+            info.edge_colliding_edges,
+            int(counters[2]),
+        ),
     ):
-        stored = min(cursor, pairs.shape[0])
+        stored = min(cursor, capacity_x2 // 2)
         offsets_np = offsets.numpy()
         test.assertEqual(int(offsets_np[-1]), stored)
-        row_values = values.numpy()[:stored]
-        test.assertEqual(len(np.unique(row_values)), stored)
-        pairs_np = pairs.numpy()
+        rows = values.numpy()
         for element in range(offsets_np.shape[0] - 1):
             for k in range(int(offsets_np[element]), int(offsets_np[element + 1])):
-                test.assertEqual(int(pairs_np[row_values[k]][0]), element)
+                test.assertEqual(int(rows[2 * k]), element)
 
 
 def test_self_contact_overflow_and_growth(test, device):
@@ -1733,17 +1756,19 @@ def _accumulate_self_contact_reference_sequential(
 ):
     """Single-thread reference: identical evaluators and color gating as the
     production scatter, but a fixed sequential summation order and no atomics."""
-    ee_count = wp.min(collision_info.counters[2], collision_info.ee_pairs.shape[0])
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
     for i in range(ee_count):
-        pair = collision_info.ee_pairs[i]
-        e1_v1 = edge_indices[pair[0], 2]
-        e1_v2 = edge_indices[pair[0], 3]
+        e1_idx = collision_info.edge_colliding_edges[2 * i]
+        e2_idx = collision_info.edge_colliding_edges[2 * i + 1]
+        e1_v1 = edge_indices[e1_idx, 2]
+        e1_v2 = edge_indices[e1_idx, 3]
         c_e1_v1 = particle_colors[e1_v1]
         c_e1_v2 = particle_colors[e1_v2]
         if c_e1_v1 == current_color or c_e1_v2 == current_color:
             has_contact, force_0, force_1, _h0, _h1 = evaluate_edge_edge_contact_2_vertices(
-                pair[0],
-                pair[1],
+                e1_idx,
+                e2_idx,
                 pos,
                 pos_prev,
                 edge_indices,
@@ -1761,11 +1786,11 @@ def _accumulate_self_contact_reference_sequential(
                 if c_e1_v2 == current_color:
                     particle_forces[e1_v2] = particle_forces[e1_v2] + force_1
 
-    vt_count = wp.min(collision_info.counters[0], collision_info.vt_pairs.shape[0])
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
     for i in range(vt_count):
-        pair = collision_info.vt_pairs[i]
-        v = pair[0]
-        tri = pair[1]
+        v = collision_info.vertex_colliding_triangles[2 * i]
+        tri = collision_info.vertex_colliding_triangles[2 * i + 1]
         tri_a = tri_indices[tri, 0]
         tri_b = tri_indices[tri, 1]
         tri_c = tri_indices[tri, 2]
