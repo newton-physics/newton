@@ -1026,46 +1026,10 @@ class ViewerGui:
             imgui.pop_style_color()
 
     def _render_scalar_plots(self):
-        """Render floating time-series plot window for log_scalar() data and array heatmaps."""
-        viewer = self._viewer
-        scalar_buffers = getattr(viewer, "_scalar_buffers", None)
-        array_buffers = getattr(viewer, "_array_buffers", None)
-        if not scalar_buffers and not array_buffers:
-            return
-        imgui = self.ui.imgui
-        io = self.ui.io
-        s = self.ui.dpi_scale
-        scalar_arrays = getattr(viewer, "_scalar_arrays", {})
-        plot_history_size = getattr(viewer, "_plot_history_size", 250)
-        window_width = 400 * s
-        item_height = len(scalar_buffers or {}) * 140 * s + len(array_buffers or {}) * 260 * s
-        window_height = min(io.display_size[1] - 20 * s, item_height + 60 * s)
-        # ``first_use_ever`` keeps user-dragged positions stable across
-        # collapse/expand cycles and survives ``imgui.ini`` reloads.
-        imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10 * s, io.display_size[1] - window_height - 10 * s),
-            imgui.Cond_.first_use_ever,
-        )
-        imgui.set_next_window_size(imgui.ImVec2(window_width, window_height), imgui.Cond_.first_use_ever)
-        n = plot_history_size
-        expanded = imgui.begin("Plots")
-        if expanded:
-            graph_size = imgui.ImVec2(-1, 100 * s)
-            for name, buf in (scalar_buffers or {}).items():
-                arr = scalar_arrays.get(name)
-                if arr is None:
-                    arr = np.full(n, np.nan, dtype=np.float32)
-                    arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
-                    scalar_arrays[name] = arr
-                overlay = f"{buf[-1]:.4g}" if buf else ""
-                if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
-                    imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
-            render_heatmap = getattr(viewer, "_render_array_heatmap", None)
-            if render_heatmap is not None:
-                for name, array in (array_buffers or {}).items():
-                    if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
-                        render_heatmap(name, array, window_width - 40.0 * s, dpi_scale=s)
-        imgui.end()
+        """Render live scalar plots and array heatmaps."""
+        plot_logger = getattr(self._viewer, "_plot_logger", None)
+        if plot_logger is not None:
+            plot_logger.draw(self.ui)
 
     def _render_selection_panel(self):
         """Render the articulation selection panel."""
