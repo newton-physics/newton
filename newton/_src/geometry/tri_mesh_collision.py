@@ -91,18 +91,18 @@ class TriMeshCollisionInfo:
     edge_colliding_edges_min_dist: wp.array[float]
     """Minimum detected edge-edge distance for each edge [m]."""
 
-    vt_list_heads: wp.array[wp.int32]
-    """Per-vertex head slot of the linked (vertex, triangle) record list (-1 = empty)."""
-    vt_list_next: wp.array[wp.int32]
-    """Per-record next slot of the vertex-keyed lists (parallel to ``vt_pairs``)."""
-    ee_list_heads: wp.array[wp.int32]
-    """Per-edge head slot of the linked (edge, edge) record list (-1 = empty)."""
-    ee_list_next: wp.array[wp.int32]
-    """Per-record next slot of the edge-keyed lists (parallel to ``ee_pairs``)."""
-    triangle_list_heads: wp.array[wp.int32]
-    """Optional per-triangle reverse list heads; empty unless recording is enabled."""
-    triangle_list_next: wp.array[wp.int32]
-    """Optional next slots of the triangle-keyed reverse lists."""
+    _vt_list_heads: wp.array[wp.int32]
+    """Internal: per-vertex head slot of the linked (vertex, triangle) record list (-1 = empty)."""
+    _vt_list_next: wp.array[wp.int32]
+    """Internal: per-record next slot of the vertex-keyed lists (parallel to ``vt_pairs``)."""
+    _ee_list_heads: wp.array[wp.int32]
+    """Internal: per-edge head slot of the linked (edge, edge) record list (-1 = empty)."""
+    _ee_list_next: wp.array[wp.int32]
+    """Internal: per-record next slot of the edge-keyed lists (parallel to ``ee_pairs``)."""
+    _triangle_list_heads: wp.array[wp.int32]
+    """Internal: optional per-triangle reverse list heads; empty unless recording is enabled."""
+    _triangle_list_next: wp.array[wp.int32]
+    """Internal: optional next slots of the triangle-keyed reverse lists."""
     _vertex_stored_counts: wp.array[wp.int32]
     """Internal: per-vertex count of records actually stored (scan input for the CSR)."""
     _edge_stored_counts: wp.array[wp.int32]
@@ -369,16 +369,16 @@ def build_tri_mesh_collision_info(
     info.vertex_colliding_triangles_offsets = wp.zeros(shape=(particle_count + 1,), dtype=wp.int32, device=device)
     info.vertex_colliding_triangles_count = wp.zeros(shape=(particle_count,), dtype=wp.int32, device=device)
     info.vertex_colliding_triangles_min_dist = wp.zeros(shape=(particle_count,), dtype=float, device=device)
-    info.vt_list_heads = wp.full(shape=(particle_count,), value=-1, dtype=wp.int32, device=device)
-    info.vt_list_next = wp.empty(shape=(max(vt_capacity, 1),), dtype=wp.int32, device=device)
+    info._vt_list_heads = wp.full(shape=(particle_count,), value=-1, dtype=wp.int32, device=device)
+    info._vt_list_next = wp.empty(shape=(max(vt_capacity, 1),), dtype=wp.int32, device=device)
     info._vertex_stored_counts = wp.zeros(shape=(particle_count,), dtype=wp.int32, device=device)
 
     if record_triangle_contacting_vertices:
         info.triangle_colliding_vertices = wp.zeros(shape=(max(vt_capacity, 1),), dtype=wp.int32, device=device)
         info.triangle_colliding_vertices_offsets = wp.zeros(shape=(tri_count + 1,), dtype=wp.int32, device=device)
         info.triangle_colliding_vertices_count = wp.zeros(shape=(tri_count,), dtype=wp.int32, device=device)
-        info.triangle_list_heads = wp.full(shape=(tri_count,), value=-1, dtype=wp.int32, device=device)
-        info.triangle_list_next = wp.empty(shape=(max(vt_capacity, 1),), dtype=wp.int32, device=device)
+        info._triangle_list_heads = wp.full(shape=(tri_count,), value=-1, dtype=wp.int32, device=device)
+        info._triangle_list_next = wp.empty(shape=(max(vt_capacity, 1),), dtype=wp.int32, device=device)
 
     # needed regardless of whether triangle contacting vertices are recorded
     info.triangle_colliding_vertices_min_dist = wp.zeros(shape=(tri_count,), dtype=float, device=device)
@@ -387,8 +387,8 @@ def build_tri_mesh_collision_info(
     info.edge_colliding_edges_offsets = wp.zeros(shape=(edge_count + 1,), dtype=wp.int32, device=device)
     info.edge_colliding_edges_count = wp.zeros(shape=(edge_count,), dtype=wp.int32, device=device)
     info.edge_colliding_edges_min_dist = wp.zeros(shape=(edge_count,), dtype=float, device=device)
-    info.ee_list_heads = wp.full(shape=(edge_count,), value=-1, dtype=wp.int32, device=device)
-    info.ee_list_next = wp.empty(shape=(max(ee_capacity, 1),), dtype=wp.int32, device=device)
+    info._ee_list_heads = wp.full(shape=(edge_count,), value=-1, dtype=wp.int32, device=device)
+    info._ee_list_next = wp.empty(shape=(max(ee_capacity, 1),), dtype=wp.int32, device=device)
     info._edge_stored_counts = wp.zeros(shape=(edge_count,), dtype=wp.int32, device=device)
 
     return info
@@ -593,8 +593,8 @@ class TriMeshCollisionDetector:
                 particle_count,
                 wp.float32,
             ),
-            ("vt_list_heads", collision_info.vt_list_heads, particle_count, wp.int32),
-            ("vt_list_next", collision_info.vt_list_next, vt_capacity, wp.int32),
+            ("_vt_list_heads", collision_info._vt_list_heads, particle_count, wp.int32),
+            ("_vt_list_next", collision_info._vt_list_next, vt_capacity, wp.int32),
             ("_vertex_stored_counts", collision_info._vertex_stored_counts, particle_count, wp.int32),
             (
                 "triangle_colliding_vertices_min_dist",
@@ -621,8 +621,8 @@ class TriMeshCollisionDetector:
                 edge_count,
                 wp.float32,
             ),
-            ("ee_list_heads", collision_info.ee_list_heads, edge_count, wp.int32),
-            ("ee_list_next", collision_info.ee_list_next, ee_capacity, wp.int32),
+            ("_ee_list_heads", collision_info._ee_list_heads, edge_count, wp.int32),
+            ("_ee_list_next", collision_info._ee_list_next, ee_capacity, wp.int32),
             ("_edge_stored_counts", collision_info._edge_stored_counts, edge_count, wp.int32),
         )
         if self.record_triangle_contacting_vertices:
@@ -645,8 +645,8 @@ class TriMeshCollisionDetector:
                     tri_count,
                     wp.int32,
                 ),
-                ("triangle_list_heads", collision_info.triangle_list_heads, tri_count, wp.int32),
-                ("triangle_list_next", collision_info.triangle_list_next, vt_capacity, wp.int32),
+                ("_triangle_list_heads", collision_info._triangle_list_heads, tri_count, wp.int32),
+                ("_triangle_list_next", collision_info._triangle_list_next, vt_capacity, wp.int32),
             )
         for array in arrays:
             validate_array(*array)
@@ -980,7 +980,7 @@ class TriMeshCollisionDetector:
             # triangle-keyed reverse lists have many writers, so heads and
             # stored counts need explicit resets (the vertex/edge lists do not:
             # each element's own thread writes its head and count unconditionally)
-            info.triangle_list_heads.fill_(-1)
+            info._triangle_list_heads.fill_(-1)
             info.triangle_colliding_vertices_count.zero_()
         vt_capacity = info.vt_pairs.shape[0]
 
@@ -1003,16 +1003,16 @@ class TriMeshCollisionDetector:
             outputs=[
                 info.vt_pairs,
                 info.counters,
-                info.vt_list_heads,
-                info.vt_list_next,
+                info._vt_list_heads,
+                info._vt_list_next,
                 info._vertex_stored_counts,
                 info.vertex_colliding_triangles_count,
                 info.vertex_colliding_triangles_min_dist,
                 # gate the triangle-side outputs on the DETECTOR's flag: an
                 # injected struct may carry recording arrays, but without the
                 # per-detection resets above they would accumulate stale data
-                info.triangle_list_heads if self.record_triangle_contacting_vertices else self._empty_int32,
-                info.triangle_list_next if self.record_triangle_contacting_vertices else self._empty_int32,
+                info._triangle_list_heads if self.record_triangle_contacting_vertices else self._empty_int32,
+                info._triangle_list_next if self.record_triangle_contacting_vertices else self._empty_int32,
                 info.triangle_colliding_vertices_count
                 if self.record_triangle_contacting_vertices
                 else self._empty_int32,
@@ -1028,16 +1028,16 @@ class TriMeshCollisionDetector:
         self._build_pair_rows(
             info._vertex_stored_counts,
             info.vertex_colliding_triangles_offsets,
-            info.vt_list_heads,
-            info.vt_list_next,
+            info._vt_list_heads,
+            info._vt_list_next,
             info.vertex_colliding_triangles,
         )
         if self.record_triangle_contacting_vertices:
             self._build_pair_rows(
                 info.triangle_colliding_vertices_count,
                 info.triangle_colliding_vertices_offsets,
-                info.triangle_list_heads,
-                info.triangle_list_next,
+                info._triangle_list_heads,
+                info._triangle_list_next,
                 info.triangle_colliding_vertices,
             )
 
@@ -1073,8 +1073,8 @@ class TriMeshCollisionDetector:
             outputs=[
                 info.ee_pairs,
                 info.counters,
-                info.ee_list_heads,
-                info.ee_list_next,
+                info._ee_list_heads,
+                info._ee_list_next,
                 info._edge_stored_counts,
                 info.edge_colliding_edges_count,
                 info.edge_colliding_edges_min_dist,
@@ -1087,8 +1087,8 @@ class TriMeshCollisionDetector:
         self._build_pair_rows(
             info._edge_stored_counts,
             info.edge_colliding_edges_offsets,
-            info.ee_list_heads,
-            info.ee_list_next,
+            info._ee_list_heads,
+            info._ee_list_next,
             info.edge_colliding_edges,
         )
 
