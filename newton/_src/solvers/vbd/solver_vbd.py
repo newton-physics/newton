@@ -36,7 +36,7 @@ from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
-from .joint_mimic_kernels import JointMimicData, accumulate_joint_mimics, reset_joint_mimics, update_joint_mimic_duals
+from .joint_mimic_kernels import JointMimicData, accumulate_joint_mimics, update_joint_mimic_duals
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -2587,20 +2587,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_lambda_ang,
                 self.joint_drive_lambda,
                 self.joint_limit_lambda,
+                self._joint_mimics.lambda_ if self._has_joint_mimics else None,
                 self._rigid_pose_rebaseline_mask,
                 self._contact_history_reset_mask,
                 self._contact_history_reset_pending,
             ],
             device=self.device,
         )
-
-        if self._has_joint_mimics:
-            wp.launch(
-                reset_joint_mimics,
-                dim=model.joint_count,
-                inputs=[self._joint_mimics, model.joint_world, world_mask, model.world_count],
-                device=self.device,
-            )
 
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None, *, force: bool = False):
         """Snapshot solved contact state for persistent or in-step matched restoration."""

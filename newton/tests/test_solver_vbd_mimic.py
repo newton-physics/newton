@@ -140,15 +140,17 @@ def _evaluate_rows(
 
 def test_vbd_mimic_gradients(test, device):
     """Match mimic-coordinate derivatives, including moving axes and shared parents."""
-    for joint_type, linear_count, angular_count in (
-        (newton.JointType.PRISMATIC, 1, 0),
-        (newton.JointType.REVOLUTE, 0, 1),
-        (newton.JointType.D6, 2, 0),
-        (newton.JointType.D6, 0, 1),
-        (newton.JointType.D6, 1, 2),
-        (newton.JointType.D6, 1, 3),
+    for joint_type, linear_count, angular_count, swap_axes in (
+        (newton.JointType.PRISMATIC, 1, 0, False),
+        (newton.JointType.REVOLUTE, 0, 1, False),
+        (newton.JointType.D6, 2, 0, False),
+        (newton.JointType.D6, 0, 1, False),
+        (newton.JointType.D6, 1, 2, False),
+        (newton.JointType.D6, 1, 3, False),
+        (newton.JointType.D6, 1, 2, True),
+        (newton.JointType.D6, 1, 3, True),
     ):
-        with test.subTest(joint_type=joint_type, linear=linear_count, angular=angular_count):
+        with test.subTest(joint_type=joint_type, linear=linear_count, angular=angular_count, swap_axes=swap_axes):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             for body in range(3):
                 rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, float(body + 1), 2.0)), 0.2 * (body + 1))
@@ -171,6 +173,8 @@ def test_vbd_mimic_gradients(test, device):
                 else:
                     axis = newton.ModelBuilder.JointDofConfig.create_unlimited
                     axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+                    if swap_axes:
+                        axes = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
                     joint = builder.add_joint_d6(
                         0,
                         child,

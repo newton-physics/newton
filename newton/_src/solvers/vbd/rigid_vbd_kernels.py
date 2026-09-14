@@ -3702,6 +3702,7 @@ def reset_rigid_state(
     joint_lambda_ang: wp.array[wp.vec3],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
+    joint_mimic_lambda: wp.array2d[float],
     rigid_pose_rebaseline_mask: wp.array[wp.bool],
     contact_history_reset_mask: wp.array[wp.bool],
     contact_history_reset_pending: wp.array[wp.int32],
@@ -3754,6 +3755,9 @@ def reset_rigid_state(
                 dof = dof_start + offset
                 joint_drive_lambda[dof] = 0.0
                 joint_limit_lambda[dof] = 0.0
+            if joint_mimic_lambda:
+                for component in range(6):
+                    joint_mimic_lambda[tid, component] = 0.0
 
 
 @wp.kernel

@@ -5,14 +5,13 @@
 
 import warp as wp
 
+from ...math import quat_decompose
 from ...sim import JointType
-from ...sim.articulation import invert_2d_rotational_dofs, invert_3d_rotational_dofs
-from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ...sim.articulation import transform_3d_rotational_axes
 from .rigid_vbd_kernels import (
     _alm_relaxed_ascent,
     _bilateral_auto_rho,
     _compliant_alm_coefficients,
-    _reset_world_selected,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -67,69 +66,64 @@ def _active(data: JointMimicData, follower: int):
 
 @wp.func
 def _coordinate(data: JointMimicData, joint: int, component: int, body_q: wp.array[wp.transform]):
-    coordinate, gradient_parent, gradient_child = eval_joint_mimic_coordinate(
-        joint,
-        component,
-        body_q,
-        data.body_com,
-        data.joint_type,
-        data.joint_parent,
-        data.joint_child,
-        data.joint_X_p,
-        data.joint_X_c,
-        data.joint_qd_start,
-        data.joint_dof_dim,
-        data.joint_axis,
-    )
+    """Evaluate a supported coordinate and its derivatives about each body's COM."""
     parent = data.joint_parent[joint]
+    child = data.joint_child[joint]
     X_wp = data.joint_X_p[joint]
     if parent >= 0:
         X_wp = body_q[parent] * X_wp
-    X_wc = body_q[data.joint_child[joint]] * data.joint_X_c[joint]
+    X_wc = body_q[child] * data.joint_X_c[joint]
+    q_p = wp.transform_get_rotation(X_wp)
+    q_c = wp.transform_get_rotation(X_wc)
     linear_count = data.joint_dof_dim[joint, 0]
+    start = data.joint_qd_start[joint]
     if component < linear_count:
+        axis = wp.quat_rotate(q_p, data.joint_axis[start + component])
+        anchor_c = wp.transform_get_translation(X_wc)
+        separation = anchor_c - wp.transform_get_translation(X_wp)
+        coordinate = wp.dot(separation, axis)
         # The prismatic coordinate's axis rotates with its parent frame.
-        separation = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-        gradient_parent = wp.spatial_vector(
-            wp.spatial_top(gradient_parent),
-            wp.spatial_bottom(gradient_parent) - wp.cross(separation, wp.spatial_top(gradient_child)),
-        )
+        r_p = wp.vec3(0.0)
+        if parent >= 0:
+            r_p = anchor_c - wp.transform_point(body_q[parent], data.body_com[parent])
+        r_c = anchor_c - wp.transform_point(body_q[child], data.body_com[child])
+        return coordinate, wp.spatial_vector(-axis, -wp.cross(r_p, axis)), wp.spatial_vector(axis, wp.cross(r_c, axis))
+
+    start += linear_count
+    angular_count = data.joint_dof_dim[joint, 1]
+    angular_component = component - linear_count
+    axis_0 = data.joint_axis[start]
+    coordinate = float(0.0)
+    covector = wp.vec3(0.0)
+    if angular_count == 1:
+        relative = wp.quat_inverse(q_p) * q_c
+        coordinate = wp.quat_twist_angle_signed(axis_0, relative)
+        # Differentiate the signed twist even when structural swing error remains.
+        v = wp.vec3(relative[0], relative[1], relative[2])
+        w = relative[3]
+        twist = wp.dot(axis_0, v)
+        denom = wp.max(w * w + twist * twist, 1.0e-12)
+        covector = (w * w * axis_0 + w * wp.cross(v, axis_0) + twist * v) / denom
     else:
-        q_p = wp.transform_get_rotation(X_wp)
-        q_c = wp.transform_get_rotation(X_wc)
-        start = data.joint_qd_start[joint] + linear_count
-        angular_count = data.joint_dof_dim[joint, 1]
-        angular_component = component - linear_count
-        covector = wp.vec3(0.0)
-        if angular_count == 1:
-            # Differentiate the signed twist even when structural swing error remains.
-            axis = data.joint_axis[start]
-            relative = wp.quat_inverse(q_p) * q_c
-            v = wp.vec3(relative[0], relative[1], relative[2])
-            w = relative[3]
-            twist = wp.dot(axis, v)
-            denom = wp.max(w * w + twist * twist, 1.0e-12)
-            local = (w * w * axis + w * wp.cross(v, axis) + twist * v) / denom
-            covector = wp.quat_rotate(q_p, local)
-        else:
-            # Coordinate rates are the covectors of the Euler decomposition;
-            # the forward rotation axes are not generally their own dual basis.
-            for k in range(3):
-                omega = wp.vec3(0.0)
-                omega[k] = 1.0
-                if angular_count == 2:
-                    _q, rates = invert_2d_rotational_dofs(
-                        data.joint_axis[start], data.joint_axis[start + 1], q_p, q_c, omega
-                    )
-                    covector[k] = rates[angular_component]
-                else:
-                    _q3, rates3 = invert_3d_rotational_dofs(
-                        data.joint_axis[start], data.joint_axis[start + 1], data.joint_axis[start + 2], q_p, q_c, omega
-                    )
-                    covector[k] = rates3[angular_component]
-        gradient_parent = wp.spatial_vector(wp.vec3(0.0), -covector)
-        gradient_child = wp.spatial_vector(wp.vec3(0.0), covector)
-    return coordinate, gradient_parent, gradient_child
+        axis_1 = data.joint_axis[start + 1]
+        axis_2 = wp.cross(axis_0, axis_1)
+        # Use the same canonical frame as invert_2d/3d_rotational_dofs.
+        q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2))
+        angles = quat_decompose(wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off)
+        coordinate = angles[angular_component]
+        a0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
+        a1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
+        a2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
+        a0, a1, a2 = transform_3d_rotational_axes(a0, a1, a2, angles[0], angles[1])
+        # A coordinate gradient is a row of the inverse angular-velocity basis.
+        axes = wp.matrix_from_rows(a0, a1, a2)
+        covector = wp.cross(axes[(angular_component + 1) % 3], axes[(angular_component + 2) % 3])
+        covector /= wp.dot(axes[angular_component], covector)
+        if angular_component == 2 and wp.dot(axis_2, data.joint_axis[start + 2]) < 0.0:
+            coordinate = -coordinate
+            covector = -covector
+    covector = wp.quat_rotate(q_p, covector)
+    return coordinate, wp.spatial_vector(wp.vec3(0.0), -covector), wp.spatial_vector(wp.vec3(0.0), covector)
 
 
 @wp.func
@@ -224,13 +218,3 @@ def update_joint_mimic_duals(data: JointMimicData, body_q: wp.array[wp.transform
             )
         else:
             data.lambda_[follower, component] = 0.0
-
-
-@wp.kernel
-def reset_joint_mimics(data: JointMimicData, joint_world: wp.array[int], world_mask: wp.array[bool], world_count: int):
-    """Clear selected worlds' mimic history after a reset."""
-    joint = wp.tid()
-    world = joint_world[joint]
-    if _reset_world_selected(world, world_mask, not world_mask, world_count):
-        for component in range(6):
-            data.lambda_[joint, component] = 0.0
