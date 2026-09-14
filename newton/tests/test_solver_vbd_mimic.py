@@ -5,6 +5,7 @@
 
 import unittest
 from functools import partial
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -14,7 +15,7 @@ from newton._src.solvers.vbd.joint_mimic_kernels import JointMimicData, _row
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _build_finger(device, *, mimic=True, driven=False):
+def _build_finger(device, *, mimic=True, driven=False, d6=False):
     """Build an offset finger chain with a passive link beyond its mimic joint."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     masses = np.array([0.013, 0.039, 0.039, 0.027])
@@ -25,6 +26,19 @@ def _build_finger(device, *, mimic=True, driven=False):
 
     def hinge(parent, child, anchor, axis, **kwargs):
         frame = wp.transform(anchor, wp.quat_identity())
+        if d6:
+            config = newton.ModelBuilder.JointDofConfig
+            return builder.add_joint_d6(
+                parent,
+                child,
+                parent_xform=frame,
+                child_xform=frame,
+                angular_axes=[
+                    config(axis=axis, **kwargs),
+                    config.create_unlimited(newton.Axis.Y),
+                    config.create_unlimited(newton.Axis.Z),
+                ],
+            )
         return builder.add_joint_revolute(parent, child, parent_xform=frame, child_xform=frame, axis=axis, **kwargs)
 
     target = np.deg2rad(47.0)
@@ -77,9 +91,9 @@ def test_vbd_mimic_articulated_chain(test, device):
 
 def test_vbd_driven_finger_limit(test, device):
     """Converge a light articulated finger's limit without delayed-force oscillation."""
-    for mimic in (False, True):
-        with test.subTest(mimic=mimic):
-            model, masses, inertias, target = _build_finger(device, mimic=mimic, driven=True)
+    for mimic, d6 in product((False, True), repeat=2):
+        with test.subTest(mimic=mimic, d6=d6):
+            model, masses, inertias, target = _build_finger(device, mimic=mimic, driven=True, d6=d6)
             state, other = model.state(), model.state()
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
             model.body_q.assign(state.body_q)
@@ -102,7 +116,8 @@ def test_vbd_driven_finger_limit(test, device):
                 test.assertLessEqual(float(energy), 0.5 * 171.88734 * target**2 * 1.02)
             test.assertAlmostEqual(float(q[0]), target, delta=0.01)
             if mimic:
-                test.assertAlmostEqual(float(q[0] + q[1]), 0.0, delta=0.002)
+                follower_start = int(model.joint_q_start.numpy()[2])
+                np.testing.assert_allclose(q[:follower_start] + q[follower_start : 2 * follower_start], 0.0, atol=0.002)
 
 
 @wp.kernel

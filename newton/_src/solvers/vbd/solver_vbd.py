@@ -1058,6 +1058,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Joint constraint stiffness and damping for non-rod structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
         self.rigid_joint_angular_ke = rigid_joint_angular_ke
+        self._joint_structural_ke = wp.vec2(rigid_joint_linear_ke, rigid_joint_angular_ke)
         self.rigid_joint_linear_kd = max(0.0, rigid_joint_linear_kd)
         self.rigid_joint_angular_kd = max(0.0, rigid_joint_angular_kd)
 
@@ -1248,6 +1249,12 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Refresh cached VBD properties after model edits.
+
+        Joint-owned mimic references and coefficients use
+        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` in VBD. This flag refreshes
+        their array bindings and clears their multipliers.
+        """
         self._apply_module_options()
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
@@ -3625,6 +3632,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_penalty_k,
                     self.joint_rho,
                     self.joint_material_k,
+                    self._joint_structural_ke,
                     self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
@@ -3750,6 +3758,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_is_hard,
                     self.rigid_joint_alpha,
                     self.joint_material_k,
+                    self._joint_structural_ke,
                     self.joint_rho,
                     self.rigid_compliant_alm,
                     self.rigid_linear_beta,

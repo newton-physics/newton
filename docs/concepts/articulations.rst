@@ -197,9 +197,11 @@ prismatic, and D6 joints with coupled maximal-coordinate corrections.
 finite-stiffness rows in its rigid-body solve. Their forces and Hessians are
 solved together with structural joints and contacts. Linear and angular mimic
 coordinates use ``rigid_joint_linear_ke`` and ``rigid_joint_angular_ke``,
-respectively, in both VBD formulations. Increase the solver's ``iterations``
-setting when tighter convergence is needed. Both solvers act on the follower
-and reference joints, so forces applied to the follower also affect the reference.
+respectively, in both VBD formulations. VBD captures these structural stiffnesses
+at construction; rebuild the solver after changing them. Increase the solver's
+``iterations`` setting when tighter convergence is needed. Both solvers act on
+the follower and reference joints, so forces applied to the follower also affect
+the reference.
 :class:`newton.solvers.SolverFeatherstone` applies the same relationships in
 generalized coordinates. It removes follower degrees of freedom from the
 dynamics solve and transfers their forces and inertia to the reference joint.
@@ -208,7 +210,8 @@ directly through its joint equality constraints.
 
 After editing mimic properties or joint enable flags, call
 :meth:`newton.solvers.SolverVBD.notify_model_changed` with
-:attr:`newton.ModelFlags.JOINT_PROPERTIES` to clear the affected solver history.
+:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact conditioning
+and clear mimic history.
 If VBD was constructed without supported mimics, rebuild it after adding
 the first supported mimic relationship.
 
