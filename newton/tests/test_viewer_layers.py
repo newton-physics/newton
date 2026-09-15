@@ -76,8 +76,16 @@ class _MinimalRTXViewer(ViewerRTX):
         self.gui = None
         self._render_result = None
         self._render_products = None
-        self._transform_binding = None
         self._rtx = None
+        self._use_ovstage = True
+        self._transform_binding = None
+        self._all_instance_paths = []
+        self._ovstage = None
+        self._ovstage_attached = False
+        self._ovstage_paths = None
+        self._ovstage_queries = {}
+        self._ovstage_ordinal = 0
+        self._pending_transform_matrices = {}
         self._render_width = 640
         self._render_height = 480
         self._up_axis = "Z"
