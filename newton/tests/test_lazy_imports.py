@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -15,13 +17,15 @@ from newton._src import solvers as internal_solvers
 def _run_in_fresh_interpreter(code: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("PYTHONWARNINGS", None)
-    return subprocess.run(
+    result = subprocess.run(
         [sys.executable, *newton.tests.unittest_utils.get_strict_warning_args(), "-c", code],
         capture_output=True,
         env=env,
         text=True,
         check=True,
     )
+    sys.stderr.write(result.stderr)
+    return result
 
 
 class TestLazySolverImports(unittest.TestCase):
@@ -52,6 +56,23 @@ class TestLazySolverImports(unittest.TestCase):
         self.assertEqual(allowed_result.returncode, 0)
         self.assertIn(allowed_prefix, allowed_result.stderr)
         self.assertIn("unexpected dependency deprecation", raised.exception.stderr)
+
+    def test_fresh_interpreter_reports_successful_warnings(self):
+        """Replay acknowledged warnings from a successful fresh interpreter."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        output = io.StringIO()
+        with (
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(newton.tests.unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+            contextlib.redirect_stderr(output),
+        ):
+            result = _run_in_fresh_interpreter(
+                f"import warnings; warnings.warn({allowed_prefix!r}, DeprecationWarning); print('ok')"
+            )
+
+        self.assertEqual(result.stdout, "ok\n")
+        self.assertIn(f"DeprecationWarning: {allowed_prefix}", output.getvalue())
+        self.assertEqual(output.getvalue(), result.stderr)
 
     def test_import_newton_does_not_import_solvers(self):
         """Verify that importing newton does not import any solver backend module."""

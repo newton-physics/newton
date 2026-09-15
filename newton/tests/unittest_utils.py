@@ -298,11 +298,13 @@ class _OutputRegex:
             ``"stderr"``, or ``"any"``.
         required: Whether the pattern must match (expected output) or is
             merely permitted (allowed output).
+        report: Whether to replay matching output after successful validation.
     """
 
     pattern: str
     stream: str
     required: bool
+    report: bool = False
 
 
 class _OutputCapture:
@@ -331,11 +333,11 @@ class _OutputCapture:
             raise
         self.active = True
 
-    def add_pattern(self, pattern: str, *, stream: str, required: bool):
+    def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
             raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
 
-        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required))
+        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required, report=report))
 
     def record(self, stream: str, text: str | bytes | None):
         if text is None:
@@ -375,6 +377,7 @@ class _OutputCapture:
         output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
+        reported = []
 
         for pattern in self.patterns:
             streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
@@ -386,6 +389,11 @@ class _OutputCapture:
                 missing.append(pattern)
 
             for stream in streams:
+                if pattern.report:
+                    reported.extend(
+                        (stream, match.group())
+                        for match in re.finditer(pattern.pattern, unmatched_by_stream[stream], flags=re.MULTILINE)
+                    )
                 unmatched_by_stream[stream] = re.sub(
                     pattern.pattern,
                     "",
@@ -406,6 +414,9 @@ class _OutputCapture:
 
         if failures:
             return "\n\n".join(failures)
+
+        for stream, text in reported:
+            getattr(sys, stream).write(text)
 
         return None
 
@@ -431,10 +442,10 @@ class NewtonTestCase(unittest.TestCase):
 
         self._require_output_capture().add_pattern(regex, stream=stream, required=True)
 
-    def allowOutputRegex(self, regex: str, *, stream: str = "any"):
-        """Allow matching stdout/stderr output without requiring it."""
+    def allowOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
+        """Allow optional output and optionally replay it after successful output validation."""
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=False)
+        self._require_output_capture().add_pattern(regex, stream=stream, required=False, report=report)
 
     def assertSubprocessSuccess(self, result, *, command):
         """Assert a subprocess succeeded and include its output in this test's output contract."""

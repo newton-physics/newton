@@ -1,10 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import builtins
+import contextlib
+import io
 import os
+import re
 import subprocess
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -30,7 +35,12 @@ def _run_isolated(test, function_name, *args):
     env.pop("PYTHONWARNINGS", None)
     warning_args = newton.tests.unittest_utils.get_strict_warning_args()
     if newton.tests.unittest_utils.strict_warnings:
-        code = f"import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)', append=True); {code}"
+        policy = "import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)'); "
+        for message in newton.tests.unittest_utils.allowed_deprecation_warnings:
+            policy += (
+                f"warnings.filterwarnings('default', message={re.escape(message)!r}, category=DeprecationWarning); "
+            )
+        code = policy + code
 
     result = subprocess.run(
         [sys.executable, *warning_args, "-c", code],
@@ -45,6 +55,7 @@ def _run_isolated(test, function_name, *args):
         0,
         f"{function_name} subprocess failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
     )
+    sys.stderr.write(result.stderr)
 
 
 def _snapshot(state, fields):
@@ -230,6 +241,48 @@ def test_articulation_determinism(test, device, solver_name):
 
 class TestSolverDeterminism(unittest.TestCase):
     pass
+
+
+def _emit_warning_for_policy_test(category_name, message):
+    warnings.warn_explicit(message, getattr(builtins, category_name), __file__, 1, module=__name__)
+
+
+class TestSolverDeterminismWarnings(unittest.TestCase):
+    def test_successful_isolated_warnings_remain_observable(self):
+        """Replay acknowledged warnings from a successful determinism subprocess."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        output = io.StringIO()
+        with (
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(newton.tests.unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+            contextlib.redirect_stderr(output),
+        ):
+            _run_isolated(self, "_emit_warning_for_policy_test", "DeprecationWarning", allowed_prefix)
+        self.assertIn(f"DeprecationWarning: {allowed_prefix}", output.getvalue())
+
+    def test_strict_warnings_override_default_ignored_categories(self):
+        """Reject Newton warnings even when Python ignores their category by default."""
+        with mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True):
+            for category in ("ResourceWarning", "ImportWarning", "PendingDeprecationWarning"):
+                with self.subTest(category=category), self.assertRaisesRegex(AssertionError, category):
+                    _run_isolated(self, "_emit_warning_for_policy_test", category, "unexpected Newton warning")
+
+    def test_allowlisted_deprecations_override_newton_error_filter(self):
+        """Allow only acknowledged deprecations ahead of the Newton error filter."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        with (
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(newton.tests.unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+        ):
+            _run_isolated(self, "_emit_warning_for_policy_test", "DeprecationWarning", f"{allowed_prefix}; use new_api")
+            for category, message in (
+                ("DeprecationWarning", "unexpected deprecation"),
+                ("PendingDeprecationWarning", allowed_prefix),
+                ("FutureWarning", allowed_prefix),
+                ("UserWarning", allowed_prefix),
+            ):
+                with self.subTest(category=category), self.assertRaisesRegex(AssertionError, category):
+                    _run_isolated(self, "_emit_warning_for_policy_test", category, message)
 
 
 class TestSolverDeterminismOptions(unittest.TestCase):

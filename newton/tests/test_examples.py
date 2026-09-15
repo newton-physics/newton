@@ -16,7 +16,10 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import contextlib
 import importlib.util
+import io
+import linecache
 import os
 import re
 import subprocess
@@ -263,6 +266,7 @@ def add_example_test(
                 allowed_deprecation_warnings=(
                     newton.tests.unittest_utils.allowed_deprecation_warnings if strict_warnings else ()
                 ),
+                stderr=result.stderr,
             )
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
@@ -302,18 +306,29 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
-def _deprecation_warning_output_regex(message_prefix: str) -> str:
-    """Match a standard Python warning record for an allowed message prefix."""
-    category = r"(?P<category>(?:[A-Za-z_]\w*)?DeprecationWarning)"
-    return (
-        rf"(?m)^[^\n]*:\d+: {category}: (?i:{re.escape(message_prefix)})[^\n]*\n"
-        r"(?:  [^\n]*\n)?"
-        r"(?:"
-        r"(?P=category): Enable tracemalloc to get the object allocation traceback\n"
-        r"|Object allocated at \(most recent call last\):\n"
-        r'(?:  File "[^\n]+", lineno \d+\n(?:    [^\n]*\n)?)+'
-        r")?"
-    )
+def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
+    """Match allowed warning records with source context verified at their locations."""
+    # Formatted stderr cannot establish a custom category's inheritance.
+    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+
+    def source_end(filename, lineno, offset, indent):
+        source = linecache.getline(filename, int(lineno))
+        context = f"{indent}{source.strip()}\n"
+        return offset + len(context) if source and stderr.startswith(context, offset) else offset
+
+    for match in re.finditer(header, stderr):
+        end = source_end(*match.groups(), match.end(), "  ")
+        tracemalloc_hint = "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
+        allocation_header = "Object allocated at (most recent call last):\n"
+        if stderr.startswith(tracemalloc_hint, end):
+            end += len(tracemalloc_hint)
+        elif stderr.startswith(allocation_header, end):
+            offset = end + len(allocation_header)
+            frame_pattern = re.compile(r'  File "([^\n]+)", lineno (\d+)\n')
+            while frame := frame_pattern.match(stderr, offset):
+                end = source_end(*frame.groups(), frame.end(), "    ")
+                offset = end
+        yield "^" + re.escape(stderr[match.start() : end])
 
 
 def _register_example_allow_output_regexes(
@@ -321,15 +336,19 @@ def _register_example_allow_output_regexes(
     *,
     is_cuda: bool,
     allowed_deprecation_warnings: tuple[str, ...] = (),
+    stderr: str = "",
 ) -> None:
     _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
     if not is_cuda:
         test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
-    for message_prefix in allowed_deprecation_warnings:
-        test.allowOutputRegex(
-            _deprecation_warning_output_regex(message_prefix),
-            stream="stderr",
-        )
+    regexes = {
+        regex
+        for message_prefix in allowed_deprecation_warnings
+        for regex in _deprecation_warning_output_regexes(stderr, message_prefix)
+    }
+    # Consume full records before header-only occurrences of the same warning.
+    for regex in sorted(regexes, key=len, reverse=True):
+        test.allowOutputRegex(regex, stream="stderr", report=True)
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
@@ -370,11 +389,10 @@ class TestExampleOutputRegexes(unittest.TestCase):
         allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
         warning_outputs = (
             (
-                f"/path/to/example.py:12: DeprecationWarning: {allowed_message}\n"
-                "  warnings.warn(message, DeprecationWarning)\n"
+                f"{__file__}:1: DeprecationWarning: {allowed_message}\n"
+                "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
             ),
             f"<string>:1: DeprecationWarning: {allowed_message.upper()}\n",
-            f"<string>:1: DependencyDeprecationWarning: {allowed_message}\n",
             (
                 f"<string>:1: DeprecationWarning: {allowed_message}\n"
                 "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
@@ -382,8 +400,8 @@ class TestExampleOutputRegexes(unittest.TestCase):
             (
                 f"<string>:1: DeprecationWarning: {allowed_message}\n"
                 "Object allocated at (most recent call last):\n"
-                '  File "/path/to/dependency.py", lineno 42\n'
-                "    source = DeprecatedResource()\n"
+                f'  File "{__file__}", lineno 1\n'
+                "    # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
             ),
         )
 
@@ -396,8 +414,8 @@ class TestExampleOutputRegexes(unittest.TestCase):
         """Reject unrelated stderr following an acknowledged deprecation."""
         allowed_prefix = "dependency.old_api is deprecated"
         stderr = (
-            f"/path/to/example.py:12: DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
-            "  warnings.warn(message, DeprecationWarning)\n"
+            f"{__file__}:1: DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
             "unexpected stderr\n"
         )
 
@@ -412,11 +430,72 @@ class TestExampleOutputRegexes(unittest.TestCase):
     def test_allowlisted_deprecation_does_not_allow_other_warning_categories(self):
         """Reject a non-deprecation warning with an allowlisted message."""
         allowed_prefix = "dependency.old_api is deprecated"
-        stderr = f"<string>:1: UserWarning: {allowed_prefix}\n"
+        for category in ("PendingDeprecationWarning", "FutureWarning", "UserWarning", "DependencyDeprecationWarning"):
+            with self.subTest(category=category):
+                stderr = f"<string>:1: {category}: {allowed_prefix}\n"
+                result = self._run_example_with_stderr(stderr, allowed_prefix)
 
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
+                self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])
+
+    def test_allowlisted_deprecation_preserves_indented_diagnostics(self):
+        """Reject unrelated indented stderr after a header-only warning."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        for location in ("<string>:1", f"{__file__}:1"):
+            with self.subTest(location=location):
+                stderr = f"{location}: DeprecationWarning: {allowed_prefix}\n  unexpected diagnostic\n"
+                result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
+                self.assertIn("Unexpected stderr:\n  unexpected diagnostic", result.failures[0][1])
+
+    def test_allowlisted_example_warnings_remain_observable(self):
+        """Replay acknowledged example warnings after successful output validation."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"<string>:1: DeprecationWarning: {allowed_prefix}\n"
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
+    def test_repeated_warning_headers_keep_optional_context(self):
+        """Accept repeated headers with different optional warning context."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        header = f"{__file__}:1: DeprecationWarning: {allowed_prefix}\n"
+        stderr = header + header + "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue().count(header), 2)
+        self.assertIn("  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n", output.getvalue())
+
+    def test_allowlisted_deprecation_preserves_indented_allocation_diagnostics(self):
+        """Reject unrelated indented stderr after an allocation traceback frame."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = (
+            f"<string>:1: DeprecationWarning: {allowed_prefix}\n"
+            "Object allocated at (most recent call last):\n"
+            '  File "<string>", lineno 1\n'
+            "    unexpected diagnostic\n"
+        )
         result = self._run_example_with_stderr(stderr, allowed_prefix)
 
-        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stderr:\n    unexpected diagnostic", result.failures[0][1])
+
+    def test_unlisted_example_deprecations_remain_failures(self):
+        """Reject a deprecation record whose message does not match the allowlist."""
+        stderr = "<string>:1: DeprecationWarning: unexpected deprecation\n"
+        result = self._run_example_with_stderr(stderr, "dependency.old_api is deprecated")
+
         self.assertEqual(result.errors, [])
         self.assertEqual(len(result.failures), 1)
         self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import io
 import subprocess
 import sys
@@ -69,6 +70,45 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         result = unittest.TestResult()
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
+
+    def test_reported_output_is_replayed_once_after_validation(self):
+        """Replay each allowed record once after restoring the parent streams."""
+
+        class ReportsOutput(NewtonTestCase):
+            def test_output(self):
+                """Emit repeated allowed output on both streams."""
+                self.allowOutputRegex(r"allowed output\n", report=True)
+                self.allowOutputRegex(r"allowed output\n", report=True)
+                print("allowed output")
+                print("allowed output", file=sys.stderr)
+                print("allowed output", file=sys.stderr)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = self._run_test_case(ReportsOutput)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+        self.assertEqual(stdout.getvalue(), "allowed output\n")
+        self.assertEqual(stderr.getvalue(), "allowed output\nallowed output\n")
+
+    def test_failed_validation_does_not_replay_allowed_output(self):
+        """Keep replay conditional on successful validation of both streams."""
+
+        class ReportsUnexpectedOutput(NewtonTestCase):
+            def test_output(self):
+                """Emit an allowed record beside unexpected output."""
+                self.allowOutputRegex(r"allowed output\n", stream="stderr", report=True)
+                print("allowed output", file=sys.stderr)
+                print("unexpected output")
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = self._run_test_case(ReportsUnexpectedOutput)
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stdout:\nunexpected output", result.failures[0][1])
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_unexpected_stdout_fails(self):
         class EmitsOutput(NewtonTestCase):
