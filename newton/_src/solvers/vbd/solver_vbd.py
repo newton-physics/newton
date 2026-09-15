@@ -402,13 +402,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                 instead. When set, it overrides ``dat_conservative_bound_relaxation``.
 
                 .. deprecated:: 1.7
-            particle_vertex_contact_buffer_size: Average vertex-triangle contact budget per vertex: the
-                shared storage holds ``particle_vertex_contact_buffer_size x particle_count`` contacts that any
-                vertex can draw from. On overflow excess contacts are dropped and the overflow flag is set;
-                call :meth:`check_and_grow_self_contact_buffers` between steps to report and grow.
-            particle_edge_contact_buffer_size: Average edge-edge contact budget per edge: the shared pair array
-                holds ``particle_edge_contact_buffer_size x edge_count`` records that any edge can draw from.
-                Overflow behaves as above.
+            particle_vertex_contact_buffer_size: Sizes the global vertex-triangle contact buffer:
+                capacity = this value x ``particle_count`` contacts, shared by all vertices (an average
+                budget per vertex, not a per-vertex cap). On overflow excess contacts are dropped and the
+                overflow flag is set; call :meth:`check_and_grow_self_contact_buffers` between steps to
+                report and grow.
+            particle_edge_contact_buffer_size: Sizes the global edge-edge contact buffer:
+                capacity = this value x ``edge_count`` contacts, shared by all edges. Overflow behaves as
+                above.
             particle_collision_detection_interval: Deprecated; use the self-contact slot of
                 ``collision_frequency`` / ``collision_frequency_type`` instead.
                 Controls how frequently particle self-contact detection is applied
@@ -634,9 +635,10 @@ class SolverVBD(SolverBase, CouplingInterface):
               computed accordingly.
             - `rigid_body_contact_buffer_size` and `rigid_body_particle_contact_buffer_size` are fixed and will not be
               dynamically resized during runtime; setting them too small may overflow rigid contacts.
-              `particle_vertex_contact_buffer_size` and `particle_edge_contact_buffer_size` size the shared
-              self-contact storage as average contacts per element; on overflow excess contacts are dropped and a
-              device flag is set. The solver never checks or grows on its own: call
+              `particle_vertex_contact_buffer_size` and `particle_edge_contact_buffer_size` size one global
+              contact buffer per family (capacity = value x particle/edge count) that all primitives share, so the
+              value is an average budget per primitive rather than a per-primitive cap. On overflow excess contacts
+              are dropped and a device flag is set. The solver never checks or grows on its own: call
               :meth:`check_and_grow_self_contact_buffers` between steps (and re-capture afterwards if it grew).
               Setting any of these excessively large increases memory usage.
             - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
