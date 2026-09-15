@@ -546,11 +546,11 @@ class TestViewerGLInitialization(unittest.TestCase):
 
         try:
             viewer.log_scalar("metric", 1.0)
-            self.assertIn("metric", viewer._scalar_buffers)
+            self.assertIn("metric", viewer._plot_logger._scalar_buffers)
 
             viewer.clear_model()
 
-            self.assertNotIn("metric", viewer._scalar_buffers)
+            self.assertNotIn("metric", viewer._plot_logger._scalar_buffers)
         finally:
             viewer.close()
 
