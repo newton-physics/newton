@@ -9099,6 +9099,7 @@ class ModelBuilder:
             )
 
         # Material rigidities are discretized using structural-rest lengths.
+        # Keep this after assembly: the assemblers validate explicit rest geometry before it is indexed here.
         rest_points = rod_points if rest_positions is None else np.asarray(rest_positions)
         if uses_chain_assembly and rod.closed:
             rest_points = rest_points.copy()
@@ -9509,9 +9510,10 @@ class ModelBuilder:
               arguments override the derived value per mode.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
               the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
-              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
-              is at local ``(0, 0, 2 * half_height)``. These offsets use rest lengths.
+            - With ``body_frame_origin="start"``, the body origin is at the local start of the rest-sized
+              capsule centerline. The COM and shape are at local ``(0, 0, half_height)``, and the other
+              centerline endpoint is at ``(0, 0, 2 * half_height)``. These offsets use rest lengths; the
+              world-space body origin equals the initial segment start only when the initial and rest lengths match.
             - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
@@ -9935,6 +9937,9 @@ class ModelBuilder:
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
 
+        _identity_rotation = wp.quat_identity()
+        _reverse_tangent_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi)
+
         def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
                 z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
@@ -9942,19 +9947,22 @@ class ModelBuilder:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
-            rotation = (
-                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi) if reverse_tangent else wp.quat_identity()
-            )
+            rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
         def _edge_rest_rotation(
             parent_edge: int,
             child_edge: int,
-            parent_xform: Transform,
-            child_xform: Transform,
+            parent_reversed: bool = False,
+            child_reversed: bool = False,
         ) -> wp.quat:
-            q_wp_rest = edge_rest_q[parent_edge] * wp.transform_get_rotation(parent_xform)
-            q_wc_rest = edge_rest_q[child_edge] * wp.transform_get_rotation(child_xform)
+            # Anchor rotations are identity or a fixed half-turn; skip identity products.
+            q_wp_rest = edge_rest_q[parent_edge]
+            q_wc_rest = edge_rest_q[child_edge]
+            if parent_reversed:
+                q_wp_rest = q_wp_rest * _reverse_tangent_rotation
+            if child_reversed:
+                q_wc_rest = q_wc_rest * _reverse_tangent_rotation
             return wp.quat_inverse(q_wp_rest) * q_wc_rest
 
         joint_counter = 0
@@ -10002,7 +10010,7 @@ class ModelBuilder:
                         child=child_body,
                         parent_xform=parent_xform,
                         child_xform=child_xform,
-                        rest_rotation=_edge_rest_rotation(parent_edge, child_edge, parent_xform, child_xform),
+                        rest_rotation=_edge_rest_rotation(parent_edge, child_edge),
                         bend_stiffness=bend_stiffness,
                         bend_damping=bend_damping,
                         twist_stiffness=twist_stiffness,
@@ -10080,15 +10088,17 @@ class ModelBuilder:
                                 raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
+                            parent_reversed = shared_node == edge_u[parent_edge]
+                            child_reversed = shared_node == edge_v[child_edge]
                             parent_xform = _edge_anchor_xform(
                                 parent_edge,
                                 shared_node,
-                                reverse_tangent=shared_node == edge_u[parent_edge],
+                                reverse_tangent=parent_reversed,
                             )
                             child_xform = _edge_anchor_xform(
                                 child_edge,
                                 shared_node,
-                                reverse_tangent=shared_node == edge_v[child_edge],
+                                reverse_tangent=child_reversed,
                             )
 
                             joint_counter += 1
@@ -10099,7 +10109,9 @@ class ModelBuilder:
                                 child=child_body,
                                 parent_xform=parent_xform,
                                 child_xform=child_xform,
-                                rest_rotation=_edge_rest_rotation(parent_edge, child_edge, parent_xform, child_xform),
+                                rest_rotation=_edge_rest_rotation(
+                                    parent_edge, child_edge, parent_reversed, child_reversed
+                                ),
                                 bend_stiffness=bend_stiffness,
                                 bend_damping=bend_damping,
                                 twist_stiffness=twist_stiffness,

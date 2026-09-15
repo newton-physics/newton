@@ -101,22 +101,41 @@ energies. Supply explicit per-joint builder stiffnesses instead.
 :attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
 pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
 relative twist. :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between
-this joint state and body state.
+this joint state and body state. :class:`newton.solvers.SolverVBD` is currently
+the only solver that evaluates the rod's constitutive response.
+
+For the preferred prepared-object workflow, :class:`newton.Rod` points and
+material frames define the initial centerline and segment orientations. Pass
+``rest_positions`` and/or ``rest_quaternions`` to
+:meth:`newton.ModelBuilder.add_rod` to define a structural-rest shape with the
+same topology. Rest edge lengths determine capsule geometry, mass properties,
+anchor offsets, and rigidity discretization; the initial centerline and frames
+determine the initial segment centers and orientations. If rest positions are
+omitted, the initial centerline also supplies the rest lengths. If rest frames
+are omitted, the initial material roll is transported to the rest tangents.
 
 At rod structural rest, the transformed parent and child anchor points
 coincide. Accordingly, the three translation entries in the rod's
 :attr:`newton.Model.joint_target_q` are zero; live anchor separation is
-stretch/shear strain. Rotation defines structural-rest bend and twist using a
-unitless quaternion in coordinate layout or extrinsic ZYX angles [rad] in
-legacy layout. If :meth:`newton.ModelBuilder.add_joint_rod` omits
-``rest_rotation``, the builder copies the initial relative anchor rotation.
-Rod structural rest is sourced from :attr:`newton.Model.joint_target_q`, not
-from :attr:`newton.Control.joint_target_q`.
+stretch/shear strain. Rest lengths are encoded by capsule geometry and anchor
+offsets rather than nonzero target translations. Rotation defines
+structural-rest bend and twist using a unitless quaternion in coordinate layout
+or extrinsic ZYX angles [rad] in legacy layout. If
+:meth:`newton.ModelBuilder.add_joint_rod` omits ``rest_rotation``, the builder
+copies the initial relative anchor rotation; :meth:`newton.ModelBuilder.add_rod`
+instead derives each rest rotation from the supplied or inferred rest frames.
 
 :meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets rod rest
 rotations to identity, removing intrinsic bend and twist without changing
-initial poses, anchors, or segment lengths. A closed rod's structural-rest
-centerline must have coincident endpoints.
+initial poses, anchor geometry, or segment lengths. This convenience is for
+ordered chains and cannot be combined with explicit rest positions or frames.
+
+A closed ordered chain represents its closing span as an explicit segment. In
+the preferred API, repeat the first point at the end when constructing
+``newton.Rod(..., closed=True)``; explicit rest positions must close in the same
+way. The deprecated ``add_rod(positions=..., closed=True)`` form can instead use
+noncoincident initial endpoints together with closed ``rest_positions`` to
+represent an initially open or prestrained seam.
 
 Rod material properties use the six per-axis
 :attr:`newton.Model.joint_target_ke` and
@@ -129,6 +148,14 @@ transverse responses are isotropic about that tangent.
 automatically; generic :meth:`newton.ModelBuilder.add_joint` construction uses
 zero linear ``target_pos`` values and its three angular ``target_pos`` values as
 structural rest.
+
+Rod structural rest is Model-owned. Because every material axis uses
+:attr:`~newton.JointTargetMode.NONE`, :attr:`newton.Control.joint_target_q` and
+:attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its rest
+state. After editing the rod rotations in :attr:`newton.Model.joint_target_q`,
+call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh the solver's derived rest
+invariants.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

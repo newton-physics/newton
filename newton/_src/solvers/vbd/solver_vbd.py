@@ -182,8 +182,9 @@ class SolverVBD(SolverBase, CouplingInterface):
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
           conditioning. Structural-slot material (``rigid_joint_linear_ke``/
-          ``rigid_joint_angular_ke``), constraint layout, and rest-angle offsets are
-          captured at construction; rebuild ``SolverVBD`` after changing them.
+          ``rigid_joint_angular_ke``), constraint layout, and non-ROD drive/limit
+          rest-angle offsets are captured at construction; rebuild ``SolverVBD``
+          after changing them.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).

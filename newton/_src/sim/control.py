@@ -77,13 +77,13 @@ class Control:
         """Reset all control inputs to zero.
 
         ``joint_target_q`` is special: zeroing it under coord layout corrupts
-        FREE/BALL/DISTANCE/ROD quaternion slots (``(0,0,0,0)`` is not a valid
+        FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
         instead. Without ``model`` it falls back to the legacy zero-fill.
 
         Args:
             model: Optional source :class:`Model` whose ``joint_target_q``
-                seeds this Control. Required for models with FREE/BALL/DISTANCE/ROD
+                seeds this Control. Required for models with FREE/BALL/DISTANCE
                 joints under coord layout.
         """
 
