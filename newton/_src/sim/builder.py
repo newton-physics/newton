@@ -14273,13 +14273,9 @@ class ModelBuilder:
                     )
             validated_templates.add(template_key)
 
-    def _is_shape_pair_inherently_filtered(self, shape_a: int, shape_b: int) -> bool:
-        """Return whether a shape pair is excluded without an explicit filter pair."""
-        body_a = self.shape_body[shape_a]
-        body_b = self.shape_body[shape_b]
-        return (body_a >= 0 and body_a == body_b) or (body_a < 0 and body_b < 0)
-
     def _find_shape_contact_pairs(self, model: Model) -> None:
+        shape_body_values = self.shape_body
+        shape_body = _list_for_iteration(shape_body_values)
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -14314,7 +14310,7 @@ class ModelBuilder:
                     segment_worlds[starts[world] : starts[world + 1]] = world
                 use_world_templates = np.array_equal(segment_worlds, shape_world_np)
                 if use_world_templates:
-                    shape_body_np = np.asarray(self.shape_body, dtype=np.int64)
+                    shape_body_np = np.asarray(shape_body_values, dtype=np.int64)
                     body_world_np = np.asarray(self.body_world, dtype=np.int32)
                     attached = shape_body_np >= 0
                     # Body-relative template keys are valid only when shapes and their bodies share a world.
@@ -14378,8 +14374,11 @@ class ModelBuilder:
                 ]
 
                 for i1, (shape_a, group_a) in enumerate(colliding_globals):
+                    body_a = shape_body[shape_a]
                     for shape_b, group_b in colliding_globals[i1 + 1 :]:
-                        if self._is_shape_pair_inherently_filtered(shape_a, shape_b):
+                        body_b = shape_body[shape_b]
+                        # Same-body and static-static shape pairs are inherently filtered.
+                        if body_a == body_b or (body_a < 0 and body_b < 0):
                             continue
                         if not self._test_group_pair(group_a, group_b):
                             continue
@@ -14401,10 +14400,10 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
-                    world_shape_bodies = shape_body_np[world_start:world_end]
+                    world_shape_bodies_np = shape_body_np[world_start:world_end]
                     body_key = np.where(
-                        world_shape_bodies >= 0,
-                        world_shape_bodies - self.body_world_start[world],
+                        world_shape_bodies_np >= 0,
+                        world_shape_bodies_np - self.body_world_start[world],
                         -1,
                     ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
@@ -14421,6 +14420,7 @@ class ModelBuilder:
 
                     if cached_pairs is None:
                         collision_groups = self.shape_collision_group[world_start:world_end]
+                        world_shape_bodies = shape_body[world_start:world_end]
                         local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
 
                         # Replicated-block filters are local to the source block;
@@ -14447,8 +14447,11 @@ class ModelBuilder:
                         # absolute, while the local id is shifted during replay.
                         global_local_pairs = []
                         for global_shape, global_group in colliding_globals:
+                            global_body = shape_body[global_shape]
                             for local_shape in local_colliding_indices:
-                                if self._is_shape_pair_inherently_filtered(global_shape, world_start + local_shape):
+                                local_body = world_shape_bodies[local_shape]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if global_body == local_body or (global_body < 0 and local_body < 0):
                                     continue
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
                                     pair = (global_shape, local_shape)
@@ -14458,10 +14461,11 @@ class ModelBuilder:
                         local_pairs = []
                         for i1, shape_a in enumerate(local_colliding_indices):
                             group_a = collision_groups[shape_a]
+                            body_a = world_shape_bodies[shape_a]
                             for shape_b in local_colliding_indices[i1 + 1 :]:
-                                if self._is_shape_pair_inherently_filtered(
-                                    world_start + shape_a, world_start + shape_b
-                                ):
+                                body_b = world_shape_bodies[shape_b]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if body_a == body_b or (body_a < 0 and body_b < 0):
                                     continue
                                 if not self._test_group_pair(group_a, collision_groups[shape_b]):
                                     continue
@@ -14525,6 +14529,7 @@ class ModelBuilder:
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = shape_world[s1]
+            body1 = shape_body[s1]
             collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
@@ -14538,10 +14543,12 @@ class ModelBuilder:
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
 
-                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+                body2 = shape_body[s2]
+                # Same-body and static-static shape pairs are inherently filtered.
+                if body1 == body2 or (body1 < 0 and body2 < 0):
                     continue
 
-                if self._is_shape_pair_inherently_filtered(s1, s2):
+                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
                 if s1 > s2:
