@@ -24,6 +24,7 @@ import sys
 import tempfile
 import unittest
 from typing import Any
+from unittest import mock
 from unittest.mock import call, create_autospec
 
 import warp as wp
@@ -256,7 +257,13 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
-            _register_example_allow_output_regexes(test, is_cuda=is_cuda)
+            _register_example_allow_output_regexes(
+                test,
+                is_cuda=is_cuda,
+                allowed_deprecation_warnings=(
+                    newton.tests.unittest_utils.allowed_deprecation_warnings if strict_warnings else ()
+                ),
+            )
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -295,13 +302,125 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
-def _register_example_allow_output_regexes(test: NewtonTestCase, *, is_cuda: bool) -> None:
+def _deprecation_warning_output_regex(message_prefix: str) -> str:
+    """Match a standard Python warning record for an allowed message prefix."""
+    category = r"(?P<category>(?:[A-Za-z_]\w*)?DeprecationWarning)"
+    return (
+        rf"(?m)^[^\n]*:\d+: {category}: (?i:{re.escape(message_prefix)})[^\n]*\n"
+        r"(?:  [^\n]*\n)?"
+        r"(?:"
+        r"(?P=category): Enable tracemalloc to get the object allocation traceback\n"
+        r"|Object allocated at \(most recent call last\):\n"
+        r'(?:  File "[^\n]+", lineno \d+\n(?:    [^\n]*\n)?)+'
+        r")?"
+    )
+
+
+def _register_example_allow_output_regexes(
+    test: NewtonTestCase,
+    *,
+    is_cuda: bool,
+    allowed_deprecation_warnings: tuple[str, ...] = (),
+) -> None:
     _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
     if not is_cuda:
         test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
+    for message_prefix in allowed_deprecation_warnings:
+        test.allowOutputRegex(
+            _deprecation_warning_output_regex(message_prefix),
+            stream="stderr",
+        )
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def _run_example_with_stderr(self, stderr: str, allowed_prefix: str) -> unittest.TestResult:
+        process_result = subprocess.CompletedProcess(
+            args=[sys.executable, "-m", "newton.examples.basic.example_basic_pendulum"],
+            returncode=0,
+            stdout="",
+            stderr=stderr,
+        )
+
+        class ExampleWithAllowedDeprecation(NewtonTestCase):
+            pass
+
+        add_example_test(
+            ExampleWithAllowedDeprecation,
+            name="basic.example_basic_pendulum",
+            use_viewer=True,
+        )
+
+        with (
+            mock.patch.object(subprocess, "run", return_value=process_result),
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(
+                newton.tests.unittest_utils,
+                "allowed_deprecation_warnings",
+                (allowed_prefix,),
+            ),
+        ):
+            result = unittest.TestResult()
+            unittest.defaultTestLoader.loadTestsFromTestCase(ExampleWithAllowedDeprecation).run(result)
+
+        return result
+
+    def test_allowlisted_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted by an example subprocess."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+        warning_outputs = (
+            (
+                f"/path/to/example.py:12: DeprecationWarning: {allowed_message}\n"
+                "  warnings.warn(message, DeprecationWarning)\n"
+            ),
+            f"<string>:1: DeprecationWarning: {allowed_message.upper()}\n",
+            f"<string>:1: DependencyDeprecationWarning: {allowed_message}\n",
+            (
+                f"<string>:1: DeprecationWarning: {allowed_message}\n"
+                "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
+            ),
+            (
+                f"<string>:1: DeprecationWarning: {allowed_message}\n"
+                "Object allocated at (most recent call last):\n"
+                '  File "/path/to/dependency.py", lineno 42\n'
+                "    source = DeprecatedResource()\n"
+            ),
+        )
+
+        for stderr in warning_outputs:
+            with self.subTest(stderr=stderr):
+                result = self._run_example_with_stderr(stderr, allowed_prefix)
+                self.assertTrue(result.wasSuccessful(), result.failures)
+
+    def test_allowlisted_deprecation_does_not_hide_other_example_stderr(self):
+        """Reject unrelated stderr following an acknowledged deprecation."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = (
+            f"/path/to/example.py:12: DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+            "  warnings.warn(message, DeprecationWarning)\n"
+            "unexpected stderr\n"
+        )
+
+        result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stderr:\nunexpected stderr", result.failures[0][1])
+        self.assertNotIn(allowed_prefix, result.failures[0][1])
+
+    def test_allowlisted_deprecation_does_not_allow_other_warning_categories(self):
+        """Reject a non-deprecation warning with an allowlisted message."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"<string>:1: UserWarning: {allowed_prefix}\n"
+
+        result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])
+
     def test_warp_cuda_unavailable_output_is_registered_only_for_cpu(self):
         """Register CUDA driver initialization diagnostics only for CPU examples."""
         cpu_test = create_autospec(NewtonTestCase, instance=True)
