@@ -23,14 +23,14 @@ from newton.solvers import SolverMuJoCo
 
 
 class TestLoopJointConnectAnchor(unittest.TestCase):
-    def test_ball_loop_connect_honors_child_anchor(self):
-        # Two sibling bodies hang off a fixed root, deliberately placed so that
-        # the loop is NOT closed at the zero (reference) pose: bodyA's anchor and
-        # bodyB's anchor are 0.5 m apart in world space.
-        pos0 = wp.vec3(0.2, 0.0, 0.0)  # anchor on bodyA (parent), bodyA-local
-        pos1 = wp.vec3(-0.3, 0.0, 0.0)  # anchor on bodyB (child), bodyB-local
-        body_b_offset = wp.vec3(1.0, 0.0, 0.0)  # bodyB sits 1 m from the root
+    # Anchors on the two loop bodies, each in its own body frame. Body B sits 1 m from the root,
+    # so the anchors are 0.5 m apart in world space at the zero pose: the loop is deliberately
+    # NOT closed at the reference configuration.
+    POS_A = wp.vec3(0.2, 0.0, 0.0)
+    POS_B = wp.vec3(-0.3, 0.0, 0.0)
+    BODY_B_OFFSET = wp.vec3(1.0, 0.0, 0.0)
 
+    def _build_model(self) -> newton.Model:
         inertia = wp.mat33(np.eye(3))
 
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -47,31 +47,30 @@ class TestLoopJointConnectAnchor(unittest.TestCase):
             parent=root,
             child=body_b,
             axis=wp.vec3(0.0, 0.0, 1.0),
-            parent_xform=wp.transform(body_b_offset, wp.quat_identity()),
+            parent_xform=wp.transform(self.BODY_B_OFFSET, wp.quat_identity()),
         )
 
-        # Loop-closure ball joint between the two siblings. Crucially it is NOT
-        # added to the articulation, so joint_articulation stays -1 and the
-        # MuJoCo solver synthesizes a CONNECT equality from it.
+        # Left out of the articulation so it stays a loop closure that MuJoCo receives as a CONNECT.
         builder.add_joint_ball(
             parent=body_a,
             child=body_b,
-            parent_xform=wp.transform(pos0, wp.quat_identity()),
-            child_xform=wp.transform(pos1, wp.quat_identity()),
+            parent_xform=wp.transform(self.POS_A, wp.quat_identity()),
+            child_xform=wp.transform(self.POS_B, wp.quat_identity()),
         )
 
         builder.add_articulation(joints=[root_joint, joint_a, joint_b])
+        return builder.finalize()
 
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-
+    def _assert_anchors(self, use_mujoco_cpu: bool):
         import mujoco
+
+        solver = SolverMuJoCo(self._build_model(), use_mujoco_cpu=use_mujoco_cpu)
 
         m = solver.mj_model
         self.assertEqual(m.neq, 1, "expected exactly one synthesized equality constraint")
         self.assertEqual(int(m.eq_type[0]), int(mujoco.mjtEq.mjEQ_CONNECT))
 
-        if solver.use_mujoco_cpu:
+        if use_mujoco_cpu:
             eq_data = np.array(m.eq_data)  # [neq, 11]
         else:
             eq_data = solver.mjw_model.eq_data.numpy()[0]  # [neq, 11]
@@ -79,12 +78,19 @@ class TestLoopJointConnectAnchor(unittest.TestCase):
         anchor1 = eq_data[0][0:3]
         anchor2 = eq_data[0][3:6]
 
-        # anchor1 is the parent-side anchor (bodyA-local) == pos0.
-        np.testing.assert_allclose(anchor1, [pos0[0], pos0[1], pos0[2]], atol=1e-5)
-        # anchor2 is the child-side anchor (bodyB-local) and must equal the
-        # authored child frame pos1 -- NOT the reference-pose projection
-        # (which would be pos0 - body_b_offset = (-0.8, 0, 0)).
-        np.testing.assert_allclose(anchor2, [pos1[0], pos1[1], pos1[2]], atol=1e-5)
+        # anchor1 is the parent-side anchor (bodyA-local).
+        np.testing.assert_allclose(anchor1, list(self.POS_A), atol=1e-5)
+        # anchor2 is the child-side anchor (bodyB-local) and must equal the authored child frame,
+        # NOT the reference-pose projection POS_A - BODY_B_OFFSET = (-0.8, 0, 0).
+        np.testing.assert_allclose(anchor2, list(self.POS_B), atol=1e-5)
+
+    def test_ball_loop_connect_honors_child_anchor(self):
+        """Check that the MuJoCo-Warp path writes the authored child anchor into eq_data."""
+        self._assert_anchors(use_mujoco_cpu=False)
+
+    def test_ball_loop_connect_honors_child_anchor_cpu(self):
+        """Check that the MuJoCo CPU path writes the authored child anchor into eq_data."""
+        self._assert_anchors(use_mujoco_cpu=True)
 
 
 if __name__ == "__main__":
