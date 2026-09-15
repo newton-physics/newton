@@ -7,16 +7,13 @@ import math
 import os
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
 
 from ..utils import _require_onnx, load_metadata
 from .base import DriveBase
-
-if TYPE_CHECKING:
-    from ..actuator import InputSource
 
 _FEATURE_POSITION = 0
 _FEATURE_TARGET_POSITION = 1
@@ -135,11 +132,9 @@ def _parse_input_feature_keys(metadata: dict[str, Any], model_path: str) -> tupl
     return tuple(input_columns)
 
 
-def _sim_state_inputs(selected: tuple[str, ...]) -> tuple[tuple[InputSource, str], ...]:
+def _sim_state_inputs(selected: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     """Declare the selected columns that are not built-in features as sim_state inputs."""
-    from ..actuator import InputSource  # noqa: PLC0415
-
-    return tuple((InputSource.SIM_STATE, name) for name in selected if name not in _INPUT_FEATURE_CODES)
+    return tuple(("sim_state", name) for name in selected if name not in _INPUT_FEATURE_CODES)
 
 
 def _parse_custom_input_names(metadata: dict[str, Any], model_path: str) -> tuple[str, ...]:

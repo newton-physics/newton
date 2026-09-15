@@ -261,8 +261,9 @@ Custom Drive Inputs
 A drive may need an array beyond the positions, velocities and targets the
 actuator already reads from ``sim_state`` and ``sim_control``. It lists those
 arrays in :attr:`DriveBase.custom_inputs`, as ``(source, attribute)`` pairs.
-*source* selects the :meth:`Actuator.step` argument that carries the array,
-``sim_state`` or ``sim_control``; *attribute* is the name it is read under.
+*source* is ``"sim_state"`` or ``"sim_control"``, naming which
+:meth:`Actuator.step` argument carries the array; *attribute* is the name it is
+read under.
 
 The array must have the same joint-DOF layout and length as ``state.joint_qd``,
 and is gathered with the actuator's velocity indices. A name that is missing, or a

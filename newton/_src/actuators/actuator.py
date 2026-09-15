@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import enum
 import functools
 import warnings
 from collections.abc import Mapping
@@ -27,16 +26,6 @@ _CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Ne
 _CONTROLLER_STATE_DEPRECATION_MSG = (
     "Actuator.State.controller_state is deprecated in Newton 1.6; use drive_state instead."
 )
-
-
-class InputSource(enum.Enum):
-    """Which :meth:`Actuator.step` argument carries a declared input."""
-
-    SIM_STATE = "sim_state"
-    """The ``sim_state`` argument."""
-
-    SIM_CONTROL = "sim_control"
-    """The ``sim_control`` argument."""
 
 
 @wp.kernel
@@ -169,7 +158,7 @@ def _select_custom_inputs(
     owner: str,
     sim_state: Any,
     sim_control: Any,
-    declared: tuple[tuple[InputSource, str], ...],
+    declared: tuple[tuple[str, str], ...],
     length: int,
 ) -> dict[str, Any]:
     """Read the ``(source, attribute)`` pairs in *declared*, keyed by attribute.
@@ -180,26 +169,22 @@ def _select_custom_inputs(
     if not declared:
         return {}
 
-    objects = {
-        InputSource.SIM_STATE: sim_state,
-        InputSource.SIM_CONTROL: sim_control,
-    }
+    objects = {"sim_state": sim_state, "sim_control": sim_control}
     selected: dict[str, Any] = {}
     for source, attribute in declared:
+        if source not in objects:
+            raise ValueError(f"{owner} declared the input source '{source}'; expected 'sim_state' or 'sim_control'.")
         value = _get_attribute(objects[source], attribute, None)
         if value is None:
             raise ValueError(
-                f"{owner} requires the array '{attribute}', but {source.value} does not provide it. "
-                f"Pass a {source.value} of your own that carries '{attribute}' alongside the usual arrays."
+                f"{owner} requires the array '{attribute}', but {source} does not provide it. "
+                f"Pass a {source} of your own that carries '{attribute}' alongside the usual arrays."
             )
         if not isinstance(value, (wp.array, wp.indexedarray, wp.fabricarray)):
-            raise ValueError(
-                f"{owner} input '{source.value}.{attribute}' must be a wp.array; got {type(value).__name__}."
-            )
+            raise ValueError(f"{owner} input '{source}.{attribute}' must be a wp.array; got {type(value).__name__}.")
         if len(value) != length:
             raise ValueError(
-                f"{owner} input '{source.value}.{attribute}' has length {len(value)}; expected {length}, "
-                f"matching '{source.value}'."
+                f"{owner} input '{source}.{attribute}' has length {len(value)}; expected {length}, matching '{source}'."
             )
         selected[attribute] = value
     return selected
@@ -459,7 +444,7 @@ class Actuator:
         Returns:
             Container whose slots are the required ``sim_state`` attributes.
         """
-        fields = self._required_attributes.get(InputSource.SIM_STATE.value, ())
+        fields = self._required_attributes.get("sim_state", ())
         return _input_container_class("sim_state", fields)()
 
     def sim_control(self) -> Any:
@@ -471,7 +456,7 @@ class Actuator:
         Note:
             Leaving the feedforward field unassigned means no feedforward term.
         """
-        fields = self._required_attributes.get(InputSource.SIM_CONTROL.value, ())
+        fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
 
     @property
@@ -558,7 +543,7 @@ class Actuator:
 
     @property
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
-        """Attributes this actuator reads, keyed by :class:`InputSource` value.
+        """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
 
         Covers the standard arrays and the drive's custom inputs.
         """
@@ -571,15 +556,15 @@ class Actuator:
             self.control_computed_output_attr,
         ]
         required = {
-            InputSource.SIM_STATE.value: state_attrs,
-            InputSource.SIM_CONTROL.value: [a for a in control_attrs if a is not None],
+            "sim_state": state_attrs,
+            "sim_control": [a for a in control_attrs if a is not None],
         }
         for source, attribute in self.drive.custom_inputs:
-            names = required.setdefault(source.value, [])
+            names = required.setdefault(source, [])
             if attribute in names:
                 raise ValueError(
                     f"{type(self.drive).__name__} custom input '{attribute}' collides with an array the "
-                    f"actuator already reads from {source.value}."
+                    f"actuator already reads from {source}."
                 )
             names.append(attribute)
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}

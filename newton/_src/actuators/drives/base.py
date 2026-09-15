@@ -4,12 +4,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 import warp as wp
-
-if TYPE_CHECKING:
-    from ..actuator import InputSource
 
 
 @wp.kernel
@@ -54,11 +51,12 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
-    custom_inputs: tuple[tuple[InputSource, str], ...] = ()
+    custom_inputs: tuple[tuple[str, str], ...] = ()
     """``(source, attribute)`` pairs for the extra arrays this drive reads.
 
-    Each names which :meth:`Actuator.step` argument carries the array, and
-    under what attribute. Set in ``__init__``; the caller supplies the arrays
+    *source* is ``"sim_state"`` or ``"sim_control"``, naming which
+    :meth:`Actuator.step` argument carries the array; *attribute* is the name
+    it is read under. Set in ``__init__``; the caller supplies the arrays
     and :class:`~newton.actuators.Actuator` passes them to :meth:`compute` as
     ``custom_inputs``, keyed by attribute name.
     """

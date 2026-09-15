@@ -1,0 +1,1 @@
+Add a `custom_inputs` parameter to `DriveBase.compute()` and `DriveBase.prepare_implicit()`. `Actuator` always passes it, so a drive that overrides either method must accept it; add `custom_inputs: dict[str, Any] | None = None` to the override's signature and ignore it unless the drive declares `DriveBase.custom_inputs`.

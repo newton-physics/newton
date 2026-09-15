@@ -21,7 +21,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.actuators.actuator import InputSource
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
@@ -1343,7 +1342,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         """Hand a drive's declared inputs to prepare_implicit, as the explicit path does."""
 
         class _RecordingDrive(DrivePD):
-            custom_inputs = ((InputSource.SIM_STATE, "bias_force"),)
+            custom_inputs = (("sim_state", "bias_force"),)
             seen = None
 
             def prepare_implicit(self, *args, custom_inputs=None, **kwargs):
@@ -1383,7 +1382,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         metadata["normalization"]["inputs"]["mean"]["qfrc_bias"] = -2.0
         metadata["normalization"]["inputs"]["std"]["qfrc_bias"] = 5.0
         case = self._make_case(self._save_gru("named_custom.onnx", metadata, input_size=2), 2)
-        self.assertEqual(case.actuator.drive.custom_inputs, ((InputSource.SIM_STATE, "qfrc_bias"),))
+        self.assertEqual(case.actuator.drive.custom_inputs, (("sim_state", "qfrc_bias"),))
 
         # The array is read under the name the checkpoint chose, not "bias_force".
         case.state.qfrc_bias = case.state.bias_force
@@ -1526,7 +1525,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         model = build_model(self._save_gru("declared_only.onnx"))
         actuator = model.actuators[0]
-        self.assertEqual(actuator.drive.custom_inputs, ((InputSource.SIM_STATE, "bias_force"),))
+        self.assertEqual(actuator.drive.custom_inputs, (("sim_state", "bias_force"),))
         self.assertEqual(actuator.control_feedforward_attr, "joint_act")
 
         # Newton allocates nothing and touches neither State nor Control.
@@ -1563,7 +1562,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         model = builder.finalize(device=self.device)
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
         self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
-        self.assertEqual(model.actuators[0].drive.custom_inputs, ((InputSource.SIM_STATE, "bias_force"),))
+        self.assertEqual(model.actuators[0].drive.custom_inputs, (("sim_state", "bias_force"),))
         self.assertFalse(hasattr(model.control(), "bias_force"))
 
     def test_builder_groups_equal_model_paths(self):
