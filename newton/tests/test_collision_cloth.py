@@ -532,8 +532,8 @@ def test_vertex_triangle_collision(test, device):
         triangle_colliding_vertices_count_1 = collision_detector.triangle_colliding_vertices_count.numpy()
         triangle_min_dis_1 = collision_detector.triangle_colliding_vertices_min_dist.numpy()
 
-        counters = collision_detector.counters.numpy()
-        test.assertEqual(int(counters[1]), 0)  # no vertex-triangle overflow
+        global_pair_counts = collision_detector.global_pair_counts.numpy()
+        test.assertEqual(int(global_pair_counts[1]), 0)  # no vertex-triangle overflow
 
         wp.launch(
             kernel=validate_vertex_collisions,
@@ -647,8 +647,8 @@ def test_edge_edge_collision(test, device):
         edge_colliding_edges_count_1 = collision_detector.edge_colliding_edges_count.numpy()
         edge_min_dist_1 = collision_detector.edge_colliding_edges_min_dist.numpy()
 
-        counters = collision_detector.counters.numpy()
-        test.assertEqual(int(counters[3]), 0)  # no edge-edge overflow
+        global_pair_counts = collision_detector.global_pair_counts.numpy()
+        test.assertEqual(int(global_pair_counts[3]), 0)  # no edge-edge overflow
 
         wp.launch(
             kernel=validate_edge_collisions,
@@ -1378,8 +1378,8 @@ def test_detector_check_and_grow(test, device):
     query_radius = 5e-2
     detector.vertex_triangle_collision_detection(query_radius)
     detector.edge_edge_collision_detection(query_radius)
-    counters = detector.collision_info.counters.numpy()
-    test.assertTrue(counters[1] or counters[3])  # budgets of 1 must overflow here
+    global_pair_counts = detector.collision_info.global_pair_counts.numpy()
+    test.assertTrue(global_pair_counts[1] or global_pair_counts[3])  # budgets of 1 must overflow here
 
     old_info = detector.collision_info
     old_vt_rows = old_info.vertex_colliding_triangles
@@ -1392,9 +1392,9 @@ def test_detector_check_and_grow(test, device):
 
     detector.vertex_triangle_collision_detection(query_radius)
     detector.edge_edge_collision_detection(query_radius)
-    counters = detector.collision_info.counters.numpy()
-    test.assertEqual(int(counters[1]), 0)
-    test.assertEqual(int(counters[3]), 0)
+    global_pair_counts = detector.collision_info.global_pair_counts.numpy()
+    test.assertEqual(int(global_pair_counts[1]), 0)
+    test.assertEqual(int(global_pair_counts[3]), 0)
     _assert_rows_partition_pairs(test, detector.collision_info)
 
     # nothing left to grow: the second call is a quiet no-op
@@ -1768,19 +1768,19 @@ def _build_two_layer_cloth(device, budgets=None):
 def _assert_rows_partition_pairs(test, info):
     """Rows hold exactly the stored contacts: totals match the clamped cursor
     and every row entry names its owning element."""
-    counters = info.counters.numpy()
+    global_pair_counts = info.global_pair_counts.numpy()
     for capacity_x2, offsets, values, cursor in (
         (
             info.vertex_colliding_triangles.shape[0],
             info.vertex_colliding_triangles_offsets,
             info.vertex_colliding_triangles,
-            int(counters[0]),
+            int(global_pair_counts[0]),
         ),
         (
             info.edge_colliding_edges.shape[0],
             info.edge_colliding_edges_offsets,
             info.edge_colliding_edges,
-            int(counters[2]),
+            int(global_pair_counts[2]),
         ),
     ):
         stored = min(cursor, capacity_x2 // 2)
@@ -1803,8 +1803,8 @@ def test_self_contact_overflow_and_growth(test, device):
     wp.synchronize_device(wp.get_device(device))
 
     detector = solver.trimesh_collision_detector
-    counters = detector.collision_info.counters.numpy()
-    test.assertTrue(counters[1] or counters[3])  # undersized budgets must overflow here
+    global_pair_counts = detector.collision_info.global_pair_counts.numpy()
+    test.assertTrue(global_pair_counts[1] or global_pair_counts[3])  # undersized budgets must overflow here
 
     with test.assertWarns(UserWarning):
         grew = solver.check_and_grow_self_contact_buffers()
@@ -1813,11 +1813,11 @@ def test_self_contact_overflow_and_growth(test, device):
     solver.step(state_1, state_0, control, None, 1e-3)
     wp.synchronize_device(wp.get_device(device))
     info = detector.collision_info
-    counters = info.counters.numpy()
-    test.assertEqual(int(counters[1]), 0)
-    test.assertEqual(int(counters[3]), 0)
-    test.assertGreater(int(counters[0]), 100)
-    test.assertGreater(int(counters[2]), 100)
+    global_pair_counts = info.global_pair_counts.numpy()
+    test.assertEqual(int(global_pair_counts[1]), 0)
+    test.assertEqual(int(global_pair_counts[3]), 0)
+    test.assertGreater(int(global_pair_counts[0]), 100)
+    test.assertGreater(int(global_pair_counts[2]), 100)
     test.assertFalse(solver.check_and_grow_self_contact_buffers())
 
     _assert_rows_partition_pairs(test, info)
@@ -1942,10 +1942,10 @@ def test_self_contact_scatter_matches_sequential_reference(test, device):
     wp.synchronize_device(wp.get_device(device))
 
     info = solver.trimesh_collision_detector.collision_info
-    counters = info.counters.numpy()
-    test.assertEqual(int(counters[1]), 0)
-    test.assertEqual(int(counters[3]), 0)
-    test.assertGreater(int(counters[0]) + int(counters[2]), 200)
+    global_pair_counts = info.global_pair_counts.numpy()
+    test.assertEqual(int(global_pair_counts[1]), 0)
+    test.assertEqual(int(global_pair_counts[3]), 0)
+    test.assertGreater(int(global_pair_counts[0]) + int(global_pair_counts[2]), 200)
 
     n = model.particle_count
     forces_production = wp.zeros(n, dtype=wp.vec3, device=device)

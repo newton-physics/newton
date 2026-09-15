@@ -49,15 +49,18 @@ class TriMeshCollisionInfo:
     internal shared scratch pool sized by an average budget per element, so
     memory scales with the actual contact count and a locally dense fold
     cannot overflow a private per-element budget; rows are rebuilt from that
-    pool after each detection, in BVH-traversal order per element. Absent
-    overflow, row contents are deterministic run to run (under overflow, which
-    records won a pool slot is an inter-thread race; each row keeps a prefix
-    of its traversal order, the matching ``counters`` overflow flag is set,
-    and the cursor keeps counting total demand). Kernel code should read
-    results through the internal ``get_*`` accessors.
+    pool after each detection. The vertex and edge rows come out in
+    BVH-traversal order per element and, absent overflow, are deterministic
+    run to run (under overflow, which records won a pool slot is an
+    inter-thread race; each such row keeps a prefix of its traversal order,
+    the matching ``global_pair_counts`` overflow flag is set, and the cursor
+    keeps counting total demand). The optional triangle-side reverse rows have
+    scheduling-dependent order (many writers); ``sort_contact_rows`` makes
+    every row canonical. Kernel code should read results through the internal
+    ``get_*`` accessors.
     """
 
-    counters: wp.array[wp.int32]
+    global_pair_counts: wp.array[wp.int32]
     """Pair cursors and overflow flags: [vt cursor, vt overflow, ee cursor, ee overflow].
     The cursors count total detection demand; stored records are ``min(cursor, capacity)``."""
 
@@ -77,7 +80,8 @@ class TriMeshCollisionInfo:
     triangle_colliding_vertices_count: wp.array[wp.int32]
     """Optional stored collision count for each triangle."""
     triangle_colliding_vertices_min_dist: wp.array[float]
-    """Minimum detected triangle-vertex distance for each triangle [m]."""
+    """Minimum detected triangle-vertex distance for each triangle [m]; when
+    triangle-side recording is off it keeps the constant query-radius fill."""
 
     edge_colliding_edges: wp.array[wp.int32]
     """Interleaved (edge, colliding edge) index pairs in exact CSR rows, both directions."""
@@ -301,9 +305,9 @@ def build_tri_mesh_collision_info(
     """Allocate all self-contact result arrays into a :class:`TriMeshCollisionInfo`.
 
     This is the single allocation path for tri-mesh self-contact results:
-    :class:`TriMeshCollisionDetector` calls it when no external struct is
-    injected, and result-owning containers call it to allocate buffers the
-    detector then writes into.
+    :class:`TriMeshCollisionDetector` calls it when constructed with
+    ``init_collision_info=True``, and result-owning containers call it to
+    allocate buffers the detector then writes into.
 
     The ``*_pre_alloc`` values are average contact budgets per element: each
     family's rows hold up to ``pre_alloc x element_count`` stored contacts
@@ -336,7 +340,7 @@ def build_tri_mesh_collision_info(
     vt_capacity = vertex_collision_buffer_pre_alloc * particle_count
     ee_capacity = edge_collision_buffer_pre_alloc * edge_count
 
-    info.counters = wp.zeros(shape=(4,), dtype=wp.int32, device=device)
+    info.global_pair_counts = wp.zeros(shape=(4,), dtype=wp.int32, device=device)
 
     # interleaved (element, counterpart) pairs: 2 ints per stored contact
     info.vertex_colliding_triangles = wp.zeros(shape=(max(2 * vt_capacity, 1),), dtype=wp.int32, device=device)
@@ -511,7 +515,7 @@ class TriMeshCollisionDetector:
         )
 
         # resize_flags only serves the on-demand triangle-triangle intersection
-        # buffers now; self-contact overflow lives in collision_info.counters
+        # buffers now; self-contact overflow lives in collision_info.global_pair_counts
         self.resize_flags = wp.zeros(shape=(4,), dtype=wp.int32, device=self.device)
         # stand-in for the optional per-triangle min-dist output when the
         # triangle-side recording is off (parity with the historical behavior:
@@ -560,7 +564,7 @@ class TriMeshCollisionDetector:
                 self._tri_list_next_scratch = wp.empty(shape=(capacity,), dtype=wp.int32, device=self.device)
 
     def _validate_collision_info(self, collision_info: TriMeshCollisionInfo) -> None:
-        """Validate externally owned result buffers against this detector."""
+        """Validate a result struct (injected or self-built) against this detector."""
 
         def validate_array(name, array, size, dtype):
             if array is None:
@@ -575,11 +579,18 @@ class TriMeshCollisionDetector:
         particle_count = self.model.particle_count
         tri_count = self.model.tri_count
         edge_count = self.model.edge_count
-        vt_capacity = max(self.vertex_collision_buffer_pre_alloc * particle_count, 1)
-        ee_capacity = max(self.edge_collision_buffer_pre_alloc * edge_count, 1)
+        # expected sizes must mirror build_tri_mesh_collision_info exactly,
+        # including the degenerate zero-count clamps
+        vt_capacity = self.vertex_collision_buffer_pre_alloc * particle_count
+        ee_capacity = self.edge_collision_buffer_pre_alloc * edge_count
         arrays = (
-            ("vertex_colliding_triangles", collision_info.vertex_colliding_triangles, 2 * vt_capacity, wp.int32),
-            ("counters", collision_info.counters, 4, wp.int32),
+            (
+                "vertex_colliding_triangles",
+                collision_info.vertex_colliding_triangles,
+                max(2 * vt_capacity, 1),
+                wp.int32,
+            ),
+            ("global_pair_counts", collision_info.global_pair_counts, 4, wp.int32),
             (
                 "vertex_colliding_triangles_offsets",
                 collision_info.vertex_colliding_triangles_offsets,
@@ -604,7 +615,7 @@ class TriMeshCollisionDetector:
                 tri_count,
                 wp.float32,
             ),
-            ("edge_colliding_edges", collision_info.edge_colliding_edges, 2 * ee_capacity, wp.int32),
+            ("edge_colliding_edges", collision_info.edge_colliding_edges, max(2 * ee_capacity, 1), wp.int32),
             (
                 "edge_colliding_edges_offsets",
                 collision_info.edge_colliding_edges_offsets,
@@ -629,7 +640,7 @@ class TriMeshCollisionDetector:
                 (
                     "triangle_colliding_vertices",
                     collision_info.triangle_colliding_vertices,
-                    vt_capacity,
+                    max(vt_capacity, 1),
                     wp.int32,
                 ),
                 (
@@ -674,8 +685,8 @@ class TriMeshCollisionDetector:
     # triangle-side buffers when ``record_triangle_contacting_vertices`` is off.
 
     @property
-    def counters(self):
-        return self.collision_info.counters
+    def global_pair_counts(self):
+        return self.collision_info.global_pair_counts
 
     @property
     def vertex_colliding_triangles(self):
@@ -847,11 +858,15 @@ class TriMeshCollisionDetector:
     def _build_pair_rows(self, fill_kernel, row_counts, row_offsets, list_heads, list_next, row_values):
         """Build one family's exact CSR rows from its per-element record lists.
 
-        Two graph-capturable passes: exclusive-scan the stored counts (written
-        by detection) into the row offsets, then one thread per element walks
-        its chain in the append log and writes its row content back to front,
-        restoring BVH-traversal order. Lists link only stored records, so rows
-        stay consistent when detection dropped records on overflow.
+        Graph-capturable passes: exclusive-scan the stored counts (written by
+        detection) into the row offsets; one thread per element walks its
+        chain in the append log and writes its row content back to front
+        (restoring forward BVH-traversal order for the single-writer vertex
+        and edge lists; the many-writer triangle reverse lists keep a
+        scheduling-dependent order); optionally one in-place insertion sort
+        per row when ``sort_contact_rows`` is on. Lists link only stored
+        records, so rows stay consistent when detection dropped records on
+        overflow.
         """
         element_count = row_counts.shape[0]
         if element_count == 0:
@@ -893,9 +908,10 @@ class TriMeshCollisionDetector:
         overflow flag is set the corresponding pair array kept only its first
         ``capacity`` records and the CSR rows cover only those.
         """
-        counters = self.collision_info.counters.numpy()
-        vt_demand, vt_overflow = int(counters[0]), bool(counters[1])
-        ee_demand, ee_overflow = int(counters[2]), bool(counters[3])
+        self._require_collision_info()
+        global_pair_counts = self.collision_info.global_pair_counts.numpy()
+        vt_demand, vt_overflow = int(global_pair_counts[0]), bool(global_pair_counts[1])
+        ee_demand, ee_overflow = int(global_pair_counts[2]), bool(global_pair_counts[3])
         if warn and (vt_overflow or ee_overflow):
             warnings.warn(
                 f"tri-mesh self-contact pair arrays overflowed "
@@ -916,7 +932,7 @@ class TriMeshCollisionDetector:
     def check_and_grow_collision_buffers(self, warn: bool = True) -> bool:
         """Check the last detection's overflow flags and grow the result storage.
 
-        Reads the counters back (synchronizes the device). When a family
+        Reads the global_pair_counts back (synchronizes the device). When a family
         overflowed, its per-element budget is raised to cover 1.5x the measured
         demand and the storage grows IN PLACE: the bound struct stays the same
         object and only its capacity-sized row arrays are replaced (per-element
@@ -973,9 +989,10 @@ class TriMeshCollisionDetector:
             ee_capacity = self.edge_collision_buffer_pre_alloc * self.model.edge_count
             info.edge_colliding_edges = wp.zeros(shape=(max(2 * ee_capacity, 1),), dtype=wp.int32, device=self.device)
 
-        # leave the struct in the same state a fresh allocation would have:
+        # leave the rows in the same state a fresh allocation would have:
         # empty rows described by empty offsets/counts, cleared demand cursors
-        info.counters.zero_()
+        # (min_dist keeps its last values; detection rewrites it anyway)
+        info.global_pair_counts.zero_()
         info.vertex_colliding_triangles_count.zero_()
         info.vertex_colliding_triangles_offsets.zero_()
         info.edge_colliding_edges_count.zero_()
@@ -1055,7 +1072,7 @@ class TriMeshCollisionDetector:
         self._require_collision_info()
         info = self.collision_info
         # clear this family's (cursor, overflow) slice; the other family's slots are untouched
-        info.counters[0:2].zero_()
+        info.global_pair_counts[0:2].zero_()
         info.triangle_colliding_vertices_min_dist.fill_(max_query_radius)
         if self.record_triangle_contacting_vertices:
             # triangle-keyed reverse lists have many writers, so heads and
@@ -1083,7 +1100,7 @@ class TriMeshCollisionDetector:
             ],
             outputs=[
                 self._pair_scratch,
-                info.counters,
+                info.global_pair_counts,
                 self._vt_list_heads,
                 self._list_next_scratch,
                 info.vertex_colliding_triangles_count,
@@ -1133,7 +1150,7 @@ class TriMeshCollisionDetector:
     ):
         self._require_collision_info()
         info = self.collision_info
-        info.counters[2:4].zero_()
+        info.global_pair_counts[2:4].zero_()
         ee_capacity = info.edge_colliding_edges.shape[0] // 2
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,
@@ -1154,7 +1171,7 @@ class TriMeshCollisionDetector:
             ],
             outputs=[
                 self._pair_scratch,
-                info.counters,
+                info.global_pair_counts,
                 self._ee_list_heads,
                 self._list_next_scratch,
                 info.edge_colliding_edges_count,
