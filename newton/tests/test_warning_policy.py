@@ -35,7 +35,7 @@ class TestWarningPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             allowlist_path = Path(temp_dir) / "deprecations.txt"
             allowlist_path.write_text(
-                "# Temporary migration\n\ndependency.old_api is deprecated\n",
+                "# Temporary migration\n# remove-when-minimum: dependency>=2\n\ndependency.old_api is deprecated\n",
                 encoding="utf-8",
             )
             self.assertEqual(
