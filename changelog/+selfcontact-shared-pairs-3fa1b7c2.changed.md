@@ -7,9 +7,11 @@ average contact budget per element (array capacity = budget x element count),
 with defaults lowered from 32/64 to 8/16; a locally dense fold can no longer
 overflow a private per-element budget. On pool overflow excess contacts are
 dropped and a device flag is set; calling
-`SolverVBD.check_and_grow_self_contact_buffers()` between steps reports the
-overflow and grows the storage (the solver never synchronizes to check on its
-own). Self-contact force
+`TriMeshCollisionDetector.check_and_grow_collision_buffers()` (or the
+`SolverVBD.check_and_grow_self_contact_buffers()` wrapper, which also
+refreshes the solver's references) between steps reports the overflow and
+grows the storage; nothing synchronizes to check automatically. Self-contact
+force
 accumulation and the planar truncation guard run one thread per stored contact,
 which reduces self-contact memory several-fold and speeds up most self-contact
 demos. Warp's deterministic-atomics mode no longer covers the self-contact
