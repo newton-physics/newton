@@ -1,26 +1,13 @@
-Rewrite triangle-mesh self-contact storage: detection now appends contact pairs
-to one shared array per family (vertex-triangle and edge-edge) instead of
-fixed-size per-element buffers, and the per-element query tables become exact
-CSR rows over those arrays. `SolverVBD`'s `particle_vertex_contact_buffer_size`
-and `particle_edge_contact_buffer_size` keep their names but now mean the
-average contact budget per element (array capacity = budget x element count),
-with defaults lowered from 32/64 to 8/16; a locally dense fold can no longer
-overflow a private per-element budget. On pool overflow excess contacts are
-dropped and a device flag is set; calling
+Rewrite triangle-mesh self-contact storage: result rows keep the historical
+interleaved layout but are exact-length now, backed by an internal append log,
+so memory scales with actual contacts. `TriMeshCollisionInfo` drops the
+`*_buffer_sizes` fields and gains `counters`; `SolverVBD`'s contact-buffer
+knobs and the pipeline/`Contacts` `*_pre_alloc` parameters now mean an average
+budget per element, with defaults lowered from 32/64 to 8/16. On overflow
+excess contacts are dropped and flagged; call
 `TriMeshCollisionDetector.check_and_grow_collision_buffers()` (or the
-`SolverVBD.check_and_grow_self_contact_buffers()` wrapper, which also
-refreshes the solver's references) between steps reports the overflow and
-grows the storage; nothing synchronizes to check automatically. Self-contact
-force
-accumulation and the planar truncation guard run one thread per stored contact,
-which reduces self-contact memory several-fold and speeds up most self-contact
-demos. Warp's deterministic-atomics mode no longer covers the self-contact
-force scatter (its record bound relied on the fixed per-element rows), so
-self-contact forces are not bitwise reproducible run to run even under
-`deterministic=...`; all other deterministic-atomics coverage is unchanged, and
-a reproducible fixed-order summation is planned as a follow-up. The
-`CollisionPipeline`/`Contacts` self-contact `*_buffer_pre_alloc` parameters
-adopt the same average-per-element semantics and 8/16 defaults; standalone
-pipeline users (without `SolverVBD`) can poll
-`TriMeshCollisionDetector.check_self_contact_overflow()` after detection, as
-nothing grows the arrays automatically on that path.
+`SolverVBD.check_and_grow_self_contact_buffers()` wrapper) between steps to
+report and grow the storage in place. Self-contact force sums are no longer
+covered by Warp's deterministic-atomics mode, and
+`TriMeshCollisionDetector(sort_contact_rows=True)` optionally sorts each row
+into a canonical order. Most self-contact demos run faster.
