@@ -1,0 +1,1 @@
+Remove `ModelBuilder.find_shape_contact_pairs()` and support for mutating `Model.shape_collision_filter_pairs`; update `ModelBuilder.shape_collision_filter_pairs` before calling `finalize()` and rebuild the model instead.

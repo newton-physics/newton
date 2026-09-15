@@ -76,7 +76,7 @@ def test_owned_speculative_pipeline_receives_dt(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+        speculative_contact_gap_max=0.1,
     )
     solver = _StubSolver(model, collision_pipeline=pipeline)
 

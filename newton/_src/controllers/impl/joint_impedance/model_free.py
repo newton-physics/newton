@@ -6,8 +6,10 @@ caller-supplied dynamics terms.
 
 Every port is compact: one entry per controlled DOF, robot 0's DOFs first, then
 robot 1's. The controller owns no index tables — a caller who needs to read from
-or write to a simulation-sized array binds an indexed view
-(``sim_array[selection.qd_start]``) instead.
+or write to a simulation-sized array binds an indexed view instead, e.g.
+``sim_array[ctrl.qd_start]`` using a paired model-based controller's own
+``q_start``/``qd_start`` properties (see
+:attr:`ControllerJointImpedance.qd_start`).
 
 The difference from :class:`ControllerJointImpedance` is that this controller
 requires the caller to supply dynamics terms (mass matrix, gravity force, Coriolis
@@ -30,7 +32,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _validate_array
+from ...utils import _bake_optional_float_array, _validate_array
 from .._common import (
     _add_term_kernel,
     _block_matrix_vector_multiply_kernel,
@@ -53,10 +55,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     ``controlled_dofs_per_robot``. A port may be bound either to a plain compact
     array or to an indexed view of a simulation-sized array, which is how a
     caller expresses a gather or scatter without the controller owning an index
-    table::
+    table — for example, using a paired model-based controller's own
+    ``q_start``/``qd_start`` properties (see
+    :attr:`ControllerJointImpedance.qd_start`)::
 
-        inputs.joint_q = state.joint_q[selection.q_start]  # gather
-        outputs.joint_f = control.joint_f[selection.qd_start]  # scatter
+        inputs.joint_q = state.joint_q[ctrl.q_start]  # gather
+        outputs.joint_f = control.joint_f[ctrl.qd_start]  # scatter
 
     Views are live and graph-capturable: bind them once, and each step (or graph
     replay) reads through to the current contents of the underlying array.
@@ -228,8 +232,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             device=self._device,
         )
 
-        self._stiffness_baked = self._bake_gain(stiffness)
-        self._damping_baked = self._bake_gain(damping)
+        self._stiffness_baked = _bake_optional_float_array(
+            stiffness, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+        )
+        self._damping_baked = _bake_optional_float_array(
+            damping, total_controlled_dofs, device=self._device, requires_grad=self._requires_grad
+        )
 
         def _buf():
             return wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
@@ -262,32 +270,6 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             if self._use_inertia
             else None
         )
-
-    def _bake_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh compact buffer.
-
-        Returns ``None`` for live gains, which are read from the input struct
-        each step instead. A wp.array is already validated by
-        :func:`_validate_array`.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return wp.full(
-                self._total_controlled_dofs,
-                float(value),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=self._requires_grad,
-            )
-        baked = wp.zeros(
-            self._total_controlled_dofs,
-            dtype=wp.float32,
-            device=self._device,
-            requires_grad=self._requires_grad,
-        )
-        wp.copy(baked, value)
-        return baked
 
     @property
     def controlled_robot_count(self) -> int:

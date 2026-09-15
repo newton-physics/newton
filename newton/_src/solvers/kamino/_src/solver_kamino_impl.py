@@ -98,7 +98,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, wp.array[wp.bool] | None], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, "wp.array[wp.bool] | None"], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]

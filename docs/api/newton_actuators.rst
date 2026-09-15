@@ -40,7 +40,7 @@ construction.
    DriveNeuralMLP
    DrivePD
    DrivePID
-   ResponseOracle
+   JointSpaceResponse
    SchemaNames
 
 .. rubric:: Functions

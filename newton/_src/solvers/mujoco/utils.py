@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -162,14 +163,20 @@ def mjc_add_equality_mimic(
     custom_attrs: dict[str, Any],
 ) -> tuple[int, int]:
     """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
-    mimic_idx = builder.add_constraint_mimic(
-        joint0=joint1,
-        joint1=joint2,
-        coef0=polycoef[0],
-        coef1=polycoef[1],
-        label=label,
-        enabled=enabled,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"ModelBuilder\.add_constraint_mimic\(\) is deprecated",
+            category=DeprecationWarning,
+        )
+        mimic_idx = builder.add_constraint_mimic(
+            joint0=joint1,
+            joint1=joint2,
+            coef0=polycoef[0],
+            coef1=polycoef[1],
+            label=label,
+            enabled=enabled,
+        )
     eq_idx = _add_equality_constraint(
         builder,
         constraint_type=EqType.JOINT,

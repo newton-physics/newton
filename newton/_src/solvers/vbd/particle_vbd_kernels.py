@@ -12,6 +12,8 @@ The high-level :class:`SolverVBD` interface should remain in
 
 from __future__ import annotations
 
+import functools
+
 import warp as wp
 
 from newton._src.math import orthonormal_basis
@@ -56,6 +58,23 @@ VBD_DEBUG_PRINTING_OPTIONS = {
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 TILE_SIZE_SELF_CONTACT_SOLVE = 8
+
+
+@wp.func_native(
+    """
+    #if defined(__CUDA_ARCH__)
+    float r = v;
+    r += __shfl_xor_sync(0xffffffffu, r, 8, 16);
+    r += __shfl_xor_sync(0xffffffffu, r, 4, 16);
+    r += __shfl_xor_sync(0xffffffffu, r, 2, 16);
+    r += __shfl_xor_sync(0xffffffffu, r, 1, 16);
+    return r;
+    #else
+    return v;
+    #endif
+    """
+)
+def _warp_half_reduce_sum(v: wp.float32) -> wp.float32: ...
 
 
 class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
@@ -2326,22 +2345,48 @@ def apply_truncation_ts(
 
 
 @wp.kernel
-def accumulate_particle_body_contact_force_and_hessian(
+def build_particle_body_contact_adjacency_active(
+    body_particle_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_max: int,
+    particle_contact_head: wp.array[int],
+    particle_contact_next: wp.array[int],
+):
+    """Build linked per-particle incidence lists over the compact active contact prefix."""
+    contact_index = wp.tid()
+    if contact_index >= min(body_particle_contact_max, body_particle_contact_count[0]):
+        return
+
+    corners = body_particle_contact_indices[contact_index]
+
+    # Corners are -1-padded: (p, -1, -1) is a particle record, (v0, v1, -1) an edge, (v0, v1, v2) a face.
+    corner_count = 1
+    if corners[1] >= 0:
+        corner_count = 3
+
+    for corner in range(corner_count):
+        particle_index = corners[corner]
+        if particle_index >= 0:
+            node = 3 * contact_index + corner
+            previous = wp.atomic_exch(particle_contact_head, particle_index, node)
+            particle_contact_next[node] = previous
+
+
+@wp.kernel
+def gather_particle_body_contact_force_and_hessian(
     # inputs
     dt: float,
-    current_color: int,
+    particle_ids_in_color: wp.array[wp.int32],
     pos_anchor: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
-    particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
-    body_particle_contact_count: wp.array[int],
-    body_particle_contact_max: int,
+    particle_contact_head: wp.array[int],
+    particle_contact_next: wp.array[int],
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array[float],
-    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_body: wp.array[int],
@@ -2354,38 +2399,49 @@ def accumulate_particle_body_contact_force_and_hessian(
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
-    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
     contact_barycentric: wp.array[wp.vec3],
-    # outputs: particle force and hessian
+    # outputs
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
-    t_id = wp.tid()
+    """Gather all body-contact contributions for one colored particle without output atomics.
 
-    # One unified soft-contact stream. body_particle_contact_count[0] is the total soft-contact count;
-    # each record self-describes via its -1-padded corner ids: (p, -1, -1) is a particle contact,
-    # (v0, v1, -1) an edge, (v0, v1, v2) a face. A contact energy E(x) at x = sum_i bary[i]*pos[c_i]
-    # contributes bary[i]*force to corner i and bary[i]^2*hessian to its block. VBD solves one color
-    # per launch, so only scatter to this record's corners of the active color.
-    count = min(body_particle_contact_max, body_particle_contact_count[0])
-    if t_id >= count:
-        return
+    Contacts are consumed in increasing node order rather than linked-list order, so the
+    summation order follows the contact buffer instead of the lists' insertion order. Selection
+    scans the list once per consumed node (O(k^2) link reads for k contacts on one particle);
+    k is small in practice and the scan cost is trivial next to one contact evaluation.
+    """
+    particle_index = particle_ids_in_color[wp.tid()]
+    force = wp.vec3(0.0)
+    hessian = wp.mat33(0.0)
+    head = particle_contact_head[particle_index]
 
-    corners = body_particle_contact_indices[t_id]
-    # Per-contact AVBD penalty + material properties shared with the rigid side.
-    contact_ke = body_particle_contact_penalty_k[t_id]
-    contact_kd = body_particle_contact_material_kd[t_id]
-    contact_mu = body_particle_contact_material_mu[t_id]
+    last = int(-1)
+    while True:
+        # Smallest unconsumed node id > last.
+        node = int(2147483647)
+        cursor = head
+        while cursor >= 0:
+            if cursor > last and cursor < node:
+                node = cursor
+            cursor = particle_contact_next[cursor]
+        if node == 2147483647:
+            break
+        last = node
 
-    if corners[1] < 0:
-        # Particle contact (p, -1, -1): single-vertex path, unchanged from the pre-unification code.
-        particle_idx = corners[0]
-        if particle_colors[particle_idx] == current_color:
-            body_contact_force, body_contact_hessian = _eval_body_particle_contact(
-                particle_idx,
-                pos[particle_idx],
-                pos_anchor[particle_idx],
-                t_id,
+        contact_index = node // 3
+        corner = node - 3 * contact_index
+        corners = body_particle_contact_indices[contact_index]
+        contact_ke = body_particle_contact_penalty_k[contact_index]
+        contact_kd = body_particle_contact_material_kd[contact_index]
+        contact_mu = body_particle_contact_material_mu[contact_index]
+
+        if corners[1] < 0:
+            contact_force, contact_hessian = _eval_body_particle_contact(
+                particle_index,
+                pos[particle_index],
+                pos_anchor[particle_index],
+                contact_index,
                 contact_ke,
                 contact_kd,
                 contact_mu,
@@ -2403,205 +2459,261 @@ def accumulate_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
             )
-            wp.atomic_add(particle_forces, particle_idx, body_contact_force)
-            wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
-    else:
-        # Edge/face contact: barycentric point over the record's 2-3 soft particles.
-        bary = contact_barycentric[t_id]
-        ef_force, ef_hessian, _cp_world = _eval_soft_ef_contact(
-            t_id,
-            corners,
-            bary,
-            pos,
-            pos_anchor,
-            particle_radius,
-            contact_ke,
-            contact_kd,
-            contact_mu,
-            friction_epsilon,
-            shape_body,
-            body_q,
-            body_q_prev,
-            body_qd,
-            body_com,
-            contact_shape,
-            contact_body_pos,
-            contact_body_vel,
-            contact_normal,
-            shape_margin,
-            dt,
-        )
-        for i in range(3):
-            ci = corners[i]
-            if ci >= 0:
-                w = bary[i]
-                if particle_colors[ci] == current_color:
-                    wp.atomic_add(particle_forces, ci, w * ef_force)
-                    wp.atomic_add(particle_hessians, ci, (w * w) * ef_hessian)
+            force += contact_force
+            hessian += contact_hessian
+        else:
+            bary = contact_barycentric[contact_index]
+            contact_force, contact_hessian, _cp_world = _eval_soft_ef_contact(
+                contact_index,
+                corners,
+                bary,
+                pos,
+                pos_anchor,
+                particle_radius,
+                contact_ke,
+                contact_kd,
+                contact_mu,
+                friction_epsilon,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+                shape_margin,
+                dt,
+            )
+            weight = bary[corner]
+            force += weight * contact_force
+            hessian += (weight * weight) * contact_hessian
+
+    # Plain write, no atomics: later spring/self-contact kernels accumulate on top.
+    particle_forces[particle_index] = force
+    particle_hessians[particle_index] = hessian
 
 
-@wp.kernel
-def solve_elasticity_tile(
-    dt: float,
-    particle_ids_in_color: wp.array[wp.int32],
-    pos_prev: wp.array[wp.vec3],
-    pos: wp.array[wp.vec3],
-    mass: wp.array[float],
-    inertia: wp.array[wp.vec3],
-    particle_flags: wp.array[wp.int32],
-    tri_indices: wp.array2d[wp.int32],
-    tri_poses: wp.array[wp.mat22],
-    tri_materials: wp.array2d[float],
-    tri_areas: wp.array[float],
-    edge_indices: wp.array2d[wp.int32],
-    edge_rest_angles: wp.array[float],
-    edge_rest_length: wp.array[float],
-    edge_bending_properties: wp.array2d[float],
-    tet_indices: wp.array2d[wp.int32],
-    tet_poses: wp.array[wp.mat33],
-    tet_materials: wp.array2d[float],
-    particle_adjacency: MeshAdjacencyData,
-    particle_forces: wp.array[wp.vec3],
-    particle_hessians: wp.array[wp.mat33],
-    # output
-    particle_displacements: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-    thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-    particle_index = particle_ids_in_color[block_idx]
+@functools.cache
+def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_particles_per_warp: bool):
+    """Build the tiled per-particle elasticity kernel, specialized at code generation.
 
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0:
-        if thread_idx == 0:
-            particle_displacements[particle_index] = wp.vec3(0.0)
-        return
+    One kernel source serves every tiled variant: ``include_triangles`` / ``include_tets``
+    statically strip the triangle+edge or tetrahedron adjacency loops (the stripped
+    code is absent from the generated kernel, matching a hand-specialized one), and
+    ``two_particles_per_warp`` packs two independent 16-lane particle solves into one
+    32-thread warp, reducing with :func:`_warp_half_reduce_sum` to preserve the legacy
+    16-lane reduction order bit for bit. Variants are memoized per flag combination.
+    """
 
-    dt_sqr_reciprocal = 1.0 / (dt * dt)
+    # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
+    assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16
 
-    # elastic force and hessian
-    f = wp.vec3(0.0)
-    h = wp.mat33(0.0)
+    @wp.kernel(module="unique")
+    def solve_elasticity_tile_kernel(
+        dt: float,
+        particle_ids_in_color: wp.array[wp.int32],
+        pos_prev: wp.array[wp.vec3],
+        pos: wp.array[wp.vec3],
+        mass: wp.array[float],
+        inertia: wp.array[wp.vec3],
+        particle_flags: wp.array[wp.int32],
+        tri_indices: wp.array2d[wp.int32],
+        tri_poses: wp.array[wp.mat22],
+        tri_materials: wp.array2d[float],
+        tri_areas: wp.array[float],
+        edge_indices: wp.array2d[wp.int32],
+        edge_rest_angles: wp.array[float],
+        edge_rest_length: wp.array[float],
+        edge_bending_properties: wp.array2d[float],
+        tet_indices: wp.array2d[wp.int32],
+        tet_poses: wp.array[wp.mat33],
+        tet_materials: wp.array2d[float],
+        particle_adjacency: MeshAdjacencyData,
+        particle_forces: wp.array[wp.vec3],
+        particle_hessians: wp.array[wp.mat33],
+        # output
+        particle_displacements: wp.array[wp.vec3],
+    ):
+        tid = wp.tid()
+        particle_slot = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
 
-    batch_counter = wp.int32(0)
+        particle_slot_valid = True
+        if wp.static(two_particles_per_warp):
+            # Odd color sizes leave the second half-warp slot empty; it must still reach the
+            # warp-wide reductions, so it cannot early-return.
+            particle_slot_valid = particle_slot < particle_ids_in_color.shape[0]
 
-    if tri_indices.shape[0] > 0:
-        num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
-        # loop through all the adjacent triangles using whole block
-        while batch_counter + thread_idx < num_adj_faces:
-            adj_tri_counter = thread_idx + batch_counter
-            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-            # elastic force and hessian
-            tri_index, vertex_order = get_vertex_adjacent_face_id_order(
-                particle_adjacency, particle_index, adj_tri_counter
+        particle_index = wp.int32(0)
+        particle_is_dynamic = False
+        if particle_slot_valid:
+            particle_index = particle_ids_in_color[particle_slot]
+            particle_is_dynamic = (
+                particle_flags[particle_index] & ParticleFlags.ACTIVE != 0 and mass[particle_index] != 0.0
             )
 
-            # fmt: off
-            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
-                wp.printf(
-                    "particle: %d | num_adj_faces: %d | ",
-                    particle_index,
-                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
-                )
-                wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
-                wp.printf(
-                    "face: %d %d %d\n",
-                    tri_indices[tri_index, 0],
-                    tri_indices[tri_index, 1],
-                    tri_indices[tri_index, 2],
-                )
-            # fmt: on
+        if wp.static(not two_particles_per_warp):
+            # Whole 16-lane block shares one particle: safe to retire inactive blocks early.
+            if not particle_is_dynamic:
+                if thread_idx == 0:
+                    particle_displacements[particle_index] = wp.vec3(0.0)
+                return
 
-            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                    tri_index,
-                    vertex_order,
-                    pos,
-                    pos_prev,
-                    tri_indices,
-                    tri_poses[tri_index],
-                    tri_areas[tri_index],
-                    tri_materials[tri_index, 0],
-                    tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
-                    dt,
-                )
+        f = wp.vec3(0.0)
+        h = wp.mat33(0.0)
 
-                f += f_tri
-                h += h_tri
+        if particle_is_dynamic:
+            if wp.static(include_triangles):
+                if tri_indices.shape[0] > 0:
+                    batch_counter = wp.int32(0)
+                    num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
+                    # loop through all the adjacent triangles using the whole 16-lane group
+                    while batch_counter + thread_idx < num_adj_faces:
+                        adj_tri_counter = thread_idx + batch_counter
+                        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+                        tri_index, vertex_order = get_vertex_adjacent_face_id_order(
+                            particle_adjacency, particle_index, adj_tri_counter
+                        )
 
-    if edge_indices.shape[0] > 0:
-        batch_counter = wp.int32(0)
-        num_adj_edges = get_vertex_num_adjacent_edges(particle_adjacency, particle_index)
-        while batch_counter + thread_idx < num_adj_edges:
-            adj_edge_counter = batch_counter + thread_idx
-            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
-                particle_adjacency, particle_index, adj_edge_counter
+                        # fmt: off
+                        if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                            wp.printf(
+                                "particle: %d | num_adj_faces: %d | ",
+                                particle_index,
+                                get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
+                            )
+                            wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
+                            wp.printf(
+                                "face: %d %d %d\n",
+                                tri_indices[tri_index, 0],
+                                tri_indices[tri_index, 1],
+                                tri_indices[tri_index, 2],
+                            )
+                        # fmt: on
+
+                        if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                            f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                                tri_index,
+                                vertex_order,
+                                pos,
+                                pos_prev,
+                                tri_indices,
+                                tri_poses[tri_index],
+                                tri_areas[tri_index],
+                                tri_materials[tri_index, 0],
+                                tri_materials[tri_index, 1],
+                                tri_materials[tri_index, 2],
+                                dt,
+                            )
+
+                            f += f_tri
+                            h += h_tri
+
+                if edge_indices.shape[0] > 0:
+                    batch_counter = wp.int32(0)
+                    num_adj_edges = get_vertex_num_adjacent_edges(particle_adjacency, particle_index)
+                    while batch_counter + thread_idx < num_adj_edges:
+                        adj_edge_counter = batch_counter + thread_idx
+                        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+                        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+                            particle_adjacency, particle_index, adj_edge_counter
+                        )
+                        if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                                nei_edge_index,
+                                vertex_order_on_edge,
+                                pos,
+                                pos_prev,
+                                edge_indices,
+                                edge_rest_angles,
+                                edge_rest_length,
+                                edge_bending_properties[nei_edge_index, 0],
+                                edge_bending_properties[nei_edge_index, 1],
+                                dt,
+                            )
+
+                            f += f_edge
+                            h += h_edge
+
+            if wp.static(include_tets):
+                if tet_indices.shape[0] > 0:
+                    batch_counter = wp.int32(0)
+                    num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
+                    while batch_counter + thread_idx < num_adj_tets:
+                        adj_tet_counter = batch_counter + thread_idx
+                        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+                        nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                            particle_adjacency, particle_index, adj_tet_counter
+                        )
+                        if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                            f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
+                                nei_tet_index,
+                                vertex_order_on_tet,
+                                pos_prev,
+                                pos,
+                                tet_indices,
+                                tet_poses[nei_tet_index],
+                                tet_materials[nei_tet_index, 0],
+                                tet_materials[nei_tet_index, 1],
+                                tet_materials[nei_tet_index, 2],
+                                dt,
+                            )
+
+                            f += f_tet
+                            h += h_tet
+
+        if wp.static(two_particles_per_warp):
+            # The legacy 16-thread tile reduction uses the same 8,4,2,1 butterfly tree for lane
+            # zero. Scalar shuffles retain that arithmetic order while allowing the two half-warps
+            # to solve independent particles in one full warp.
+            f_total = wp.vec3(
+                _warp_half_reduce_sum(f[0]),
+                _warp_half_reduce_sum(f[1]),
+                _warp_half_reduce_sum(f[2]),
             )
-            if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                    nei_edge_index,
-                    vertex_order_on_edge,
-                    pos,
-                    pos_prev,
-                    edge_indices,
-                    edge_rest_angles,
-                    edge_rest_length,
-                    edge_bending_properties[nei_edge_index, 0],
-                    edge_bending_properties[nei_edge_index, 1],
-                    dt,
-                )
-
-                f += f_edge
-                h += h_edge
-
-    if tet_indices.shape[0] > 0:
-        # solve tet elasticity
-        batch_counter = wp.int32(0)
-        num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
-        while batch_counter + thread_idx < num_adj_tets:
-            adj_tet_counter = batch_counter + thread_idx
-            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
-                particle_adjacency, particle_index, adj_tet_counter
+            h_total = wp.mat33(
+                _warp_half_reduce_sum(h[0, 0]),
+                _warp_half_reduce_sum(h[0, 1]),
+                _warp_half_reduce_sum(h[0, 2]),
+                _warp_half_reduce_sum(h[1, 0]),
+                _warp_half_reduce_sum(h[1, 1]),
+                _warp_half_reduce_sum(h[1, 2]),
+                _warp_half_reduce_sum(h[2, 0]),
+                _warp_half_reduce_sum(h[2, 1]),
+                _warp_half_reduce_sum(h[2, 2]),
             )
-            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
-                    nei_tet_index,
-                    vertex_order_on_tet,
-                    pos_prev,
-                    pos,
-                    tet_indices,
-                    tet_poses[nei_tet_index],
-                    tet_materials[nei_tet_index, 0],
-                    tet_materials[nei_tet_index, 1],
-                    tet_materials[nei_tet_index, 2],
-                    dt,
-                )
+        else:
+            f_tile = wp.tile(f, preserve_type=True)
+            h_tile = wp.tile(h, preserve_type=True)
 
-                f += f_tet
-                h += h_tet
+            f_total = wp.tile_reduce(wp.add, f_tile)[0]
+            h_total = wp.tile_reduce(wp.add, h_tile)[0]
 
-    f_tile = wp.tile(f, preserve_type=True)
-    h_tile = wp.tile(h, preserve_type=True)
-
-    f_total = wp.tile_reduce(wp.add, f_tile)[0]
-    h_total = wp.tile_reduce(wp.add, h_tile)[0]
-
-    if thread_idx == 0:
-        h_total = (
-            h_total
-            + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
-            + particle_hessians[particle_index]
-        )
-        if abs(wp.determinant(h_total)) > 1e-8:
-            h_inv = wp.inverse(h_total)
-            f_total = (
-                f_total
-                + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
-                + particle_forces[particle_index]
+        if thread_idx == 0 and particle_slot_valid:
+            if wp.static(two_particles_per_warp):
+                if not particle_is_dynamic:
+                    particle_displacements[particle_index] = wp.vec3(0.0)
+                    return
+            dt_sqr_reciprocal = 1.0 / (dt * dt)
+            h_total = (
+                h_total
+                + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+                + particle_hessians[particle_index]
             )
-            particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+            if abs(wp.determinant(h_total)) > 1e-8:
+                h_inv = wp.inverse(h_total)
+                f_total = (
+                    f_total
+                    + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
+                    + particle_forces[particle_index]
+                )
+                particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+
+    # module="unique" kernels do not inherit this file's module options.
+    wp.set_module_options({"enable_backward": False}, module=solve_elasticity_tile_kernel.module)
+    return solve_elasticity_tile_kernel
 
 
 @wp.kernel
