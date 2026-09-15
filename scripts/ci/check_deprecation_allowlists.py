@@ -4,7 +4,6 @@
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
 
 import tomllib
 from packaging.requirements import InvalidRequirement, Requirement
@@ -17,24 +16,11 @@ PYPROJECT = ROOT / "pyproject.toml"
 ALLOWLIST_DIRECTORY = ROOT / "scripts" / "ci" / "deprecation_allowlists"
 
 
-class AllowlistEntry(NamedTuple):
-    path: Path
-    line_number: int
-    message: str
-    removal_requirement: Requirement
-
-
-def _parse_removal_requirement(
-    value: str,
-    path: Path,
-    line_number: int,
-    errors: list[str],
-) -> Requirement | None:
+def _parse_removal_requirement(value: str) -> Requirement:
     try:
         requirement = Requirement(value)
     except InvalidRequirement as error:
-        errors.append(f"{path}:{line_number}: invalid removal requirement: {error}")
-        return None
+        raise ValueError(f"invalid removal requirement: {error}") from error
 
     specifiers = list(requirement.specifier)
     if (
@@ -44,36 +30,8 @@ def _parse_removal_requirement(
         or len(specifiers) != 1
         or specifiers[0].operator != ">="
     ):
-        errors.append(
-            f"{path}:{line_number}: removal condition must be a plain requirement with exactly one >= specifier"
-        )
-        return None
+        raise ValueError("removal condition must be a plain requirement with exactly one >= specifier")
     return requirement
-
-
-def _parse_allowlist(path: Path) -> tuple[list[AllowlistEntry], list[str]]:
-    entries: list[AllowlistEntry] = []
-    errors: list[str] = []
-    pending: tuple[int, Requirement | None] | None = None
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if line.startswith(DIRECTIVE_PREFIX):
-            if pending is not None:
-                errors.append(f"{path}:{pending[0]}: removal condition has no allowlist entry")
-            value = line.removeprefix(DIRECTIVE_PREFIX).strip()
-            pending = (line_number, _parse_removal_requirement(value, path, line_number, errors))
-        elif not line or line.startswith("#"):
-            continue
-        elif pending is None:
-            errors.append(f"{path}:{line_number}: allowlist entry has no removal condition")
-        else:
-            _, requirement = pending
-            if requirement is not None:
-                entries.append(AllowlistEntry(path, line_number, line, requirement))
-            pending = None
-    if pending is not None:
-        errors.append(f"{path}:{pending[0]}: removal condition has no allowlist entry")
-    return entries, errors
 
 
 def _load_project_requirements(path: Path) -> list[Requirement]:
@@ -95,55 +53,57 @@ def _declared_minimum(requirement: Requirement) -> Version:
     return Version(lower_bounds[0].version)
 
 
-def check_allowlists(pyproject_path: Path, allowlist_paths: Sequence[Path]) -> list[str]:
-    errors: list[str] = []
+def check_allowlists(pyproject_path: Path, allowlist_paths: Sequence[Path]) -> str | None:
     requirements = _load_project_requirements(pyproject_path)
-    by_name: dict[str, list[Requirement]] = {}
-    for requirement in requirements:
-        by_name.setdefault(canonicalize_name(requirement.name), []).append(requirement)
-
-    entries: list[AllowlistEntry] = []
     for path in allowlist_paths:
-        parsed, parse_errors = _parse_allowlist(path)
-        entries.extend(parsed)
-        errors.extend(parse_errors)
+        pending: tuple[int, Requirement] | None = None
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line_number, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if line.startswith(DIRECTIVE_PREFIX):
+                if pending is not None:
+                    return f"{path}:{pending[0]}: removal condition has no allowlist entry"
+                try:
+                    condition = _parse_removal_requirement(line.removeprefix(DIRECTIVE_PREFIX).strip())
+                except ValueError as error:
+                    return f"{path}:{line_number}: {error}"
+                pending = (line_number, condition)
+                continue
+            if not line or line.startswith("#"):
+                continue
+            if pending is None:
+                return f"{path}:{line_number}: allowlist entry has no removal condition"
 
-    for entry in entries:
-        name = canonicalize_name(entry.removal_requirement.name)
-        matches = by_name.get(name, [])
-        if not matches:
-            errors.append(
-                f"{entry.path}:{entry.line_number}: {entry.removal_requirement.name} is not a direct project dependency"
-            )
-            continue
-        if len(matches) != 1:
-            errors.append(
-                f"{entry.path}:{entry.line_number}: {entry.removal_requirement.name} "
-                "has multiple direct project requirements"
-            )
-            continue
-        try:
-            declared_minimum = _declared_minimum(matches[0])
-        except ValueError as error:
-            errors.append(f"{entry.path}:{entry.line_number}: {matches[0]} {error}")
-            continue
-        threshold_specifier = next(iter(entry.removal_requirement.specifier))
-        threshold = Version(threshold_specifier.version)
-        if declared_minimum >= threshold:
-            errors.append(
-                f"{entry.path}:{entry.line_number}: {entry.message!r} is obsolete; "
-                f"project requirement {matches[0]} satisfies removal condition "
-                f"{entry.removal_requirement}; remove this allowlist entry"
-            )
-    return errors
+            _, condition = pending
+            name = canonicalize_name(condition.name)
+            matches = [requirement for requirement in requirements if canonicalize_name(requirement.name) == name]
+            if not matches:
+                return f"{path}:{line_number}: {condition.name} is not a direct project dependency"
+            if len(matches) != 1:
+                return f"{path}:{line_number}: {condition.name} has multiple direct project requirements"
+            try:
+                declared_minimum = _declared_minimum(matches[0])
+            except ValueError as error:
+                return f"{path}:{line_number}: {matches[0]} {error}"
+            threshold = Version(next(iter(condition.specifier)).version)
+            if declared_minimum >= threshold:
+                return (
+                    f"{path}:{line_number}: {line!r} is obsolete; project requirement "
+                    f"{matches[0]} satisfies removal condition {condition}; remove this allowlist entry"
+                )
+            pending = None
+        if pending is not None:
+            return f"{path}:{pending[0]}: removal condition has no allowlist entry"
+    return None
 
 
 def main() -> int:
     allowlist_paths = sorted(ALLOWLIST_DIRECTORY.glob("*.txt"))
-    errors = check_allowlists(PYPROJECT, allowlist_paths)
-    for error in errors:
+    error = check_allowlists(PYPROJECT, allowlist_paths)
+    if error is not None:
         print(error, file=sys.stderr)
-    return int(bool(errors))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
