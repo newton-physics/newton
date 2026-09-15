@@ -8,6 +8,7 @@ import warnings
 from unittest import mock
 
 import numpy as np
+import warp as wp
 
 from newton._src.viewer.viewer_rtx import ViewerRTX
 
@@ -70,6 +71,8 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.viewer._ovstage_paths = self.ovstage.PathDictionary(self.viewer._ovstage)
         self.viewer._ovstage_queries = {}
         self.viewer._ovstage_ordinal = 1
+        self.viewer._ovstage_population_dirty = False
+        self.viewer._line_batch_handles = {}
         self.ovstage.population.open_usd_from_string(
             self.viewer._ovstage,
             """#usda 1.0
@@ -153,6 +156,53 @@ def Xform "World"
             self.viewer._ovstage.release_group(group)
 
         np.testing.assert_allclose(values, points)
+
+    def test_runtime_line_batch_population_uses_ovstage(self):
+        """Add and remove runtime line USD through OVStage without legacy calls."""
+        self.viewer._rtx = mock.Mock()
+        self.viewer._rtx.add_usd_reference_from_string.side_effect = DeprecationWarning
+        self.viewer._rtx.remove_usd.side_effect = DeprecationWarning
+        self.viewer._get_path = mock.Mock(return_value="/World/RuntimeLines")
+        starts = np.asarray([[0.0, 0.0, 0.0]], dtype=np.float32)
+        ends = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+        colors = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        self.assertTrue(self.viewer._rebuild_runtime_line_batch_layer("runtime", starts, ends, colors, 0.1, False))
+        self.assertTrue(self.viewer._ovstage_population_dirty)
+        self.assertIsInstance(self.viewer._line_batch_handles["runtime"], int)
+        self.viewer._ovstage_ordinal = 2
+        self.viewer._apply_ovstage_population_changes()
+        self.assertFalse(self.viewer._ovstage_population_dirty)
+
+        self.viewer._remove_runtime_line_batch_layer("runtime")
+        self.assertTrue(self.viewer._ovstage_population_dirty)
+        self.viewer._ovstage_ordinal = 3
+        self.viewer._apply_ovstage_population_changes()
+        self.assertFalse(self.viewer._ovstage_population_dirty)
+        self.viewer._rtx.add_usd_reference_from_string.assert_not_called()
+        self.viewer._rtx.remove_usd.assert_not_called()
+
+
+@unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
+class TestViewerRTXRendering(unittest.TestCase):
+    def test_runtime_line_batch_has_no_deprecation_warnings(self):
+        """Render a line batch first created after the runtime scene is active."""
+        viewer = ViewerRTX(headless=True, async_rendering=False)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+                viewer.begin_frame(1.0 / 60.0)
+                viewer.log_lines(
+                    "/runtime_line",
+                    wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+                    wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
+                    wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3),
+                )
+                viewer.end_frame()
+        finally:
+            viewer.close()
 
 
 if __name__ == "__main__":

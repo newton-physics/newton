@@ -85,6 +85,7 @@ class _MinimalRTXViewer(ViewerRTX):
         self._ovstage_paths = None
         self._ovstage_queries = {}
         self._ovstage_ordinal = 0
+        self._ovstage_population_dirty = False
         self._pending_transform_matrices = {}
         self._render_width = 640
         self._render_height = 480

@@ -225,6 +225,7 @@ class ViewerRTX(ViewerUSD):
         self._ovstage_paths = None
         self._ovstage_queries = {}
         self._ovstage_ordinal = 0
+        self._ovstage_population_dirty = False
         self._pending_transform_matrices = {}
         self._async = async_rendering
 
@@ -969,7 +970,15 @@ void main() {
 
         handle = self._line_batch_handles.pop(name, None)
         if handle is not None:
-            self._rtx.remove_usd(handle)
+            if self._use_ovstage:
+                if self._ovstage is None:
+                    return
+                import ovstage
+
+                ovstage.population.remove_usd(self._ovstage, handle)
+                self._ovstage_population_dirty = True
+            else:
+                self._rtx.remove_usd(handle)
 
     def _ensure_point_batch_primitive(self, name: str):
         if Gf is None or UsdGeom is None:
@@ -1117,7 +1126,16 @@ void main() {
             _UsdShade.MaterialBindingAPI.Apply(capsule.GetPrim())
             _UsdShade.MaterialBindingAPI(capsule).Bind(_UsdShade.Material.Get(stage, mat_path))
 
-        handle = self._rtx.add_usd_reference_from_string(stage.GetRootLayer().ExportToString(), prefix_path=target_path)
+        usd_source = stage.GetRootLayer().ExportToString()
+        if self._use_ovstage:
+            if self._ovstage is None:
+                return False
+            import ovstage
+
+            handle = ovstage.population.add_usd_reference_from_string(self._ovstage, usd_source, target_path)
+            self._ovstage_population_dirty = True
+        else:
+            handle = self._rtx.add_usd_reference_from_string(usd_source, prefix_path=target_path)
         self._line_batch_handles[name] = handle
         return True
 
@@ -1474,6 +1492,7 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
             if self._use_ovstage:
                 self._ovstage_ordinal += 1
+                self._apply_ovstage_population_changes()
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
             self._update_ovrtx_instance_visibility()
@@ -1815,11 +1834,22 @@ void main() {
             cuda_stream=cuda_stream,
         )
 
+    def _apply_ovstage_population_changes(self) -> None:
+        """Publish pending runtime USD population edits at the current ordinal."""
+        if not self._ovstage_population_dirty or self._ovstage is None:
+            return
+
+        import ovstage
+
+        ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
+        self._ovstage_population_dirty = False
+
     def _release_ovstage(self) -> None:
         """Release runtime-stage queries and detach the stage from OVRTX."""
         stage = getattr(self, "_ovstage", None)
         paths = getattr(self, "_ovstage_paths", None)
         queries = getattr(self, "_ovstage_queries", {})
+        self._ovstage_population_dirty = False
 
         if stage is None:
             return
@@ -2438,6 +2468,7 @@ void main() {
         self._pending_line_batches = {}
         self._pending_point_batches = {}
         self._pending_transform_matrices = {}
+        self._ovstage_population_dirty = False
 
         self._flat_shape_xforms = None
         self._flat_shape_parents = None
