@@ -1382,10 +1382,13 @@ def test_detector_check_and_grow(test, device):
     test.assertTrue(counters[1] or counters[3])  # budgets of 1 must overflow here
 
     old_info = detector.collision_info
+    old_vt_rows = old_info.vertex_colliding_triangles
     with test.assertWarns(UserWarning):
         grew = detector.check_and_grow_collision_buffers()
     test.assertTrue(grew)
-    test.assertIsNot(detector.collision_info, old_info)
+    # growth is in place: same struct object, larger row arrays
+    test.assertIs(detector.collision_info, old_info)
+    test.assertGreater(old_info.vertex_colliding_triangles.shape[0], old_vt_rows.shape[0])
 
     detector.vertex_triangle_collision_detection(query_radius)
     detector.edge_edge_collision_detection(query_radius)

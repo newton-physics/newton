@@ -1032,10 +1032,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Thin wrapper over
         ``TriMeshCollisionDetector.check_and_grow_collision_buffers()``, which
-        owns the overflow readback, the warning, and the 1.5x-demand resize;
-        this method afterwards re-points the solver-side references (the
-        pipeline's ``Contacts`` result struct, the struct array the contact
-        kernels read, and the per-pair launch size). The solver never calls
+        owns the overflow readback, the warning, and the in-place 1.5x-demand
+        resize; this method afterwards refreshes the two solver-side pieces
+        the in-place growth cannot reach (the device-side struct copy the
+        contact kernels read, and the per-pair launch size). The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
         empty until the next step's detection fills it.
@@ -1056,13 +1056,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             detector = self.collision_pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
         else:
             detector = self.trimesh_collision_detector
-        # overflow handling and resizing are the detector's job; this wrapper
-        # only refreshes the solver-side references to the new result struct
+        # overflow handling and resizing are the detector's job; growth is in
+        # place (same struct object), so owners like the pipeline's Contacts
+        # stay valid on their own -- only the solver's DEVICE-SIDE copy of the
+        # struct and the launch size need a refresh
         if not detector.check_and_grow_collision_buffers():
             return False
         collision_info = detector.collision_info
-        if self.collision_pipeline is not None:
-            self._pipeline_contacts.soft_self_contact_data = collision_info
         self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
         self._update_self_contact_launch_size(collision_info)
         return True

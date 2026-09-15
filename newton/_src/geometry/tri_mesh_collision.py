@@ -918,21 +918,22 @@ class TriMeshCollisionDetector:
 
         Reads the counters back (synchronizes the device). When a family
         overflowed, its per-element budget is raised to cover 1.5x the measured
-        demand, a fresh result struct is allocated and bound, and the internal
-        append log is resized to match; the next detection fills the grown
-        rows. The grown storage is empty until then, so call this between
+        demand and the storage grows IN PLACE: the bound struct stays the same
+        object and only its capacity-sized row arrays are replaced (per-element
+        arrays never change size), so every owner of the struct keeps a valid
+        reference. The internal append log is resized to match. The grown rows
+        are empty until the next detection fills them, so call this between
         detections, not between a detection and a consumer of its results.
 
         This call must not be captured into a CUDA graph: it synchronizes,
         and growth reallocates arrays. While capture is active it returns
         ``False`` without checking anything. After a ``True`` return, any
         PREVIOUSLY captured graph that contains detection or contact kernels
-        is invalid: it still operates on the old, unbound storage, so replaying
-        it silently produces stale results. Re-create such graphs after growth.
-
-        Owners of the result struct must re-read :attr:`collision_info` after
-        a ``True`` return (``SolverVBD.check_and_grow_self_contact_buffers``
-        wraps this and refreshes the solver-side references).
+        is invalid: it still operates on the old row arrays, so replaying it
+        silently produces stale results. Re-create such graphs after growth.
+        Device-side COPIES of the struct also go stale (``SolverVBD`` keeps
+        one for its contact kernels; its
+        ``check_and_grow_self_contact_buffers`` wrapper refreshes it).
 
         Args:
             warn: Emit a ``UserWarning`` describing the overflow (per-family
@@ -952,25 +953,38 @@ class TriMeshCollisionDetector:
 
         particle_count = max(self.model.particle_count, 1)
         edge_count = max(self.model.edge_count, 1)
+        info = self.collision_info
         if vt_overflow:
             self.vertex_collision_buffer_pre_alloc = max(
                 self.vertex_collision_buffer_pre_alloc + 1, -(-3 * vt_demand // (2 * particle_count))
             )
+            vt_capacity = self.vertex_collision_buffer_pre_alloc * self.model.particle_count
+            info.vertex_colliding_triangles = wp.zeros(
+                shape=(max(2 * vt_capacity, 1),), dtype=wp.int32, device=self.device
+            )
+            if self.record_triangle_contacting_vertices:
+                info.triangle_colliding_vertices = wp.zeros(
+                    shape=(max(vt_capacity, 1),), dtype=wp.int32, device=self.device
+                )
         if ee_overflow:
             self.edge_collision_buffer_pre_alloc = max(
                 self.edge_collision_buffer_pre_alloc + 1, -(-3 * ee_demand // (2 * edge_count))
             )
+            ee_capacity = self.edge_collision_buffer_pre_alloc * self.model.edge_count
+            info.edge_colliding_edges = wp.zeros(shape=(max(2 * ee_capacity, 1),), dtype=wp.int32, device=self.device)
 
-        collision_info = build_tri_mesh_collision_info(
-            self.model.particle_count,
-            self.model.tri_count,
-            self.model.edge_count,
-            vertex_collision_buffer_pre_alloc=self.vertex_collision_buffer_pre_alloc,
-            edge_collision_buffer_pre_alloc=self.edge_collision_buffer_pre_alloc,
-            record_triangle_contacting_vertices=self.record_triangle_contacting_vertices,
-            device=self.device,
-        )
-        self._bind_external_buffers(collision_info)
+        # leave the struct in the same state a fresh allocation would have:
+        # empty rows described by empty offsets/counts, cleared demand cursors
+        info.counters.zero_()
+        info.vertex_colliding_triangles_count.zero_()
+        info.vertex_colliding_triangles_offsets.zero_()
+        info.edge_colliding_edges_count.zero_()
+        info.edge_colliding_edges_offsets.zero_()
+        if self.record_triangle_contacting_vertices:
+            info.triangle_colliding_vertices_count.zero_()
+            info.triangle_colliding_vertices_offsets.zero_()
+
+        self._ensure_scratch()
         return True
 
     def rebuild(self, new_pos=None):
