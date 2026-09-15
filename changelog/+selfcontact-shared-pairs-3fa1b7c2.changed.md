@@ -1,7 +1,7 @@
 Rewrite triangle-mesh self-contact storage: result rows keep the historical
 interleaved layout but are exact-length now, backed by an internal append log,
 so memory scales with actual contacts. `TriMeshCollisionInfo` drops the
-`*_buffer_sizes` fields and gains `counters`; `SolverVBD`'s contact-buffer
+`*_buffer_sizes` fields and gains `global_pair_counts`; `SolverVBD`'s contact-buffer
 knobs and the pipeline/`Contacts` `*_pre_alloc` parameters now mean an average
 budget per element, with defaults lowered from 32/64 to 8/16. On overflow
 excess contacts are dropped and flagged; call
