@@ -308,6 +308,10 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
 
 def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
     """Match allowed warning records with source context verified at their locations."""
+    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+    for match in re.finditer(warp_header, stderr):
+        yield "^" + re.escape(match.group())
+
     # Formatted stderr cannot establish a custom category's inheritance.
     header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
 
@@ -409,6 +413,18 @@ class TestExampleOutputRegexes(unittest.TestCase):
             with self.subTest(stderr=stderr):
                 result = self._run_example_with_stderr(stderr, allowed_prefix)
                 self.assertTrue(result.wasSuccessful(), result.failures)
+
+    def test_allowlisted_warp_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted in Warp's log format."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
 
     def test_allowlisted_deprecation_does_not_hide_other_example_stderr(self):
         """Reject unrelated stderr following an acknowledged deprecation."""
