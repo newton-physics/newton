@@ -1610,8 +1610,8 @@ def edge_colliding_edges_detection_kernel(
     ``global_pair_counts[EE_PAIR_CURSOR]``, and links each stored record into the edge's
     single-writer list (chain head in a register; push-front, so the chain
     reads in reverse traversal order and the row fill restores forward order).
-    Pairs are recorded from both edges' threads (both directions), matching the
-    historical row contents. Hits found beyond ``ee_pair_capacity`` are still
+    Pairs are recorded from both edges' threads, so each edge's row lists the
+    collisions from its own perspective. Hits found beyond ``ee_pair_capacity`` are still
     counted by the cursor (total demand for the overflow report) but not stored
     or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set.
 
@@ -1773,8 +1773,8 @@ def fill_self_contact_rows_from_lists(
 ):
     """Walk each element's linked record list and write its CSR row content.
 
-    Rows store the interleaved (element, counterpart) index pairs of the
-    historical fixed rows, in exact-length rows. The chain holds the records
+    Rows store interleaved (element, counterpart) index pairs, exact length
+    per element. The chain holds the records
     in reverse traversal order (push-front), so the row is written back to
     front, which restores the forward BVH-traversal order. Single writer per
     row, no atomics: absent overflow, row contents and order are deterministic
@@ -1803,10 +1803,9 @@ def fill_self_contact_reverse_rows_from_lists(
     # outputs
     row_values: wp.array[wp.int32],
 ):
-    """Triangle-side variant of the row fill: each row entry stores only the
-    contacting vertex index (``pair[0]``), matching the historical reverse
-    table. These chains have many writers (``atomic_exch`` push-front), so row
-    order is scheduling-dependent."""
+    """Triangle-side variant of the row fill: each row entry stores one
+    contacting vertex index (``pair[0]``). These chains have many writers
+    (``atomic_exch`` push-front), so row order is scheduling-dependent."""
     element = wp.tid()
     end = row_offsets[element + 1]
     start = row_offsets[element]

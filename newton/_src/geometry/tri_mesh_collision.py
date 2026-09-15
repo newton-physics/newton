@@ -41,11 +41,12 @@ class TriMeshCollisionInfo:
         This storage-level result type may change without the normal
         deprecation period while the public self-contact API matures.
 
-    Rows keep the historical layout: ``vertex_colliding_triangles`` and
-    ``edge_colliding_edges`` hold interleaved (element, counterpart) index
-    pairs and ``triangle_colliding_vertices`` holds vertex indices, but rows
-    are now exact-length CSR (``*_offsets`` are real prefix sums and
-    ``*_count`` equals each row's length). Detection appends hits to an
+    Each family's results are exact-length CSR rows over flat int32 arrays:
+    ``vertex_colliding_triangles`` holds interleaved (vertex, triangle) index
+    pairs, ``edge_colliding_edges`` holds interleaved (edge, colliding edge)
+    pairs (both directions), and ``triangle_colliding_vertices`` holds one
+    contacting vertex index per entry. ``*_offsets`` are real prefix sums and
+    ``*_count`` equals each row's length. Detection appends hits to an
     internal shared scratch pool sized by an average budget per element, so
     memory scales with the actual contact count and a locally dense fold
     cannot overflow a private per-element budget; rows are rebuilt from that
@@ -518,8 +519,8 @@ class TriMeshCollisionDetector:
         # buffers now; self-contact overflow lives in collision_info.global_pair_counts
         self.resize_flags = wp.zeros(shape=(4,), dtype=wp.int32, device=self.device)
         # stand-in for the optional per-triangle min-dist output when the
-        # triangle-side recording is off (parity with the historical behavior:
-        # the array then keeps its constant query-radius fill)
+        # triangle-side recording is off; the real array then keeps its
+        # constant query-radius fill from the per-detection reset
         self._empty_min_dist = wp.empty(shape=(0,), dtype=float, device=self.device)
         self._empty_int32 = wp.empty(shape=(0,), dtype=wp.int32, device=self.device)
 
@@ -679,10 +680,10 @@ class TriMeshCollisionDetector:
                 "struct before detecting."
             )
 
-    # Result-array views into the owned/injected ``collision_info`` (D21: the
-    # detector owns no result buffers). Read-only properties preserve the
-    # historical attribute surface, including ``None`` for the optional
-    # triangle-side buffers when ``record_triangle_contacting_vertices`` is off.
+    # Read-only views into the owned/injected ``collision_info``, one property
+    # per result field (the detector owns no result buffers), with ``None`` for
+    # the optional triangle-side buffers when
+    # ``record_triangle_contacting_vertices`` is off.
 
     @property
     def global_pair_counts(self):
