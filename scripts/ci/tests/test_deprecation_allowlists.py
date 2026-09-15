@@ -9,6 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "ci" / "check_deprecation_allowlists.py"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+CHECK_COMMAND = "uv run --no-project --with packaging scripts/ci/check_deprecation_allowlists.py"
 
 spec = importlib.util.spec_from_file_location("check_deprecation_allowlists", SCRIPT)
 assert spec is not None and spec.loader is not None
@@ -124,3 +126,16 @@ class TestDeprecationAllowlists(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertIn("first warning", errors[0])
         self.assertIn("second warning", errors[1])
+
+
+class TestDeprecationAllowlistWorkflow(unittest.TestCase):
+    def test_ci_runs_blocking_checker(self):
+        """Run the deprecation allowlist checker as a blocking CPU CI step."""
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        marker = "      - name: Check deprecation allowlists\n"
+        self.assertIn(marker, workflow)
+        start = workflow.index(marker)
+        end = workflow.find("\n      - name:", start + len(marker))
+        block = workflow[start:] if end == -1 else workflow[start:end]
+        self.assertIn(f"        run: {CHECK_COMMAND}\n", block)
+        self.assertNotIn("continue-on-error", block)

@@ -30,7 +30,10 @@ class TestPrApiChangesWorkflow(unittest.TestCase):
     def test_ci_runs_api_detector_tests(self):
         """Run CI-tool regression tests explicitly in the main CI workflow."""
         ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("uv run --no-project -m unittest discover -s scripts/ci/tests", ci_workflow)
+        self.assertIn(
+            "uv run --no-project --with packaging -m unittest discover -s scripts/ci/tests",
+            ci_workflow,
+        )
 
     def test_external_prs_do_not_require_manual_approval(self):
         """Run trusted static analysis for external PRs without an approval gate."""
