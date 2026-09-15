@@ -904,7 +904,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         body_global_to_local = {body_id: body_id for body_id in range(model.body_count)}
         view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
     def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexMaps | None) -> _EntryIndexMaps:
         """Build local/global id maps for a completed entry view."""
@@ -1434,7 +1434,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             body_global_to_local,
             set(visible_shape_order),
         )
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
         articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)

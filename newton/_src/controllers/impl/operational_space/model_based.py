@@ -18,18 +18,16 @@ import re
 import numpy as np
 import warp as wp
 
-from newton import JointType
-from newton._src.geometry.flags import ShapeFlags
 from newton._src.sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 from newton._src.sim.model import Model
 
-from ....utils.selection import get_name_from_label, match_labels
 from ...controller import ControllerBase
-from ...joint_selection import select_joints
+from ...joint_selection import resolve_joint_selection
+from ...tool_selection import resolve_tool_sites
 from ...utils import _validate_array
-from .._common import _gather_mass_matrix_blocks_kernel, _read_port
-from ._common import _shift_jacobian_to_tool_kernel, _tool_pose_and_twist_kernel
+from .._common import _gather_mass_matrix_blocks_kernel, _read_port, _shift_jacobian_to_tool_kernel
+from ._common import _tool_pose_and_twist_kernel
 from .model_free import _IDENTITY_QUAT, _IDENTITY_TRANSFORM, ControllerOperationalSpaceModelFree
 
 
@@ -315,204 +313,40 @@ class ControllerOperationalSpace(ControllerBase):
         self._coord_count = int(model.joint_coord_count)
         self._dof_count = int(model.joint_dof_count)
 
-        joint_selection = select_joints(model, articulations=articulations, joints=joints)
-        joint_q_idx = joint_selection.q_start
-        joint_qd_idx = joint_selection.qd_start
-
-        # ------------------------------------------------------------------
-        # Validate the two model-space index arrays select_joints returns:
-        #   1. type/dtype/shape of q_start, then qd_start against its length
-        #   2. non-empty
-        #   3. both index within the model's coordinate/DOF space
-        #   4. qd_start has no duplicate DOF (a duplicate coordinate in
-        #      q_start alone cannot occur without one, given every joint
-        #      here is 1-coordinate/1-DOF and steps 5-6 below)
-        #   5. q_start[i]/qd_start[i] name the same joint for every i
-        #   6. every joint spans exactly one coordinate and one DOF
-        #   7. every joint belongs to a robot (articulation)
-        #   8. joints are grouped by robot, ascending
-        # ------------------------------------------------------------------
-        if not isinstance(joint_q_idx, wp.array):
-            raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
-        _validate_array(
-            array=joint_q_idx,
-            name="joint_selection.q_start",
-            dtype=wp.int32,
-            shape=(joint_q_idx.size,),
+        joints_resolved = resolve_joint_selection(
+            model,
+            articulations=articulations,
+            joints=joints,
             device=self._device,
+            controller_name="ControllerOperationalSpace",
+            ownerless_joint_reason=(
+                "The controller runs forward kinematics and dynamics per robot, so such a joint has no "
+                "Jacobian, mass matrix, or gravity term."
+            ),
         )
-        total_controlled_dofs = int(joint_q_idx.size)
-        if total_controlled_dofs < 1:
-            raise ValueError("joint_selection.q_start is empty; there is nothing to control.")
-        _validate_array(
-            array=joint_qd_idx,
-            name="joint_selection.qd_start",
-            dtype=wp.int32,
-            shape=(total_controlled_dofs,),
-            device=self._device,
-        )
+        qd_idx_np = joints_resolved.qd_idx_np
+        model_robot_index_np = joints_resolved.model_robot_index_np
+        controlled_dofs_per_robot_np = joints_resolved.controlled_dofs_per_robot_np
+        controlled_robot_count = joints_resolved.controlled_robot_count
+        max_controlled_dofs = joints_resolved.max_controlled_dofs
 
-        q_idx_np = joint_q_idx.numpy()
-        qd_idx_np = joint_qd_idx.numpy()
-        for name, idx_np, limit, space in (
-            ("joint_selection.q_start", q_idx_np, self._coord_count, "coordinate"),
-            ("joint_selection.qd_start", qd_idx_np, self._dof_count, "DOF"),
-        ):
-            if idx_np.min() < 0 or idx_np.max() >= limit:
-                raise ValueError(
-                    f"{name} must index the model's {space} space [0, {limit}), got "
-                    f"range [{int(idx_np.min())}, {int(idx_np.max())}]."
-                )
-
-        if np.unique(qd_idx_np).size != qd_idx_np.size:
-            duplicate = int(np.bincount(qd_idx_np).argmax())
-            raise ValueError(
-                f"joint_selection.qd_start contains DOF {duplicate} more than once; two controlled slots "
-                f"cannot map to the same simulation DOF."
-            )
-
-        owning_joint = np.searchsorted(model.joint_q_start.numpy(), q_idx_np, side="right") - 1
-        owning_joint_qd = np.searchsorted(model.joint_qd_start.numpy(), qd_idx_np, side="right") - 1
-        if not np.array_equal(owning_joint, owning_joint_qd):
-            mismatched = int(np.flatnonzero(owning_joint != owning_joint_qd)[0])
-            raise ValueError(
-                f"joint_selection.q_start and joint_selection.qd_start disagree at entry {mismatched}: "
-                f"coordinate {int(q_idx_np[mismatched])} belongs to joint {int(owning_joint[mismatched])} "
-                f"but DOF {int(qd_idx_np[mismatched])} belongs to joint {int(owning_joint_qd[mismatched])}. "
-                f"Did you swap the two arrays?"
-            )
-
-        # A joint is controllable when its Jacobian column is a single scalar
-        # DOF, i.e. it spans exactly one coordinate and one DOF. Derived from
-        # the model's own spans.
-        joint_type_np = model.joint_type.numpy()
-        coord_span = np.diff(model.joint_q_start.numpy())[owning_joint]
-        dof_span = np.diff(model.joint_qd_start.numpy())[owning_joint]
-        unsupported = sorted(
-            {
-                (int(j), JointType(joint_type_np[j]).name)
-                for j, coords, dofs in zip(owning_joint, coord_span, dof_span, strict=True)
-                if coords != 1 or dofs != 1
-            }
-        )
-        if unsupported:
-            raise ValueError(
-                f"ControllerOperationalSpace only supports controlling joints that span a single "
-                f"coordinate and a single DOF; joint_selection addresses unsupported joints: {unsupported}"
-            )
-
-        owning_robot = model.joint_articulation.numpy()[owning_joint]
-        loose = np.flatnonzero(owning_robot < 0)
-        if loose.size:
-            raise ValueError(
-                f"joint_selection addresses joint {int(owning_joint[loose[0]])}, which belongs to no "
-                f"robot. The controller runs forward kinematics and dynamics per robot, so such a "
-                f"joint has no Jacobian, mass matrix, or gravity term."
-            )
-        if np.any(np.diff(owning_robot) < 0):
-            raise ValueError(
-                "joint_selection.q_start/qd_start must be grouped by robot (robot 0's DOFs first, "
-                f"then robot 1's, ...); got robot order {owning_robot.tolist()}."
-            )
-
-        # Packed-robot bookkeeping, derived from owning_robot's distinct
-        # values (model_robot_index_np) and their counts
-        # (controlled_dofs_per_robot_np):
-        #   - controlled_dofs_per_robot: the inner ModelFree's whole layout
-        #   - controlled_robot_count: packed slot count (vs. model_robot_count,
-        #     every articulation whether controlled or not)
-        #   - max_controlled_dofs: sizes every padded per-robot buffer
-        #   - self._model_robot_index: packed slot -> real model articulation
-        #     index, needed since eval_jacobian/eval_mass_matrix output is
-        #     addressed by model articulation number, not packed slot
-        #   - self._controlled_robot_mask: model_robot_count-length mask so
-        #     eval_fk/eval_jacobian/eval_mass_matrix skip uncontrolled robots
-        model_robot_index_np, controlled_dofs_per_robot_np = np.unique(owning_robot, return_counts=True)
-        model_robot_index_np = model_robot_index_np.astype(np.int32)
-        controlled_dofs_per_robot_np = controlled_dofs_per_robot_np.astype(np.int32)
-        controlled_robot_count = int(model_robot_index_np.size)
-        controlled_dofs_per_robot = wp.array(controlled_dofs_per_robot_np, dtype=wp.int32, device=self._device)
-        max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
-        self._model_robot_index = wp.array(model_robot_index_np, dtype=wp.int32, device=self._device)
-        mask_np = np.zeros(model_robot_count, dtype=bool)
-        mask_np[model_robot_index_np] = True
-        self._controlled_robot_mask = wp.array(mask_np, dtype=wp.bool, device=self._device)
-        # ------------------------------------------------------------------
-
+        self._model_robot_index = joints_resolved.model_robot_index
+        self._controlled_robot_mask = joints_resolved.controlled_robot_mask
         self._model_robot_count = model_robot_count
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
-        self._total_controlled_dofs = total_controlled_dofs
+        self._total_controlled_dofs = joints_resolved.total_controlled_dofs
+        controlled_dofs_per_robot = joints_resolved.controlled_dofs_per_robot
         self._controlled_dofs_per_robot = controlled_dofs_per_robot
-        self._q_idx = wp.clone(joint_q_idx)
-        self._qd_idx = wp.clone(joint_qd_idx)
+        self._q_idx = joints_resolved.q_idx
+        self._qd_idx = joints_resolved.qd_idx
 
-        # ------------------------------------------------------------------
-        # Tool-site selection: one site per robot in model_robot_index_np --
-        # the exact, already-ordered set joint selection resolved above, so
-        # there is no second, independent articulation resolution to keep in
-        # sync with the first.
-        # ------------------------------------------------------------------
-        joint_child_np = model.joint_child.numpy()
-        joint_articulation_np = model.joint_articulation.numpy()
-        body_to_articulation_np = np.full(model.body_count, -1, dtype=np.int32)
-        body_to_articulation_np[joint_child_np] = joint_articulation_np
-
-        shape_flags_np = model.shape_flags.numpy()
-        shape_body_np = model.shape_body.numpy()
-        shape_transform_np = model.shape_transform.numpy()
-        site_indices_np = np.flatnonzero((shape_flags_np & ShapeFlags.SITE) != 0)
-        if site_indices_np.size == 0:
-            raise ValueError("model contains no sites; add one with ModelBuilder.add_site for the tool frame.")
-        site_articulation_np = body_to_articulation_np[shape_body_np[site_indices_np]]
-        site_names = [get_name_from_label(model.shape_label[s]) for s in site_indices_np]
-
-        tool_site_entries = [tool_sites] if isinstance(tool_sites, (int, str, re.Pattern)) else tool_sites
-        matched_sites: list[int] = []
-        for entry in tool_site_entries:
-            if isinstance(entry, int):
-                if entry not in site_indices_np:
-                    raise ValueError(f"tool_sites site index {entry} is not a site in the model.")
-                matched_sites.append(entry)
-            else:
-                local_matches = match_labels(site_names, entry)
-                if not local_matches:
-                    raise ValueError(f"tool_sites pattern {entry!r} matches no site in the model.")
-                matched_sites.extend(int(site_indices_np[m]) for m in local_matches)
-        matched_sites_set = sorted(set(matched_sites))
-
-        site_index_to_articulation = dict(zip(site_indices_np.tolist(), site_articulation_np.tolist(), strict=True))
-        tool_body_np = np.zeros(controlled_robot_count, dtype=np.int32)
-        tool_transform_body: list[wp.transform] = []
-        for robot_slot, art in enumerate(model_robot_index_np.tolist()):
-            sites_on_robot = [s for s in matched_sites_set if site_index_to_articulation[s] == art]
-            if len(sites_on_robot) == 0:
-                raise ValueError(f"tool_sites matches no site on articulation {art}.")
-            if len(sites_on_robot) > 1:
-                raise ValueError(
-                    f"tool_sites matches {len(sites_on_robot)} sites on articulation {art}; exactly one "
-                    f"tool site is required per robot."
-                )
-            site = sites_on_robot[0]
-            tool_body_np[robot_slot] = shape_body_np[site]
-            tool_transform_body.append(wp.transform(*shape_transform_np[site]))
-
-        self._tool_body = wp.array(tool_body_np, dtype=wp.int32, device=self._device)
-        self._tool_transform_body = wp.array(tool_transform_body, dtype=wp.transform, device=self._device)
-
-        # robot_link_idx: the tool site's row-block index within its
-        # articulation's eval_jacobian output. eval_articulation_jacobian
-        # writes link i's rows at [i*6 : i*6+6], where i is the position,
-        # within its articulation's own joint range, of the joint that moves
-        # the tool site's body -- so this is (that joint's index) minus
-        # (the articulation's first joint index).
-        body_to_joint_np = np.full(model.body_count, -1, dtype=np.int32)
-        body_to_joint_np[joint_child_np] = np.arange(joint_child_np.size, dtype=np.int32)
-        tool_site_joint_np = body_to_joint_np[tool_body_np]
-        articulation_start_np = model.articulation_start.numpy()
-        robot_link_idx_np = (tool_site_joint_np - articulation_start_np[model_robot_index_np]).astype(np.int32)
-        self._robot_link_idx = wp.array(robot_link_idx_np, dtype=wp.int32, device=self._device)
-        # ------------------------------------------------------------------
+        tool_sites_resolved = resolve_tool_sites(
+            model, model_robot_index_np=model_robot_index_np, tool_sites=tool_sites, device=self._device
+        )
+        self._tool_body = tool_sites_resolved.tool_body
+        self._tool_transform_body = tool_sites_resolved.tool_transform_body
+        self._robot_link_idx = tool_sites_resolved.robot_link_idx
 
         # ------------------------------------------------------------------
         # Dynamics buffers. Allocated up front; populated by step().

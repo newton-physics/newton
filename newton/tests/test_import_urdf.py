@@ -2074,30 +2074,18 @@ class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
     def test_mimic_constraint_basic(self):
-        """Test that mimic constraints are created from URDF mimic tags."""
+        """Verify URDF mimic tags create joint-owned mimic metadata."""
         builder = newton.ModelBuilder()
         builder.add_urdf(MIMIC_URDF)
         model = builder.finalize()
-
-        # Should have 1 mimic constraint
-        self.assertEqual(model.constraint_mimic_count, 1)
-
-        # Check the constraint values
-        joint0 = model.constraint_mimic_joint0.numpy()[0]
-        joint1 = model.constraint_mimic_joint1.numpy()[0]
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
-        enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
         leader_idx = model.joint_label.index("mimic_test/leader_joint")
         follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
-        self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
-        self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
-        self.assertAlmostEqual(coef0, 0.5, places=5)
-        self.assertAlmostEqual(coef1, 2.0, places=5)
-        self.assertTrue(enabled)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[follower_idx], (0.5, 2.0))
 
     def test_mimic_constraint_default_values(self):
         """Test mimic constraints with default coef1 and coef0."""
@@ -2121,13 +2109,14 @@ class TestMimicConstraints(unittest.TestCase):
         builder.add_urdf(urdf)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        leader_idx = model.joint_label.index("mimic_defaults/j1")
+        follower_idx = model.joint_label.index("mimic_defaults/j2")
+        coeffs = model.joint_mimic_coeffs.numpy()[follower_idx]
 
         # Default values from URDF spec
-        self.assertAlmostEqual(coef0, 0.0, places=5)
-        self.assertAlmostEqual(coef1, 1.0, places=5)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        self.assertAlmostEqual(coeffs[0], 0.0, places=5)
+        self.assertAlmostEqual(coeffs[1], 1.0, places=5)
 
     def test_mimic_joint_skipped_child_does_not_mismatch(self):
         """Regression test: skipped joints must not be included in name->index mapping."""
@@ -2165,8 +2154,9 @@ class TestMimicConstraints(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
             builder.add_urdf(urdf, joint_ordering=None)
 
-        # No mimic constraint should be created because the follower joint was skipped.
+        # No mimic relationship should be created because the follower joint was skipped.
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+        self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
 class TestOverrideRootXformURDF(unittest.TestCase):

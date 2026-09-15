@@ -280,10 +280,13 @@ practice:
 ``nconmax`` and ``njmax`` size the **per-world** contact and constraint buffers.
 Set them for the busiest world, not the average: a buffer that fits a quiet
 world can truncate contacts or constraints in a heavier one, while an oversized
-buffer wastes GPU memory multiplied across every world. If left unset, they are
-estimated from the initial state; monitor overflow counters or warnings and raise
-the relevant buffer when needed. A positive gap can increase the number of
-detected contacts even though contacts outside the margin remain inactive.
+buffer wastes GPU memory multiplied across every world. If left unset, Newton
+estimates them automatically. Explicit values set fixed capacities instead of
+lower bounds for those estimates. A value that cannot hold the initial MuJoCo
+contacts or constraints may still be increased with a warning. Monitor overflow
+counters or warnings and raise the relevant buffer when needed. A positive gap
+can increase the number of detected contacts even though contacts outside the
+margin remain inactive.
 After changing gaps or upgrading margin/gap behavior, remeasure peak contacts,
 constraints, and overflow in the busiest world before compensating with
 stiffness or iterations; do not assume the previous run generated the same rows.
