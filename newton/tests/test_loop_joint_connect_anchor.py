@@ -31,6 +31,7 @@ class TestLoopJointConnectAnchor(unittest.TestCase):
     BODY_B_OFFSET = wp.vec3(1.0, 0.0, 0.0)
 
     def _build_model(self) -> newton.Model:
+        """Build a two-branch mechanism closed by a ball loop joint that is open at the zero pose."""
         inertia = wp.mat33(np.eye(3))
 
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -62,6 +63,12 @@ class TestLoopJointConnectAnchor(unittest.TestCase):
         return builder.finalize()
 
     def _assert_anchors(self, use_mujoco_cpu: bool):
+        """Check that the synthesized CONNECT equality carries the authored anchors.
+
+        Args:
+            use_mujoco_cpu: Whether to build the solver on the MuJoCo CPU backend
+                instead of MuJoCo-Warp.
+        """
         import mujoco
 
         solver = SolverMuJoCo(self._build_model(), use_mujoco_cpu=use_mujoco_cpu)
