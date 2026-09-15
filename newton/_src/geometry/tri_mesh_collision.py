@@ -906,8 +906,8 @@ class TriMeshCollisionDetector:
                 "excess contacts were dropped this detection. Raise the average "
                 "per-element budgets (SolverVBD: particle_vertex_contact_buffer_size / "
                 "particle_edge_contact_buffer_size; detector or pipeline: the "
-                "vertex/edge *_pre_alloc parameters), or rely on the solver's "
-                "automatic growth outside CUDA graph capture.",
+                "vertex/edge *_pre_alloc parameters), or call "
+                "SolverVBD.check_and_grow_self_contact_buffers() between steps.",
                 stacklevel=2,
             )
         return vt_demand, ee_demand, vt_overflow, ee_overflow

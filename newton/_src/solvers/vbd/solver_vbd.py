@@ -102,9 +102,6 @@ _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
 # cap for the strided per-pair self-contact launches: dims stay host-static
 # (graph-safe); threads loop when a grown pair array exceeds the cap
 _SELF_CONTACT_MAX_LAUNCH_DIM = 2**21
-# steps between automatic overflow checks (each check reads the pair counters
-# back and synchronizes, so it must not run every substep)
-_SELF_CONTACT_GROWTH_CHECK_INTERVAL = 32
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -406,10 +403,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 instead. When set, it overrides ``dat_conservative_bound_relaxation``.
 
                 .. deprecated:: 1.7
-            particle_vertex_contact_buffer_size: Average vertex-triangle contact budget per vertex: the shared
-                pair array holds ``particle_vertex_contact_buffer_size x particle_count`` records that any vertex
-                can draw from. On overflow a warning is emitted and the array grows automatically outside graph
-                capture (see :meth:`check_and_grow_self_contact_buffers`).
+            particle_vertex_contact_buffer_size: Average vertex-triangle contact budget per vertex: the
+                shared storage holds ``particle_vertex_contact_buffer_size x particle_count`` contacts that any
+                vertex can draw from. On overflow excess contacts are dropped and the overflow flag is set;
+                call :meth:`check_and_grow_self_contact_buffers` between steps to report and grow.
             particle_edge_contact_buffer_size: Average edge-edge contact budget per edge: the shared pair array
                 holds ``particle_edge_contact_buffer_size x edge_count`` records that any edge can draw from.
                 Overflow behaves as above.
@@ -638,10 +635,11 @@ class SolverVBD(SolverBase, CouplingInterface):
               computed accordingly.
             - `rigid_body_contact_buffer_size` and `rigid_body_particle_contact_buffer_size` are fixed and will not be
               dynamically resized during runtime; setting them too small may overflow rigid contacts.
-              `particle_vertex_contact_buffer_size` and `particle_edge_contact_buffer_size` size the shared self-contact
-              pair arrays as average contacts per element; on overflow the solver warns and grows them at non-captured
-              steps (see :meth:`check_and_grow_self_contact_buffers`), while captured workflows must re-check and
-              re-capture themselves. Setting any of these excessively large increases memory usage.
+              `particle_vertex_contact_buffer_size` and `particle_edge_contact_buffer_size` size the shared
+              self-contact storage as average contacts per element; on overflow excess contacts are dropped and a
+              device flag is set. The solver never checks or grows on its own: call
+              :meth:`check_and_grow_self_contact_buffers` between steps (and re-capture afterwards if it grew).
+              Setting any of these excessively large increases memory usage.
             - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
               ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
@@ -1001,7 +999,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
 
             self._update_self_contact_launch_size(collision_info)
-            self._self_contact_steps_since_check = 0
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
 
@@ -1034,13 +1031,16 @@ class SolverVBD(SolverBase, CouplingInterface):
     def check_and_grow_self_contact_buffers(self) -> bool:
         """Check self-contact pair demand and grow overflowed pair arrays.
 
-        Reads the pair counters back from the device (synchronizes). When a
-        family overflowed its shared array in the latest detection, a warning
-        is emitted and the storage is reallocated with that family's
-        per-element budget raised to cover 1.5x the measured demand; the next
-        detection uses the grown arrays. No-op (returns ``False``) during graph
-        capture -- growth reallocates arrays, so captured graphs must be
-        re-created afterwards.
+        The solver never calls this on its own (each call reads the pair
+        counters back and synchronizes the device): call it between steps at
+        whatever cadence suits the workload. When a family overflowed its
+        shared storage in the latest detection, a warning is emitted and the
+        storage is reallocated with that family's per-element budget raised to
+        cover 1.5x the measured demand; the next step's detection fills the
+        grown arrays. The freshly grown arrays are empty until then, so call
+        this between steps, not between a step and a consumer of its results.
+        No-op (returns ``False``) during graph capture -- growth reallocates
+        arrays, so captured graphs must be re-created afterwards.
 
         Returns:
             True if the storage was reallocated.
@@ -2464,24 +2464,6 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         _Frequency = SolverBase.CollisionFrequencyType
         self._self_contact_mode_this_step, self._self_contact_freq_this_step = self._resolve_self_contact_schedule()
-
-        # Periodic self-contact overflow check (readback = device sync, so not
-        # every step); no-op during capture. Runs BEFORE this step's detection
-        # so grown arrays are refilled within the same step and no consumer --
-        # including a between-steps coupling harvest -- can observe the fresh,
-        # empty storage. Captured workflows should call
-        # check_and_grow_self_contact_buffers() between replays (and re-capture
-        # after growth) if they expect contact demand to grow.
-        if (
-            self.particle_enable_self_contact
-            and self.model.particle_count > 0
-            and self._self_contact_mode_this_step != _Frequency.NONE
-            and not self.device.is_capturing
-        ):
-            self._self_contact_steps_since_check += 1
-            if self._self_contact_steps_since_check >= _SELF_CONTACT_GROWTH_CHECK_INTERVAL:
-                self._self_contact_steps_since_check = 0
-                self.check_and_grow_self_contact_buffers()
 
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
