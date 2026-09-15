@@ -15,7 +15,6 @@ from ...geometry import ParticleFlags
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
-    build_tri_mesh_collision_info,
 )
 from ...sim import (
     BodyFlags,
@@ -1029,55 +1028,34 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, _SELF_CONTACT_MAX_LAUNCH_DIM)
 
     def check_and_grow_self_contact_buffers(self) -> bool:
-        """Check self-contact pair demand and grow overflowed pair arrays.
+        """Check self-contact overflow, grow the storage, refresh solver state.
 
-        The solver never calls this on its own (each call reads the pair
-        counters back and synchronizes the device): call it between steps at
-        whatever cadence suits the workload. When a family overflowed its
-        shared storage in the latest detection, a warning is emitted and the
-        storage is reallocated with that family's per-element budget raised to
-        cover 1.5x the measured demand; the next step's detection fills the
-        grown arrays. The freshly grown arrays are empty until then, so call
-        this between steps, not between a step and a consumer of its results.
-        No-op (returns ``False``) during graph capture -- growth reallocates
-        arrays, so captured graphs must be re-created afterwards.
+        Thin wrapper over
+        ``TriMeshCollisionDetector.check_and_grow_collision_buffers()``, which
+        owns the overflow readback, the warning, and the 1.5x-demand resize;
+        this method afterwards re-points the solver-side references (the
+        pipeline's ``Contacts`` result struct, the struct array the contact
+        kernels read, and the per-pair launch size). The solver never calls
+        this on its own (each check synchronizes the device): call it between
+        steps at whatever cadence suits the workload. The grown storage is
+        empty until the next step's detection fills it. No-op (returns
+        ``False``) during graph capture; re-create captured graphs after a
+        ``True`` return.
 
         Returns:
             True if the storage was reallocated.
         """
         if not self.particle_enable_self_contact or self.model.particle_count == 0:
             return False
-        if self.device.is_capturing:
-            return False
         if self.collision_pipeline is not None:
             detector = self.collision_pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
         else:
             detector = self.trimesh_collision_detector
-        vt_demand, ee_demand, vt_overflow, ee_overflow = detector.check_self_contact_overflow()
-        if not (vt_overflow or ee_overflow):
+        # overflow handling and resizing are the detector's job; this wrapper
+        # only refreshes the solver-side references to the new result struct
+        if not detector.check_and_grow_collision_buffers():
             return False
-
-        particle_count = max(self.model.particle_count, 1)
-        edge_count = max(self.model.edge_count, 1)
-        vertex_budget = detector.vertex_collision_buffer_pre_alloc
-        edge_budget = detector.edge_collision_buffer_pre_alloc
-        if vt_overflow:
-            vertex_budget = max(vertex_budget + 1, -(-3 * vt_demand // (2 * particle_count)))
-        if ee_overflow:
-            edge_budget = max(edge_budget + 1, -(-3 * ee_demand // (2 * edge_count)))
-        detector.vertex_collision_buffer_pre_alloc = vertex_budget
-        detector.edge_collision_buffer_pre_alloc = edge_budget
-
-        collision_info = build_tri_mesh_collision_info(
-            self.model.particle_count,
-            self.model.tri_count,
-            self.model.edge_count,
-            vertex_collision_buffer_pre_alloc=vertex_budget,
-            edge_collision_buffer_pre_alloc=edge_budget,
-            record_triangle_contacting_vertices=detector.record_triangle_contacting_vertices,
-            device=self.device,
-        )
-        detector._bind_external_buffers(collision_info)
+        collision_info = detector.collision_info
         if self.collision_pipeline is not None:
             self._pipeline_contacts.soft_self_contact_data = collision_info
         self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)

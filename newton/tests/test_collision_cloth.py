@@ -1364,6 +1364,40 @@ def test_collision_filter_decouple(test, device):
     test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
 
 
+def test_detector_check_and_grow(test, device):
+    """The detector's own grow call must warn, raise budgets, rebind, and fit
+    the demand on the next detection, without any solver involved."""
+    vertices, faces = get_data()
+    model, _ = init_model(vertices, faces, device)
+    detector = TriMeshCollisionDetector(
+        model=model,
+        vertex_collision_buffer_pre_alloc=1,
+        edge_collision_buffer_pre_alloc=1,
+        init_collision_info=True,
+    )
+    query_radius = 5e-2
+    detector.vertex_triangle_collision_detection(query_radius)
+    detector.edge_edge_collision_detection(query_radius)
+    counters = detector.collision_info.counters.numpy()
+    test.assertTrue(counters[1] or counters[3])  # budgets of 1 must overflow here
+
+    old_info = detector.collision_info
+    with test.assertWarns(UserWarning):
+        grew = detector.check_and_grow_collision_buffers()
+    test.assertTrue(grew)
+    test.assertIsNot(detector.collision_info, old_info)
+
+    detector.vertex_triangle_collision_detection(query_radius)
+    detector.edge_edge_collision_detection(query_radius)
+    counters = detector.collision_info.counters.numpy()
+    test.assertEqual(int(counters[1]), 0)
+    test.assertEqual(int(counters[3]), 0)
+    _assert_rows_partition_pairs(test, detector.collision_info)
+
+    # nothing left to grow: the second call is a quiet no-op
+    test.assertFalse(detector.check_and_grow_collision_buffers())
+
+
 def test_sorted_contact_rows(test, device):
     """Sorted rows are ascending by counterpart, hold the same contacts as an
     unsorted detector, and are bitwise stable across repeated detections."""
@@ -2051,6 +2085,7 @@ add_function_test(
     test_trimesh_collision_detection_cuda_graph_capturable,
     devices=get_cuda_test_devices(),
 )
+add_function_test(TestCollision, "test_detector_check_and_grow", test_detector_check_and_grow, devices=devices)
 add_function_test(TestCollision, "test_sorted_contact_rows", test_sorted_contact_rows, devices=devices)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 add_function_test(

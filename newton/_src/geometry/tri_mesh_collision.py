@@ -907,10 +907,60 @@ class TriMeshCollisionDetector:
                 "per-element budgets (SolverVBD: particle_vertex_contact_buffer_size / "
                 "particle_edge_contact_buffer_size; detector or pipeline: the "
                 "vertex/edge *_pre_alloc parameters), or call "
-                "SolverVBD.check_and_grow_self_contact_buffers() between steps.",
+                "check_and_grow_collision_buffers() between detections "
+                "(SolverVBD users: check_and_grow_self_contact_buffers()).",
                 stacklevel=2,
             )
         return vt_demand, ee_demand, vt_overflow, ee_overflow
+
+    def check_and_grow_collision_buffers(self, warn: bool = True) -> bool:
+        """Check the last detection's overflow flags and grow the result storage.
+
+        Reads the counters back (synchronizes the device). When a family
+        overflowed, its per-element budget is raised to cover 1.5x the measured
+        demand, a fresh result struct is allocated and bound, and the internal
+        append log is resized to match; the next detection fills the grown
+        rows. The grown storage is empty until then, so call this between
+        detections, not between a detection and a consumer of its results.
+        No-op (returns ``False``) during graph capture, since growth
+        reallocates arrays; re-create captured graphs after a ``True`` return.
+
+        Owners of the result struct must re-read :attr:`collision_info` after
+        a ``True`` return (``SolverVBD.check_and_grow_self_contact_buffers``
+        wraps this and refreshes the solver-side references).
+
+        Returns:
+            True if the storage was reallocated.
+        """
+        if self.device.is_capturing:
+            return False
+        self._require_collision_info()
+        vt_demand, ee_demand, vt_overflow, ee_overflow = self.check_self_contact_overflow(warn=warn)
+        if not (vt_overflow or ee_overflow):
+            return False
+
+        particle_count = max(self.model.particle_count, 1)
+        edge_count = max(self.model.edge_count, 1)
+        if vt_overflow:
+            self.vertex_collision_buffer_pre_alloc = max(
+                self.vertex_collision_buffer_pre_alloc + 1, -(-3 * vt_demand // (2 * particle_count))
+            )
+        if ee_overflow:
+            self.edge_collision_buffer_pre_alloc = max(
+                self.edge_collision_buffer_pre_alloc + 1, -(-3 * ee_demand // (2 * edge_count))
+            )
+
+        collision_info = build_tri_mesh_collision_info(
+            self.model.particle_count,
+            self.model.tri_count,
+            self.model.edge_count,
+            vertex_collision_buffer_pre_alloc=self.vertex_collision_buffer_pre_alloc,
+            edge_collision_buffer_pre_alloc=self.edge_collision_buffer_pre_alloc,
+            record_triangle_contacting_vertices=self.record_triangle_contacting_vertices,
+            device=self.device,
+        )
+        self._bind_external_buffers(collision_info)
+        return True
 
     def rebuild(self, new_pos=None):
         if new_pos is not None:
