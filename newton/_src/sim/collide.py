@@ -1971,9 +1971,11 @@ class CollisionPipeline:
             vertex_buffer_pre_alloc: Average vertex-triangle contact budget per
                 vertex; the shared pair array holds ``budget x particle_count``
                 records. On overflow excess pairs are dropped and the detector's
-                overflow flag is set (read it back with
-                ``TriMeshCollisionDetector.check_self_contact_overflow()``;
-                nothing grows the arrays on the standalone pipeline path).
+                overflow flag is set. On the standalone pipeline path nothing
+                grows the arrays automatically; the pipeline's internal
+                detector (``CollisionPipeline._soft_self_contact_detector``,
+                experimental) exposes ``check_self_contact_overflow()`` and
+                ``check_and_grow_collision_buffers()``.
             edge_buffer_pre_alloc: Average edge-edge contact budget per edge;
                 same pooled semantics and overflow behavior as the vertex
                 budget.

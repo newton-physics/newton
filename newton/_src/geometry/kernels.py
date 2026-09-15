@@ -1279,11 +1279,11 @@ TRI_CONTACT_FEATURE_EDGE_BC = wp.constant(5)
 TRI_CONTACT_FEATURE_FACE_INTERIOR = wp.constant(6)
 
 # constants used to access TriMeshCollisionDetector.resize_flags
-# (self-contact overflow moved to TriMeshCollisionInfo.counters; resize_flags
+# (self-contact overflow moved to TriMeshCollisionInfo.global_pair_counts; resize_flags
 # now only serves the on-demand triangle-triangle intersection buffers)
 TRI_TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(3)
 
-# slots of TriMeshCollisionInfo.counters: the shared pair-array cursors written
+# slots of TriMeshCollisionInfo.global_pair_counts: the shared pair-array cursors written
 # by the detection kernels and the overflow flags read back by
 # check_self_contact_overflow. Each family's (cursor, flag) pair is contiguous
 # so one slice memset clears a family independently of the other.
@@ -1413,7 +1413,7 @@ def vertex_triangle_collision_detection_kernel(
     vt_pair_capacity: wp.int32,
     # outputs
     vt_pairs: wp.array[wp.vec2i],
-    counters: wp.array[wp.int32],
+    global_pair_counts: wp.array[wp.int32],
     vertex_list_heads: wp.array[wp.int32],
     vertex_list_next: wp.array[wp.int32],
     vertex_colliding_triangles_count: wp.array[wp.int32],
@@ -1427,12 +1427,13 @@ def vertex_triangle_collision_detection_kernel(
 
     One thread per vertex walks the triangle BVH and appends every hit as a
     ``(vertex, triangle)`` record to ``vt_pairs`` through the shared cursor
-    ``counters[VT_PAIR_CURSOR]``, linking each stored record into the vertex's
+    ``global_pair_counts[VT_PAIR_CURSOR]``, linking each stored record into the vertex's
     list. The thread is its own list's only writer, so the chain head lives in
-    a register and the list order is the BVH traversal order. Hits found beyond
+    a register; push-front linking means the chain reads in reverse traversal
+    order (the row fill restores forward order). Hits found beyond
     ``vt_pair_capacity`` are still counted by the cursor (total demand for the
     overflow report) but not stored or linked, and
-    ``counters[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
+    ``global_pair_counts[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
     array.
 
     Args:
@@ -1440,12 +1441,18 @@ def vertex_triangle_collision_detection_kernel(
         min_query_radius: the lower bound of collision distance, evaluated on
             min_distance_filtering_ref_pos.
         bvh_id: the triangle BVH to query.
+        bvh_group_roots: per-world BVH subtree roots for grouped traversal.
         pos: positions of all the vertices that make up the triangles.
+        tri_indices: vertex index buffer for each triangle.
+        particle_world: world index of each particle.
+        world_count: number of worlds in the model.
+        vertex_triangle_filtering_list: vertex-triangle exclusions (flat list).
+        vertex_triangle_filtering_list_offsets: offsets into the exclusion list.
         min_distance_filtering_ref_pos: positions used for the minimum-distance
             filtering.
         vt_pair_capacity: capacity of ``vt_pairs``.
         vt_pairs: shared (vertex, triangle) pair scratch array.
-        counters: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        global_pair_counts: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
         vertex_list_heads: per-vertex head slot of the linked record list (-1 = empty).
         vertex_list_next: per-record next slot in the owning vertex's list.
         vertex_colliding_triangles_count: per-vertex count of records actually
@@ -1550,7 +1557,7 @@ def vertex_triangle_collision_detection_kernel(
                     # record the (vertex, triangle) pair to the shared array and
                     # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
-                    slot = wp.atomic_add(counters, VT_PAIR_CURSOR, 1)
+                    slot = wp.atomic_add(global_pair_counts, VT_PAIR_CURSOR, 1)
                     # slot >= 0 guards int32 cursor wrap-around on pathological
                     # demand (>2^31 pairs): drop instead of writing out of bounds
                     if slot >= 0 and slot < vt_pair_capacity:
@@ -1563,7 +1570,7 @@ def vertex_triangle_collision_detection_kernel(
                             triangle_list_next[slot] = wp.atomic_exch(triangle_list_heads, tri_index, slot)
                             wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
                     else:
-                        counters[VT_PAIR_OVERFLOW] = 1
+                        global_pair_counts[VT_PAIR_OVERFLOW] = 1
 
                     if triangle_colliding_vertices_min_dist:
                         wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
@@ -1590,7 +1597,7 @@ def edge_colliding_edges_detection_kernel(
     ee_pair_capacity: wp.int32,
     # outputs
     ee_pairs: wp.array[wp.vec2i],
-    counters: wp.array[wp.int32],
+    global_pair_counts: wp.array[wp.int32],
     edge_list_heads: wp.array[wp.int32],
     edge_list_next: wp.array[wp.int32],
     edge_colliding_edges_count: wp.array[wp.int32],
@@ -1600,30 +1607,37 @@ def edge_colliding_edges_detection_kernel(
 
     One thread per edge walks the edge BVH, appends every hit as an
     ``(edge, colliding_edge)`` record to ``ee_pairs`` through the shared cursor
-    ``counters[EE_PAIR_CURSOR]``, and links each stored record into the edge's
-    single-writer list (chain head in a register, order = traversal order).
+    ``global_pair_counts[EE_PAIR_CURSOR]``, and links each stored record into the edge's
+    single-writer list (chain head in a register; push-front, so the chain
+    reads in reverse traversal order and the row fill restores forward order).
     Pairs are recorded from both edges' threads (both directions), matching the
     historical row contents. Hits found beyond ``ee_pair_capacity`` are still
     counted by the cursor (total demand for the overflow report) but not stored
-    or linked, and ``counters[EE_PAIR_OVERFLOW]`` is set.
+    or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set.
 
     Args:
         max_query_radius: the upper bound of collision distance.
         min_query_radius: the lower bound of collision distance, evaluated on
             min_distance_filtering_ref_pos.
         bvh_id: the edge BVH to query.
+        bvh_group_roots: per-world BVH subtree roots for grouped traversal.
         pos: positions of all the vertices that make up the edges.
         edge_indices: vertex index buffer for each edge.
+        particle_world: world index of each particle.
+        world_count: number of worlds in the model.
         edge_edge_parallel_epsilon: threshold for treating edge directions as parallel.
         edge_filtering_list: edge indices to exclude from collision checks.
         edge_filtering_list_offsets: offsets into the edge filtering list.
         min_distance_filtering_ref_pos: positions used for minimum-distance filtering.
         ee_pair_capacity: capacity of ``ee_pairs``.
         ee_pairs: shared (edge, colliding_edge) pair scratch array.
-        counters: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        global_pair_counts: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        edge_list_heads: per-edge head slot of the linked record list (-1 = empty).
+        edge_list_next: per-record next slot in the owning edge's list.
         edge_colliding_edges_count: per-edge count of records actually stored and
             linked (the exact CSR row length).
-        edge_colliding_edges_min_dist: each edge's min distance to all non-filtered edges.
+        edge_colliding_edges_min_dist: each edge's min distance to all non-filtered
+            edges (including detected hits dropped on overflow).
     """
     e_index = wp.tid()
 
@@ -1717,7 +1731,7 @@ def edge_colliding_edges_detection_kernel(
                     # record e-e collision from e0's side (e1 records its own
                     # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-                    slot = wp.atomic_add(counters, EE_PAIR_CURSOR, 1)
+                    slot = wp.atomic_add(global_pair_counts, EE_PAIR_CURSOR, 1)
                     # slot >= 0 guards int32 cursor wrap-around on pathological
                     # demand (>2^31 pairs): drop instead of writing out of bounds
                     if slot >= 0 and slot < ee_pair_capacity:
@@ -1726,7 +1740,7 @@ def edge_colliding_edges_detection_kernel(
                         list_head = slot
                         stored_count = stored_count + 1
                     else:
-                        counters[EE_PAIR_OVERFLOW] = 1
+                        global_pair_counts[EE_PAIR_OVERFLOW] = 1
 
     edge_list_heads[e_index] = list_head
     edge_colliding_edges_count[e_index] = stored_count
