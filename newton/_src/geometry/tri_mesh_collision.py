@@ -46,10 +46,11 @@ class TriMeshCollisionInfo:
     pairs, ``edge_colliding_edges`` holds interleaved (edge, colliding edge)
     pairs (both directions), and ``triangle_colliding_vertices`` holds one
     contacting vertex index per entry. ``*_offsets`` are real prefix sums and
-    ``*_count`` equals each row's length. Detection appends hits to an
-    internal shared scratch pool sized by an average budget per element, so
-    memory scales with the actual contact count and a locally dense fold
-    cannot overflow a private per-element budget; rows are rebuilt from that
+    ``*_count`` equals each row's length. Detection appends hits to one
+    internal global scratch buffer per family (sized budget x element count,
+    shared by all elements), so memory scales with the total contact count and
+    a locally dense fold cannot overflow a private per-element budget; rows
+    are rebuilt from that
     pool after each detection. The vertex and edge rows come out in
     BVH-traversal order per element and, absent overflow, are deterministic
     run to run (under overflow, which records won a pool slot is an
@@ -310,10 +311,11 @@ def build_tri_mesh_collision_info(
     ``init_collision_info=True``, and result-owning containers call it to
     allocate buffers the detector then writes into.
 
-    The ``*_pre_alloc`` values are average contact budgets per element: each
-    family's rows hold up to ``pre_alloc x element_count`` stored contacts
-    that any element can draw from, so a locally dense fold only overflows
-    when the whole mesh's contact demand exceeds the pool.
+    Each ``*_pre_alloc`` value sizes one global contact buffer for its family:
+    capacity = ``pre_alloc x element_count`` stored contacts, shared by all
+    elements (an average budget per element, not a per-element cap), so a
+    locally dense fold only overflows when the whole mesh's contact demand
+    exceeds the buffer.
 
     When ``record_triangle_contacting_vertices`` is ``False`` the
     triangle-side CSR fields are left at their empty defaults;

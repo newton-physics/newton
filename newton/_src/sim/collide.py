@@ -1968,17 +1968,18 @@ class CollisionPipeline:
                 in the rest shape (``model.particle_q``) are excluded from
                 detection — for meshes whose regions are close by design
                 (layered cloth, seams). ``0`` disables the filter.
-            vertex_buffer_pre_alloc: Average vertex-triangle contact budget per
-                vertex; the shared pair array holds ``budget x particle_count``
-                records. On overflow excess pairs are dropped and the detector's
-                overflow flag is set. On the standalone pipeline path nothing
-                grows the arrays automatically; the pipeline's internal
-                detector (``CollisionPipeline._soft_self_contact_detector``,
+            vertex_buffer_pre_alloc: Sizes the global vertex-triangle contact
+                buffer: capacity = ``budget x particle_count`` contacts, shared
+                by all vertices. On overflow excess pairs are dropped and the
+                detector's overflow flag is set. On the standalone pipeline
+                path nothing grows the arrays automatically; the pipeline's
+                internal detector
+                (``CollisionPipeline._soft_self_contact_detector``,
                 experimental) exposes ``check_self_contact_overflow()`` and
                 ``check_and_grow_collision_buffers()``.
-            edge_buffer_pre_alloc: Average edge-edge contact budget per edge;
-                same pooled semantics and overflow behavior as the vertex
-                budget.
+            edge_buffer_pre_alloc: Sizes the global edge-edge contact buffer:
+                capacity = ``budget x edge_count`` contacts, shared by all
+                edges; same overflow behavior as the vertex budget.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
             record_triangle_contacting_vertices: Also record per-triangle
                 contacting vertices.
