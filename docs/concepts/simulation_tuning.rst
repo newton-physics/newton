@@ -30,6 +30,7 @@ as external references.
 
    simulation_tuning_solvers
    simulation_tuning_mujoco
+   simulation_tuning_vbd
 
 Diagnose Before Tuning
 ----------------------
@@ -182,3 +183,5 @@ Going Deeper
   math.
 - :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to
   ``solref``/``solimp`` mapping, and task templates.
+- :ref:`Tuning VBD` — the VBD/AVBD mental model, parameter effects for
+  particle, rigid, and coupled scenes, and known-good parameter combinations.
