@@ -19,7 +19,6 @@ CUDA device.
 import contextlib
 import importlib.util
 import io
-import linecache
 import os
 import re
 import subprocess
@@ -263,10 +262,6 @@ def add_example_test(
             _register_example_allow_output_regexes(
                 test,
                 is_cuda=is_cuda,
-                allowed_deprecation_warnings=(
-                    newton.tests.unittest_utils.allowed_deprecation_warnings if strict_warnings else ()
-                ),
-                stderr=result.stderr,
             )
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
@@ -306,53 +301,14 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
-def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
-    """Match allowed warning records with source context verified at their locations."""
-    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
-    for match in re.finditer(warp_header, stderr):
-        yield "^" + re.escape(match.group())
-
-    # Formatted stderr cannot establish a custom category's inheritance.
-    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
-
-    def source_end(filename, lineno, offset, indent):
-        source = linecache.getline(filename, int(lineno))
-        context = f"{indent}{source.strip()}\n"
-        return offset + len(context) if source and stderr.startswith(context, offset) else offset
-
-    for match in re.finditer(header, stderr):
-        end = source_end(*match.groups(), match.end(), "  ")
-        tracemalloc_hint = "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
-        allocation_header = "Object allocated at (most recent call last):\n"
-        if stderr.startswith(tracemalloc_hint, end):
-            end += len(tracemalloc_hint)
-        elif stderr.startswith(allocation_header, end):
-            offset = end + len(allocation_header)
-            frame_pattern = re.compile(r'  File "([^\n]+)", lineno (\d+)\n')
-            while frame := frame_pattern.match(stderr, offset):
-                end = source_end(*frame.groups(), frame.end(), "    ")
-                offset = end
-        yield "^" + re.escape(stderr[match.start() : end])
-
-
 def _register_example_allow_output_regexes(
     test: NewtonTestCase,
     *,
     is_cuda: bool,
-    allowed_deprecation_warnings: tuple[str, ...] = (),
-    stderr: str = "",
 ) -> None:
     _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
     if not is_cuda:
         test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
-    regexes = {
-        regex
-        for message_prefix in allowed_deprecation_warnings
-        for regex in _deprecation_warning_output_regexes(stderr, message_prefix)
-    }
-    # Consume full records before header-only occurrences of the same warning.
-    for regex in sorted(regexes, key=len, reverse=True):
-        test.allowOutputRegex(regex, stream="stderr", report=True)
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
@@ -426,6 +382,21 @@ class TestExampleOutputRegexes(unittest.TestCase):
         self.assertTrue(result.wasSuccessful(), result.failures)
         self.assertEqual(output.getvalue(), stderr)
 
+    def test_allowlisted_verbose_warp_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged Warp deprecation with verified source context."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = (
+            f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead ({__file__}:1)\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+        )
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
     def test_allowlisted_deprecation_does_not_hide_other_example_stderr(self):
         """Reject unrelated stderr following an acknowledged deprecation."""
         allowed_prefix = "dependency.old_api is deprecated"
@@ -467,6 +438,17 @@ class TestExampleOutputRegexes(unittest.TestCase):
                 self.assertEqual(result.errors, [])
                 self.assertEqual(len(result.failures), 1)
                 self.assertIn("Unexpected stderr:\n  unexpected diagnostic", result.failures[0][1])
+
+    def test_allowlisted_verbose_warp_deprecation_preserves_mismatched_source_context(self):
+        """Reject indented Warp warning context that does not match its source location."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"Warp DeprecationWarning: {allowed_prefix} ({__file__}:1)\n  unexpected diagnostic\n"
+
+        result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stderr:\n  unexpected diagnostic", result.failures[0][1])
 
     def test_allowlisted_example_warnings_remain_observable(self):
         """Replay acknowledged example warnings after successful output validation."""

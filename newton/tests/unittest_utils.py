@@ -7,6 +7,7 @@ import ctypes.util
 import dataclasses
 import importlib.util
 import io
+import linecache
 import os
 import re
 import shlex
@@ -40,8 +41,8 @@ coverage_branch = None
 # warning attributed to a newton.* module). Off by default so verifying an
 # installation does not fail on warnings the user cannot act on.
 strict_warnings = False
-# Literal message prefixes loaded from --deprecation-allowlist and translated to
-# Python -W options for subprocesses.
+# Literal message prefixes loaded from --deprecation-allowlist and applied to
+# in-process output validation and Python subprocess warning filters.
 allowed_deprecation_warnings: tuple[str, ...] = ()
 
 
@@ -54,6 +55,39 @@ def get_strict_warning_args() -> list[str]:
     for message in allowed_deprecation_warnings:
         arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
     return arguments
+
+
+def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
+    """Match allowed warning records with source context verified at their locations."""
+
+    def source_end(filename, lineno, offset, indent):
+        source = linecache.getline(filename, int(lineno))
+        context = f"{indent}{source.strip()}\n"
+        return offset + len(context) if source and stderr.startswith(context, offset) else offset
+
+    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+    for match in re.finditer(warp_header, stderr):
+        end = match.end()
+        if location := re.search(r" \((.+):(\d+)\)\n$", match.group()):
+            end = source_end(*location.groups(), end, "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
+    # Formatted stderr cannot establish a custom category's inheritance.
+    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+
+    for match in re.finditer(header, stderr):
+        end = source_end(*match.groups(), match.end(), "  ")
+        tracemalloc_hint = "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
+        allocation_header = "Object allocated at (most recent call last):\n"
+        if stderr.startswith(tracemalloc_hint, end):
+            end += len(tracemalloc_hint)
+        elif stderr.startswith(allocation_header, end):
+            offset = end + len(allocation_header)
+            frame_pattern = re.compile(r'  File "([^\n]+)", lineno (\d+)\n')
+            while frame := frame_pattern.match(stderr, offset):
+                end = source_end(*frame.groups(), frame.end(), "    ")
+                offset = end
+        yield "^" + re.escape(stderr[match.start() : end])
 
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
@@ -379,7 +413,20 @@ class _OutputCapture:
         missing = []
         reported = []
 
-        for pattern in self.patterns:
+        patterns = list(self.patterns)
+        if strict_warnings:
+            regexes = {
+                regex
+                for message_prefix in allowed_deprecation_warnings
+                for regex in _deprecation_warning_output_regexes(output_by_stream["stderr"], message_prefix)
+            }
+            automatic_patterns = [
+                _OutputRegex(pattern=regex, stream="stderr", required=False, report=True)
+                for regex in sorted(regexes, key=len, reverse=True)
+            ]
+            patterns = automatic_patterns + patterns
+
+        for pattern in patterns:
             streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
             matched = any(
                 re.search(pattern.pattern, output_by_stream[stream], flags=re.MULTILINE) for stream in streams
