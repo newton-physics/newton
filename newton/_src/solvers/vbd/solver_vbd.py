@@ -1038,9 +1038,14 @@ class SolverVBD(SolverBase, CouplingInterface):
         kernels read, and the per-pair launch size). The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
-        empty until the next step's detection fills it. No-op (returns
-        ``False``) during graph capture; re-create captured graphs after a
-        ``True`` return.
+        empty until the next step's detection fills it.
+
+        This call must not be captured into a CUDA graph: it synchronizes,
+        and growth reallocates arrays. While capture is active it returns
+        ``False`` without checking anything. After a ``True`` return, any
+        PREVIOUSLY captured graph that contains this solver's step is
+        invalid: it still operates on the old storage, so replaying it
+        silently produces stale results. Re-capture after growth.
 
         Returns:
             True if the storage was reallocated.
