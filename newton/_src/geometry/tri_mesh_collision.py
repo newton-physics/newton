@@ -22,6 +22,8 @@ from .kernels import (
     fill_self_contact_reverse_rows_from_lists,
     fill_self_contact_rows_from_lists,
     finalize_row_offsets,
+    sort_self_contact_reverse_rows,
+    sort_self_contact_rows,
     triangle_triangle_collision_detection_kernel,
     vertex_triangle_collision_detection_kernel,
 )
@@ -381,9 +383,14 @@ class TriMeshCollisionDetector:
         collision_detection_block_size: int | None = None,
         collision_info: TriMeshCollisionInfo | None = None,
         init_collision_info: bool = False,
+        sort_contact_rows: bool = False,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
+        # sort each CSR row by counterpart index after the build: canonical row
+        # order for a given contact set (frame-to-frame matching, reproducible
+        # consumers); off by default because the solver does not need it
+        self.sort_contact_rows = sort_contact_rows
         self.vertex_positions = model.particle_q if vertex_positions is None else vertex_positions
         self.device = model.device
         self.vertex_collision_buffer_pre_alloc = vertex_collision_buffer_pre_alloc
@@ -864,6 +871,19 @@ class TriMeshCollisionDetector:
             outputs=[row_values],
             device=self.device,
         )
+        if self.sort_contact_rows:
+            sort_kernel = (
+                sort_self_contact_reverse_rows
+                if fill_kernel is fill_self_contact_reverse_rows_from_lists
+                else sort_self_contact_rows
+            )
+            wp.launch(
+                kernel=sort_kernel,
+                dim=element_count,
+                inputs=[row_offsets],
+                outputs=[row_values],
+                device=self.device,
+            )
 
     def check_self_contact_overflow(self, warn: bool = True) -> tuple[int, int, bool, bool]:
         """Read back pair demand and overflow flags (synchronizes the device).

@@ -1805,6 +1805,58 @@ def fill_self_contact_reverse_rows_from_lists(
 
 
 @wp.kernel
+def sort_self_contact_rows(
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Sort each element's interleaved row by counterpart index, in place.
+
+    One thread per element runs an insertion sort over its own row (rows are
+    short: the average budget per element). Counterparts are unique within a
+    row, so the sorted order is canonical for a given contact set --
+    independent of BVH traversal order and of scheduling.
+    """
+    element = wp.tid()
+    start = row_offsets[element]
+    end = row_offsets[element + 1]
+    i = start + 1
+    while i < end:
+        own = row_values[2 * i]
+        counterpart = row_values[2 * i + 1]
+        j = i - 1
+        while j >= start and row_values[2 * j + 1] > counterpart:
+            row_values[2 * (j + 1)] = row_values[2 * j]
+            row_values[2 * (j + 1) + 1] = row_values[2 * j + 1]
+            j -= 1
+        row_values[2 * (j + 1)] = own
+        row_values[2 * (j + 1) + 1] = counterpart
+        i += 1
+
+
+@wp.kernel
+def sort_self_contact_reverse_rows(
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Triangle-side variant of the row sort: single-int entries (contacting
+    vertex indices), insertion-sorted ascending in place."""
+    element = wp.tid()
+    start = row_offsets[element]
+    end = row_offsets[element + 1]
+    i = start + 1
+    while i < end:
+        value = row_values[i]
+        j = i - 1
+        while j >= start and row_values[j] > value:
+            row_values[j + 1] = row_values[j]
+            j -= 1
+        row_values[j + 1] = value
+        i += 1
+
+
+@wp.kernel
 def triangle_triangle_collision_detection_kernel(
     bvh_id: wp.uint64,
     pos: wp.array[wp.vec3],
