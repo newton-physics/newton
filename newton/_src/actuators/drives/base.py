@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import warp as wp
+
+if TYPE_CHECKING:
+    from ..actuator import InputSource
 
 
 @wp.kernel
@@ -51,6 +54,15 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
+    custom_inputs: tuple[tuple[InputSource, str], ...] = ()
+    """``(source, attribute)`` pairs for the extra arrays this drive reads.
+
+    Each names which :meth:`Actuator.step` argument carries the array, and
+    under what attribute. Set in ``__init__``; the caller supplies the arrays
+    and :class:`~newton.actuators.Actuator` passes them to :meth:`compute` as
+    ``custom_inputs``, keyed by attribute name.
+    """
+
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         """Resolve user-provided arguments with defaults.
@@ -62,24 +74,6 @@ class DriveBase:
             Complete arguments with defaults filled in.
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
-
-    @classmethod
-    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> None:
-        """Register model attributes required by this drive."""
-
-    custom_state_attributes: tuple[str, ...] = ()
-    """State attributes copied onto the drive before each evaluation.
-
-    The drive owns the interpretation and validation of these inputs. A missing
-    attribute is bound as ``None``.
-    """
-
-    custom_control_attributes: tuple[str, ...] = ()
-    """Control attributes copied onto the drive before each evaluation.
-
-    The drive owns the interpretation and validation of these inputs. A missing
-    attribute is bound as ``None``.
-    """
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         """Called by :class:`Actuator` after construction to set up device-specific resources.
@@ -108,6 +102,7 @@ class DriveBase:
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Compute actuator output effort and write to ``forces[i]``.
 
@@ -125,6 +120,9 @@ class DriveBase:
             state: Drive state (``None`` if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.
+            custom_inputs: Arrays for the names this drive lists in
+                :attr:`custom_inputs`, keyed by attribute name. Empty when the
+                drive names none.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
@@ -172,6 +170,7 @@ class DriveBase:
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Refresh the parameter pack before an implicit solve step.
 
@@ -181,6 +180,9 @@ class DriveBase:
         state) override this to rewrite the pack built by :meth:`bind_params`
         in place. The default is a no-op — parameter-static laws like PD need
         nothing here.
+
+        ``custom_inputs`` carries the same arrays as the matching argument of
+        :meth:`compute`.
         """
 
     def is_stateful(self) -> bool:

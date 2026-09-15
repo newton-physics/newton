@@ -567,12 +567,18 @@ class _EffortModeImplicit:
         applied_forces: wp.array[float],
         drive_state: Any,
         dt: float | None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
         The drive law at the final predicted state is written to
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
+
+        *custom_inputs* holds the arrays the drive named in
+        :attr:`~newton.actuators.DriveBase.custom_inputs`, and is forwarded to
+        :meth:`~newton.actuators.DriveBase.prepare_implicit` so the
+        linearization sees the same extra arrays the explicit path does.
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
@@ -597,8 +603,9 @@ class _EffortModeImplicit:
                 target_vel_indices,
                 drive_state,
                 float(dt),
-                self._slot_response,
-                self._device,
+                inv_mass=self._slot_response,
+                device=self._device,
+                custom_inputs=custom_inputs,
             )
         inverse_blocks = self._response.inverse_blocks
 

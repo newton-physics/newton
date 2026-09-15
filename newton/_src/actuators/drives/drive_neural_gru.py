@@ -7,7 +7,7 @@ import math
 import os
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -15,29 +15,33 @@ import warp as wp
 from ..utils import _require_onnx, load_metadata
 from .base import DriveBase
 
+if TYPE_CHECKING:
+    from ..actuator import InputSource
+
 _FEATURE_POSITION = 0
-_FEATURE_POSITION_ERROR = 1
-_FEATURE_VELOCITY = 2
-_FEATURE_TARGET_VELOCITY = 3
-_FEATURE_VELOCITY_ERROR = 4
-_FEATURE_DYNAMIC_BIAS = 5
+_FEATURE_TARGET_POSITION = 1
+_FEATURE_POSITION_ERROR = 2
+_FEATURE_VELOCITY = 3
+_FEATURE_TARGET_VELOCITY = 4
+_FEATURE_VELOCITY_ERROR = 5
+_FEATURE_CUSTOM_INPUT = 6
 _INPUT_FEATURE_CODES = {
     "position": _FEATURE_POSITION,
+    "target_position": _FEATURE_TARGET_POSITION,
     "position_error": _FEATURE_POSITION_ERROR,
     "velocity": _FEATURE_VELOCITY,
     "target_velocity": _FEATURE_TARGET_VELOCITY,
     "velocity_error": _FEATURE_VELOCITY_ERROR,
-    "dynamic_bias": _FEATURE_DYNAMIC_BIAS,
 }
 
 
 @wp.kernel
-def _assemble_input_kernel(
+def _compute_inputs_kernel(
     positions: wp.array[float],
     velocities: wp.array[float],
     target_pos: wp.array[float],
     target_vel: wp.array[float],
-    bias_force: wp.array[float],
+    custom_input: wp.array[float],
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     target_pos_indices: wp.array[wp.uint32],
@@ -54,6 +58,8 @@ def _assemble_input_kernel(
     value = 0.0
     if feature == _FEATURE_POSITION:
         value = position
+    elif feature == _FEATURE_TARGET_POSITION:
+        value = target_pos[target_pos_indices[i]]
     elif feature == _FEATURE_POSITION_ERROR:
         value = target_pos[target_pos_indices[i]] - position
     elif feature == _FEATURE_VELOCITY:
@@ -62,8 +68,8 @@ def _assemble_input_kernel(
         value = target_vel[target_vel_indices[i]]
     elif feature == _FEATURE_VELOCITY_ERROR:
         value = target_vel[target_vel_indices[i]] - velocity
-    elif feature == _FEATURE_DYNAMIC_BIAS:
-        value = bias_force[vel_indices[i]]
+    elif feature == _FEATURE_CUSTOM_INPUT:
+        value = custom_input[vel_indices[i]]
     output[i, column] = (value - means[column]) / stds[column]
 
 
@@ -119,12 +125,39 @@ def _parse_input_feature_keys(metadata: dict[str, Any], model_path: str) -> tupl
         )
     if len(set(input_columns)) != len(input_columns):
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' input_columns must not contain duplicates")
-    unsupported = sorted(set(input_columns).difference(_INPUT_FEATURE_CODES))
+    custom = _parse_custom_input_names(metadata, model_path)
+    unsupported = sorted(set(input_columns).difference(_INPUT_FEATURE_CODES).difference(custom))
     if unsupported:
         raise ValueError(
-            f"DriveNeuralGRU checkpoint '{model_path}' has unsupported input_columns: {', '.join(unsupported)}"
+            f"DriveNeuralGRU checkpoint '{model_path}' has unsupported input_columns: {', '.join(unsupported)}. "
+            f"Name caller-supplied columns in the checkpoint's custom_inputs metadata."
         )
     return tuple(input_columns)
+
+
+def _sim_state_inputs(selected: tuple[str, ...]) -> tuple[tuple[InputSource, str], ...]:
+    """Declare the selected columns that are not built-in features as sim_state inputs."""
+    from ..actuator import InputSource  # noqa: PLC0415
+
+    return tuple((InputSource.SIM_STATE, name) for name in selected if name not in _INPUT_FEATURE_CODES)
+
+
+def _parse_custom_input_names(metadata: dict[str, Any], model_path: str) -> tuple[str, ...]:
+    """Return the input columns the caller supplies, from ``custom_inputs`` metadata."""
+    names = metadata.get("custom_inputs", [])
+    if not isinstance(names, list) or not all(isinstance(name, str) and name.isidentifier() for name in names):
+        raise ValueError(
+            f"DriveNeuralGRU checkpoint '{model_path}' custom_inputs must be a list of names; got {names!r}"
+        )
+    if len(names) > 1:
+        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' supports at most one custom input; got {names!r}")
+    clashing = sorted(set(names).intersection(_INPUT_FEATURE_CODES))
+    if clashing:
+        raise ValueError(
+            f"DriveNeuralGRU checkpoint '{model_path}' custom_inputs may not reuse built-in feature names: "
+            f"{', '.join(clashing)}"
+        )
+    return tuple(names)
 
 
 def _node_attributes(onnx, node) -> dict[str, Any]:
@@ -443,10 +476,70 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
 class DriveNeuralGRU(DriveBase):
     """Stateful GRU actuator drive using Warp-NN.
 
-    Checkpoint metadata selects an ordered set of supported joint-state,
-    target, and optional caller-provided generalized-bias-force inputs. The
-    network and weights are loaded from an ONNX checkpoint and evaluated with
-    Warp-NN.
+    The network and its weights are read from an ONNX checkpoint and evaluated
+    with Warp-NN. Hidden state is kept across timesteps through the
+    double-buffered :class:`Actuator.State` lifecycle. Only the explicit effort
+    mode is supported.
+
+    **Checkpoint metadata.** A JSON block embedded in the ONNX file must
+    provide:
+
+    .. list-table::
+        :header-rows: 1
+        :widths: 22 78
+
+        * - Key
+          - Meaning
+        * - ``input_columns``
+          - Ordered list of the network's input feature names, one per input
+            column. Non-empty and duplicate-free.
+        * - ``custom_inputs``
+          - Optional list naming at most one column of ``input_columns`` that
+            the application supplies. The name must be a valid identifier and
+            must not be a built-in feature name.
+        * - ``normalization``
+          - ``inputs.mean`` and ``inputs.std`` per name in ``input_columns``,
+            and ``targets.mean.torque`` and ``targets.std.torque``.
+        * - ``sample_dt_s``
+          - Timestep [s] the network was trained at. The runtime actuator
+            timestep must match it.
+
+    **Input features.** Each name in ``input_columns`` is one of the built-in
+    features below, or the column named in ``custom_inputs``. Any other name is
+    rejected.
+
+    The drive computes the built-in features from the State and Control arrays
+    every drive receives:
+
+    * ``position``
+    * ``target_position``
+    * ``position_error`` — ``target_position - position``, without angle wrapping
+    * ``velocity``
+    * ``target_velocity``
+    * ``velocity_error`` — ``target_velocity - velocity``
+
+    The application supplies the custom column. It is declared through
+    :attr:`DriveBase.custom_inputs` and read from ``sim_state``; see
+    :ref:`custom-drive-inputs`.
+
+    Normalization is applied per column as ``(value - mean) / std``. The
+    scalar output is converted to physical torque [N or N·m] as
+    ``output * torque_std + torque_mean``. Any output-head activation or scale
+    is part of the exported network and is not applied again.
+
+    **ONNX graph.** One or more forward ``GRU`` nodes followed by a scalar
+    ``Gemm`` output head, optionally followed by ``Tanh`` and a scalar ``Mul``.
+    GRU nodes use ``layout=0`` and ``linear_before_reset=1``; stacked layers
+    share one hidden size; all weights must be embedded in the file. Per
+    invocation the network takes an input of shape ``[1, N, F]`` and a hidden
+    state of shape ``[layer_count, N, hidden_size]``, and returns one scalar
+    per actuator.
+
+    .. warning::
+
+        :class:`DriveNeuralGRU` is experimental. Its checkpoint metadata
+        contract, the set of supported ONNX graph shapes, and the custom
+        inputs it declares may change without the normal deprecation period.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -470,6 +563,8 @@ class DriveNeuralGRU(DriveBase):
             if mask is None:
                 self.hidden.zero_()
                 return
+            if len(mask) < self.hidden.shape[1]:
+                raise ValueError(f"mask has length {len(mask)}; expected at least {self.hidden.shape[1]}.")
             wp.launch(
                 _zero_masked_hidden_kernel,
                 dim=self.hidden.shape,
@@ -494,25 +589,6 @@ class DriveNeuralGRU(DriveBase):
             raise ValueError("DriveNeuralGRU requires a non-empty 'model_path'")
         return {"model_path": model_path}
 
-    @classmethod
-    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> None:
-        """Register the optional generalized-bias input."""
-        model_path = os.fspath(args["model_path"])
-        if "dynamic_bias" not in _parse_input_feature_keys(load_metadata(model_path), model_path):
-            return
-
-        from ...sim.model import Model  # noqa: PLC0415
-
-        builder.add_custom_attribute(
-            builder.CustomAttribute(
-                name="dynamic_bias",
-                dtype=wp.float32,
-                frequency=Model.AttributeFrequency.JOINT_DOF,
-                assignment=Model.AttributeAssignment.CONTROL,
-                default=0.0,
-            )
-        )
-
     def __init__(self, model_path: str):
         """Initialize the drive from an ONNX GRU network.
 
@@ -527,8 +603,7 @@ class DriveNeuralGRU(DriveBase):
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
-        self.custom_control_attributes = ("dynamic_bias",) if "dynamic_bias" in self._input_feature_keys else ()
-        self.dynamic_bias: wp.array[float] | None = None
+        self.custom_inputs = _sim_state_inputs(self._input_feature_keys)
         if self._description.layers[0].input_size != len(self._input_feature_keys):
             raise ValueError(
                 f"DriveNeuralGRU checkpoint '{self.model_path}' GRU input size "
@@ -592,12 +667,18 @@ class DriveNeuralGRU(DriveBase):
                 "DriveNeuralGRU requires Warp-NN and ONNX. Install them with `pip install newton[onnx]`."
             ) from exc
 
+        if self._device is not None and (self._device != device or self._num_actuators != num_actuators):
+            raise RuntimeError(
+                "DriveNeuralGRU is already finalized for a different actuator; construct one drive per actuator."
+            )
         self._device = device
         self._num_actuators = num_actuators
         self._input_means_wp = wp.array(self._input_means, dtype=wp.float32, device=device)
         self._input_stds_wp = wp.array(self._input_stds, dtype=wp.float32, device=device)
         self._input_feature_codes_wp = wp.array(
-            [_INPUT_FEATURE_CODES[name] for name in self._input_feature_keys], dtype=wp.int32, device=device
+            [_INPUT_FEATURE_CODES.get(name, _FEATURE_CUSTOM_INPUT) for name in self._input_feature_keys],
+            dtype=wp.int32,
+            device=device,
         )
         self._net_input = wp.zeros((num_actuators, len(self._input_feature_keys)), dtype=wp.float32, device=device)
 
@@ -684,15 +765,19 @@ class DriveNeuralGRU(DriveBase):
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
         self._next_hidden = None
-        dynamic_bias = self.dynamic_bias
-        self.dynamic_bias = None
-        if "dynamic_bias" in self._input_feature_keys and dynamic_bias is None:
-            raise RuntimeError(
-                "DriveNeuralGRU input_columns includes 'dynamic_bias', but sim_control.dynamic_bias is missing"
-            )
+        custom_input = None
+        if self.custom_inputs:
+            name = self.custom_inputs[0][1]
+            custom_input = (custom_inputs or {}).get(name)
+            if custom_input is None:
+                raise RuntimeError(
+                    f"DriveNeuralGRU input_columns includes '{name}', but no array was supplied. Pass a "
+                    f"sim_state carrying '{name}' with shape (model.joint_dof_count,)."
+                )
         if state is None or state.hidden is None:
             raise ValueError("DriveNeuralGRU requires a current drive state with hidden data")
 
@@ -712,14 +797,14 @@ class DriveNeuralGRU(DriveBase):
 
         runtime_device = device or self._device
         wp.launch(
-            _assemble_input_kernel,
+            _compute_inputs_kernel,
             dim=(self._num_actuators, len(self._input_feature_keys)),
             inputs=[
                 positions,
                 velocities,
                 target_pos,
                 target_vel,
-                dynamic_bias,
+                custom_input,
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
@@ -732,15 +817,10 @@ class DriveNeuralGRU(DriveBase):
             device=runtime_device,
         )
 
-        hidden_flat = state.hidden.reshape(
-            (len(self._description.layers) * self._num_actuators, self._description.layers[0].hidden_size)
-        )
         output = self._net_input
         next_hidden = []
         for layer_index, layer in enumerate(self._gru_layers):
-            start = layer_index * self._num_actuators
-            layer_hidden = hidden_flat[start : start + self._num_actuators]
-            output = layer(output, layer_hidden)
+            output = layer(output, state.hidden[layer_index])
             next_hidden.append(output)
         self._next_hidden = next_hidden
 
@@ -775,10 +855,6 @@ class DriveNeuralGRU(DriveBase):
             raise RuntimeError("DriveNeuralGRU has no next hidden state; compute must run before update_state")
         if next_state is None or next_state.hidden is None:
             raise ValueError("DriveNeuralGRU requires a next drive state")
-        next_hidden_flat = next_state.hidden.reshape(
-            (len(self._description.layers) * self._num_actuators, self._description.layers[0].hidden_size)
-        )
         for layer_index, layer_hidden in enumerate(self._next_hidden):
-            start = layer_index * self._num_actuators
-            wp.copy(next_hidden_flat[start : start + self._num_actuators], layer_hidden)
+            wp.copy(next_state.hidden[layer_index], layer_hidden)
         self._next_hidden = None

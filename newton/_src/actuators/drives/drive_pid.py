@@ -246,6 +246,7 @@ class DrivePID(DriveBase):
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         """Fold ``ki*integral`` into the pack's constant column.
 
@@ -292,6 +293,7 @@ class DrivePID(DriveBase):
         state: DrivePID.State,
         dt: float,
         device: wp.Device | None = None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> None:
         wp.launch(
             kernel=_pid_effort_kernel,
