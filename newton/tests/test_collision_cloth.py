@@ -1364,6 +1364,67 @@ def test_collision_filter_decouple(test, device):
     test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
 
 
+def test_sorted_contact_rows(test, device):
+    """Sorted rows are ascending by counterpart, hold the same contacts as an
+    unsorted detector, and are bitwise stable across repeated detections."""
+    vertices, faces = get_data()
+    model, detector_plain = init_model(vertices, faces, device)
+    detector_sorted = TriMeshCollisionDetector(
+        model=model,
+        record_triangle_contacting_vertices=True,
+        vertex_collision_buffer_pre_alloc=256,
+        edge_collision_buffer_pre_alloc=256,
+        init_collision_info=True,
+        sort_contact_rows=True,
+    )
+
+    query_radius = 5e-2
+    for detector in (detector_plain, detector_sorted):
+        detector.vertex_triangle_collision_detection(query_radius)
+        detector.edge_edge_collision_detection(query_radius)
+
+    for interleaved, plain_info, sorted_info in (
+        (True, detector_plain.vertex_colliding_triangles, detector_sorted.vertex_colliding_triangles),
+        (True, detector_plain.edge_colliding_edges, detector_sorted.edge_colliding_edges),
+        (False, detector_plain.triangle_colliding_vertices, detector_sorted.triangle_colliding_vertices),
+    ):
+        plain = plain_info.numpy()
+        rows = sorted_info.numpy()
+        offsets = (
+            detector_sorted.vertex_colliding_triangles_offsets
+            if sorted_info is detector_sorted.vertex_colliding_triangles
+            else detector_sorted.edge_colliding_edges_offsets
+            if sorted_info is detector_sorted.edge_colliding_edges
+            else detector_sorted.triangle_colliding_vertices_offsets
+        ).numpy()
+        total = 0
+        for element in range(offsets.shape[0] - 1):
+            start, end = int(offsets[element]), int(offsets[element + 1])
+            if end == start:
+                continue
+            if interleaved:
+                row = rows[2 * start : 2 * end].reshape(-1, 2)
+                plain_row = plain[2 * start : 2 * end].reshape(-1, 2)
+                keys = row[:, 1]
+                test.assertTrue((row[:, 0] == element).all())
+            else:
+                row = rows[start:end]
+                plain_row = plain[start:end]
+                keys = row
+            test.assertTrue((keys[1:] > keys[:-1]).all() if keys.shape[0] > 1 else True)
+            test.assertEqual(
+                sorted(map(tuple, row.reshape(keys.shape[0], -1))),
+                sorted(map(tuple, plain_row.reshape(keys.shape[0], -1))),
+            )
+            total += end - start
+        test.assertGreater(total, 0)
+
+    # canonical order: a second detection reproduces the rows bitwise
+    first = detector_sorted.vertex_colliding_triangles.numpy().copy()
+    detector_sorted.vertex_triangle_collision_detection(query_radius)
+    assert_np_equal(detector_sorted.vertex_colliding_triangles.numpy(), first)
+
+
 def test_collision_info_injection(test, device):
     """Verify an injected TriMeshCollisionInfo yields results identical to self-allocation.
 
@@ -1990,6 +2051,7 @@ add_function_test(
     test_trimesh_collision_detection_cuda_graph_capturable,
     devices=get_cuda_test_devices(),
 )
+add_function_test(TestCollision, "test_sorted_contact_rows", test_sorted_contact_rows, devices=devices)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 add_function_test(
     TestCollision,
