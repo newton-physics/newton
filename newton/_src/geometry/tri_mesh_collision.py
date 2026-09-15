@@ -922,12 +922,23 @@ class TriMeshCollisionDetector:
         append log is resized to match; the next detection fills the grown
         rows. The grown storage is empty until then, so call this between
         detections, not between a detection and a consumer of its results.
-        No-op (returns ``False``) during graph capture, since growth
-        reallocates arrays; re-create captured graphs after a ``True`` return.
+
+        This call must not be captured into a CUDA graph: it synchronizes,
+        and growth reallocates arrays. While capture is active it returns
+        ``False`` without checking anything. After a ``True`` return, any
+        PREVIOUSLY captured graph that contains detection or contact kernels
+        is invalid: it still operates on the old, unbound storage, so replaying
+        it silently produces stale results. Re-create such graphs after growth.
 
         Owners of the result struct must re-read :attr:`collision_info` after
         a ``True`` return (``SolverVBD.check_and_grow_self_contact_buffers``
         wraps this and refreshes the solver-side references).
+
+        Args:
+            warn: Emit a ``UserWarning`` describing the overflow (per-family
+                demand versus capacity and how to raise the budgets) before
+                growing. Pass ``False`` to grow silently and rely on the
+                return value instead.
 
         Returns:
             True if the storage was reallocated.
