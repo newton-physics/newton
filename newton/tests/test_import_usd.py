@@ -44,6 +44,12 @@ devices = get_test_devices()
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
+_MIRRORED_BODY_WARNING = (
+    r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
+)
+_PARTIAL_EQ_SOLREF_WARNING = (
+    r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects 2\."
+)
 
 
 def _expect_jointless_articulation_warning(test):
@@ -8882,7 +8888,15 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with warnings.catch_warnings(record=True) as caught:
+            # This fixture deliberately covers negative scale. Record only its
+            # expected diagnostic while preserving the ambient warning policy.
+            warnings.filterwarnings("always", message=_MIRRORED_BODY_WARNING, category=UserWarning)
+            result = builder.add_usd(stage)
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(caught[0].category, UserWarning)
+        self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
@@ -10540,7 +10554,15 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
         self.assertEqual(builder.joint_dof_count, 12)
         self.assertEqual(builder.joint_coord_count, 14)
-        model = builder.finalize()
+        with warnings.catch_warnings(record=True) as caught:
+            # The body-to-world row intentionally omits solref to exercise the
+            # registered default. Keep all unrelated warnings under the ambient policy.
+            warnings.filterwarnings("always", message=_PARTIAL_EQ_SOLREF_WARNING, category=UserWarning)
+            model = builder.finalize()
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(caught[0].category, UserWarning)
+        self.assertRegex(str(caught[0].message), _PARTIAL_EQ_SOLREF_WARNING)
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
         self.assertNotIn("/World/EqualityConnectBodyToWorld", result["path_joint_map"])
@@ -10570,6 +10592,7 @@ def Xform "Articulation" (
             atol=1e-6,
         )
         np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[site_eq], np.array([0.04, 0.7], dtype=np.float32))
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[world_eq], np.array([0.02, 1.0], dtype=np.float32))
         np.testing.assert_allclose(
             model.mujoco.eq_solimp.numpy()[site_eq],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
@@ -23,6 +25,24 @@ from newton.tests.unittest_utils import (
 
 class TestEvalFK(unittest.TestCase):
     pass
+
+
+_PARALLEL_JOINT_WARNING = (
+    r"Adding a (?:FIXED|REVOLUTE) joint between parent \d+ and child \d+ \(label: 'body_\d+'\), but another joint "
+    r"already connects these bodies\. Parallel joints between the same pair of bodies have undefined semantics"
+)
+
+
+@contextmanager
+def _expect_parallel_joint_warning(test):
+    """Require one parallel-joint warning without relaxing the ambient policy."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.filterwarnings("always", message=_PARALLEL_JOINT_WARNING, category=UserWarning)
+        yield
+
+    test.assertEqual(len(caught), 1)
+    test.assertEqual(caught[0].category, UserWarning)
+    test.assertRegex(str(caught[0].message), _PARALLEL_JOINT_WARNING)
 
 
 @wp.kernel
@@ -97,14 +117,16 @@ def _build_gradient_model(device):
     return builder.finalize(device=device, requires_grad=True), parent
 
 
-def _build_loop_model(device):
+def _build_loop_model(test, device):
+    """Build a loop whose closing joint intentionally parallels an existing joint."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
     child_joint = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Y)
     builder.add_articulation([root_joint, child_joint])
-    builder.add_joint_fixed(parent=child, child=root)
+    with _expect_parallel_joint_warning(test):
+        builder.add_joint_fixed(parent=child, child=root)
     model = builder.finalize(device=device)
     model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
     return model
@@ -331,7 +353,8 @@ def test_empty_model(test, device):
 
 
 def test_loop_closing_joint(test, device):
-    model = _build_loop_model(device)
+    """Evaluate a loop-closing joint after asserting its parallel-joint warning."""
+    model = _build_loop_model(test, device)
     assert_np_equal(model.joint_ancestor.numpy(), np.array([-1, 2, 1], dtype=np.int32))
     assert_np_equal(model._fk_articulation_level_start.numpy(), np.array([0, 2], dtype=np.int32))
     assert_np_equal(model._fk_level_joint_start.numpy(), np.array([0, 1, 2], dtype=np.int32))
@@ -346,12 +369,14 @@ def test_loop_closing_joint(test, device):
 
 
 def test_duplicate_child_serial_fallback(test, device):
+    """Fall back to serial FK when two joints intentionally share a child."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
     child_joint = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Y)
-    duplicate_joint = builder.add_joint_fixed(parent=root, child=child)
+    with _expect_parallel_joint_warning(test):
+        duplicate_joint = builder.add_joint_fixed(parent=root, child=child)
     builder.add_articulation([root_joint, child_joint, duplicate_joint])
     model = builder.finalize(device=device)
     model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
@@ -367,11 +392,13 @@ def test_duplicate_child_serial_fallback(test, device):
 
 
 def test_cyclic_articulation_serial_fallback(test, device):
+    """Fall back to serial FK for an intentionally cyclic articulation."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joint_a = builder.add_joint_revolute(parent=body_b, child=body_a, axis=newton.Axis.Z)
-    joint_b = builder.add_joint_revolute(parent=body_a, child=body_b, axis=newton.Axis.Y)
+    with _expect_parallel_joint_warning(test):
+        joint_b = builder.add_joint_revolute(parent=body_a, child=body_b, axis=newton.Axis.Y)
     builder.add_articulation([joint_a, joint_b])
     model = builder.finalize(device=device)
     model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
