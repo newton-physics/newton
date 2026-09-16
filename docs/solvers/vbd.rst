@@ -90,9 +90,10 @@ Newton.
 
 The contact methods are described in:
 
-- Anka He Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+- Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
   and Truncate: A Penetration and Inversion Free Framework for Coupled
-  Multi-physics Systems. arXiv:2604.15513. https://arxiv.org/abs/2604.15513
+  Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
+  https://doi.org/10.1145/3799902.3811143
 - Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
   Yuksel. 2025. Offset Geometric Contact. *ACM Trans. Graph.* 44, 4.
   https://doi.org/10.1145/3731205
