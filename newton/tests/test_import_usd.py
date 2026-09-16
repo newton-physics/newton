@@ -1134,6 +1134,47 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_drive_scale_and_per_import_joint_defaults(self):
+        """Use scene drive scaling and keep joint defaults scoped to each import."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.GetPrim().CreateAttribute("newton:joint_drive_gains_scaling", Sdf.ValueTypeNames.Float).Set(2.5)
+        root = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        for name in ("Parent", "Child"):
+            body = UsdGeom.Cube.Define(stage, f"/Articulation/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets(["/Articulation/Parent"])
+        joint.CreateBody1Rel().SetTargets(["/Articulation/Child"])
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive.CreateStiffnessAttr(4.0)
+        drive.CreateDampingAttr(0.5)
+
+        for default in (1.0, 3.0):
+            with self.subTest(default=default):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.armature = default
+                builder.default_joint_cfg.friction = default / 10.0
+                builder.default_joint_cfg.damping = default * 2.0
+                builder.default_joint_cfg.limit_ke = default * 100.0
+                builder.default_joint_cfg.limit_kd = default * 5.0
+                builder.add_usd(stage, joint_drive_gains_scaling=9.0)
+                dof = builder.joint_qd_start[builder.joint_label.index("/Articulation/Joint")]
+                self.assertAlmostEqual(builder.joint_target_ke[dof], 4.0 * math.degrees(2.5))
+                self.assertAlmostEqual(builder.joint_target_kd[dof], 0.5 * math.degrees(2.5))
+                self.assertAlmostEqual(builder.joint_armature[dof], default)
+                self.assertAlmostEqual(builder.joint_friction[dof], default / 10.0)
+                self.assertAlmostEqual(builder.joint_damping[dof], default * 2.0)
+                self.assertAlmostEqual(builder.joint_limit_ke[dof], default * 100.0)
+                self.assertAlmostEqual(builder.joint_limit_kd[dof], default * 5.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_distance_joint(self):
         """Import independently enabled distance-joint limits."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -1262,7 +1303,7 @@ class TestImportUsdJoints(unittest.TestCase):
         """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
         from pxr import Usd
 
-        from newton._src.utils.import_usd import _HARD_LIMIT_KE  # noqa: PLC0415
+        from newton._src.usd._usd_resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
 
         deg2rad = math.pi / 180.0
 
