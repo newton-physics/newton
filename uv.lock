@@ -4644,9 +4644,9 @@ wheels = [
 
 [[package]]
 name = "ovrtx"
-version = "0.4.1.364340"
+version = "0.3.0.312915"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2c/3e/ecefd14d7dc8b377607aafe19e426f40b921b2be9a8f73ebc6e4d180ecd1/ovrtx-0.4.1.364340.tar.gz", hash = "sha256:1b20e48a69a091246b0537412e0434ee5d5437a8bfc3bbe02599f13ac7488927", size = 23382, upload-time = "2026-08-14T22:43:40.756Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/2c/44ee27cf01b28b0cce6d5e9cb54e312569732883fa7246defa499dfa791c/ovrtx-0.3.0.312915.tar.gz", hash = "sha256:78a01cafca25b6f76e51d858eb37233cf3611e06bdd47847b96782580f65eb40", size = 673, upload-time = "2026-05-18T16:47:22.702Z" }
 
 [[package]]
 name = "ovstage"
