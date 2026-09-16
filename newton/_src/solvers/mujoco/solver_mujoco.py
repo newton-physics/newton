@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import MAXVAL, override, vec5, vec10
+from ...core.types import MAXVAL, Axis, override, vec5, vec10
 from ...geometry import GeoType, Mesh, ShapeFlags
 from ...sim import (
     BodyFlags,
@@ -6041,6 +6041,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             GeoType.ELLIPSOID: mujoco.mjtGeom.mjGEOM_ELLIPSOID,
             GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
             GeoType.CONVEX_MESH: mujoco.mjtGeom.mjGEOM_MESH,
+            GeoType.CONE: mujoco.mjtGeom.mjGEOM_MESH,
         }
 
         mj_bodies = [spec.worldbody]
@@ -6457,6 +6458,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         wp.vec3(tf.p[0], tf.p[1], tf.p[2] + hfield_src.min_z),
                         tf.q,
                     )
+                elif stype == GeoType.CONE:
+                    size = shape_size[shape]
+                    mesh_src = Mesh.create_cone(
+                        float(size[0]),
+                        float(size[1]),
+                        up_axis=Axis.Z,
+                        compute_normals=False,
+                        compute_uvs=False,
+                        compute_inertia=False,
+                    )
+                    spec.add_mesh(
+                        name=name,
+                        uservert=mesh_src.vertices.flatten(),
+                        userface=mesh_src.indices.flatten(),
+                        maxhullvert=mesh_src.maxhullvert,
+                    )
+                    geom_params["meshname"] = name
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     size = shape_size[shape]
