@@ -299,7 +299,6 @@ def build_tri_mesh_collision_info(
     edge_count: int,
     *,
     vertex_collision_buffer_pre_alloc: int = 8,
-    triangle_collision_buffer_pre_alloc: int = 8,
     edge_collision_buffer_pre_alloc: int = 16,
     record_triangle_contacting_vertices: bool = False,
     device=None,
@@ -327,8 +326,6 @@ def build_tri_mesh_collision_info(
         edge_count: Number of mesh edges.
         vertex_collision_buffer_pre_alloc: Average vertex-triangle contact
             budget per vertex; row capacity = this x ``particle_count`` pairs.
-        triangle_collision_buffer_pre_alloc: Unused for sizing (the reverse
-            table holds the same stored contacts); kept for signature stability.
         edge_collision_buffer_pre_alloc: Average edge-edge contact budget per
             edge; row capacity = this x ``edge_count`` pairs.
         record_triangle_contacting_vertices: Whether to allocate the reverse
@@ -377,7 +374,6 @@ class TriMeshCollisionDetector:
         vertex_collision_buffer_pre_alloc=8,
         vertex_triangle_filtering_list=None,
         vertex_triangle_filtering_list_offsets=None,
-        triangle_collision_buffer_pre_alloc=8,
         edge_collision_buffer_pre_alloc=16,
         edge_filtering_list=None,
         edge_filtering_list_offsets=None,
@@ -401,7 +397,6 @@ class TriMeshCollisionDetector:
         self.vertex_positions = model.particle_q if vertex_positions is None else vertex_positions
         self.device = model.device
         self.vertex_collision_buffer_pre_alloc = vertex_collision_buffer_pre_alloc
-        self.triangle_collision_buffer_pre_alloc = triangle_collision_buffer_pre_alloc
         self.edge_collision_buffer_pre_alloc = edge_collision_buffer_pre_alloc
         self.triangle_triangle_collision_buffer_pre_alloc = triangle_triangle_collision_buffer_pre_alloc
         self.triangle_triangle_collision_buffer_max_alloc = triangle_triangle_collision_buffer_max_alloc
@@ -483,7 +478,6 @@ class TriMeshCollisionDetector:
                 model.tri_count,
                 model.edge_count,
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
-                triangle_collision_buffer_pre_alloc=triangle_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
                 record_triangle_contacting_vertices=record_triangle_contacting_vertices,
                 device=self.device,
