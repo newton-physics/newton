@@ -174,7 +174,8 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``rigid_compliant_alm`` is deprecated because the default will change to
       ``True``.
 
-    Rigid-rigid contacts consume shape ``mu_torsional`` and ``mu_rolling``.
+    With ``rigid_compliant_alm=True``, rigid-rigid contacts consume shape
+    ``mu_torsional`` and ``mu_rolling``. Legacy contacts ignore both coefficients.
     Both coefficients have units of length [m]; multiplying them by the contact
     normal load gives the corresponding torque limit [N·m].
     Their nonzero defaults enable both channels; setting either coefficient to
@@ -370,8 +371,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             Common parameters:
 
             iterations: Number of VBD iterations per step.
-            friction_epsilon: Friction-regularization speed. Sliding friction interprets it in m/s; legacy-soft angular
-                friction interprets it in rad/s. Hard/ALM angular friction does not use it.
+            friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
+                and rigid body contacts).
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
 
@@ -491,7 +492,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 matching it also restores projected tangential multipliers as a
                 numerical warm start; with sticky matching, tangential memory is
                 represented by the collision pipeline's replayed material anchor.
-                Matched hard/ALM contacts also restore projected angular-friction multipliers.
+                Matched ALM contacts also restore projected angular-friction multipliers.
                 Legacy hard contacts restore the full multiplier; legacy soft contacts
                 restore penalty k only. Contact geometry remains owned by the
                 collision pipeline. Requires ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
@@ -1013,8 +1014,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.rigid_compliant_alm:
             self._validate_compliant_contact_materials()
             self._validate_compliant_joint_dof_materials()
-        if self._integrates_rigid_bodies:
-            self._validate_angular_contact_materials()
 
         self.rigid_joint_linear_k_start = rigid_joint_linear_k_start if rigid_avbd_linear_beta > 0.0 else None
         self.rigid_joint_angular_k_start = rigid_joint_angular_k_start if rigid_avbd_angular_beta > 0.0 else None
@@ -1084,11 +1083,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_hessian_al = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
             self.body_hessian_ll = wp.zeros(model.body_count, dtype=wp.mat33, device=self.device)
             angular_compliance_capacity = (
-                model.body_count
-                if model.joint_count > 0
-                and model.shape_count > 0
-                and (self.rigid_contact_hard or self.rigid_compliant_alm)
-                else 0
+                model.body_count if model.joint_count > 0 and model.shape_count > 0 and self.rigid_compliant_alm else 0
             )
             self.body_contact_free_angular_compliance = wp.zeros(
                 angular_compliance_capacity, dtype=wp.mat33, device=self.device
@@ -1255,8 +1250,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         if flags & ModelFlags.SHAPE_PROPERTIES:
             if self.rigid_compliant_alm:
                 self._validate_compliant_contact_materials()
-            if self._integrates_rigid_bodies:
-                self._validate_angular_contact_materials()
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
@@ -1588,15 +1581,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Validate physical contact coefficients consumed by compliant ALM."""
         if self.model.shape_count == 0:
             return
-        for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
-            values = self._to_numpy(getattr(self.model, attribute), dtype=float)
-            _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
-
-    def _validate_angular_contact_materials(self) -> None:
-        """Validate shape coefficients consumed by torsional and rolling friction."""
-        if self.model.shape_count == 0:
-            return
-        for attribute in ("shape_material_mu_torsional", "shape_material_mu_rolling"):
+        attributes = ("shape_material_ke", "shape_material_kd", "shape_material_mu")
+        if self._integrates_rigid_bodies:
+            attributes += ("shape_material_mu_torsional", "shape_material_mu_rolling")
+        for attribute in attributes:
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
             _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
 
@@ -3479,7 +3467,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             and model.shape_count > 0
             and contacts is not None
             and contacts.rigid_contact_max > 0
-            and (self.rigid_contact_hard or self.rigid_compliant_alm)
+            and self.rigid_compliant_alm
         )
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.

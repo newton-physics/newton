@@ -399,7 +399,6 @@ def _eval_angular_contact_friction_kernel(
     mu_torsional: wp.array[float],
     mu_rolling: wp.array[float],
     contact_lambda_angular: wp.array[wp.vec3],
-    use_angular_friction_multiplier: int,
     torque_out: wp.array[wp.vec3],
     hessian_out: wp.array[wp.mat33],
 ):
@@ -416,9 +415,6 @@ def _eval_angular_contact_friction_kernel(
         100.0,
         100.0,
         contact_lambda_angular[0],
-        use_angular_friction_multiplier,
-        1.0e-2,
-        0.01,
     )
     torque_out[0] = torque
     hessian_out[0] = hessian
@@ -1324,7 +1320,7 @@ def _assert_rigid_compliant_alm_coefficients(device):
 
 
 def _angular_contact_friction_isolates_channels(test, device):
-    """Verify angular-channel isolation, bounds, and stateful solve metrics."""
+    """Verify angular-channel isolation, bounds, and ALM solve metrics."""
     cases = (
         (
             wp.vec3(0.0, 0.0, 1.0),
@@ -1334,7 +1330,6 @@ def _angular_contact_friction_isolates_channels(test, device):
             wp.vec3(0.0),
             np.array([0.0, 0.0, -2.0]),
             np.diag([0.0, 0.0, 20.0]),
-            False,
         ),
         (
             wp.vec3(1.0, 0.0, 0.0),
@@ -1344,7 +1339,6 @@ def _angular_contact_friction_isolates_channels(test, device):
             wp.vec3(0.0),
             np.array([-3.0, 0.0, 0.0]),
             np.diag([30.0, 30.0, 0.0]),
-            False,
         ),
         (
             wp.vec3(0.0, 0.0, 1.0),
@@ -1354,7 +1348,6 @@ def _angular_contact_friction_isolates_channels(test, device):
             wp.vec3(0.0, 0.0, -0.5),
             np.array([0.0, 0.0, -0.6]),
             np.diag([0.0, 0.0, 100.0]),
-            True,
         ),
         (
             wp.vec3(1.0, 0.0, 0.0),
@@ -1364,52 +1357,45 @@ def _angular_contact_friction_isolates_channels(test, device):
             wp.vec3(-0.5, 0.0, 0.0),
             np.array([-0.6, 0.0, 0.0]),
             np.diag([100.0, 100.0, 0.0]),
-            True,
         ),
     )
     with wp.ScopedDevice(device):
-        for use_angular_friction_multiplier in (0, 1):
-            for (
-                axis,
-                angle,
-                mu_torsional,
-                mu_rolling,
-                contact_lambda_angular,
-                expected_torque,
-                expected_stateful_hessian,
-                stateful_only,
-            ) in cases:
-                if stateful_only and use_angular_friction_multiplier == 0:
-                    continue
-                q_now = wp.quat_from_axis_angle(axis, angle)
-                body_q = wp.array([wp.transform(wp.vec3(0.0), q_now)], dtype=wp.transform, device=device)
-                body_q_prev = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
-                normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
-                torque = wp.zeros(1, dtype=wp.vec3, device=device)
-                hessian = wp.zeros(1, dtype=wp.mat33, device=device)
+        for (
+            axis,
+            angle,
+            mu_torsional,
+            mu_rolling,
+            contact_lambda_angular,
+            expected_torque,
+            expected_hessian,
+        ) in cases:
+            q_now = wp.quat_from_axis_angle(axis, angle)
+            body_q = wp.array([wp.transform(wp.vec3(0.0), q_now)], dtype=wp.transform, device=device)
+            body_q_prev = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+            normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
+            torque = wp.zeros(1, dtype=wp.vec3, device=device)
+            hessian = wp.zeros(1, dtype=wp.mat33, device=device)
 
-                wp.launch(
-                    _eval_angular_contact_friction_kernel,
-                    dim=1,
-                    inputs=[
-                        body_q,
-                        body_q_prev,
-                        normal,
-                        wp.array([mu_torsional], dtype=float, device=device),
-                        wp.array([mu_rolling], dtype=float, device=device),
-                        wp.array([contact_lambda_angular], dtype=wp.vec3, device=device),
-                        use_angular_friction_multiplier,
-                    ],
-                    outputs=[torque, hessian],
-                    device=device,
-                )
+            wp.launch(
+                _eval_angular_contact_friction_kernel,
+                dim=1,
+                inputs=[
+                    body_q,
+                    body_q_prev,
+                    normal,
+                    wp.array([mu_torsional], dtype=float, device=device),
+                    wp.array([mu_rolling], dtype=float, device=device),
+                    wp.array([contact_lambda_angular], dtype=wp.vec3, device=device),
+                ],
+                outputs=[torque, hessian],
+                device=device,
+            )
 
-                np.testing.assert_allclose(torque.numpy()[0], expected_torque, rtol=1.0e-5, atol=1.0e-5)
-                hessian_np = hessian.numpy()[0]
-                np.testing.assert_allclose(hessian_np, hessian_np.T, rtol=1.0e-6, atol=1.0e-6)
-                test.assertGreaterEqual(float(np.linalg.eigvalsh(hessian_np).min()), -1.0e-5)
-                if use_angular_friction_multiplier == 1:
-                    np.testing.assert_allclose(hessian_np, expected_stateful_hessian, rtol=1.0e-5, atol=1.0e-5)
+            np.testing.assert_allclose(torque.numpy()[0], expected_torque, rtol=1.0e-5, atol=1.0e-5)
+            hessian_np = hessian.numpy()[0]
+            np.testing.assert_allclose(hessian_np, hessian_np.T, rtol=1.0e-6, atol=1.0e-6)
+            test.assertGreaterEqual(float(np.linalg.eigvalsh(hessian_np).min()), -1.0e-5)
+            np.testing.assert_allclose(hessian_np, expected_hessian, rtol=1.0e-5, atol=1.0e-5)
 
 
 def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
@@ -1489,7 +1475,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[0.5, 0.0, 1.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
-        history.lambda_angular = wp.zeros(3, dtype=wp.vec3, device=device)
+        history.lambda_angular = wp.array([[1.0, 2.0, 3.0]] * 3, dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
@@ -1542,6 +1528,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
 
         np.testing.assert_allclose(penalty_k.numpy(), [40.0, 10.0, 20.0, 10.0])
         np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 7.0], [0.0, 0.0, 0.0], [0.5, 0.0, 1.0], [0.0, 0.0, 0.0]])
+        np.testing.assert_array_equal(lam_angular.numpy(), np.zeros((4, 3)))
         np.testing.assert_allclose(material_ke.numpy(), [150.0] * 4)
         np.testing.assert_allclose(material_kd.numpy(), [2.0] * 4)
         np.testing.assert_allclose(material_mu.numpy(), [0.5] * 4)
