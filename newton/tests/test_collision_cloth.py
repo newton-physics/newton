@@ -386,7 +386,6 @@ def init_multiworld_model(
         record_triangle_contacting_vertices=record_triangle_contacting_vertices,
         init_collision_info=True,
         vertex_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
-        triangle_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         edge_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
     )
 
@@ -434,7 +433,6 @@ def init_global_multiworld_model(
         record_triangle_contacting_vertices=record_triangle_contacting_vertices,
         init_collision_info=True,
         vertex_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
-        triangle_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         edge_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
     )
 
