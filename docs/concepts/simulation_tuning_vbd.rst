@@ -41,7 +41,10 @@ math, how the solver converges and why it fails:
 - how AVBD enforces rigid joint and contact constraints through penalty
   stiffness with optional per-iteration ramping plus augmented-Lagrangian
   state for hard slots, and what roles ``rigid_avbd_alpha``,
-  ``rigid_avbd_beta``, and ``rigid_avbd_gamma`` play in that scheme.
+  ``rigid_avbd_beta``, and ``rigid_avbd_gamma`` play in that scheme;
+- how the penetration-free Divide and Truncate (DAT) scheme bounds and
+  truncates per-vertex motion against contacts, and what that implies for
+  self-contact parameters.
 
 For the underlying methods, see the VBD and AVBD papers cited in
 :class:`~newton.solvers.SolverVBD`.
@@ -72,6 +75,16 @@ cloth membrane and bending stiffness and damping (``tri_ke``, ``tri_ka``,
 materials (``soft_contact_*`` and shape ``mu``/``ke``/``kd``), joint and cable
 stiffness and damping, particle mass and radius, and the
 ``dt``–substeps–``iterations`` trade-off.
+
+Contact Handling
+~~~~~~~~~~~~~~~~
+
+*In development.* How the contact stack responds to tuning: the self-contact
+detection family (radius, margin, detection interval, buffer sizes, and the
+topological and rest-shape filters), the penetration-free Divide and Truncate
+(DAT) truncation and ``particle_conservative_bound_relaxation``, and the
+interplay of contact stiffness, damping, and friction. Coverage of Offset
+Geometric Contact (OGC) will be added once it is available in Newton.
 
 Best Practices
 --------------

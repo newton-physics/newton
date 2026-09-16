@@ -78,6 +78,25 @@ inside the solver and one-way coupling with an external rigid-body solver
 
 Until then, see :doc:`Coupled Solvers </concepts/coupling>`.
 
+Contact Handling
+~~~~~~~~~~~~~~~~
+
+*In development.* This section will explain the contact stack: particle
+self-contact detection (vertex–triangle and edge–edge), body–particle
+contacts, friction, and the penetration-free Divide and Truncate (DAT)
+scheme that truncates particle motion against contact bounds. Coverage of
+Offset Geometric Contact (OGC) will be added once it is available in
+Newton.
+
+The contact methods are described in:
+
+- Anka He Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+  and Truncate: A Penetration and Inversion Free Framework for Coupled
+  Multi-physics Systems. arXiv:2604.15513. https://arxiv.org/abs/2604.15513
+- Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
+  Yuksel. 2025. Offset Geometric Contact. *ACM Trans. Graph.* 44, 4.
+  https://doi.org/10.1145/3731205
+
 Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
