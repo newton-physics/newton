@@ -1,0 +1,1 @@
+Replace `basic_vbd_mimic_joint_friction` with the interactive `vbd_mimic_gripper` example, using CUDA graph replay for faster simulation. Run `python -m newton.examples vbd_mimic_gripper` to launch the replacement.

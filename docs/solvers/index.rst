@@ -312,7 +312,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`8`
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
@@ -344,6 +344,18 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+| :sup:`8` VBD applies regularized Coulomb friction to each free coordinate of REVOLUTE, PRISMATIC, and D6 joints. The force is ``-joint_friction * tanh(qd / 0.01)``; near rest this allows slow creep rather than exact sticking. Friction on either joint in a mimic pair resists the coupled motion.
+
+VBD also supports passive viscous :attr:`~newton.Model.joint_damping` for
+REVOLUTE, PRISMATIC, and D6 joints. Set ``damping`` when adding a joint, or
+on its :class:`~newton.ModelBuilder.JointDofConfig`. Each free coordinate
+receives a resisting force or torque ``-damping * qd``. This differs from
+``joint_target_kd``, which damps toward the drive's target velocity. Passive
+damping works with or without a drive and adds to Coulomb friction. On a mimic
+pair, damping on either joint resists the coupled motion. VBD includes both
+in its implicit body solve; no additional iteration setting is needed.
+Values in ``model.joint_damping`` can be changed without rebuilding the solver
+or recapturing a CUDA graph. Other VBD joint types currently ignore this property.
 
 **Actuation and control**
 
@@ -412,7 +424,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
 | :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
-| :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+| :sup:`5` XPBD uses mass-weighted mimic corrections. VBD uses its assembled body Hessians and retains the mimic reaction forces within the timestep, so drives, friction, and contacts participate in the coupled solve. Both perform one mimic solve per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 

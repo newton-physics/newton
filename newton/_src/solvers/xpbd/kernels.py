@@ -14,7 +14,7 @@ from ...math import (
 )
 from ...sim import BodyFlags, JointType, Model
 from ...sim.contacts import contact_surface_point, contact_surface_separation
-from ...sim.joint_mimic import eval_joint_mimic_coordinate
+from ...sim.joint_coordinates import eval_joint_coordinate
 
 
 @wp.kernel
@@ -2160,7 +2160,7 @@ def solve_joint_mimics(
         if component >= coordinate_count:
             continue
 
-        follower_q, follower_parent_gradient, follower_child_gradient = eval_joint_mimic_coordinate(
+        follower_q, follower_parent_gradient, follower_child_gradient = eval_joint_coordinate(
             follower,
             component,
             body_q,
@@ -2174,7 +2174,7 @@ def solve_joint_mimics(
             joint_dof_dim,
             joint_axis,
         )
-        reference_q, reference_parent_gradient, reference_child_gradient = eval_joint_mimic_coordinate(
+        reference_q, reference_parent_gradient, reference_child_gradient = eval_joint_coordinate(
             reference,
             component,
             body_q,

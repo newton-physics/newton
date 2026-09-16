@@ -34,8 +34,10 @@ from ...utils import is_graph_capture_allocation_enabled
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
-from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
+from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from .joint_coordinates import JointCoordinates
+from .joint_mimic import JointMimicSolver
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -182,7 +184,7 @@ class SolverVBD(SolverBase, CouplingInterface):
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
           conditioning. Structural-slot material (``rigid_joint_linear_ke``/
-          ``rigid_joint_angular_ke``), constraint layout, and rest-angle offsets are
+          ``rigid_joint_angular_ke``) and constraint layout are
           captured at construction; rebuild ``SolverVBD`` after changing them.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
@@ -198,10 +200,41 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
-        - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+        - :attr:`~newton.Model.joint_damping` is supported for REVOLUTE, PRISMATIC, and D6
+          joints as a per-DOF passive viscous damper: ``force = -joint_damping * qd``
+          [N or N·m]. Unlike drive damping (``joint_target_kd``), it always opposes
+          motion, regardless of drive targets. It is solved
+          implicitly alongside Coulomb friction, including on mimic followers.
+          Coefficients are read live; changing array values needs no notification
+          or CUDA graph recapture. Other joint types do not use this property.
+        - :attr:`~newton.Model.joint_friction` is supported for REVOLUTE, PRISMATIC, and D6
+          joints as a per-DOF Coulomb dry-friction force or torque [N or N·m]. The friction
+          force is ``-joint_friction * tanh(qd / 0.01)`` (velocity in m/s or rad/s).
+          This smooth approximation allows slow creep, not exact static sticking.
+          Each joint's friction contributes to the coupled motion of a mimic pair;
+          it does not change the mimic ratio. Friction values are read live from
+          the model, including during CUDA graph replay.
+        - Not supported: :attr:`~newton.Model.joint_armature`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
+        - REVOLUTE and D6 angular coordinates retain their turn counts, with or
+          without mimic relationships. Drives, limits, friction, damping, and
+          mimics share these coordinates. After each step, VBD updates
+          :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` for
+          REVOLUTE, PRISMATIC, and D6 joints, including disabled joints.
+          Quaternion-valued joints keep their existing representation; these
+          joint-coordinate outputs are not populated by VBD.
+          On the first step and after :meth:`reset`, ``state.joint_q`` supplies
+          initial turns (use :func:`~newton.eval_fk` to set matching body poses).
+          Each angular coordinate must advance by less than pi per timestep;
+          three-axis D6 Euler-coordinate singularities still apply. Calling
+          :func:`~newton.eval_ik` overwrites the continuous output with wrapped
+          angles, but does not change VBD's internal turn history.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          VBD uses its assembled body Hessians and constraint reaction forces,
+          with one mimic solve per iteration. Changes to mimic references require
+          :meth:`notify_model_changed` with :attr:`~newton.ModelFlags.JOINT_PROPERTIES`
+          and recapturing any existing CUDA graph; turn history is preserved.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -238,7 +271,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         Call :meth:`newton.ModelBuilder.color` to automatically color both particles and rigid bodies.
 
         VBD uses ``model.body_q`` as the structural rest pose and reads
-        ``model.joint_q`` for drive/limit rest-angle offsets. The body
+        ``state.joint_q`` for initial turn counts. The body
         transforms must match the joint angles at solver creation time
         (see example below).
 
@@ -822,9 +855,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
-        self._mimic_body_deltas = None
-        if self._has_joint_mimics:
-            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
+        self._joint_coordinates = JointCoordinates(model) if self._integrates_rigid_bodies else None
+        self._mimic_solver = JointMimicSolver(model, self._joint_coordinates.data) if self._has_joint_mimics else None
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -1104,7 +1136,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_is_hard,
             ) = self._init_joint_penalty_k()
             self._init_structural_k()
-            self.joint_rest_angle = self._init_joint_rest_angle()
 
             # Body-body contact state (pre-allocated in __init__ when possible, resized on first step otherwise).
             self.body_body_contact_penalty_k = wp.zeros(0, dtype=float, device=self.device)
@@ -1224,6 +1255,13 @@ class SolverVBD(SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
+        if flags & ModelFlags.JOINT_PROPERTIES:
+            self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(
+                self.model, "SolverVBD"
+            )
+            self._mimic_solver = (
+                JointMimicSolver(self.model, self._joint_coordinates.data) if self._has_joint_mimics else None
+            )
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
@@ -1994,46 +2032,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _init_joint_rest_angle(self):
-        """Compute per-DOF rest-pose joint angles from ``model.joint_q``.
-
-        VBD computes angular joint angles via ``kappa`` (rotation vector relative to
-        the rest pose stored in ``model.body_q``). After ``eval_fk(model, ..., model)``,
-        the rest pose encodes the initial joint configuration, so ``kappa = 0`` at the
-        initial angles. Drive targets and limits, however, are specified in absolute
-        joint coordinates. This array stores the rest-pose angle offset per DOF so that
-        ``theta_abs = theta + joint_rest_angle[dof_idx]`` converts rest-relative
-        ``theta`` back to absolute coordinates for drive/limit comparison.
-
-        Only angular DOFs of REVOLUTE and D6 joints need nonzero entries. Linear DOFs
-        (PRISMATIC, D6 linear) use absolute geometric measurements (``d_along``) and
-        are unaffected - their entries are left at 0.
-        """
-        dof_count = self.model.joint_dof_count
-        rest_angle_np = np.zeros(dof_count, dtype=float)
-
-        with wp.ScopedDevice("cpu"):
-            jt = self._to_numpy(self.model.joint_type, dtype=int)
-            jq = self._to_numpy(self.model.joint_q, dtype=float)
-            jq_start = self._to_numpy(self.model.joint_q_start, dtype=int)
-            jqd_start = self._to_numpy(self.model.joint_qd_start, dtype=int)
-            jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
-
-            for j in range(self.model.joint_count):
-                if jt[j] == JointType.REVOLUTE:
-                    q_start = int(jq_start[j])
-                    qd_start = int(jqd_start[j])
-                    rest_angle_np[qd_start] = float(jq[q_start])
-                elif jt[j] == JointType.D6:
-                    q_start = int(jq_start[j])
-                    qd_start = int(jqd_start[j])
-                    lin_count = int(jdof_dim[j, 0])
-                    ang_count = int(jdof_dim[j, 1])
-                    for ai in range(ang_count):
-                        rest_angle_np[qd_start + lin_count + ai] = float(jq[q_start + lin_count + ai])
-
-        return wp.array(rest_angle_np, dtype=float, device=self.device)
-
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -2389,9 +2387,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         is skipped if its *state* array is ``None``. If your initial pose differs
         from the model defaults, pass ``flags=0`` and author the pose any time
         before the next step; reset then preserves it and only clears VBD history.
-        ``JOINT_Q`` / ``JOINT_QD`` are ignored (VBD uses maximal ``body_q`` /
-        ``body_qd``); to reset from joint coordinates, run :func:`~newton.eval_fk`
-        after reset so the resulting ``body_q`` supersedes reset's model copy.
+        VBD integrates maximal ``body_q`` / ``body_qd``. For REVOLUTE, PRISMATIC,
+        and D6 joints, ``JOINT_Q`` / ``JOINT_QD`` restore ``model.joint_q`` /
+        ``model.joint_qd``. ``BODY_Q`` / ``BODY_QD`` restore the corresponding
+        joint coordinates too. Coordinates for other joint types are untouched.
+        Joint-only flags do not run forward kinematics or change body poses.
+        To reset to custom joint coordinates, use ``flags=0``, write
+        ``state.joint_q`` (including full turns), and run :func:`~newton.eval_fk`
+        before the next step. The next step reseeds joint turn history from these
+        coordinates and poses; unselected worlds keep their existing history.
 
         ``PARTICLE_Q`` / ``PARTICLE_QD`` likewise copy ``model.particle_q`` /
         ``model.particle_qd`` into *state* for particles in the selected worlds,
@@ -2445,7 +2449,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 :attr:`~newton.StateFlags.BODY_Q`,
                 :attr:`~newton.StateFlags.BODY_QD`,
                 :attr:`~newton.StateFlags.PARTICLE_Q`, and
-                :attr:`~newton.StateFlags.PARTICLE_QD`; ``None`` requests all flags.
+                :attr:`~newton.StateFlags.PARTICLE_QD`, plus
+                :attr:`~newton.StateFlags.JOINT_Q` and :attr:`~newton.StateFlags.JOINT_QD`
+                for REVOLUTE, PRISMATIC, and D6 joint coordinates;
+                ``None`` requests all flags.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
@@ -2472,6 +2479,19 @@ class SolverVBD(SolverBase, CouplingInterface):
                         f"state.body_qd is on device {state.body_qd.device}, expected solver device {self.device}."
                     )
                 body_qd = state.body_qd
+
+        joint_q = None
+        joint_qd = None
+        if self._joint_coordinates is not None and self._joint_coordinates.joints.size:
+            if flags_value & int(StateFlags.BODY_Q | StateFlags.JOINT_Q):
+                joint_q = state.joint_q
+            if flags_value & int(StateFlags.BODY_QD | StateFlags.JOINT_QD):
+                joint_qd = state.joint_qd
+            for field, array in (("joint_q", joint_q), ("joint_qd", joint_qd)):
+                if array is not None and array.device != self.device:
+                    raise ValueError(
+                        f"state.{field} is on device {array.device}, expected solver device {self.device}."
+                    )
 
         # Particle state reset mirrors the rigid path: only a requested, on-device
         # State array binds, and a bound array is itself the kernel's per-field
@@ -2553,6 +2573,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             ],
             device=self.device,
         )
+        if joint_q is not None or joint_qd is not None:
+            self._joint_coordinates.reset_coordinates(joint_q, joint_qd, world_mask)
 
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None, *, force: bool = False):
         """Snapshot solved contact state for persistent or in-step matched restoration."""
@@ -3032,6 +3054,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         # ---------------------------
         if self._integrates_rigid_bodies:
             self._refresh_rigid_contact_state(contacts, refresh)
+            self._joint_coordinates.begin_step(
+                state_in,
+                self._rigid_pose_rebaseline_mask,
+                self._mimic_solver.multipliers if self._mimic_solver is not None else None,
+            )
 
             # Per-step penalty decay, lambda retention, C0, and ALM auto-rho
             # (body_q is still collide frame here).
@@ -3440,6 +3467,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
 
+        if self._mimic_solver is not None:
+            self._mimic_solver.accumulate_reactions(state_in.body_q, self.body_forces, self.body_torques)
+
         body_color_groups = model.body_color_groups
 
         # Gauss-Seidel-style per-color updates
@@ -3590,12 +3620,15 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_joint_alpha,
                     self.rigid_compliant_alm,
                     model.joint_dof_dim,
-                    self.joint_rest_angle,
+                    self._joint_coordinates.data,
+                    model.joint_friction,
+                    model.joint_damping,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
+                    self._has_joint_mimics,
                 ],
                 outputs=[
                     state_in.body_q,
@@ -3604,15 +3637,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        if self._has_joint_mimics:
-            project_joint_mimics(
-                model,
+        if self._mimic_solver is not None:
+            self._mimic_solver.solve(
                 state_in.body_q,
-                state_in.body_qd,
                 self.body_inv_mass_effective,
-                self.body_inv_inertia_effective,
-                self._mimic_body_deltas,
-                dt,
+                self.body_hessian_ll,
+                self.body_hessian_al,
+                self.body_hessian_aa,
             )
 
         if contacts is not None and contacts.rigid_contact_max > 0:
@@ -3708,7 +3739,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_limit_upper,
                     model.joint_limit_ke,
                     model.joint_limit_kd,
-                    self.joint_rest_angle,
+                    self._joint_coordinates.data,
                     self.joint_drive_limit_support,
                     dt,
                     self.joint_penalty_k,  # input/output
@@ -3906,6 +3937,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             dim=model.body_count,
             device=self.device,
         )
+
+        self._joint_coordinates.end_step(state_in, state_out)
 
         if self.enable_dahl_friction and model.joint_count > 0:
             wp.launch(

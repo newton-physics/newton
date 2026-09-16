@@ -12,7 +12,7 @@ from ...sim import (
     Model,
     State,
 )
-from ...sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
+from ...sim.joint_coordinates import eval_joint_coordinate, eval_joint_velocity
 
 
 @wp.func
@@ -101,7 +101,7 @@ def eval_joint_mimic_forces(
     multiplier = coeffs[1]
 
     for component in range(coordinate_count):
-        follower_q, follower_parent_gradient, follower_child_gradient = eval_joint_mimic_coordinate(
+        follower_q, follower_parent_gradient, follower_child_gradient = eval_joint_coordinate(
             follower,
             component,
             body_q,
@@ -115,7 +115,7 @@ def eval_joint_mimic_forces(
             joint_dof_dim,
             joint_axis,
         )
-        reference_q, reference_parent_gradient, reference_child_gradient = eval_joint_mimic_coordinate(
+        reference_q, reference_parent_gradient, reference_child_gradient = eval_joint_coordinate(
             reference,
             component,
             body_q,
@@ -134,14 +134,14 @@ def eval_joint_mimic_forces(
         if component >= follower_linear_count and component >= reference_linear_count:
             position_error = wp.atan2(wp.sin(position_error), wp.cos(position_error))
 
-        follower_qd = eval_joint_mimic_velocity(
+        follower_qd = eval_joint_velocity(
             follower_parent,
             follower_child,
             follower_parent_gradient,
             follower_child_gradient,
             body_qd,
         )
-        reference_qd = eval_joint_mimic_velocity(
+        reference_qd = eval_joint_velocity(
             reference_parent,
             reference_child,
             reference_parent_gradient,

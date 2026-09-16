@@ -35,6 +35,8 @@ from newton._src.sim import JointType
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.solver import integrate_rigid_body
 
+from .joint_coordinates import JointCoordinateData, evaluate_coordinate
+
 wp.set_module_options({"enable_backward": False})
 
 # ---------------------------------
@@ -57,6 +59,9 @@ _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
+
+_JOINT_FRICTION_SMOOTHING_VELOCITY = wp.constant(1.0e-2)
+"""Velocity scale [m/s or rad/s] for regularized Coulomb joint friction."""
 
 _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
@@ -2655,6 +2660,80 @@ def _eval_joint_axis_drive_limit(
 
 
 @wp.func
+def _eval_joint_axis_friction(rate: float, friction: float, inv_dt: float):
+    """Evaluate smooth Coulomb friction with a positive secant majorizer.
+
+    The exact tanh derivative vanishes during sliding. Using it in an
+    unrestricted Newton step can overshoot zero velocity and add energy.
+    The secant stiffness bounds that step while preserving the friction law
+    at convergence (including its small regularized creep near rest).
+    """
+    force = float(0.0)
+    hessian = float(0.0)
+    if friction > 0.0:
+        inv_eps = 1.0 / _JOINT_FRICTION_SMOOTHING_VELOCITY
+        direction = wp.tanh(rate * inv_eps)
+        force = friction * direction
+        slope = friction * inv_eps
+        if wp.abs(rate) > 1.0e-8:
+            slope = force / rate
+        hessian = slope * inv_dt
+    return force, hessian
+
+
+@wp.func
+def _evaluate_joint_dissipation(
+    body: int,
+    joint: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    data: JointCoordinateData,
+    joint_enabled: wp.array[bool],
+    joint_friction: wp.array[float],
+    joint_damping: wp.array[float],
+    dt: float,
+):
+    """Assemble Coulomb friction and passive damping in joint coordinates.
+
+    Using coordinate increments avoids fictitious sliding when both bodies
+    rotate together. Coordinate gradients also include the moving parent
+    axis and use Euler-coordinate covectors for multi-axis D6 rotations.
+    Viscous damping adds d * rate to the resisting force and d / dt to
+    its positive pose-space solve metric, independently of drive targets.
+    """
+    force, torque, H_ll, H_al, H_aa = _zero_force_hessian()
+    jt = data.joint_type[joint]
+    if not joint_enabled[joint] or (jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6):
+        return force, torque, H_ll, H_al, H_aa
+    linear_count = data.dof_dim[joint, 0]
+    for component in range(linear_count + data.dof_dim[joint, 1]):
+        dof = data.qd_start[joint] + component
+        friction = joint_friction[dof]
+        damping = wp.max(joint_damping[dof], 0.0)
+        if friction <= 0.0 and damping == 0.0:
+            continue
+        q, g_p, g_c = evaluate_coordinate(data, joint, component, body_q)
+        q_prev, _g_p_prev, _g_c_prev = evaluate_coordinate(data, joint, component, body_q_prev)
+        displacement = q - q_prev
+        if component >= linear_count:
+            displacement = wp.atan2(wp.sin(displacement), wp.cos(displacement))
+        rate = displacement / dt
+        f, h = _eval_joint_axis_friction(rate, friction, 1.0 / dt)
+        f += damping * rate
+        h += damping / dt
+        gradient = g_c
+        if body == data.parent[joint]:
+            gradient = g_p
+        g_l, g_a = wp.spatial_top(gradient), wp.spatial_bottom(gradient)
+        force -= f * g_l
+        torque -= f * g_a
+        H_ll += h * wp.outer(g_l, g_l)
+        H_al += h * wp.outer(g_a, g_l)
+        H_aa += h * wp.outer(g_a, g_a)
+    return force, torque, H_ll, H_al, H_aa
+
+
+@wp.func
 def _update_joint_axis_drive_limit_state(
     axis: JointAxisDriveLimit,
     q: float,
@@ -2710,21 +2789,32 @@ def _update_joint_axis_drive_limit_state(
 
 
 @wp.func
+def _evaluate_angular_coordinate(
+    data: JointCoordinateData,
+    joint: int,
+    component: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    dt: float,
+):
+    """Measure the continuous angle, step velocity, and world-space angular gradient."""
+    q, _g_p, g_c = evaluate_coordinate(data, joint, component, body_q)
+    q_prev, _g_p_prev, _g_c_prev = evaluate_coordinate(data, joint, component, body_q_prev)
+    delta = q - q_prev
+    rate = wp.atan2(wp.sin(delta), wp.cos(delta)) / dt
+    return q, rate, wp.spatial_bottom(g_c)
+
+
+@wp.func
 def apply_angular_drive_limit_torque(
-    a: wp.vec3,
-    J_world: wp.mat33,
+    gradient: wp.vec3,
     is_parent: bool,
     f_scalar: float,
     H_scalar: float,
 ):
-    """Rank-1 angular drive/limit torque and Hessian along local axis a.
-
-    Maps scalar spring-damper (f_scalar, H_scalar) through J_world to
-    world-frame torque and H_aa.
-    """
-    Ja = J_world * a
-    tau = f_scalar * Ja
-    Haa = H_scalar * wp.outer(Ja, Ja)
+    """Map a scalar drive/limit response through its angular coordinate gradient."""
+    tau = f_scalar * gradient
+    Haa = H_scalar * wp.outer(gradient, gradient)
     if not is_parent:
         tau = -tau
     return tau, Haa
@@ -2806,7 +2896,7 @@ def evaluate_joint_force_hessian(
     stab_alpha: float,
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
-    joint_rest_angle: wp.array[float],
+    joint_coordinates: JointCoordinateData,
     dt: float,
 ):
     """Compute VBD joint force and Hessian contributions for one body.
@@ -3160,7 +3250,6 @@ def evaluate_joint_force_hessian(
     elif jt == JointType.REVOLUTE:
         qd_start = joint_qd_start[joint_index]
         P_lin, P_ang = build_joint_projectors(jt, joint_axis, qd_start, 0, 1, q_wp)
-        a = wp.normalize(joint_axis[qd_start])
 
         solve_weight_lin = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 0, joint_compliant_alm)
         kd_lin = joint_penalty_kd[c_start + 0]
@@ -3195,12 +3284,8 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
-
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang, _kappa, _J_world = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
                 q_wp_rest,
@@ -3218,7 +3303,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
@@ -3246,18 +3330,9 @@ def evaluate_joint_force_hessian(
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
 
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
-
-            theta = wp.dot(kappa, a)
-            theta_abs = theta + joint_rest_angle[dof_idx]
-            omega_p = quat_velocity(q_wp, q_wp_prev, dt)
-            omega_c = quat_velocity(q_wc, q_wc_prev, dt)
-            dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
-            dtheta_dt = wp.dot(dkappa_dt, a)
+            theta_abs, dtheta_dt, gradient = _evaluate_angular_coordinate(
+                joint_coordinates, joint_index, 0, body_q, body_q_prev, dt
+            )
 
             f_scalar, H_scalar = _eval_joint_axis_drive_limit(
                 axis_dl,
@@ -3272,7 +3347,7 @@ def evaluate_joint_force_hessian(
                 inv_dt,
             )
             if H_scalar > 0.0:
-                tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
+                tau_drive, Haa_drive = apply_angular_drive_limit_torque(gradient, is_parent_body, f_scalar, H_scalar)
                 t_ang = t_ang + tau_drive
                 Haa_ang = Haa_ang + Haa_drive
 
@@ -3460,12 +3535,8 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
-
         if ang_count < 3 and solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang, _kappa, _J_world = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
                 q_wp_rest,
@@ -3483,7 +3554,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
 
             total_torque = total_torque + t_ang
             total_H_aa = total_H_aa + Haa_ang
@@ -3561,16 +3631,6 @@ def evaluate_joint_force_hessian(
         if ang_count > 0:
             inv_dt = 1.0 / dt
 
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
-
-            omega_p = quat_velocity(q_wp, q_wp_prev, dt)
-            omega_c = quat_velocity(q_wc, q_wc_prev, dt)
-            dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
-
             target_q_base = joint_target_q_start[joint_index]
             for ai in range(3):
                 if ai < ang_count:
@@ -3594,10 +3654,9 @@ def evaluate_joint_force_hessian(
                     has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
                     if has_drive or has_limits:
-                        a = wp.normalize(joint_axis[dof_idx])
-                        theta = wp.dot(kappa, a)
-                        theta_abs = theta + joint_rest_angle[dof_idx]
-                        dtheta_dt = wp.dot(dkappa_dt, a)
+                        theta_abs, dtheta_dt, gradient = _evaluate_angular_coordinate(
+                            joint_coordinates, joint_index, lin_count + ai, body_q, body_q_prev, dt
+                        )
 
                         f_scalar, H_scalar = _eval_joint_axis_drive_limit(
                             axis_dl,
@@ -3613,7 +3672,7 @@ def evaluate_joint_force_hessian(
                         )
                         if H_scalar > 0.0:
                             tau_drive, Haa_drive = apply_angular_drive_limit_torque(
-                                a, J_world, is_parent_body, f_scalar, H_scalar
+                                gradient, is_parent_body, f_scalar, H_scalar
                             )
                             total_torque = total_torque + tau_drive
                             total_H_aa = total_H_aa + Haa_drive
@@ -5666,13 +5725,16 @@ def solve_rigid_body(
     stab_alpha: float,
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
-    joint_rest_angle: wp.array[float],
+    joint_coordinates: JointCoordinateData,
+    joint_friction: wp.array[float],
+    joint_damping: wp.array[float],
     external_forces: wp.array[wp.vec3],
     external_torques: wp.array[wp.vec3],
     # Preaccumulated rigid-contact Hessian contributions
     external_hessian_ll: wp.array[wp.mat33],
     external_hessian_al: wp.array[wp.mat33],
     external_hessian_aa: wp.array[wp.mat33],
+    store_body_hessian: bool,
     # Output
     body_q_new: wp.array[wp.transform],
 ):
@@ -5707,6 +5769,8 @@ def solve_rigid_body(
         external_hessian_ll: Preaccumulated rigid-contact linear block.
         external_hessian_al: Preaccumulated rigid-contact angular-linear block.
         external_hessian_aa: Preaccumulated rigid-contact angular block.
+        store_body_hessian: Replace contact Hessian buffers with assembled
+            body blocks for the VBD mimic solve after the body sweep.
         body_q: Current body transforms (input).
         body_q_new: Updated body transforms (output) for the current solve sweep.
 
@@ -5840,9 +5904,26 @@ def solve_rigid_body(
             stab_alpha,
             joint_compliant_alm,
             joint_dof_dim,
-            joint_rest_angle,
+            joint_coordinates,
             dt,
         )
+
+        passive_force, passive_torque, passive_H_ll, passive_H_al, passive_H_aa = _evaluate_joint_dissipation(
+            body_index,
+            joint_idx,
+            body_q,
+            body_q_prev,
+            joint_coordinates,
+            joint_enabled,
+            joint_friction,
+            joint_damping,
+            dt,
+        )
+        joint_force += passive_force
+        joint_torque += passive_torque
+        joint_H_ll += passive_H_ll
+        joint_H_al += passive_H_al
+        joint_H_aa += passive_H_aa
 
         f_force = f_force + joint_force
         f_torque = f_torque + joint_torque
@@ -5860,6 +5941,11 @@ def solve_rigid_body(
 
     # Solve 6x6 system via direct LDL^T
     x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
+
+    if store_body_hessian:
+        external_hessian_ll[body_index] = h_ll
+        external_hessian_al[body_index] = h_al
+        external_hessian_aa[body_index] = h_aa
 
     # Update pose from increments
     # Convert angular increment to quaternion
@@ -5923,7 +6009,7 @@ def update_duals_joint(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
-    joint_rest_angle: wp.array[float],
+    joint_coordinates: JointCoordinateData,
     joint_drive_limit_support: wp.array[float],
     dt: float,
     # Input/output
@@ -6211,14 +6297,7 @@ def update_duals_joint(
         has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
         if has_drive or has_limits:
-            a = wp.normalize(joint_axis[qd_start])
-            theta_abs = wp.dot(kappa, a) + joint_rest_angle[dof_idx]
-            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
-            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
-            omega_p = quat_velocity(q_wp, q_wp_prev, dt)
-            omega_c = quat_velocity(q_wc, q_wc_prev, dt)
-            _kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
-            rate = wp.dot(compute_kappa_dot(J_world, omega_p, omega_c), a)
+            theta_abs, rate, _gradient = _evaluate_angular_coordinate(joint_coordinates, j, 0, body_q, body_q_prev, dt)
             _update_joint_axis_drive_limit_state(
                 axis_dl,
                 theta_abs,
@@ -6367,14 +6446,9 @@ def update_duals_joint(
             )
 
         q_wc = wp.transform_get_rotation(X_wc)
-        q_wp_prev = wp.transform_get_rotation(X_wp_prev)
-        q_wc_prev = wp.transform_get_rotation(X_wc_prev)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa, J_world = compute_kappa_and_jacobian(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
-        omega_p = quat_velocity(q_wp_rot, q_wp_prev, dt)
-        omega_c = quat_velocity(q_wc, q_wc_prev, dt)
-        dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
+        kappa = compute_kappa(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
         inv_dt = 1.0 / dt
         if ang_count < 3:
             kappa_perp = P_ang * kappa
@@ -6462,11 +6536,13 @@ def update_duals_joint(
                 has_limits = _limit_row_exists(axis_dl.material_limit_ke, axis_dl.lower, axis_dl.upper)
 
                 if has_drive or has_limits:
-                    a_dl = wp.normalize(joint_axis[dof_idx])
+                    theta_abs, rate, _gradient = _evaluate_angular_coordinate(
+                        joint_coordinates, j, lin_count + ai, body_q, body_q_prev, dt
+                    )
                     _update_joint_axis_drive_limit_state(
                         axis_dl,
-                        wp.dot(kappa, a_dl) + joint_rest_angle[dof_idx],
-                        wp.dot(dkappa_dt, a_dl),
+                        theta_abs,
+                        rate,
                         has_drive,
                         has_limits,
                         dof_idx,
