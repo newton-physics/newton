@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -17,6 +19,8 @@ from .schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
+
+    from ..sim.builder import ModelBuilder
 
 
 # Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
@@ -315,3 +319,359 @@ class _UsdJointProperties:
             initial_velocity=initial_velocity,
             limit_solref_mode=self.joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),
         )
+
+
+@dataclass
+class _PhysicsMaterial:
+    """Physics-material values used by the USD shape importer."""
+
+    staticFriction: float
+    dynamicFriction: float
+    torsionalFriction: float
+    rollingFriction: float
+    restitution: float
+    density: float
+    ke: float | None = None
+    kd: float | None = None
+    kf: float | None = None
+    ka: float | None = None
+
+
+def _resolve_physics_material(
+    prim: Usd.Prim,
+    desc: UsdPhysics.RigidBodyMaterialDesc,
+    resolver: SchemaResolverManager,
+    defaults: ModelBuilder.ShapeConfig,
+    *,
+    default_shape_density: float,
+    verbose: bool,
+) -> _PhysicsMaterial:
+    """Read material values, retaining the importer's sampled density default."""
+
+    def _resolve_contact_attr(key, _prim=prim):
+        val = resolver.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
+        if val is None:
+            return None
+        return float(val)
+
+    if not math.isfinite(desc.density):
+        warnings.warn(
+            f"{prim.GetPath()}: authored material density must be finite; treating it as unspecified.",
+            stacklevel=3,
+        )
+
+    return _PhysicsMaterial(
+        staticFriction=desc.staticFriction,
+        dynamicFriction=desc.dynamicFriction,
+        restitution=desc.restitution,
+        torsionalFriction=resolver.get_value(
+            prim,
+            prim_type=PrimType.MATERIAL,
+            key="mu_torsional",
+            default=defaults.mu_torsional,
+            verbose=verbose,
+        ),
+        rollingFriction=resolver.get_value(
+            prim,
+            prim_type=PrimType.MATERIAL,
+            key="mu_rolling",
+            default=defaults.mu_rolling,
+            verbose=verbose,
+        ),
+        # Treat non-positive, non-finite, or unauthored material density as "use importer default".
+        # Effective collider/body MassAPI mass+inertia is handled later.
+        density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
+        ke=_resolve_contact_attr("ke"),
+        kd=_resolve_contact_attr("kd"),
+        kf=_resolve_contact_attr("kf"),
+        ka=_resolve_contact_attr("ka"),
+    )
+
+
+def _resolve_shape_offsets(
+    prim: Usd.Prim,
+    resolver: SchemaResolverManager,
+    defaults: ModelBuilder.ShapeConfig,
+    *,
+    legacy_margin_gap: bool,
+    verbose: bool,
+) -> tuple[float, float | None]:
+    """Resolve collision margin and gap, including the legacy MuJoCo translation."""
+    margin_val, margin_resolver = resolver.get_value_with_resolver(
+        prim,
+        prim_type=PrimType.SHAPE,
+        key="margin",
+        default=defaults.margin,
+        verbose=verbose,
+    )
+    gap_val = resolver.get_value(
+        prim,
+        prim_type=PrimType.SHAPE,
+        key="gap",
+        verbose=verbose,
+    )
+    if gap_val == float("-inf"):
+        gap_val = defaults.gap
+    if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
+        # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
+        mjc_gap = usd.get_attribute(prim, "mjc:gap")
+        mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+        newton_margin = float(margin_val) - mjc_gap
+        if newton_margin < 0.0:
+            warnings.warn(
+                f"Prim '{prim.GetPath()}': legacy translation yields "
+                f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                stacklevel=3,
+            )
+        margin_val = newton_margin
+    return margin_val, gap_val
+
+
+def _resolve_shape_contact(
+    prim: Usd.Prim,
+    resolver: SchemaResolverManager,
+    material: _PhysicsMaterial,
+    defaults: ModelBuilder.ShapeConfig,
+    *,
+    verbose: bool,
+) -> dict[str, float]:
+    """Select contact response values from shape, material, and builder settings."""
+    # Contact response precedence:
+    #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
+    mjc_has_priority = False
+    for _r in resolver.resolvers:
+        if _r.name == "mjc":
+            mjc_has_priority = True
+            break
+        if _r.name == "newton":
+            break
+    has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
+    shape_contact = {}
+    for _ck in ("ke", "kd", "kf", "ka"):
+        per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
+        has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
+        mat_val = getattr(material, _ck)
+        has_mat = mat_val is not None and math.isfinite(mat_val)
+
+        if has_solref and _ck in ("ke", "kd") and has_shape:
+            shape_contact[_ck] = float(per_shape_val)
+        elif has_mat:
+            shape_contact[_ck] = mat_val
+        elif has_shape:
+            shape_contact[_ck] = float(per_shape_val)
+        else:
+            shape_contact[_ck] = getattr(defaults, _ck)
+
+    return shape_contact
+
+
+@dataclass
+class _ShapeSdfProperties:
+    """Resolved SDF settings, including whether the shape applies the SDF schema."""
+
+    has_api: bool
+    max_resolution: int | None
+    narrow_band_range: tuple[float, float]
+    target_voxel_size: float | None
+    texture_format: str
+    padding: float | None
+
+
+def _resolve_shape_sdf(
+    prim: Usd.Prim,
+    resolver: SchemaResolverManager,
+    defaults: ModelBuilder.ShapeConfig,
+    *,
+    verbose: bool,
+) -> _ShapeSdfProperties:
+    """Resolve SDF settings and validate authored values before shape construction."""
+    # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
+    # signal that SDF generation is configured for this shape.
+    has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+    # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+    # collision representations and should not be co-applied. SDF wins
+    # when both are present.
+    if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+        warnings.warn(
+            f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+            f"independent collision representations and should not be co-applied; "
+            f"SDF configuration will be used.",
+            stacklevel=3,
+        )
+
+    # Resolve target_voxel_size first because it overrides
+    # sdf_max_resolution and the two are mutually exclusive in
+    # ShapeConfig.validate().
+    sdf_target_voxel_size = resolver.get_value(
+        prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+    )
+    if sdf_target_voxel_size == float("-inf"):
+        sdf_target_voxel_size = None
+    elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+            f"(must be > 0); falling back to default.",
+            stacklevel=3,
+        )
+        sdf_target_voxel_size = None
+    if sdf_target_voxel_size is None:
+        sdf_target_voxel_size = defaults.sdf_target_voxel_size
+
+    sdf_max_resolution = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose)
+    if sdf_max_resolution == float("-inf"):
+        sdf_max_resolution = None
+    elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+            f"(must be > 0); falling back to default.",
+            stacklevel=3,
+        )
+        sdf_max_resolution = None
+    elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+            f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+            stacklevel=3,
+        )
+        sdf_max_resolution = None
+    if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+        warnings.warn(
+            f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+            f"are set; sdfTargetVoxelSize takes precedence.",
+            stacklevel=3,
+        )
+        sdf_max_resolution = None
+    if sdf_max_resolution is None:
+        # When the API is applied but neither attribute is authored,
+        # fall back to the schema default (64). When target voxel
+        # size already drives the resolution, leave max_resolution
+        # unset so the two don't conflict in ShapeConfig.validate().
+        if has_sdf_api and sdf_target_voxel_size is None:
+            sdf_max_resolution = 64
+        else:
+            sdf_max_resolution = defaults.sdf_max_resolution
+
+    sdf_narrow_band_inner = resolver.get_value(
+        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+    )
+    if sdf_narrow_band_inner == float("-inf"):
+        sdf_narrow_band_inner = None
+    sdf_narrow_band_outer = resolver.get_value(
+        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+    )
+    if sdf_narrow_band_outer == float("-inf"):
+        sdf_narrow_band_outer = None
+    default_nb = defaults.sdf_narrow_band_range
+    sdf_narrow_band_range = (
+        sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+        sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+    )
+
+    sdf_texture_format = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose)
+    _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+    if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+            f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+            stacklevel=3,
+        )
+        sdf_texture_format = None
+    if sdf_texture_format is None:
+        sdf_texture_format = defaults.sdf_texture_format
+
+    sdf_padding = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
+    if sdf_padding == float("-inf"):
+        sdf_padding = None
+    elif sdf_padding is not None and sdf_padding < 0:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid (must be >= 0); falling back to default.",
+            stacklevel=3,
+        )
+        sdf_padding = None
+
+    return _ShapeSdfProperties(
+        has_api=has_sdf_api,
+        max_resolution=sdf_max_resolution,
+        narrow_band_range=sdf_narrow_band_range,
+        target_voxel_size=sdf_target_voxel_size,
+        texture_format=sdf_texture_format,
+        padding=sdf_padding,
+    )
+
+
+def _resolve_shape_hydroelastic(
+    prim: Usd.Prim,
+    resolver: SchemaResolverManager,
+    defaults: ModelBuilder.ShapeConfig,
+    sdf: _ShapeSdfProperties,
+    *,
+    is_mesh: bool,
+    verbose: bool,
+) -> tuple[bool, float]:
+    """Resolve hydroelastic settings and require an SDF source for mesh shapes."""
+    hydroelastic_enabled = resolver.get_value(
+        prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+    )
+    kh = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+    if kh == float("-inf"):
+        kh = None
+    elif kh is not None and kh <= 0:
+        warnings.warn(
+            f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid (must be > 0); falling back to default.",
+            stacklevel=3,
+        )
+        kh = None
+    if hydroelastic_enabled is True:
+        is_hydroelastic = True
+    elif hydroelastic_enabled is False:
+        is_hydroelastic = False
+    elif sdf.has_api:
+        # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
+        is_hydroelastic = False
+    else:
+        is_hydroelastic = defaults.is_hydroelastic
+    if kh is None:
+        kh = defaults.kh
+
+    # Hydroelastic meshes need an SDF source. For primitives, a texture
+    # SDF is generated from a synthesized watertight mesh at finalize(),
+    # but meshes require either an attached mesh.sdf or a
+    # resolution/voxel_size so one can be built deferred. Warn and
+    # disable hydroelastic on this shape rather than aborting the whole
+    # import — typically reached when newton:hydroelasticEnabled=true
+    # is authored without applying NewtonSDFCollisionAPI.
+    if is_hydroelastic and is_mesh and sdf.max_resolution is None and sdf.target_voxel_size is None:
+        warnings.warn(
+            f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
+            f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
+            f"disabling hydroelastic for this shape.",
+            stacklevel=3,
+        )
+        is_hydroelastic = False
+
+    return is_hydroelastic, kh
+
+
+def _resolve_shape_shell(
+    prim: Usd.Prim, resolver: SchemaResolverManager, margin_val: float
+) -> tuple[bool, float, float | None]:
+    """Return solidity, the inertia margin, and the raw thickness for margin restoration."""
+    # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
+    mass_model = resolver.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
+    shape_is_solid = mass_model != "shell"
+    shell_thickness_val = resolver.get_value(prim, PrimType.SHAPE, "shell_thickness")
+    # When shell thickness is authored, pass it as margin so compute_inertia_shape
+    # uses the correct thickness. The real collision margin is restored after add_shape.
+    if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+        if float(shell_thickness_val) >= 0.0:
+            inertia_margin = float(shell_thickness_val)
+        else:
+            warnings.warn(
+                f"Shape {prim.GetPath()}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                stacklevel=3,
+            )
+            inertia_margin = margin_val
+    else:
+        inertia_margin = margin_val
+
+    return shape_is_solid, inertia_margin, shell_thickness_val

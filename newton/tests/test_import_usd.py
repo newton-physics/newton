@@ -2761,6 +2761,40 @@ def Xform "Articulation" (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_per_import_shape_defaults(self):
+        """Keep unbound material and shape defaults independent between imports."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        cube = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                defaults = builder.default_shape_cfg
+                defaults.mu = scale * 0.1
+                defaults.mu_torsional = scale * 0.2
+                defaults.mu_rolling = scale * 0.3
+                defaults.restitution = scale * 0.4
+                defaults.density = scale * 123.0
+                defaults.ke = scale * 1000.0
+                defaults.kd = scale * 10.0
+                defaults.margin = scale * 0.01
+                defaults.sdf_max_resolution = int(scale) * 32
+                result = builder.add_usd(stage)
+                shape = result["path_shape_map"]["/Body"]
+                for key in ("mu", "mu_torsional", "mu_rolling", "restitution", "ke", "kd"):
+                    self.assertAlmostEqual(getattr(builder, f"shape_material_{key}")[shape], getattr(defaults, key))
+                self.assertAlmostEqual(builder.shape_margin[shape], defaults.margin)
+                self.assertEqual(builder.shape_sdf_max_resolution[shape], defaults.sdf_max_resolution)
+                self.assertAlmostEqual(builder.body_mass[result["path_body_map"]["/Body"]], defaults.density * 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
