@@ -1306,11 +1306,9 @@ class CollisionPipeline:
                 "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
                 and specialize internal buffers at construction, so do not modify or resize the
                 array while the pipeline is in use. Rebuild the pipeline after changing the pairs.
-            include_static_kinematic_pairs: Whether to generate contacts for
-                pairs where both shapes are immovable. Set to ``False`` to
-                filter static-static, static-kinematic, and
-                kinematic-kinematic pairs. Defaults to ``True`` for backward
-                compatibility.
+            include_static_kinematic_pairs: Whether to generate contacts for static-kinematic and
+                kinematic-kinematic pairs. Set to ``False`` to filter those pairs. Static-static pairs are
+                always filtered. Defaults to ``True`` for backward compatibility.
             sdf_hydroelastic_config: Configuration for hydroelastic collision
                 handling. Defaults to None.
             shape_pairs_max: Override for the broad-phase candidate-pair
