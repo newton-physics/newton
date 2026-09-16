@@ -9,8 +9,8 @@ VBD Tuning
 ==========
 
 This page explains how :class:`~newton.solvers.SolverVBD` reacts to its solver
-and model parameters, what typically goes wrong in particle, rigid, and
-coupled scenes, and which parameter combinations are known to work. See
+and model parameters, what typically goes wrong and how to fix it, and which
+parameter combinations are known to work. See
 :ref:`Simulation Tuning` for the diagnostic workflow, :ref:`Tuning Solver
 Reference` for the full knob list, and :doc:`VBD </solvers/vbd>` for setup and
 API explanations.
@@ -35,18 +35,20 @@ Mental Model
 *In development.* This section will explain, briefly and without paper-level
 math, how the solver converges and why it fails:
 
-- how VBD updates one vertex block at a time from its local 3×3 system while
-  neighbor positions stay fixed within the update, and why that makes heavily
-  deformed configurations the hard case;
-- how AVBD enforces rigid joint and contact constraints through penalty
-  stiffness with optional per-iteration ramping plus augmented-Lagrangian
-  state for hard slots, and what roles ``rigid_avbd_alpha``,
-  ``rigid_avbd_beta``, and ``rigid_avbd_gamma`` play in that scheme;
+- how VBD updates one block at a time — a cloth or soft-body vertex, or a
+  rigid body — from its local system while its neighbors stay fixed within
+  the update, and why that makes heavily deformed or stiffly coupled
+  configurations the hard case;
+- how joint and contact constraints are enforced inside the same VBD loop
+  through an augmented-Lagrangian (ALM) formulation
+  (``rigid_compliant_alm=True``, recommended; the legacy path is deprecated),
+  and what roles ``rigid_avbd_alpha``, ``rigid_avbd_beta``, and
+  ``rigid_avbd_gamma`` play;
 - how the penetration-free Divide and Truncate (DAT) scheme bounds and
   truncates per-vertex motion against contacts, and what that implies for
   self-contact parameters.
 
-For the underlying methods, see the VBD and AVBD papers cited in
+For the underlying method, see the VBD paper cited in
 :class:`~newton.solvers.SolverVBD`.
 
 Parameter Effects
@@ -58,8 +60,9 @@ VBD-Specific Parameters
 *In development.* Effects and interactions of the constructor parameters, by
 group: common (``iterations``, ``friction_epsilon``), particle (the
 self-contact family, ``particle_collision_detection_interval``,
-``particle_enable_tile_solve``, contact buffer sizes), and rigid AVBD
-(``rigid_avbd_alpha``/``beta``/``gamma``, penalty seeds and ceilings,
+``particle_enable_tile_solve``, contact buffer sizes), and rigid constraints
+(``rigid_compliant_alm`` mode selection,
+``rigid_avbd_alpha``/``beta``/``gamma``, penalty seeds and ceilings,
 ``rigid_contact_hard``, ``rigid_contact_history``).
 
 Until then, the authoritative parameter list with defaults is
@@ -72,7 +75,7 @@ Model Parameters
 *In development.* How the solver interprets material and scene parameters:
 cloth membrane and bending stiffness and damping (``tri_ke``, ``tri_ka``,
 ``tri_kd``, ``edge_ke``, ``edge_kd``), soft-body volumetric material, contact
-materials (``soft_contact_*`` and shape ``mu``/``ke``/``kd``), joint and cable
+materials (``soft_contact_*`` and shape ``mu``/``ke``/``kd``), joint and rod
 stiffness and damping, particle mass and radius, and the
 ``dt``–substeps–``iterations`` trade-off.
 
@@ -92,11 +95,11 @@ Best Practices
 What Can Go Wrong and How to Fix It
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*In development.* One entry per failure mode — symptom, cause, fix — grouped
-by system (particle, rigid, coupled), topped by a quick-lookup symptom table.
-Planned entries include cloth oscillation that more iterations do not fix,
-outlier-vertex explosions, self-contact tunneling, rigid contact chattering
-and penetration, joint drift, and coupled-scene feedback instability.
+*In development.* One entry per failure mode — symptom, cause, fix — topped
+by a quick-lookup symptom table. Planned entries include cloth oscillation
+that more iterations do not fix, outlier-vertex explosions, self-contact
+tunneling, contact chattering and penetration, grasp slip versus finger
+penetration, and joint drift.
 
 Until then, use the generic Symptom Table in :ref:`Simulation Tuning`.
 
@@ -104,7 +107,8 @@ Empirical Parameter Combinations That Work
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *In development.* Known-good value tables per scenario family — cloth, soft
-body, cable, rigid contacts, coupled scenes — each linking to a representative
+body, rods (cables), rigid contacts, mixed scenes — each linking to a
+representative
 runnable example from the `examples directory
 <https://github.com/newton-physics/newton/tree/main/newton/examples>`_.
 

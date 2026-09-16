@@ -6,10 +6,11 @@
 VBD
 ===
 
-:class:`~newton.solvers.SolverVBD` is a unified implicit solver: particles
-(cloth and soft bodies) are integrated with Vertex Block Descent (VBD), rigid
-bodies (joints, contacts, cables) with Augmented Vertex Block Descent (AVBD),
-and both systems can be coupled in a single solver instance.
+:class:`~newton.solvers.SolverVBD` is a unified implicit solver based on
+Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
+contacts, rods), and their interactions are all solved in one VBD loop, with
+joint and contact constraints enforced through an augmented-Lagrangian (ALM)
+extension of the method.
 
 .. experimental::
 
@@ -44,6 +45,7 @@ cited by :class:`~newton.solvers.SolverVBD`:
   Descent. *ACM Trans. Graph.* 43, 4. https://doi.org/10.1145/3658179
 - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
   Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
+  (the deprecated legacy rigid constraint path)
 
 API Explanations
 ----------------
@@ -66,14 +68,16 @@ Model Inputs
 *In development.* This section will explain what the solver consumes from
 :class:`~newton.ModelBuilder` for each system: triangle meshes for cloth,
 tetrahedral meshes for soft bodies, rigid bodies with the supported joint
-types (including cables), and the hard/soft joint constraint modes and how to
-switch them.
+types (including rods), the ALM constraint mode (``rigid_compliant_alm=True``,
+recommended) versus the deprecated legacy path, and the hard/soft joint
+constraint modes and how to switch them.
 
 Coupling Modes
 ~~~~~~~~~~~~~~
 
-*In development.* This section will cover two-way particle–rigid coupling
-inside the solver and one-way coupling with an external rigid-body solver
+*In development.* This section will cover how deformables and rigid bodies
+interact inside the solver (no special coupling setup is needed) and one-way
+coupling with an external rigid-body solver
 (``integrate_with_external_rigid_solver=True``).
 
 Until then, see :doc:`Coupled Solvers </concepts/coupling>`.
