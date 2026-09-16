@@ -4083,6 +4083,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
 
+        self._cone_shape_indices = np.empty(0, dtype=np.int32)
+        self._cone_shape_scale_snapshot = np.empty((0, 3), dtype=np.float32)
+
         # Track changes to generic gains separately from their numerical
         # values. Imported MJCF defaults may use any builder configuration, so
         # no particular stiffness/damping pair can serve as a provenance marker.
@@ -4810,6 +4813,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         need_const_0 = False
         need_length_range = False
 
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            self._validate_cone_shape_scales()
+
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
             # set_const_fixed / set_const_0 (called below) recompute MuJoCo
@@ -4939,6 +4945,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MuJoCo Warp cannot infer that Newton-side property updates
                 # invalidate sleeping islands, so explicitly wake them.
                 self._wake_sleeping_worlds()
+
+    def _validate_cone_shape_scales(self) -> None:
+        """Reject resizing cones whose MuJoCo meshes were compiled at construction."""
+        if self._cone_shape_indices.size == 0:
+            return
+
+        current_scales = self.model.shape_scale.numpy()[self._cone_shape_indices]
+        changed = np.any(current_scales != self._cone_shape_scale_snapshot, axis=1)
+        if np.any(changed):
+            changed_labels = [self.model.shape_label[i] for i in self._cone_shape_indices[changed][:5]]
+            if np.count_nonzero(changed) > len(changed_labels):
+                changed_labels.append("...")
+            raise ValueError(
+                "SolverMuJoCo does not support changing shape_scale for cone shapes after construction because "
+                f"their meshes are already compiled. Recreate the solver after resizing. Shapes: {changed_labels}."
+            )
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
@@ -7719,6 +7741,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ],
                     device=model.device,
                 )
+
+            converted_shapes = np.unique(self.mjc_geom_to_newton_shape.numpy())
+            converted_shapes = converted_shapes[converted_shapes >= 0]
+            self._cone_shape_indices = converted_shapes[shape_type[converted_shapes] == GeoType.CONE]
+            self._cone_shape_scale_snapshot = np.array(model.shape_scale.numpy()[self._cone_shape_indices], copy=True)
 
             site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
             site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
