@@ -89,33 +89,6 @@ _KNOWN_WARNING_DEBT = (
             r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
         ),
     },
-    {
-        "message": (
-            r"Adding a (?:FIXED|REVOLUTE) joint between parent \d+ and child \d+ \(label: 'body_\d+'\), but another "
-            r"joint already connects these bodies\. Parallel joints between the same pair of bodies have undefined "
-            r"semantics and may not behave as expected\."
-        ),
-        "category": UserWarning,
-        "module": rf"{_TEST_MODULE_PREFIX}test_eval_fk$",
-    },
-    {
-        "message": r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\..*",
-        "category": UserWarning,
-        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
-    },
-    {
-        "message": (
-            r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects "
-            r"2\..*"
-        ),
-        "category": UserWarning,
-        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
-    },
-    {
-        "message": r"invalid value encountered in cast",
-        "category": RuntimeWarning,
-        "module": rf"{_TEST_MODULE_PREFIX}test_recorder$",
-    },
 )
 
 
@@ -187,9 +160,9 @@ def main(argv=None):
         "--strict-warnings",
         action="store_true",
         default=False,
-        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
-        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
-        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
+        help="Treat all DeprecationWarnings and warnings attributed to newton.* or test_* modules as errors, "
+        "except narrowly tracked known debt. Off by default so verifying an installation does not fail on "
+        "warnings the user cannot act on; enabled in CI to surface warning debt.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
