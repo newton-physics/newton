@@ -197,7 +197,8 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_body_particle_contact_buffer_size``, and
        ``rigid_contact_history``. On the legacy path, examples also tune
        ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
-       under compliant ALM as an advanced stabilization override.
+       under compliant ALM as an advanced stabilization override. See
+       :ref:`Tuning VBD` for the VBD-specific tuning page.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.
