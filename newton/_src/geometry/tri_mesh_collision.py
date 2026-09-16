@@ -521,18 +521,24 @@ class TriMeshCollisionDetector:
         self._empty_int32 = wp.empty(shape=(0,), dtype=wp.int32, device=self.device)
 
         # "Scratch" = transient working memory for one detection, never part of
-        # the results: detection appends (element, counterpart) records into
-        # _pair_scratch through the global cursor and chains them per element
-        # via the next pools; the row build then copies the records into the
-        # result rows, and the scratch contents are dead until the next
-        # detection overwrites them. The heads are per element (sized once for
-        # the model); the pair/next pools are sized by the current budgets and
-        # shared by both families, because the vertex-triangle and edge-edge
-        # detections run back-to-back on one stream. None means "not allocated
-        # yet": _ensure_scratch() allocates on a grow-only rule and also runs
-        # on bind and growth. The triangle next pool keeps the zero-length
-        # stand-in (kernels read that as "reverse table off") unless
-        # record_triangle_contacting_vertices is set.
+        # the results. Detection appends each (element, counterpart) record to
+        # _pair_scratch at whatever slot the global cursor hands out, so one
+        # element's records end up scattered across the log in arrival order.
+        # To find them again, each record is also linked into its element's
+        # singly linked list as it is appended: _*_list_heads[element] holds
+        # the element's most recent slot, and _list_next_scratch[slot] holds
+        # the slot of that element's previous record (-1 ends the list). The
+        # row build walks each element's list and copies its records out
+        # contiguously -- that copy is what turns the arrival-ordered log into
+        # per-element CSR rows. Afterwards the scratch contents are dead until
+        # the next detection overwrites them.
+        # The heads are sized once for the model; the pair/next pools are
+        # sized by the current budgets and shared by both families (the
+        # vertex-triangle and edge-edge detections run back-to-back on one
+        # stream). None means "not allocated yet": _ensure_scratch() allocates
+        # grow-only and also runs on bind and growth. The triangle next pool
+        # keeps the zero-length stand-in (kernels read that as "reverse table
+        # off") unless record_triangle_contacting_vertices is set.
         self._vt_list_heads = wp.empty(shape=(max(model.particle_count, 1),), dtype=wp.int32, device=self.device)
         self._ee_list_heads = wp.empty(shape=(max(model.edge_count, 1),), dtype=wp.int32, device=self.device)
         self._tri_list_heads = (
