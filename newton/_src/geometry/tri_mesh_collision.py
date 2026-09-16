@@ -520,11 +520,19 @@ class TriMeshCollisionDetector:
         self._empty_min_dist = wp.empty(shape=(0,), dtype=float, device=self.device)
         self._empty_int32 = wp.empty(shape=(0,), dtype=wp.int32, device=self.device)
 
-        # Internal append log + linked-list scratch for the CSR build. Heads
-        # are per element (fixed for the model); the pair/next pool is sized by
-        # the current budgets and shared by both families: vt and ee detection
-        # run back-to-back on one stream and each family's log is dead as soon
-        # as its rows are filled.
+        # "Scratch" = transient working memory for one detection, never part of
+        # the results: detection appends (element, counterpart) records into
+        # _pair_scratch through the global cursor and chains them per element
+        # via the next pools; the row build then copies the records into the
+        # result rows, and the scratch contents are dead until the next
+        # detection overwrites them. The heads are per element (sized once for
+        # the model); the pair/next pools are sized by the current budgets and
+        # shared by both families, because the vertex-triangle and edge-edge
+        # detections run back-to-back on one stream. None means "not allocated
+        # yet": _ensure_scratch() allocates on a grow-only rule and also runs
+        # on bind and growth. The triangle next pool keeps the zero-length
+        # stand-in (kernels read that as "reverse table off") unless
+        # record_triangle_contacting_vertices is set.
         self._vt_list_heads = wp.empty(shape=(max(model.particle_count, 1),), dtype=wp.int32, device=self.device)
         self._ee_list_heads = wp.empty(shape=(max(model.edge_count, 1),), dtype=wp.int32, device=self.device)
         self._tri_list_heads = (
@@ -543,11 +551,13 @@ class TriMeshCollisionDetector:
         self.triangle_intersecting_triangles_offsets = None
 
     def _ensure_scratch(self) -> None:
-        """(Re)allocate the shared append log for the current budgets.
+        """(Re)allocate the scratch (the transient append log) for the current budgets.
 
         One ``vec2i`` pool plus one next-slot pool serve both families; the
         optional triangle-side reverse lists chain the same vt records through
-        their own next pool.
+        their own next pool. Scratch lives for one detection only: once the
+        result rows are filled its contents are dead. Grow-only: existing
+        pools are kept when they already cover the budgets.
         """
         capacity = max(
             self.vertex_collision_buffer_pre_alloc * self.model.particle_count,
