@@ -99,7 +99,8 @@ _COMPLIANT_ALM_BILATERAL_MIN_RHO_OVER_K = wp.constant(
 )
 """Floor on ``rho/K`` realizing that fraction, inverted from ``k_eff = K*rho/(K+rho)``.
 
-Applied to bilateral structural and drive rows.
+Applied to bilateral structural and drive rows. Joint limits also target this
+floor, subject to a cap from their inertial support and structural stiffness.
 """
 
 # ---------------------------------
@@ -189,11 +190,19 @@ def _drive_auto_rho(axis_support: float, material_k: float):
 
 
 @wp.func
-def _limit_auto_rho(axis_support: float, material_k: float):
-    """Return support as limit rho, or zero if the row is off."""
+def _limit_auto_rho(axis_support: float, material_k: float, structural_ke: float):
+    """Accelerate soft limits without making near-hard limits ill-conditioned.
+
+    Raw support alone can make a light link's limit multiplier lag its motion.
+    Cap the material floor by support plus structural stiffness: an arbitrarily
+    stiff limit should not overwhelm the body solve and lose its active gap to
+    float32 rounding. The cap uses the solver's configured linear/angular
+    structural stiffness, including fully free D6 classes whose structural
+    slots are inactive.
+    """
     if axis_support <= 0.0 or material_k <= 0.0:
         return 0.0
-    return axis_support
+    return wp.min(_bilateral_auto_rho(axis_support, material_k), axis_support + structural_ke)
 
 
 @wp.func
@@ -2444,6 +2453,7 @@ def _evaluate_limit_axis(
     limit_d: float,
     rate: float,
     axis_support: float,
+    structural_ke: float,
     limit_lambda: float,
     inv_dt: float,
 ):
@@ -2458,7 +2468,7 @@ def _evaluate_limit_axis(
         return 0.0, 0.0
     gap = _limit_signed_gap(q, lim_lower, lim_upper, bound)
     row_error, row_k = _spring_damper_step(gap, rate, limit_k, limit_d, inv_dt)
-    rho = _limit_auto_rho(axis_support, row_k)
+    rho = _limit_auto_rho(axis_support, row_k, structural_ke)
     s, k_eff, _a = _compliant_alm_coefficients(row_k, rho)
     force = k_eff * row_error + s * limit_lambda
     if bound == _DRIVE_LIMIT_MODE_LIMIT_LOWER and force >= 0.0:
@@ -2478,6 +2488,7 @@ def _update_limit_lambda(
     limit_d: float,
     rate: float,
     axis_support: float,
+    structural_ke: float,
     limit_lambda: float,
     inv_dt: float,
 ):
@@ -2492,7 +2503,7 @@ def _update_limit_lambda(
         return 0.0
     gap = _limit_signed_gap(q, lim_lower, lim_upper, bound)
     row_error, row_k = _spring_damper_step(gap, rate, limit_k, limit_d, inv_dt)
-    rho = _limit_auto_rho(axis_support, row_k)
+    rho = _limit_auto_rho(axis_support, row_k, structural_ke)
     lambda_new = _alm_relaxed_ascent(limit_lambda, row_error, row_k, rho)
     if bound == _DRIVE_LIMIT_MODE_LIMIT_LOWER:
         return wp.min(lambda_new, 0.0)
@@ -2552,6 +2563,7 @@ class JointAxisDriveLimit:
 
     material_drive_ke: float
     material_limit_ke: float
+    structural_ke: float
     drive_ke: float
     limit_ke: float
     drive_kd: float
@@ -2576,12 +2588,14 @@ def _load_joint_axis_drive_limit(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_penalty_k: wp.array[float],
+    structural_ke: float,
     use_compliant_alm: int,
 ):
     """Gather one DOF's drive/limit coefficients from the model arrays."""
     axis = JointAxisDriveLimit()
     axis.material_drive_ke = joint_target_ke[dof_idx]
     axis.material_limit_ke = joint_limit_ke[dof_idx]
+    axis.structural_ke = structural_ke
     axis.drive_kd = joint_target_kd[dof_idx]
     axis.limit_kd = joint_limit_kd[dof_idx]
     axis.target_pos = joint_target_q[target_q_idx]
@@ -2648,6 +2662,7 @@ def _eval_joint_axis_drive_limit(
         axis.limit_kd,
         rate,
         axis_support,
+        axis.structural_ke,
         limit_lambda,
         inv_dt,
     )
@@ -2704,6 +2719,7 @@ def _update_joint_axis_drive_limit_state(
         axis.limit_kd,
         rate,
         axis_support,
+        axis.structural_ke,
         joint_limit_lambda[dof_idx],
         inv_dt,
     )
@@ -2782,6 +2798,8 @@ def evaluate_joint_force_hessian(
     joint_penalty_k: wp.array[float],
     joint_rho: wp.array[float],
     joint_material_k: wp.array[float],
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
@@ -3238,6 +3256,7 @@ def evaluate_joint_force_hessian(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
+            joint_structural_angular_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3353,6 +3372,7 @@ def evaluate_joint_force_hessian(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
+            joint_structural_linear_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3524,6 +3544,7 @@ def evaluate_joint_force_hessian(
                         joint_limit_ke,
                         joint_limit_kd,
                         joint_penalty_k,
+                        joint_structural_linear_ke,
                         joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3588,6 +3609,7 @@ def evaluate_joint_force_hessian(
                         joint_limit_ke,
                         joint_limit_kd,
                         joint_penalty_k,
+                        joint_structural_angular_ke,
                         joint_compliant_alm,
                     )
                     has_drive = _drive_row_applies_force(axis_dl.material_drive_ke, axis_dl.drive_kd)
@@ -3680,6 +3702,7 @@ def reset_rigid_state(
     joint_lambda_ang: wp.array[wp.vec3],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
+    joint_mimic_lambda: wp.array2d[float],
     rigid_pose_rebaseline_mask: wp.array[wp.bool],
     contact_history_reset_mask: wp.array[wp.bool],
     contact_history_reset_pending: wp.array[wp.int32],
@@ -3732,6 +3755,9 @@ def reset_rigid_state(
                 dof = dof_start + offset
                 joint_drive_lambda[dof] = 0.0
                 joint_limit_lambda[dof] = 0.0
+            if joint_mimic_lambda:
+                for component in range(6):
+                    joint_mimic_lambda[tid, component] = 0.0
 
 
 @wp.kernel
@@ -4272,7 +4298,8 @@ def step_joint_C0_lambda_rho(
       4. C0 snapshot + lambda retention for stabilized structural rows.
 
     Bilateral structural and drive auto-rho keep ``k_eff >= 0.9K`` in each local
-    solve. Limits use their directional support directly as the ALM metric.
+    solve. Limits raise their directional support toward the same floor, capped
+    by support plus the solver's structural stiffness to condition stiff limits.
     """
     j = wp.tid()
     zero = wp.vec3(0.0)
@@ -5641,6 +5668,8 @@ def solve_rigid_body(
     joint_penalty_k: wp.array[float],
     joint_rho: wp.array[float],
     joint_material_k: wp.array[float],
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_penalty_kd: wp.array[float],
     # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
     joint_sigma_start: wp.array[wp.vec3],
@@ -5818,6 +5847,8 @@ def solve_rigid_body(
             joint_penalty_k,
             joint_rho,
             joint_material_k,
+            joint_structural_linear_ke,
+            joint_structural_angular_ke,
             joint_penalty_kd,
             joint_sigma_start,
             joint_C_fric,
@@ -5911,6 +5942,8 @@ def update_duals_joint(
     joint_is_hard: wp.array[wp.int32],
     stab_alpha: float,
     joint_material_k: wp.array[float],
+    joint_structural_linear_ke: float,
+    joint_structural_angular_ke: float,
     joint_rho: wp.array[float],
     joint_compliant_alm: int,
     beta_lin: float,
@@ -6205,6 +6238,7 @@ def update_duals_joint(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
+            joint_structural_angular_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
@@ -6301,6 +6335,7 @@ def update_duals_joint(
             joint_limit_ke,
             joint_limit_kd,
             joint_penalty_k,
+            joint_structural_linear_ke,
             joint_compliant_alm,
         )
         has_drive = _drive_row_needs_state_update(axis_dl.material_drive_ke, axis_dl.drive_kd, joint_compliant_alm)
@@ -6411,6 +6446,7 @@ def update_duals_joint(
                     joint_limit_ke,
                     joint_limit_kd,
                     joint_penalty_k,
+                    joint_structural_linear_ke,
                     joint_compliant_alm,
                 )
                 has_drive = _drive_row_needs_state_update(
@@ -6454,6 +6490,7 @@ def update_duals_joint(
                     joint_limit_ke,
                     joint_limit_kd,
                     joint_penalty_k,
+                    joint_structural_angular_ke,
                     joint_compliant_alm,
                 )
                 has_drive = _drive_row_needs_state_update(

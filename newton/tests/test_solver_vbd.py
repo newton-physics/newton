@@ -1743,6 +1743,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_is_hard,
                 0.0,
                 joint_material_k,
+                10.0,
+                10.0,
                 joint_material_k,
                 0,
                 0.0,
@@ -1840,6 +1842,8 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_is_hard,
                 0.0,
                 joint_material_k,
+                10.0,
+                10.0,
                 joint_rho,
                 0,
                 0.0,
@@ -3152,6 +3156,14 @@ def _rigid_compliant_limit_holds_under_load(test, device):
     test.assertTrue(math.isfinite(speed))
     test.assertAlmostEqual(position, 0.1, delta=5.0e-4)
     test.assertLess(abs(speed), 1.0e-2)
+
+    # A resting multiplier must release when the applied force reverses.
+    wrench *= -1.0
+    for _ in range(20):
+        state_0.body_f.assign(wrench)
+        solver.step(state_0, state_1, None, None, dt)
+        state_0, state_1 = state_1, state_0
+    test.assertLess(float(state_0.body_q.numpy()[body, 0]), 0.08)
 
 
 def _body_structural_k_refreshes_after_joint_enable_notification(test, device):

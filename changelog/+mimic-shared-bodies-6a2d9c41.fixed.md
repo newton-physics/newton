@@ -1,0 +1,1 @@
+Prevent articulated mimic instability in SolverVBD by solving mimic forces and stiffness together with structural joints and contacts. Use `notify_model_changed(ModelFlags.JOINT_PROPERTIES)` after changing mimic properties or joint enable flags.
