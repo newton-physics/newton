@@ -61,6 +61,7 @@ class TestDeprecationAllowlists(unittest.TestCase):
                 "# remove-when-minimum: warp-lang>=1.18\n# remove-when-minimum: warp-lang>=1.19\nwarning prefix\n"
             ),
             "orphaned": "# remove-when-minimum: warp-lang>=1.18\n",
+            "separator": "# remove-when-minimum: warp-lang>=1.18\nwarning: prefix\n",
             "unsupported": "# remove-when-minimum: warp-lang~=1.18\nwarning prefix\n",
         }
         for name, allowlist in cases.items():

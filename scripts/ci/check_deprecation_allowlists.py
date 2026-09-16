@@ -71,6 +71,8 @@ def check_allowlists(pyproject_path: Path, allowlist_paths: Sequence[Path]) -> s
                 continue
             if not line or line.startswith("#"):
                 continue
+            if ":" in line:
+                return f"{path}:{line_number}: entry contains ':'; use a unique message prefix ending before the colon"
             if pending is None:
                 return f"{path}:{line_number}: allowlist entry has no removal condition"
 
