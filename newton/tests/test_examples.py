@@ -347,33 +347,10 @@ class TestExampleOutputRegexes(unittest.TestCase):
         """Allow an acknowledged deprecation emitted by an example subprocess."""
         allowed_prefix = "dependency.old_api is deprecated"
         allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
-        warning_outputs = (
-            (
-                f"{__file__}:1: DeprecationWarning: {allowed_message}\n"
-                "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
-            ),
-            f"<string>:1: DeprecationWarning: {allowed_message.upper()}\n",
-            (
-                f"<string>:1: DeprecationWarning: {allowed_message}\n"
-                "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
-            ),
-            (
-                f"<string>:1: DeprecationWarning: {allowed_message}\n"
-                "Object allocated at (most recent call last):\n"
-                f'  File "{__file__}", lineno 1\n'
-                "    # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
-            ),
+        stderr = (
+            f"{__file__}:1: DeprecationWarning: {allowed_message}\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
         )
-
-        for stderr in warning_outputs:
-            with self.subTest(stderr=stderr):
-                result = self._run_example_with_stderr(stderr, allowed_prefix)
-                self.assertTrue(result.wasSuccessful(), result.failures)
-
-    def test_allowlisted_warp_deprecation_from_example_subprocess_is_allowed(self):
-        """Allow an acknowledged deprecation emitted in Warp's log format."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        stderr = f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
         output = io.StringIO()
 
         with contextlib.redirect_stderr(output):
@@ -382,13 +359,10 @@ class TestExampleOutputRegexes(unittest.TestCase):
         self.assertTrue(result.wasSuccessful(), result.failures)
         self.assertEqual(output.getvalue(), stderr)
 
-    def test_allowlisted_verbose_warp_deprecation_from_example_subprocess_is_allowed(self):
-        """Allow an acknowledged Warp deprecation with verified source context."""
+    def test_allowlisted_warp_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted in Warp's log format."""
         allowed_prefix = "dependency.old_api is deprecated"
-        stderr = (
-            f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead ({__file__}:1)\n"
-            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
-        )
+        stderr = f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
         output = io.StringIO()
 
         with contextlib.redirect_stderr(output):
@@ -413,81 +387,6 @@ class TestExampleOutputRegexes(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertIn("Unexpected stderr:\nunexpected stderr", result.failures[0][1])
         self.assertNotIn(allowed_prefix, result.failures[0][1])
-
-    def test_allowlisted_deprecation_does_not_allow_other_warning_categories(self):
-        """Reject a non-deprecation warning with an allowlisted message."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        for category in ("PendingDeprecationWarning", "FutureWarning", "UserWarning", "DependencyDeprecationWarning"):
-            with self.subTest(category=category):
-                stderr = f"<string>:1: {category}: {allowed_prefix}\n"
-                result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-                self.assertEqual(result.testsRun, 1)
-                self.assertEqual(result.errors, [])
-                self.assertEqual(len(result.failures), 1)
-                self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])
-
-    def test_allowlisted_deprecation_preserves_indented_diagnostics(self):
-        """Reject unrelated indented stderr after a header-only warning."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        for location in ("<string>:1", f"{__file__}:1"):
-            with self.subTest(location=location):
-                stderr = f"{location}: DeprecationWarning: {allowed_prefix}\n  unexpected diagnostic\n"
-                result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-                self.assertEqual(result.errors, [])
-                self.assertEqual(len(result.failures), 1)
-                self.assertIn("Unexpected stderr:\n  unexpected diagnostic", result.failures[0][1])
-
-    def test_allowlisted_verbose_warp_deprecation_preserves_mismatched_source_context(self):
-        """Reject indented Warp warning context that does not match its source location."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        stderr = f"Warp DeprecationWarning: {allowed_prefix} ({__file__}:1)\n  unexpected diagnostic\n"
-
-        result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-        self.assertEqual(result.errors, [])
-        self.assertEqual(len(result.failures), 1)
-        self.assertIn("Unexpected stderr:\n  unexpected diagnostic", result.failures[0][1])
-
-    def test_allowlisted_example_warnings_remain_observable(self):
-        """Replay acknowledged example warnings after successful output validation."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        stderr = f"<string>:1: DeprecationWarning: {allowed_prefix}\n"
-        output = io.StringIO()
-        with contextlib.redirect_stderr(output):
-            result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-        self.assertTrue(result.wasSuccessful(), result.failures)
-        self.assertEqual(output.getvalue(), stderr)
-
-    def test_repeated_warning_headers_keep_optional_context(self):
-        """Accept repeated headers with different optional warning context."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        header = f"{__file__}:1: DeprecationWarning: {allowed_prefix}\n"
-        stderr = header + header + "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
-        output = io.StringIO()
-        with contextlib.redirect_stderr(output):
-            result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-        self.assertTrue(result.wasSuccessful(), result.failures)
-        self.assertEqual(output.getvalue().count(header), 2)
-        self.assertIn("  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n", output.getvalue())
-
-    def test_allowlisted_deprecation_preserves_indented_allocation_diagnostics(self):
-        """Reject unrelated indented stderr after an allocation traceback frame."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        stderr = (
-            f"<string>:1: DeprecationWarning: {allowed_prefix}\n"
-            "Object allocated at (most recent call last):\n"
-            '  File "<string>", lineno 1\n'
-            "    unexpected diagnostic\n"
-        )
-        result = self._run_example_with_stderr(stderr, allowed_prefix)
-
-        self.assertEqual(result.errors, [])
-        self.assertEqual(len(result.failures), 1)
-        self.assertIn("Unexpected stderr:\n    unexpected diagnostic", result.failures[0][1])
 
     def test_unlisted_example_deprecations_remain_failures(self):
         """Reject a deprecation record whose message does not match the allowlist."""

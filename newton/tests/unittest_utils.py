@@ -77,16 +77,6 @@ def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
 
     for match in re.finditer(header, stderr):
         end = source_end(*match.groups(), match.end(), "  ")
-        tracemalloc_hint = "DeprecationWarning: Enable tracemalloc to get the object allocation traceback\n"
-        allocation_header = "Object allocated at (most recent call last):\n"
-        if stderr.startswith(tracemalloc_hint, end):
-            end += len(tracemalloc_hint)
-        elif stderr.startswith(allocation_header, end):
-            offset = end + len(allocation_header)
-            frame_pattern = re.compile(r'  File "([^\n]+)", lineno (\d+)\n')
-            while frame := frame_pattern.match(stderr, offset):
-                end = source_end(*frame.groups(), frame.end(), "    ")
-                offset = end
         yield "^" + re.escape(stderr[match.start() : end])
 
 
@@ -489,10 +479,10 @@ class NewtonTestCase(unittest.TestCase):
 
         self._require_output_capture().add_pattern(regex, stream=stream, required=True)
 
-    def allowOutputRegex(self, regex: str, *, stream: str = "any", report: bool = False):
-        """Allow optional output and optionally replay it after successful output validation."""
+    def allowOutputRegex(self, regex: str, *, stream: str = "any"):
+        """Allow matching stdout/stderr output without requiring it."""
 
-        self._require_output_capture().add_pattern(regex, stream=stream, required=False, report=report)
+        self._require_output_capture().add_pattern(regex, stream=stream, required=False)
 
     def assertSubprocessSuccess(self, result, *, command):
         """Assert a subprocess succeeded and include its output in this test's output contract."""

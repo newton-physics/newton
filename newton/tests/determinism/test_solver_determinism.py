@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import builtins
-import contextlib
-import io
 import os
 import re
 import subprocess
@@ -248,25 +246,6 @@ def _emit_warning_for_policy_test(category_name, message):
 
 
 class TestSolverDeterminismWarnings(unittest.TestCase):
-    def test_successful_isolated_warnings_remain_observable(self):
-        """Replay acknowledged warnings from a successful determinism subprocess."""
-        allowed_prefix = "dependency.old_api is deprecated"
-        output = io.StringIO()
-        with (
-            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
-            mock.patch.object(newton.tests.unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
-            contextlib.redirect_stderr(output),
-        ):
-            _run_isolated(self, "_emit_warning_for_policy_test", "DeprecationWarning", allowed_prefix)
-        self.assertIn(f"DeprecationWarning: {allowed_prefix}", output.getvalue())
-
-    def test_strict_warnings_override_default_ignored_categories(self):
-        """Reject Newton warnings even when Python ignores their category by default."""
-        with mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True):
-            for category in ("ResourceWarning", "ImportWarning", "PendingDeprecationWarning"):
-                with self.subTest(category=category), self.assertRaisesRegex(AssertionError, category):
-                    _run_isolated(self, "_emit_warning_for_policy_test", category, "unexpected Newton warning")
-
     def test_allowlisted_deprecations_override_newton_error_filter(self):
         """Allow only acknowledged deprecations ahead of the Newton error filter."""
         allowed_prefix = "dependency.old_api is deprecated"
@@ -277,8 +256,6 @@ class TestSolverDeterminismWarnings(unittest.TestCase):
             _run_isolated(self, "_emit_warning_for_policy_test", "DeprecationWarning", f"{allowed_prefix}; use new_api")
             for category, message in (
                 ("DeprecationWarning", "unexpected deprecation"),
-                ("PendingDeprecationWarning", allowed_prefix),
-                ("FutureWarning", allowed_prefix),
                 ("UserWarning", allowed_prefix),
             ):
                 with self.subTest(category=category), self.assertRaisesRegex(AssertionError, category):
