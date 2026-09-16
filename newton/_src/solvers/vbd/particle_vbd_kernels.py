@@ -2258,6 +2258,7 @@ def apply_planar_truncation_parallel_by_collision(
 
         i += stride
 
+
 @wp.kernel
 def apply_truncation_ts(
     pos: wp.array[wp.vec3],
