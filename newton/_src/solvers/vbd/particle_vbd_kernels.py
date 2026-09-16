@@ -22,7 +22,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
-    evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
     place_dat_division_plane,
@@ -1927,6 +1926,7 @@ def apply_planar_truncation_parallel_by_collision(
                 wp.atomic_min(truncation_t_out, tri_c, t)
 
         i += stride
+
 
 @wp.kernel
 def apply_truncation_ts(

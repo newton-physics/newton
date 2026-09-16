@@ -98,10 +98,6 @@ __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
 
-# cap for the strided per-pair self-contact launches: dims stay host-static
-# (graph-safe); threads loop when a grown pair array exceeds the cap
-_SELF_CONTACT_MAX_LAUNCH_DIM = 2**21
-
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
     """Return whether the model's active element materials are tetrahedral only."""
@@ -1019,15 +1015,26 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
 
     def _update_self_contact_launch_size(self, collision_info: TriMeshCollisionInfo) -> None:
-        """Host-static launch size for the per-pair self-contact kernels: covers
-        the larger family's pair capacity, capped so a grown pool makes threads
-        stride instead of inflating the grid. Graph-safe either way."""
+        """Host-static launch size for the per-pair self-contact kernels.
+
+        Enough threads to fill the device, never more than the larger family's
+        row capacity: these kernels launch per color per iteration, so grid
+        size beyond saturation only adds submission and scheduling overhead,
+        while the strided loops cover any stored count regardless of the grid
+        (the grid therefore also stays valid when the storage grows).
+        """
         capacity = max(
             collision_info.vertex_colliding_triangles.shape[0] // 2,
             collision_info.edge_colliding_edges.shape[0] // 2,
             1,
         )
-        self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, _SELF_CONTACT_MAX_LAUNCH_DIM)
+        if self.device.is_cuda:
+            # a couple of resident waves saturate; 2048 threads per SM is at or
+            # above the residency limit of every supported architecture
+            occupancy_target = self.device.sm_count * 2048
+        else:
+            occupancy_target = capacity
+        self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, occupancy_target)
 
     def check_and_grow_self_contact_buffers(self) -> bool:
         """Check self-contact overflow, grow the storage, refresh solver state.
