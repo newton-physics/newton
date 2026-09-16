@@ -589,6 +589,29 @@ default :meth:`Actuator.State.assign` behavior copies direct Warp array and
 Torch tensor fields without replacing their storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
 
+A drive can declare additional same-named attributes to bind from the objects
+passed to :meth:`Actuator.step` through
+:attr:`~DriveBase.state_input_attrs` and
+:attr:`~DriveBase.control_input_attrs`:
+
+.. code-block:: python
+
+   class MyDrive(DriveBase):
+       state_input_attrs = ("estimated_load",)
+       control_input_attrs = ("motor_temperature",)
+
+       def compute(self, ...):
+           # Bound immediately before this evaluation.
+           estimated_load = self.estimated_load
+           motor_temperature = self.motor_temperature
+
+The declarations are public so direct users can inspect which additional
+attributes a drive expects. :class:`Actuator` only binds the values; the drive
+is responsible for deciding whether an input is required and for validating
+its type, shape, device, and meaning. Missing attributes are bound as ``None``.
+When using :class:`~newton.ModelBuilder`, register any required custom State or
+Control arrays with the builder so they are allocated on the finalized model.
+
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve
 evaluates the control law inside its own kernel rather than calling

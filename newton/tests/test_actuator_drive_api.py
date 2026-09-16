@@ -3,6 +3,7 @@
 
 """Tests for the actuator drive API migration."""
 
+import types
 import typing
 import unittest
 import warnings
@@ -89,6 +90,37 @@ class TestActuatorDriveAPI(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "only one"):
             actuators.Actuator.State(drive_state=drive_state, controller_state=drive_state)
+
+    def test_actuator_binds_drive_declared_state_and_control_inputs(self):
+        """Bind declared inputs without imposing generic type or shape checks."""
+        indices = wp.array([0], dtype=wp.uint32)
+        drive = actuators.DrivePD(
+            kp=wp.array([0.0], dtype=wp.float32),
+            kd=wp.array([0.0], dtype=wp.float32),
+        )
+        drive.state_input_attrs = ("custom_state_input",)
+        drive.control_input_attrs = ("custom_control_input",)
+        actuator = actuators.Actuator(indices=indices, drive=drive)
+
+        state_input = object()
+        control_input = object()
+        state = types.SimpleNamespace(
+            joint_q=wp.zeros(1, dtype=wp.float32),
+            joint_qd=wp.zeros(1, dtype=wp.float32),
+            custom_state_input=state_input,
+        )
+        control = types.SimpleNamespace(
+            joint_target_q=wp.zeros(1, dtype=wp.float32),
+            joint_target_qd=wp.zeros(1, dtype=wp.float32),
+            joint_act=wp.zeros(1, dtype=wp.float32),
+            joint_f=wp.zeros(1, dtype=wp.float32),
+            custom_control_input=control_input,
+        )
+
+        actuator.step(state, control, dt=0.01)
+
+        self.assertIs(drive.custom_state_input, state_input)
+        self.assertIs(drive.custom_control_input, control_input)
 
     def test_builder_deprecated_controller_class_keyword(self):
         """Keep the former builder keyword functional with a warning."""
