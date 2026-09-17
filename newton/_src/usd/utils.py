@@ -1258,10 +1258,11 @@ def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
 
 
 def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
-    """Resolve the texcoord primvar name a shader's base-color texture reads, or ``None``.
+    """Resolve the texcoord primvar name a shader texture reads, or ``None``.
 
-    - ``UsdPreviewSurface``: follow the base-color ``UsdUVTexture``'s ``st`` input to its
-      ``UsdPrimvarReader_float2`` and read ``inputs:varname``.
+    - ``UsdPreviewSurface``: follow a base-color ``UsdUVTexture``'s ``st`` input to its
+      ``UsdPrimvarReader_float2`` and read ``inputs:varname``. If no base-color texture
+      is connected, fall back to the roughness texture.
     - ``OmniPBR`` and other MDL shaders: ``st_<inputs:uv_space_index>``.
     """
     if shader is None:
@@ -1271,9 +1272,9 @@ def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
     except Exception:
         shader_id = None
     if shader_id == "UsdPreviewSurface":
-        for color_name in ("baseColor", "diffuseColor"):
-            color_input = shader.GetInput(color_name)
-            source = color_input.GetConnectedSource() if color_input else None
+        for input_name in ("baseColor", "diffuseColor", "roughness"):
+            texture_input = shader.GetInput(input_name)
+            source = texture_input.GetConnectedSource() if texture_input else None
             if not source:
                 continue
             texture = UsdShade.Shader(source[0].GetPrim())
