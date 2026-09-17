@@ -124,8 +124,8 @@ _MULTICCD_UNSUPPORTED_PAIR_WARNING_RE = (
     r"At most 1 contact will be generated for these pairs\.\n"
     r"  warnings\.warn\(\n?"
 )
-_MUJOCO_LINESEARCH_LIMIT_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations to 20\n?"
-_MUJOCO_SOLVER_LIMIT_OUTPUT_RE = r"^solver iterations limit reached - please increase iterations to 10\n?"
+_MUJOCO_LINESEARCH_LIMIT_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations to \d+\n?"
+_MUJOCO_SOLVER_LIMIT_OUTPUT_RE = r"^solver iterations limit reached - please increase iterations to \d+\n?"
 _UR10_INVALID_INERTIA_WARNING_RE = (
     r"Warning: The rigid body at /ur10/ee_link has a possibly invalid inertia tensor of \{1\.0, 1\.0, 1\.0\}, "
     r"small sphere approximated inertia was used\. Either specify correct values in the mass properties, or add "
