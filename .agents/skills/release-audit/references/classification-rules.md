@@ -1,6 +1,6 @@
 # Classification Helpers
 
-This reference is loaded during Phases 3, 4, and 5 of the skill. It defines concrete path and naming rules Claude relies on when analyzing commits and CHANGELOG entries.
+This reference is loaded during Phases 3, 4, and 5 of the skill. It defines concrete path and naming rules the audit relies on when analyzing commits and CHANGELOG entries.
 
 ## Public API surface (Phase 4a, 4e)
 
@@ -30,7 +30,7 @@ Newton has no separate builtin registry to audit. All user-facing symbols are or
 
 ## Paths that trigger Phase 4f semantic-change review
 
-Commits touching these paths get per-commit judgment (Phase 4f). Not every change in them is a semantic shift — Claude reads the diff and decides:
+Commits touching these paths get per-commit judgment (Phase 4f). Not every change in them is a semantic shift — the audit reads the diff and decides:
 
 - `newton/_src/solvers/**` — solver implementations (XPBD, MuJoCo, Featherstone, VBD, implicit MPM). Changes can alter convergence, contact handling, step semantics.
 - `newton/_src/sim/**` — integrators, collision pipeline, model building, state transfer. Changes can alter per-step dynamics or contact ordering.
@@ -58,7 +58,7 @@ Typical SEMANTIC-SHIFTING signals:
 
 ## Heuristic paths commonly relevant (reference only)
 
-These are noted here so Claude can pattern-match when reading commits, but the skill does NOT use them to produce an appendix-style commit audit. Purpose is recognition, not bucketing:
+These are noted here so the audit can pattern-match when reading commits, but the skill does NOT use them to produce an appendix-style commit audit. Purpose is recognition, not bucketing:
 
 - `.github/**`, `.pre-commit-config.yaml`, `uv.lock`, `.python-version` — infrastructure, not user-facing.
 - `asv.conf.json`, `asv/**`, root-level `_bench_*.py` — benchmark harness.
