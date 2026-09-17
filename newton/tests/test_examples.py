@@ -1336,6 +1336,13 @@ add_example_test(
     },
     use_viewer=True,
 )
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_vbd_dat_rigid_soft",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300},
+    use_viewer=True,
+)
 
 
 class TestSoftbodyExamples(NewtonTestCase):

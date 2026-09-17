@@ -7533,12 +7533,6 @@ class ModelBuilder:
 
         self.shape_body.append(body)
         shape = self.shape_count
-        if cfg.has_shape_collision:
-            # no contacts between shapes of the same body
-            for same_body_shape in self.body_shapes[body]:
-                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
-                    continue
-                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -14280,6 +14274,7 @@ class ModelBuilder:
             validated_templates.add(template_key)
 
     def _find_shape_contact_pairs(self, model: Model) -> None:
+        shape_body_values = self.shape_body
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -14313,6 +14308,14 @@ class ModelBuilder:
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
                 use_world_templates = np.array_equal(segment_worlds, shape_world_np)
+                if use_world_templates:
+                    shape_body_np = np.asarray(shape_body_values, dtype=np.int32)
+                    body_world_np = np.asarray(self.body_world, dtype=np.int32)
+                    attached = shape_body_np >= 0
+                    # Body-relative template keys are valid only when shapes and their bodies share a world.
+                    use_world_templates = np.array_equal(
+                        shape_world_np[attached], body_world_np[shape_body_np[attached]]
+                    )
 
         if use_world_templates:
             blocks_by_world = {}
@@ -14365,12 +14368,15 @@ class ModelBuilder:
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
-                    (int(shape_idx), self.shape_collision_group[shape_idx])
+                    (int(shape_idx), self.shape_collision_group[shape_idx], int(shape_body_np[shape_idx]))
                     for shape_idx in np.flatnonzero((shape_world_np == -1) & colliding_np)
                 ]
 
-                for i1, (shape_a, group_a) in enumerate(colliding_globals):
-                    for shape_b, group_b in colliding_globals[i1 + 1 :]:
+                for i1, (shape_a, group_a, body_a) in enumerate(colliding_globals):
+                    for shape_b, group_b, body_b in colliding_globals[i1 + 1 :]:
+                        # Same-body and static-static shape pairs are inherently filtered.
+                        if body_a == body_b or (body_a < 0 and body_b < 0):
+                            continue
                         if not self._test_group_pair(group_a, group_b):
                             continue
                         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
@@ -14391,12 +14397,19 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
+                    world_shape_bodies_np = shape_body_np[world_start:world_end]
+                    body_key = np.where(
+                        world_shape_bodies_np >= 0,
+                        world_shape_bodies_np - self.body_world_start[world],
+                        -1,
+                    ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
                     # tuples; re-hashing per-shape tuples per world dominates
                     # this loop at high world counts.
                     cache_key = (
                         shape_flags_np[world_start:world_end].tobytes(),
                         shape_group_np[world_start:world_end].tobytes(),
+                        body_key,
                         block_key,
                         explicit_filter_specs,
                     )
@@ -14404,6 +14417,7 @@ class ModelBuilder:
 
                     if cached_pairs is None:
                         collision_groups = self.shape_collision_group[world_start:world_end]
+                        world_shape_bodies = _list_for_iteration(world_shape_bodies_np)
                         local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
 
                         # Replicated-block filters are local to the source block;
@@ -14429,8 +14443,12 @@ class ModelBuilder:
                         # Cache global/local pairs separately: the global id is
                         # absolute, while the local id is shifted during replay.
                         global_local_pairs = []
-                        for global_shape, global_group in colliding_globals:
+                        for global_shape, global_group, global_body in colliding_globals:
                             for local_shape in local_colliding_indices:
+                                local_body = world_shape_bodies[local_shape]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if global_body == local_body or (global_body < 0 and local_body < 0):
+                                    continue
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
                                     pair = (global_shape, local_shape)
                                     if pair not in global_local_filters:
@@ -14439,7 +14457,12 @@ class ModelBuilder:
                         local_pairs = []
                         for i1, shape_a in enumerate(local_colliding_indices):
                             group_a = collision_groups[shape_a]
+                            body_a = world_shape_bodies[shape_a]
                             for shape_b in local_colliding_indices[i1 + 1 :]:
+                                body_b = world_shape_bodies[shape_b]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if body_a == body_b or (body_a < 0 and body_b < 0):
+                                    continue
                                 if not self._test_group_pair(group_a, collision_groups[shape_b]):
                                     continue
 
@@ -14491,6 +14514,7 @@ class ModelBuilder:
                 return
 
         contact_pairs: list[tuple[int, int]] = []
+        shape_body = _list_for_iteration(shape_body_values)
         shape_world = self.shape_world
         shape_collision_group = self.shape_collision_group
 
@@ -14502,6 +14526,7 @@ class ModelBuilder:
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = shape_world[s1]
+            body1 = shape_body[s1]
             collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
@@ -14514,6 +14539,11 @@ class ModelBuilder:
                 # be in different worlds, so we can break early.
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
+
+                body2 = shape_body[s2]
+                # Same-body and static-static shape pairs are inherently filtered.
+                if body1 == body2 or (body1 < 0 and body2 < 0):
+                    continue
 
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
