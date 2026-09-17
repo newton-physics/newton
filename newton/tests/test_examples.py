@@ -96,6 +96,43 @@ _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
+_ANYMAL_MATERIAL_BINDING_WARNING_RE = (
+    r"Warning: in BindingsAtPrim at line \d+ of [^\n]*materialBindingAPI\.cpp -- Found material bindings on prim "
+    r"at path \(/anymal/[^\n]+\) but MaterialBindingAPI is not applied on the prim\n?"
+)
+_ALLEGRO_MATERIAL_BINDING_WARNING_RE = (
+    r"Warning: in BindingsAtPrim at line \d+ of [^\n]*materialBindingAPI\.cpp -- Found material bindings on prim "
+    r"at path \(/(?:World/envs/env_0/object/DexCube|Visuals/goal_marker/goal)/(?:visuals/visuals|collisions)\) "
+    r"but MaterialBindingAPI is not applied on the prim\n?"
+)
+_ALLEGRO_BODY_DENSITY_WARNING_RE = (
+    r"^.*newton[/\\]_src[/\\]sim[/\\]builder\.py:\d+: UserWarning: Body "
+    r"/World/envs/env_0/object/DexCube: authored mass and density without authored diagonalInertia\. "
+    r"Ignoring body-level density\.\n"
+    r"  return parse_usd\(\n?"
+)
+_FREE_JOINT_TARGET_WARNING_RE = (
+    r"^.*newton[/\\]_src[/\\]solvers[/\\]mujoco[/\\]solver_mujoco\.py:\d+: UserWarning: Free joint "
+    r"'joint_1' has a non-NONE joint_target_mode but SolverMuJoCo cannot create actuators on free joints\. "
+    r"Drive targets \(joint_target_ke, joint_target_kd, joint_target_q\) are silently ignored\. "
+    r"Apply the desired wrench directly via Control\.joint_f instead\.\n"
+    r"  self\._convert_to_mjc\(\n?"
+)
+_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE = (
+    r"^.*mujoco_warp[/\\]_src[/\\]io\.py:\d+: UserWarning: MULTICCD is enabled, but the scene contains "
+    r"CCD pairs without multicontact support: \[\('CAPSULE', 'MESH'\)\]\. "
+    r"At most 1 contact will be generated for these pairs\.\n"
+    r"  warnings\.warn\(\n?"
+)
+_MUJOCO_LINESEARCH_LIMIT_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations to 20\n?"
+_MUJOCO_SOLVER_LIMIT_OUTPUT_RE = r"^solver iterations limit reached - please increase iterations to 10\n?"
+_UR10_INVALID_INERTIA_WARNING_RE = (
+    r"Warning: The rigid body at /ur10/ee_link has a possibly invalid inertia tensor of \{1\.0, 1\.0, 1\.0\}, "
+    r"small sphere approximated inertia was used\. Either specify correct values in the mass properties, or add "
+    r"collider\(s\) to any shape\(s\) that you wish to automatically compute mass properties for\. If you do not "
+    r"want the objects to collide, add colliders regardless then disable the 'enable collision' property\. "
+    r"\[python\d+\.\d+\]\n?"
+)
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
@@ -661,7 +698,7 @@ add_example_test(
 )
 
 
-class TestRobotExamples(unittest.TestCase):
+class TestRobotExamples(NewtonTestCase):
     pass
 
 
@@ -686,6 +723,10 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
+    allow_output_regexes=[
+        (_ANYMAL_MATERIAL_BINDING_WARNING_RE, "stderr"),
+        (_FREE_JOINT_TARGET_WARNING_RE, "stderr"),
+    ],
     use_viewer=True,
 )
 add_example_test(
@@ -708,6 +749,7 @@ add_example_test(
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
+    allow_output_regexes=[(_FREE_JOINT_TARGET_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -715,6 +757,10 @@ add_example_test(
     name="robot.example_robot_omniwheel",
     devices=cuda_test_devices,
     test_options={"num-frames": 500},
+    allow_output_regexes=[
+        (_MUJOCO_LINESEARCH_LIMIT_OUTPUT_RE, "stdout"),
+        (_MUJOCO_SOLVER_LIMIT_OUTPUT_RE, "stdout"),
+    ],
     use_viewer=True,
 )
 add_example_test(
@@ -722,6 +768,7 @@ add_example_test(
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True},
+    allow_output_regexes=[(_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -729,6 +776,7 @@ add_example_test(
     name="robot.example_robot_asroballet",
     devices=cuda_test_devices,
     test_options={"controller": "lqr", "num-frames": 500},
+    allow_output_regexes=[(_MULTICCD_UNSUPPORTED_PAIR_WARNING_RE, "stderr")],
     use_viewer=True,
     test_suffix="LQR",
 )
@@ -738,6 +786,7 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
+    allow_output_regexes=[(_UR10_INVALID_INERTIA_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 add_example_test(
@@ -745,6 +794,10 @@ add_example_test(
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
+    allow_output_regexes=[
+        (_ALLEGRO_MATERIAL_BINDING_WARNING_RE, "stderr"),
+        (_ALLEGRO_BODY_DENSITY_WARNING_RE, "stderr"),
+    ],
     use_viewer=True,
 )
 add_example_test(
