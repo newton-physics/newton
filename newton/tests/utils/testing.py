@@ -57,9 +57,9 @@ __all__ = [
 ###
 
 
-def _shape_cfg_basic(collision_group: int = 1) -> ModelBuilder.ShapeConfig:
+def _shape_cfg_basic(collision_group: int = 1, gap: float = 0.0) -> ModelBuilder.ShapeConfig:
     """Shape config matching Kamino testing defaults (zero margin and gap)."""
-    return ModelBuilder.ShapeConfig(margin=0.0, gap=0.0, collision_group=collision_group)
+    return ModelBuilder.ShapeConfig(margin=0.0, gap=gap, collision_group=collision_group)
 
 
 def _identity_inertia() -> wp.mat33:
@@ -67,9 +67,13 @@ def _identity_inertia() -> wp.mat33:
     return wp.mat33(np.eye(3, dtype=np.float32))
 
 
-def _actuator_mode(implicit_pd: bool) -> JointTargetMode:
-    """Select the actuator mode used by Kamino's testing builders given ``implicit_pd``."""
-    return JointTargetMode.POSITION_VELOCITY if implicit_pd else JointTargetMode.EFFORT
+def _actuator_mode(implicit_pd: bool, actuated: bool = True) -> JointTargetMode:
+    """Select the actuator mode used by Kamino's testing builders given ``implicit_pd`` and ``actuated``."""
+    if not actuated:
+        return JointTargetMode.NONE
+    elif implicit_pd:
+        return JointTargetMode.POSITION_VELOCITY
+    return JointTargetMode.EFFORT
 
 
 def _dof_config(
@@ -124,9 +128,10 @@ def _cylindrical_axes(
     limits: bool,
     dynamic: bool,
     implicit_pd: bool,
+    actuated: bool = True,
 ) -> tuple[list[ModelBuilder.JointDofConfig], list[ModelBuilder.JointDofConfig]]:
     """Build linear + angular axes for a cylindrical joint sharing a single spatial axis."""
-    mode = _actuator_mode(implicit_pd)
+    mode = _actuator_mode(implicit_pd, actuated)
     kw_lin = {
         "armature": 0.1 if dynamic else 0.0,
         "friction": 0.01 if dynamic else 0.0,
@@ -151,10 +156,11 @@ def _cylindrical_axes(
     return [lin], [ang]
 
 
-def _universal_axes(limits: bool) -> list[ModelBuilder.JointDofConfig]:
+def _universal_axes(limits: bool, *, actuated: bool = True) -> list[ModelBuilder.JointDofConfig]:
     """Two rotational axes (X, Y) with optional limits, matching Kamino's universal joint."""
-    kw_x = {"axis": Axis.X, "actuator_mode": JointTargetMode.EFFORT}
-    kw_y = {"axis": Axis.Y, "actuator_mode": JointTargetMode.EFFORT}
+    mode = _actuator_mode(False, actuated)
+    kw_x = {"axis": Axis.X, "actuator_mode": mode}
+    kw_y = {"axis": Axis.Y, "actuator_mode": mode}
     if limits:
         kw_x["limit_lower"] = -0.6 * math.pi
         kw_x["limit_upper"] = 0.6 * math.pi
@@ -171,9 +177,10 @@ def _cartesian_axes(
     limits: bool,
     dynamic: bool,
     implicit_pd: bool,
+    actuated: bool = True,
 ) -> list[ModelBuilder.JointDofConfig]:
     """Three translational axes (X, Y, Z) with optional limits and PD parameters."""
-    mode = _actuator_mode(implicit_pd)
+    mode = _actuator_mode(implicit_pd, actuated)
     armature = [0.1, 0.2, 0.3] if dynamic else [0.0, 0.0, 0.0]
     friction = [0.01, 0.02, 0.03] if dynamic else [0.0, 0.0, 0.0]
     ke = [10.0, 20.0, 30.0] if implicit_pd else [0.0, 0.0, 0.0]
@@ -226,6 +233,32 @@ def _add_ground_box(builder: ModelBuilder, z_offset: float = 0.0) -> None:
         xform=wp.transformf(0.0, 0.0, -1.5 + z_offset, 0.0, 0.0, 0.0, 1.0),
         cfg=_shape_cfg_basic(),
     )
+
+
+def _add_base_joint(
+    *,
+    builder: ModelBuilder,
+    body_id: int,
+    floating_base: bool = False,
+    z_offset: float = 0.0,
+) -> int:
+    """Adds a fixed or free base joint to the builder. Returns the base joint index."""
+    if floating_base:
+        return builder.add_joint_free(
+            child=body_id,
+            parent=-1,
+            label="world_to_base",
+            parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+            child_xform=wp.transform_identity(dtype=wp.float32),
+        )
+    else:
+        return builder.add_joint_fixed(
+            child=body_id,
+            parent=-1,
+            label="world_to_base",
+            parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+            child_xform=wp.transform_identity(dtype=wp.float32),
+        )
 
 
 ###
@@ -326,6 +359,9 @@ def build_unary_revolute_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuator_mode: JointTargetMode | None = None,
+    effort_limit: float | None = 100.0,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary revolute joints.
@@ -345,6 +381,14 @@ def build_unary_revolute_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuator_mode: Overrides the actuator mode that would otherwise be derived from
+            ``implicit_pd``. Use this to exercise a specific :class:`JointTargetMode`
+            (e.g. ``NONE``/``EFFORT``/``POSITION``/``VELOCITY``) at construction time.
+        effort_limit: Maximum effort (torque) the joint axis can exert. Pass ``None`` to
+            leave the axis unbounded, e.g. to keep an implicit-PD DoF routed through the
+            unbounded dynamic-constraint path instead of the bounded effort-constraint path.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
+            Ignored if ``actuator_mode`` is explicitly given.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -369,14 +413,14 @@ def build_unary_revolute_joint_test(
         axis=Axis.Y,
         parent_xform=wp.transformf(0.0, -0.15, z_offset, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.5, 0.1, 0.0, 0.0, 0.0, 0.0, 1.0),
-        actuator_mode=_actuator_mode(implicit_pd),
+        actuator_mode=actuator_mode if actuator_mode is not None else _actuator_mode(implicit_pd, actuated),
         limit_lower=-0.25 * math.pi if limits else None,
         limit_upper=0.25 * math.pi if limits else None,
         armature=0.1 if dynamic else None,
         friction=0.01 if dynamic else None,
         target_ke=10.0 if implicit_pd else None,
         target_kd=0.01 if implicit_pd else None,
-        effort_limit=100.0,
+        effort_limit=effort_limit,
     )
     _builder.add_articulation([j_revolute])
 
@@ -418,6 +462,8 @@ def build_binary_revolute_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary revolute joints.
@@ -438,6 +484,9 @@ def build_binary_revolute_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -456,13 +505,7 @@ def build_binary_revolute_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.5, -0.25, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
 
     j_revolute = _builder.add_joint_revolute(
         label="base_to_follower_revolute",
@@ -471,7 +514,7 @@ def build_binary_revolute_joint_test(
         axis=Axis.Y,
         parent_xform=wp.transformf(0.0, -0.15, z_offset, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.5, 0.1, 0.0, 0.0, 0.0, 0.0, 1.0),
-        actuator_mode=_actuator_mode(implicit_pd),
+        actuator_mode=_actuator_mode(implicit_pd, actuated),
         limit_lower=-0.25 * math.pi if limits else None,
         limit_upper=0.25 * math.pi if limits else None,
         armature=0.1 if dynamic else None,
@@ -480,7 +523,7 @@ def build_binary_revolute_joint_test(
         target_kd=0.01 if implicit_pd else None,
         effort_limit=100.0,
     )
-    _builder.add_articulation([j_fixed, j_revolute])
+    _builder.add_articulation([j_base, j_revolute])
 
     # Add body collision geometries
     _builder.add_shape_box(
@@ -520,6 +563,7 @@ def build_unary_prismatic_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary prismatic joints.
@@ -539,6 +583,7 @@ def build_unary_prismatic_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -563,7 +608,7 @@ def build_unary_prismatic_joint_test(
         axis=Axis.Z,
         parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transform_identity(dtype=wp.float32),
-        actuator_mode=_actuator_mode(implicit_pd),
+        actuator_mode=_actuator_mode(implicit_pd, actuated),
         limit_lower=-0.5 if limits else None,
         limit_upper=0.5 if limits else None,
         armature=0.1 if dynamic else None,
@@ -612,6 +657,8 @@ def build_binary_prismatic_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary prismatic joints.
@@ -632,6 +679,9 @@ def build_binary_prismatic_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -650,13 +700,7 @@ def build_binary_prismatic_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.0, 0.0, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
 
     j_prismatic = _builder.add_joint_prismatic(
         label="base_to_follower_prismatic",
@@ -665,7 +709,7 @@ def build_binary_prismatic_joint_test(
         axis=Axis.Z,
         parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transform_identity(dtype=wp.float32),
-        actuator_mode=_actuator_mode(implicit_pd),
+        actuator_mode=_actuator_mode(implicit_pd, actuated),
         limit_lower=-0.5 if limits else None,
         limit_upper=0.5 if limits else None,
         armature=0.1 if dynamic else None,
@@ -674,7 +718,7 @@ def build_binary_prismatic_joint_test(
         target_kd=0.01 if implicit_pd else None,
         effort_limit=100.0,
     )
-    _builder.add_articulation([j_fixed, j_prismatic])
+    _builder.add_articulation([j_base, j_prismatic])
 
     # Add body collision geometries
     _builder.add_shape_box(
@@ -714,6 +758,7 @@ def build_unary_cylindrical_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary cylindrical joints.
@@ -733,6 +778,7 @@ def build_unary_cylindrical_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -750,7 +796,7 @@ def build_unary_cylindrical_joint_test(
     # Define test system
     bid_F = _follower_body(_builder, "follower", (0.0, 0.0, z_offset))
 
-    lin, ang = _cylindrical_axes(Axis.Z, limits=limits, dynamic=dynamic, implicit_pd=implicit_pd)
+    lin, ang = _cylindrical_axes(Axis.Z, limits=limits, dynamic=dynamic, implicit_pd=implicit_pd, actuated=actuated)
     j_cyl = _builder.add_joint_d6(
         label="world_to_follower_cylindrical",
         parent=-1,
@@ -800,6 +846,8 @@ def build_binary_cylindrical_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary cylindrical joints.
@@ -820,6 +868,9 @@ def build_binary_cylindrical_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -838,15 +889,9 @@ def build_binary_cylindrical_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.0, 0.0, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
 
-    lin, ang = _cylindrical_axes(Axis.Z, limits=limits, dynamic=dynamic, implicit_pd=implicit_pd)
+    lin, ang = _cylindrical_axes(Axis.Z, limits=limits, dynamic=dynamic, implicit_pd=implicit_pd, actuated=actuated)
     j_cyl = _builder.add_joint_d6(
         label="base_to_follower_cylindrical",
         parent=bid_B,
@@ -856,7 +901,7 @@ def build_binary_cylindrical_joint_test(
         parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transform_identity(dtype=wp.float32),
     )
-    _builder.add_articulation([j_fixed, j_cyl])
+    _builder.add_articulation([j_base, j_cyl])
 
     # Add body collision geometries
     _builder.add_shape_cylinder(
@@ -893,6 +938,7 @@ def build_unary_universal_joint_test(
     new_world: bool = True,
     limits: bool = True,
     ground: bool = True,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary universal joints.
@@ -910,6 +956,7 @@ def build_unary_universal_joint_test(
             ``begin_world`` / ``end_world`` pair is issued around the scene.
         limits: Whether to enable limits on the joint degrees of freedom.
         ground: Whether to include a static ground box in the world.
+        actuated: Whether the joint should be actuated (``JointTargetMode.EFFORT``) or left passive.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -931,7 +978,7 @@ def build_unary_universal_joint_test(
         label="world_to_follower_universal",
         parent=-1,
         child=bid_F,
-        angular_axes=_universal_axes(limits),
+        angular_axes=_universal_axes(limits, actuated=actuated),
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
     )
@@ -974,6 +1021,8 @@ def build_binary_universal_joint_test(
     new_world: bool = True,
     limits: bool = True,
     ground: bool = True,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary universal joints.
@@ -992,6 +1041,9 @@ def build_binary_universal_joint_test(
             ``begin_world`` / ``end_world`` pair is issued around the scene.
         limits: Whether to enable limits on the joint degrees of freedom.
         ground: Whether to include a static ground box in the world.
+        actuated: Whether the joint should be actuated (``JointTargetMode.EFFORT``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -1010,22 +1062,17 @@ def build_binary_universal_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.5, 0.0, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
+
     j_universal = _builder.add_joint_d6(
         label="base_to_follower_universal",
         parent=bid_B,
         child=bid_F,
-        angular_axes=_universal_axes(limits),
+        angular_axes=_universal_axes(limits, actuated=actuated),
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
     )
-    _builder.add_articulation([j_fixed, j_universal])
+    _builder.add_articulation([j_base, j_universal])
 
     # Add body collision geometries
     _builder.add_shape_box(
@@ -1063,6 +1110,7 @@ def build_unary_spherical_joint_test(
     new_world: bool = True,
     limits: bool = True,
     ground: bool = True,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary spherical (ball) joints.
@@ -1080,6 +1128,7 @@ def build_unary_spherical_joint_test(
             ``begin_world`` / ``end_world`` pair is issued around the scene.
         limits: Whether to enable limits on the joint degrees of freedom.
         ground: Whether to include a static ground box in the world.
+        actuated: Whether the joint should be actuated (``JointTargetMode.EFFORT``) or left passive.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -1108,7 +1157,7 @@ def build_unary_spherical_joint_test(
         child=bid_F,
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
-        actuator_mode=JointTargetMode.EFFORT,
+        actuator_mode=JointTargetMode.EFFORT if actuated else JointTargetMode.NONE,
     )
     _builder.add_articulation([j_spherical])
 
@@ -1153,6 +1202,8 @@ def build_binary_spherical_joint_test(
     new_world: bool = True,
     limits: bool = True,
     ground: bool = True,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary spherical (ball) joints.
@@ -1171,6 +1222,9 @@ def build_binary_spherical_joint_test(
             ``begin_world`` / ``end_world`` pair is issued around the scene.
         limits: Whether to enable limits on the joint degrees of freedom.
         ground: Whether to include a static ground box in the world.
+        actuated: Whether the joint should be actuated (``JointTargetMode.EFFORT``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -1194,22 +1248,17 @@ def build_binary_spherical_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.5, 0.0, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
+
     j_spherical = _builder.add_joint_ball(
         label="base_to_follower_spherical",
         parent=bid_B,
         child=bid_F,
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
-        actuator_mode=JointTargetMode.EFFORT,
+        actuator_mode=JointTargetMode.EFFORT if actuated else JointTargetMode.NONE,
     )
-    _builder.add_articulation([j_fixed, j_spherical])
+    _builder.add_articulation([j_base, j_spherical])
 
     # Patch per-axis angular limits post-creation (not exposed by add_joint_ball)
     if limits:
@@ -1253,6 +1302,7 @@ def build_unary_cartesian_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
 ) -> ModelBuilder:
     """
     Builds a world to test unary cartesian joints.
@@ -1273,6 +1323,7 @@ def build_unary_cartesian_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -1294,7 +1345,7 @@ def build_unary_cartesian_joint_test(
         label="world_to_follower_cartesian",
         parent=-1,
         child=bid_F,
-        linear_axes=_cartesian_axes(limits=limits, dynamic=dynamic, implicit_pd=implicit_pd),
+        linear_axes=_cartesian_axes(limits=limits, dynamic=dynamic, implicit_pd=implicit_pd, actuated=actuated),
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
     )
@@ -1339,6 +1390,8 @@ def build_binary_cartesian_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    actuated: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilder:
     """
     Builds a world to test binary cartesian joints.
@@ -1359,6 +1412,9 @@ def build_binary_cartesian_joint_test(
         ground: Whether to include a static ground box in the world.
         dynamic: Whether to set the joint to be dynamic, with non-zero armature and friction.
         implicit_pd: Whether to use implicit PD control for the joint.
+        actuated: Whether the joint should be actuated (per ``implicit_pd``) or left passive.
+        floating_base: Whether to attach the base to the world with a free joint instead
+            of a fixed joint, making the base itself a free-floating body.
 
     Returns:
         The populated :class:`ModelBuilder`.
@@ -1377,22 +1433,17 @@ def build_binary_cartesian_joint_test(
     bid_B = _follower_body(_builder, "base", (0.0, 0.0, z_offset))
     bid_F = _follower_body(_builder, "follower", (0.5, 0.0, z_offset))
 
-    j_fixed = _builder.add_joint_fixed(
-        label="world_to_base",
-        parent=-1,
-        child=bid_B,
-        parent_xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        child_xform=wp.transform_identity(dtype=wp.float32),
-    )
+    j_base = _add_base_joint(builder=_builder, body_id=bid_B, floating_base=floating_base, z_offset=z_offset)
+
     j_cartesian = _builder.add_joint_d6(
         label="base_to_follower_cartesian",
         parent=bid_B,
         child=bid_F,
-        linear_axes=_cartesian_axes(limits=limits, dynamic=dynamic, implicit_pd=implicit_pd),
+        linear_axes=_cartesian_axes(limits=limits, dynamic=dynamic, implicit_pd=implicit_pd, actuated=actuated),
         parent_xform=wp.transformf(0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
         child_xform=wp.transformf(-0.25, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0),
     )
-    _builder.add_articulation([j_fixed, j_cartesian])
+    _builder.add_articulation([j_base, j_cartesian])
 
     # Add body collision geometries
     _builder.add_shape_box(
@@ -1431,6 +1482,11 @@ def build_binary_cartesian_joint_test(
 
 def build_all_joints_test(
     builder: ModelBuilder | None = None,
+    *,
+    unary_joints: bool = True,
+    binary_joints: bool = True,
+    actuated: bool = True,
+    floating_base: bool = False,
     z_offset: float = 0.0,
     ground: bool = False,
 ) -> ModelBuilder:
@@ -1440,6 +1496,14 @@ def build_all_joints_test(
     Args:
         builder: An optional existing :class:`ModelBuilder` to which the joint-type
             worlds will be added. If ``None``, a new builder is created.
+        unary_joints: Whether unary joint worlds should be added to the builder.
+        binary_joints: Whether binary joint worlds should be added to the builder.
+        actuated: Whether the joint under test in each world should be actuated
+            or left passive. Does not apply to the free-joint world, whose single
+            joint is never actuated.
+        floating_base: Whether to attach the base to the world with a free joint
+            instead of a fixed joint in binary joint-type worlds, making the base
+            itself a free-floating body. Only applies to binary joint-type worlds.
         z_offset: A vertical offset to apply to the initial position of the follower
             bodies in each scene [m].
         ground: Whether to include a static ground box in each scene.
@@ -1454,21 +1518,36 @@ def build_all_joints_test(
         _builder = ModelBuilder()
 
     builder_kwargs = {"z_offset": z_offset, "ground": ground}
+    unary_kwargs = {"z_offset": z_offset, "ground": ground, "actuated": actuated}
+    binary_kwargs = {"z_offset": z_offset, "ground": ground, "actuated": actuated, "floating_base": floating_base}
 
     # Add a new world for each joint type
-    _builder.add_world(build_free_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_revolute_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_revolute_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_prismatic_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_prismatic_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_cylindrical_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_cylindrical_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_universal_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_universal_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_spherical_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_spherical_joint_test(**builder_kwargs))
-    _builder.add_world(build_unary_cartesian_joint_test(**builder_kwargs))
-    _builder.add_world(build_binary_cartesian_joint_test(**builder_kwargs))
+    if unary_joints:
+        _builder.add_world(build_free_joint_test(**builder_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_revolute_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_revolute_joint_test(**binary_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_prismatic_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_prismatic_joint_test(**binary_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_cylindrical_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_cylindrical_joint_test(**binary_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_universal_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_universal_joint_test(**binary_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_spherical_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_spherical_joint_test(**binary_kwargs))
+    if unary_joints:
+        _builder.add_world(build_unary_cartesian_joint_test(**unary_kwargs))
+    if binary_joints:
+        _builder.add_world(build_binary_cartesian_joint_test(**binary_kwargs))
 
     # Return the populated builder
     return _builder
@@ -1611,9 +1690,10 @@ def _add_shape_to_body(
     body: int,
     label: str,
     dims: tuple,
+    gap: float = 0.0,
 ) -> int:
     """Dispatch to the appropriate ``add_shape_*`` method based on the shape name."""
-    cfg = _shape_cfg_basic()
+    cfg = _shape_cfg_basic(gap=gap)
     if name == "sphere":
         return builder.add_shape_sphere(body=body, radius=dims[0], label=label, cfg=cfg)
     if name == "box":
@@ -1666,6 +1746,7 @@ def make_single_shape_pair_builder(
     ground_box: bool = False,
     ground_plane: bool = False,
     ground_z: float | None = None,
+    gap: float = 0.0,
 ) -> ModelBuilder:
     """
     Generates a :class:`ModelBuilder` for a given shape combination with specified parameters.
@@ -1696,6 +1777,8 @@ def make_single_shape_pair_builder(
         ground_plane: Whether to add a static ground plane below the bottom shape.
         ground_z: Explicit z position for the ground; if ``None``, defaults to
             the bottom shape's bottom position along z.
+        gap: Additional contact detection gap [m] applied to both shapes'
+            :class:`ModelBuilder.ShapeConfig`.
 
     Returns:
         The constructed :class:`ModelBuilder` with the specified shape combination.
@@ -1759,8 +1842,8 @@ def make_single_shape_pair_builder(
     )
 
     # Attach the corresponding collision geometries to each body
-    _add_shape_to_body(builder, bottom_name, bid0, "bottom_" + bottom_name, bottom_dims)
-    _add_shape_to_body(builder, top_name, bid1, "top_" + top_name, top_dims)
+    _add_shape_to_body(builder, bottom_name, bid0, "bottom_" + bottom_name, bottom_dims, gap=gap)
+    _add_shape_to_body(builder, top_name, bid1, "top_" + top_name, top_dims, gap=gap)
 
     # Optionally add a ground geometry below the bottom shape
     if ground_box or ground_plane:

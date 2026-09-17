@@ -50,27 +50,57 @@ Rod joints
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
-joints or modeled with another formulation. Cable centerline geometry uses
-``cable`` terminology. Per-segment orientation/twist frames, per-joint
-stiffness, and solver mechanics belong to the rod representation and use
-``rod`` terminology.
+joints or modeled with another formulation. :class:`newton.Rod` stores
+prepared centerline geometry, segment frames, topology, and optional rod
+constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
+simulation representation. Pass prepared data with
+``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
+``add_rod_graph()`` forms are deprecated compatibility APIs in Newton 1.6; use
+``newton.Rod(points, ...)`` or ``newton.Rod(points, edges=...)`` respectively.
+A rod may specify either an isotropic elastic material or a complete set of
+homogeneous stretch, shear, bend, and twist rigidities. These parameterizations
+are mutually exclusive. Direct per-joint stiffness values remain assembly controls on
+:meth:`~newton.ModelBuilder.add_rod` and override the corresponding derived
+modes; damping is configured directly during assembly. Solver mechanics
+likewise use ``rod`` terminology.
+
+For a circular elastic material, transverse shear uses the OpenUSD-compatible
+effective rigidity ``kGA`` with ``k = 0.9``. This is a finite
+shear-deformable rod, not the unshearable constraint of a strict Kirchhoff
+rod. Use section rigidities or direct joint stiffnesses when a different
+constitutive choice is required.
+
+Section rigidity describes the material and cross-section response before
+discretization (``EA``, ``kGA``, ``EI``, or ``GJ``). Each generated joint's
+stiffness is the corresponding rigidity divided by its local dual rest length,
+the mean rest length of the two adjacent segments. Material moduli are resolved
+through the same rigidity path. Automatic conversion supports ordered chains
+and non-branching explicit graphs. Cyclic explicit graphs require
+``wrap_in_articulation=False`` so every adjacency joint is retained. If needed,
+form an articulation from a spanning-tree subset of the returned joints,
+leaving closure joints outside it. Automatic material or section-rigidity
+conversion is not defined for branched graphs. At a branch,
+segment incidence alone does not determine unique parent-child joint pairings,
+and different star or spanning-tree choices can produce different discrete
+energies. Supply explicit per-joint builder stiffnesses instead.
 
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
 VBD constraint/material slots defined by
 :class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
 shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
-twist (``TWIST``, slot 3). These slots store independent per-rod stiffness
+twist (``TWIST``, slot 3). These slots store independent per-joint stiffness
 and damping through
 :attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
 Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
 they are not generalized coordinates or velocities that reconstruct the child
 body pose.
 
-Rod body poses and velocities are maximal-coordinate state stored in
+For a cable modeled as bodies connected by rod joints, body poses and velocities
+are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
 :class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update rod child body transforms from ``joint_q`` / ``joint_qd``.
+update those child-body transforms from ``joint_q`` / ``joint_qd``.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -105,6 +135,74 @@ In order to update the body poses (maximal coordinates), we need to use the forw
   
 Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
 As mentioned above, this call is not needed for generalized-coordinate solvers.
+
+Mimic joints
+------------
+
+A joint can derive its coordinates from another joint with the same position
+and velocity dimensions. The joint being derived is the *follower*. Newton
+calls the other joint the *reference joint*: it is the leader whose motion the
+follower mimics. Configure this relationship with
+:meth:`newton.ModelBuilder.set_joint_mimic`:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+  link_0 = builder.add_link()
+  link_1 = builder.add_link()
+  reference = builder.add_joint_revolute(parent=-1, child=link_0, axis=wp.vec3(0.0, 0.0, 1.0))
+  follower = builder.add_joint_revolute(parent=link_0, child=link_1, axis=wp.vec3(0.0, 0.0, 1.0))
+  builder.add_articulation([reference, follower])
+  builder.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
+
+  model = builder.finalize()
+  state = model.state()
+  state.joint_q.assign([0.5, 0.0])
+  state.joint_qd.assign([1.0, 0.0])
+  newton.eval_mimic(model, state)
+
+  assert np.allclose(state.joint_q.numpy(), [0.5, -0.75])
+  assert np.allclose(state.joint_qd.numpy(), [1.0, -2.0])
+
+Every joint has a :attr:`newton.Model.joint_mimic_joint` entry. ``-1`` means
+that the joint is independent; otherwise it stores the reference joint index.
+:attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)``. The
+same relationship, ``q_follower = offset + multiplier * q_reference``, is
+applied componentwise when the joints have more than one coordinate.
+The joint types do not need to match; only their position and velocity
+dimensions must match. For example, a one-axis D6 joint can mimic another
+one-dimensional joint.
+
+:func:`newton.eval_mimic` updates the follower coordinates in a state. For each
+follower, it reads all position and velocity coordinates of the reference joint
+and writes the corresponding follower coordinates. Independent joints are
+left unchanged. By default the function updates the input state in place; pass
+a different output state to copy the input coordinates and update the
+followers in that state instead.
+
+Mimic chains are not supported. The reference joint must be independent, and a
+joint that is already the reference for a follower cannot itself become a
+follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
+case would create a chain.
+
+Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
+maximal-coordinate body poses should reflect the mimic relationship.
+:class:`newton.solvers.SolverSemiImplicit` enforces these relationships with
+penalty spring and damping forces. Configure the global gains with
+``joint_mimic_ke`` and ``joint_mimic_kd`` on the solver. As with other explicit
+springs, stronger gains may require a smaller simulation time step.
+:class:`newton.solvers.SolverXPBD` and :class:`newton.solvers.SolverVBD` enforce
+relationships between revolute, prismatic, and D6 joints with coupled
+maximal-coordinate corrections. Both approaches act on the follower and the
+reference joint, so forces applied to the follower also affect the reference.
+VBD performs one mimic correction after each rigid-body iteration. Increase
+the solver's ``iterations`` setting when mimic relationships need tighter
+convergence.
+:class:`newton.solvers.SolverFeatherstone` applies the same relationships in
+generalized coordinates. It removes follower degrees of freedom from the
+dynamics solve and transfers their forces and inertia to the reference joint.
+:class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
+directly through its joint equality constraints.
 
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 

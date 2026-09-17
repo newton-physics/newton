@@ -60,8 +60,8 @@ class Example:
         # contact (meter scale)
         self.particle_radius = 0.005
         self.soft_body_contact_margin = 0.01
-        self.particle_self_contact_radius = 0.003
-        self.particle_self_contact_margin = 0.005
+        self.particle_self_contact_margin = 0.003
+        self.particle_self_contact_gap = 0.002
 
         self.soft_contact_ke = 2e6
         self.soft_contact_kd = 2e-1
@@ -136,7 +136,7 @@ class Example:
         # collision pipeline for soft body - robot contacts
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.soft_body_contact_margin,
+            soft_contact_gap=self.soft_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -153,12 +153,14 @@ class Example:
             self.model,
             iterations=self.iterations,
             integrate_with_external_rigid_solver=True,
-            particle_self_contact_radius=self.particle_self_contact_radius,
             particle_self_contact_margin=self.particle_self_contact_margin,
+            particle_self_contact_gap=self.particle_self_contact_gap,
             particle_enable_self_contact=False,
             particle_vertex_contact_buffer_size=32,
             particle_edge_contact_buffer_size=64,
-            particle_collision_detection_interval=-1,
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
+            },
         )
 
         self.viewer.set_model(self.model)
