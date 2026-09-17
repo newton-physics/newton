@@ -73,10 +73,12 @@ class _ViewerMeshProbe(ViewerNull):
     def __init__(self):
         super().__init__(num_frames=1)
         self.points = None
+        self.uvs = None
 
-    def log_mesh(self, _name, points, _indices, *args, **kwargs):
+    def log_mesh(self, _name, points, _indices, _normals=None, uvs=None, *args, **kwargs):
         """Capture generated mesh points."""
         self.points = points.numpy()
+        self.uvs = None if uvs is None else uvs.numpy()
 
 
 class _ViewerLegacyMeshSignatureProbe(ViewerNull):
@@ -158,6 +160,38 @@ class TestViewerGeometryBatching(unittest.TestCase):
         viewer.log_geo("/mesh", newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, geo_src=mesh)
         self.assertTrue(viewer.logged)
         np.testing.assert_allclose(viewer.uvs, authored_uvs * (0.5, 2.0) + (0.25, -0.75))
+
+    def test_solidified_mesh_duplicates_transformed_uvs(self):
+        """Keep UV rows aligned with vertices in both solidified mesh paths."""
+        authored_uvs = np.array(((0.1, 0.2), (1.1, 0.2), (0.1, 1.2)), dtype=np.float32)
+        mesh = newton.Mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [0, 1, 2],
+            uvs=authored_uvs,
+            compute_inertia=False,
+            roughness_texture=np.full((2, 2), 128, dtype=np.uint8),
+            texture_transform=((0.5, 0.0, 0.25), (0.0, 2.0, -0.75)),
+        )
+        expected_uvs = np.repeat(authored_uvs * (0.5, 2.0) + (0.25, -0.75), 2, axis=0)
+
+        for mirrored in (False, True):
+            with self.subTest(mirrored=mirrored):
+                viewer = _ViewerMeshProbe()
+                if mirrored:
+                    viewer._log_mesh_winding_flipped("/mesh", mesh, 0.01, False, hidden=False)
+                else:
+                    viewer.log_geo(
+                        "/mesh",
+                        newton.GeoType.MESH,
+                        (1.0, 1.0, 1.0),
+                        0.01,
+                        False,
+                        geo_src=mesh,
+                    )
+
+                self.assertEqual(len(viewer.points), 2 * len(mesh.vertices))
+                self.assertEqual(len(viewer.uvs), len(viewer.points))
+                np.testing.assert_allclose(viewer.uvs, expected_uvs)
 
     def test_barrel_cylinder_geometry(self):
         """Verify viewers generate the curved cylinder profile."""

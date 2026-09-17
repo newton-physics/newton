@@ -7838,8 +7838,8 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
-        self.assertIsInstance(src.roughness_texture, str)
-        self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertIsInstance(src.roughness_texture, newton.Mesh.Texture)
+        self.assertTrue(src.roughness_texture.source.endswith("roughness.png"), src.roughness_texture.source)
         self.assertEqual(src.roughness_texture_influence, 1.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -7856,9 +7856,63 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
 
         self.assertIsNone(src.texture)
-        self.assertIsInstance(src.roughness_texture, str)
-        self.assertTrue(src.roughness_texture.endswith("roughness.png"), src.roughness_texture)
+        self.assertIsInstance(src.roughness_texture, newton.Mesh.Texture)
+        self.assertTrue(src.roughness_texture.source.endswith("roughness.png"), src.roughness_texture.source)
         self.assertEqual(src.roughness_texture_influence, 1.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preview_surface_preserves_roughness_sampler(self):
+        """Preserve the connected UV texture's scalar sampling semantics."""
+        from pxr import Sdf, UsdShade
+
+        stage = self._build_custom_shader_mesh_stage(with_diffuse=False)
+        surface = UsdShade.Shader(stage.GetPrimAtPath("/M/Surface"))
+        surface.GetIdAttr().Set("UsdPreviewSurface")
+        roughness_texture = UsdShade.Shader(stage.GetPrimAtPath("/M/RoughTex"))
+        roughness_texture.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set((1.0, -1.0, 1.0, 1.0))
+        roughness_texture.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set((0.0, 1.0, 0.0, 0.0))
+        roughness_texture.CreateInput("fallback", Sdf.ValueTypeNames.Float4).Set((0.1, 0.2, 0.3, 0.4))
+        roughness_texture.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("clamp")
+        roughness_texture.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("mirror")
+        roughness_texture.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+        roughness_texture.CreateOutput("g", Sdf.ValueTypeNames.Float)
+        surface.GetInput("roughness").ConnectToSource(roughness_texture.ConnectableAPI(), "g")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        texture = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]].roughness_texture
+
+        self.assertIsInstance(texture, newton.Mesh.Texture)
+        self.assertTrue(texture.source.endswith("roughness.png"), texture.source)
+        self.assertEqual(texture.channel, "g")
+        self.assertEqual(texture.scale, (1.0, -1.0, 1.0, 1.0))
+        self.assertEqual(texture.bias, (0.0, 1.0, 0.0, 0.0))
+        np.testing.assert_allclose(texture.fallback, (0.1, 0.2, 0.3, 0.4))
+        self.assertEqual(texture.wrap_s, "clamp")
+        self.assertEqual(texture.wrap_t, "mirror")
+        self.assertEqual(texture.source_color_space, "raw")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preview_surface_connected_scalar_keeps_source_value(self):
+        """Prefer the upstream scalar over a connected destination fallback."""
+        from pxr import Sdf, UsdShade
+
+        stage = self._build_custom_shader_mesh_stage(with_diffuse=False)
+        surface = UsdShade.Shader(stage.GetPrimAtPath("/M/Surface"))
+        surface.GetIdAttr().Set("UsdPreviewSurface")
+        source = UsdShade.Shader.Define(stage, "/M/RoughnessSource")
+        source.CreateIdAttr("CustomScalar")
+        source.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+        source.CreateOutput("result", Sdf.ValueTypeNames.Float)
+        roughness = surface.GetInput("roughness")
+        roughness.Set(0.2)
+        roughness.ConnectToSource(source.ConnectableAPI(), "result")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        mesh = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+
+        self.assertAlmostEqual(mesh.roughness, 0.8)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_fallback_texture_prefers_color_output(self):
@@ -7969,8 +8023,8 @@ def Xform "Articulation" (
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsInstance(src.texture, str)
         self.assertTrue(src.texture.endswith("albedo.png"), src.texture)
-        self.assertIsInstance(src.roughness_texture, str)
-        self.assertTrue(src.roughness_texture.endswith("r.png"), src.roughness_texture)
+        self.assertIsInstance(src.roughness_texture, newton.Mesh.Texture)
+        self.assertTrue(src.roughness_texture.source.endswith("r.png"), src.roughness_texture.source)
         self.assertEqual(src.roughness_texture_influence, 0.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -7989,6 +8043,22 @@ def Xform "Articulation" (
 
         self.assertAlmostEqual(src.roughness, 0.8)
         self.assertAlmostEqual(src.roughness_texture_influence, 0.25)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_custom_texture_keeps_legacy_color_fallback(self):
+        """Keep importing unrecognized non-roughness Material texture inputs."""
+        from pxr import Sdf, UsdShade
+
+        stage = self._build_mdl_shader_mesh_stage({})
+        material = UsdShade.Material(stage.GetPrimAtPath("/M"))
+        material.CreateInput("custom_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("albedo.png"))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        mesh = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+
+        self.assertIsInstance(mesh.texture, str)
+        self.assertTrue(mesh.texture.endswith("albedo.png"), mesh.texture)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mdl_direct_asset_ignores_non_color_maps(self):

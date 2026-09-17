@@ -259,7 +259,7 @@ class ViewerRerun(ViewerBase):
         dynamic: bool = False,
         opacity: float | None = None,
         *,
-        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture: newton.Mesh.Texture | np.ndarray | str | None = None,
         roughness_texture_influence: float = 1.0,
     ):
         """
@@ -276,13 +276,11 @@ class ViewerRerun(ViewerBase):
             backface_culling: Whether to enable backface culling (unused).
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
-            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
-                smooth, ``1`` is fully rough.
-            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
-                is metal.
+            roughness: Surface roughness in ``[0, 1]`` (unused by ViewerRerun).
+            metallic: Metallicity in ``[0, 1]`` (unused by ViewerRerun).
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
-            roughness_texture: Optional linear roughness texture path/URL or image array (unused).
+            roughness_texture: Optional linear roughness texture (unused by ViewerRerun).
             roughness_texture_influence: Blend weight between scalar and texture roughness (unused).
         """
         name = self._qualify(name)

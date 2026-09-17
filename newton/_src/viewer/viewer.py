@@ -46,15 +46,23 @@ _DEFAULT_LAYER_ID = "__default__"
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
 
-def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
-    """Return authored UVs with the mesh's affine texture transform applied."""
+def _mesh_texture_uvs(mesh: newton.Mesh, *, solidified: bool = False) -> np.ndarray | None:
+    """Return transformed UVs aligned with the backend mesh vertices."""
     uvs = mesh._uvs
+    if uvs is None:
+        return None
+
     texture_transform = mesh.texture_transform
     has_texture = mesh.texture is not None or mesh.roughness_texture is not None
-    if uvs is None or not has_texture or texture_transform == ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
-        return uvs
-    transform = np.asarray(texture_transform, dtype=uvs.dtype)
-    return uvs @ transform[:, :2].T + transform[:, 2]
+    if has_texture and texture_transform != ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        transform = np.asarray(texture_transform, dtype=uvs.dtype)
+        uvs = uvs @ transform[:, :2].T + transform[:, 2]
+
+    # solidify_mesh interleaves the positive and negative extrusion of each
+    # source vertex, so duplicate UV rows in the same order.
+    if solidified:
+        uvs = np.repeat(uvs, 2, axis=0)
+    return uvs
 
 
 class Layer:
@@ -1701,7 +1709,7 @@ class ViewerBase(ABC):
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
 
-            transformed_uvs = _mesh_texture_uvs(geo_src)
+            transformed_uvs = _mesh_texture_uvs(geo_src, solidified=not geo_is_solid)
             if transformed_uvs is not None:
                 uvs = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
@@ -1820,7 +1828,7 @@ class ViewerBase(ABC):
         dynamic: bool = False,
         opacity: float | None = None,
         *,
-        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture: newton.Mesh.Texture | np.ndarray | str | None = None,
         roughness_texture_influence: float = 1.0,
     ):
         """
@@ -1848,7 +1856,8 @@ class ViewerBase(ABC):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
-            roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture: Optional linear roughness texture path, HTTP(S)
+                URL, image array, or :class:`newton.Mesh.Texture`.
             roughness_texture_influence: Blend weight between ``roughness`` and
                 ``roughness_texture`` in [0, 1]. The effective roughness is
                 ``(1 - influence) * roughness + influence * roughness_texture``.
@@ -2404,7 +2413,7 @@ class ViewerBase(ABC):
             normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
 
         uvs_wp = None
-        transformed_uvs = _mesh_texture_uvs(src)
+        transformed_uvs = _mesh_texture_uvs(src, solidified=not is_solid)
         if transformed_uvs is not None:
             uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 

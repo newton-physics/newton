@@ -8,6 +8,7 @@ import os
 import tempfile
 import warnings
 from typing import Any
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -301,7 +302,7 @@ class ViewerUSD(ViewerBase):
         dynamic: bool = False,
         opacity: float | None = None,
         *,
-        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture: newton.Mesh.Texture | np.ndarray | str | None = None,
         roughness_texture_influence: float = 1.0,
     ):
         """
@@ -324,7 +325,8 @@ class ViewerUSD(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
-            roughness_texture: Optional linear roughness texture path/URL or image array.
+            roughness_texture: Optional linear roughness texture path, HTTP(S)
+                URL, image array, or :class:`newton.Mesh.Texture`.
             roughness_texture_influence: Blend weight between ``roughness`` and
                 ``roughness_texture`` in [0, 1]. The effective roughness is
                 ``(1 - influence) * roughness + influence * roughness_texture``.
@@ -357,8 +359,9 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np, self._frame_index)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
-        valid_texture = texture is not None and uvs is not None
-        valid_roughness_texture = roughness_texture is not None and uvs is not None
+        valid_uvs = uvs is not None and len(uvs) == len(points)
+        valid_texture = texture is not None and valid_uvs
+        valid_roughness_texture = roughness_texture is not None and valid_uvs
         self._mesh_appearance[name] = {
             "texture": texture if valid_texture else None,
             "roughness_texture": roughness_texture if valid_roughness_texture else None,
@@ -378,7 +381,7 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetNormalsAttr().Set([], self._frame_index)
 
         # Set UVs if provided
-        if uvs is not None:
+        if valid_uvs:
             uvs_np = uvs.numpy().astype(np.float32) if isinstance(uvs, wp.array) else np.asarray(uvs, dtype=np.float32)
             pv_api = UsdGeom.PrimvarsAPI(mesh_prim)
             st_pv = pv_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
@@ -423,7 +426,9 @@ class ViewerUSD(ViewerBase):
 
     def _resolve_texture_path(self, mesh_name: str, texture, *, texture_role: str = "color") -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""
-        if isinstance(texture, str):
+        if isinstance(texture, newton.Mesh.Texture):
+            texture = texture.source
+        if isinstance(texture, str) and urlparse(texture).scheme not in {"http", "https", "file"}:
             return os.path.abspath(texture)
 
         cache_key = (mesh_name, texture_role)
@@ -484,7 +489,7 @@ class ViewerUSD(ViewerBase):
         opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
-        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture: newton.Mesh.Texture | np.ndarray | str | None = None,
         roughness_texture_influence: float = 1.0,
     ):
         """Return a cached UsdPreviewSurface material for the requested appearance."""
@@ -492,9 +497,16 @@ class ViewerUSD(ViewerBase):
         from pxr import UsdShade
 
         tex_path = self._resolve_texture_path(mesh_name, texture) if texture is not None else None
+        roughness_sampler = None
+        if roughness_texture is not None:
+            roughness_sampler = (
+                roughness_texture
+                if isinstance(roughness_texture, newton.Mesh.Texture)
+                else newton.Mesh.Texture(roughness_texture)
+            )
         roughness_tex_path = (
-            self._resolve_texture_path(mesh_name, roughness_texture, texture_role="roughness")
-            if roughness_texture is not None
+            self._resolve_texture_path(mesh_name, roughness_sampler, texture_role="roughness")
+            if roughness_sampler is not None
             else None
         )
         color_value = self._material_color(color)
@@ -509,6 +521,7 @@ class ViewerUSD(ViewerBase):
             "preview",
             os.path.normcase(tex_path) if tex_path is not None else None,
             os.path.normcase(roughness_tex_path) if roughness_tex_path is not None else None,
+            roughness_sampler._sampling_key() if roughness_sampler is not None else None,
             tuple(self._material_key_value(v) for v in color_value),
             self._material_key_value(opacity_value),
             self._material_key_value(roughness_value),
@@ -563,17 +576,29 @@ class ViewerUSD(ViewerBase):
             roughness_reader = UsdShade.Shader.Define(self.stage, f"{mat_path}/RoughnessTexture")
             roughness_reader.CreateIdAttr("UsdUVTexture")
             roughness_reader.CreateInput("file", _Sdf.ValueTypeNames.Asset).Set(roughness_tex_path)
-            roughness_reader.CreateInput("sourceColorSpace", _Sdf.ValueTypeNames.Token).Set("raw")
-            roughness_reader.CreateInput("wrapS", _Sdf.ValueTypeNames.Token).Set("repeat")
-            roughness_reader.CreateInput("wrapT", _Sdf.ValueTypeNames.Token).Set("repeat")
-            roughness_reader.CreateInput("scale", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_influence_value))
-            roughness_bias = (1.0 - roughness_influence_value) * roughness_value
-            roughness_reader.CreateInput("bias", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(roughness_bias))
-            roughness_reader.CreateOutput("r", _Sdf.ValueTypeNames.Float)
+            roughness_reader.CreateInput("sourceColorSpace", _Sdf.ValueTypeNames.Token).Set(
+                roughness_sampler.source_color_space
+            )
+            roughness_reader.CreateInput("wrapS", _Sdf.ValueTypeNames.Token).Set(roughness_sampler.wrap_s)
+            roughness_reader.CreateInput("wrapT", _Sdf.ValueTypeNames.Token).Set(roughness_sampler.wrap_t)
+            roughness_reader.CreateInput("fallback", _Sdf.ValueTypeNames.Float4).Set(
+                Gf.Vec4f(*roughness_sampler.fallback)
+            )
+            channel_index = {"r": 0, "g": 1, "b": 2, "a": 3}[roughness_sampler.channel]
+            roughness_scale = list(roughness_sampler.scale)
+            roughness_bias = list(roughness_sampler.bias)
+            roughness_scale[channel_index] *= roughness_influence_value
+            roughness_bias[channel_index] = (
+                roughness_influence_value * roughness_bias[channel_index]
+                + (1.0 - roughness_influence_value) * roughness_value
+            )
+            roughness_reader.CreateInput("scale", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(*roughness_scale))
+            roughness_reader.CreateInput("bias", _Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(*roughness_bias))
+            roughness_reader.CreateOutput(roughness_sampler.channel, _Sdf.ValueTypeNames.Float)
             roughness_reader.CreateInput("st", _Sdf.ValueTypeNames.Float2).ConnectToSource(
                 st_reader.ConnectableAPI(), "result"
             )
-            roughness_input.ConnectToSource(roughness_reader.ConnectableAPI(), "r")
+            roughness_input.ConnectToSource(roughness_reader.ConnectableAPI(), roughness_sampler.channel)
 
         self._preview_materials[key] = material
         return material

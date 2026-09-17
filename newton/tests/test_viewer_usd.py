@@ -206,13 +206,110 @@ class TestViewerUSD(unittest.TestCase):
         roughness_shader = UsdShade.Shader(source[0].GetPrim())
         self.assertEqual(roughness_shader.GetIdAttr().Get(), "UsdUVTexture")
         self.assertEqual(roughness_shader.GetInput("sourceColorSpace").Get(), "raw")
-        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), np.full(4, 0.25))
-        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), np.full(4, 0.6))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), (0.25, 1.0, 1.0, 1.0))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), (0.6, 0.0, 0.0, 0.0))
         diffuse_path = self._logged_texture_path(viewer, "/pbr_mesh")
         roughness_asset = roughness_shader.GetInput("file").Get()
         roughness_path = roughness_asset.path if hasattr(roughness_asset, "path") else str(roughness_asset)
         self.assertNotEqual(diffuse_path, roughness_path)
         self.assertTrue(os.path.isfile(roughness_path))
+
+    def test_log_mesh_preserves_roughness_sampler(self):
+        """Preserve the selected channel and standard UV-texture sampling inputs."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=wp.vec2)
+        roughness_texture = newton.Mesh.Texture(
+            np.full((2, 2, 4), 128, dtype=np.uint8),
+            channel="g",
+            scale=(1.0, -1.0, 1.0, 1.0),
+            bias=(0.0, 1.0, 0.0, 0.0),
+            fallback=(0.1, 0.2, 0.3, 0.4),
+            wrap_s="clamp",
+            wrap_t="mirror",
+            source_color_space="raw",
+        )
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(
+            "/sampled_roughness",
+            points,
+            indices,
+            uvs=uvs,
+            roughness=0.8,
+            roughness_texture=roughness_texture,
+            roughness_texture_influence=0.25,
+        )
+
+        surface = self._get_bound_preview_surface(viewer.stage.GetPrimAtPath("/root/sampled_roughness"))
+        source = surface.GetInput("roughness").GetConnectedSource()
+        self.assertEqual(str(source[1]), "g")
+        texture = UsdShade.Shader(source[0].GetPrim())
+        np.testing.assert_allclose(texture.GetInput("scale").Get(), (1.0, -0.25, 1.0, 1.0))
+        np.testing.assert_allclose(texture.GetInput("bias").Get(), (0.0, 0.85, 0.0, 0.0))
+        np.testing.assert_allclose(texture.GetInput("fallback").Get(), (0.1, 0.2, 0.3, 0.4))
+        self.assertEqual(texture.GetInput("wrapS").Get(), "clamp")
+        self.assertEqual(texture.GetInput("wrapT").Get(), "mirror")
+        self.assertEqual(texture.GetInput("sourceColorSpace").Get(), "raw")
+
+    def test_log_mesh_disables_textures_for_mismatched_uv_count(self):
+        """Do not author vertex texture sampling with the wrong number of UVs."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0.0, 0.0], [1.0, 0.0]], dtype=wp.vec2)
+        texture = np.full((2, 2, 4), 128, dtype=np.uint8)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(
+            "/invalid_uvs",
+            points,
+            indices,
+            uvs=uvs,
+            texture=texture,
+            roughness_texture=texture,
+        )
+
+        prim = viewer.stage.GetPrimAtPath("/root/invalid_uvs")
+        material, _binding = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        self.assertFalse(material)
+        self.assertFalse(UsdGeom.PrimvarsAPI(prim).GetPrimvar("st"))
+
+    def test_log_mesh_localizes_http_roughness_texture(self):
+        """Download an HTTP texture before authoring it into a local USD stage."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=wp.vec2)
+        pixels = np.full((2, 2), 128, dtype=np.uint8)
+
+        viewer.begin_frame(0.0)
+        with mock.patch("newton._src.utils.texture.load_texture", return_value=pixels) as load_texture:
+            viewer.log_mesh(
+                "/remote_roughness",
+                points,
+                indices,
+                uvs=uvs,
+                roughness_texture="https://example.com/roughness.png",
+            )
+
+        load_texture.assert_called_once_with("https://example.com/roughness.png")
+        surface = self._get_bound_preview_surface(viewer.stage.GetPrimAtPath("/root/remote_roughness"))
+        source = surface.GetInput("roughness").GetConnectedSource()
+        texture = UsdShade.Shader(source[0].GetPrim())
+        asset = texture.GetInput("file").Get()
+        path = asset.path if hasattr(asset, "path") else str(asset)
+        self.assertTrue(os.path.isfile(path), path)
 
     def test_model_mesh_forwards_roughness_texture(self):
         """Forward a model mesh's roughness texture into its rendered instance."""
@@ -246,8 +343,8 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(str(source[1]), "r")
         roughness_shader = UsdShade.Shader(source[0].GetPrim())
         self.assertEqual(roughness_shader.GetIdAttr().Get(), "UsdUVTexture")
-        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), np.full(4, 0.25))
-        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), np.full(4, 0.6))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("scale").Get()), (0.25, 1.0, 1.0, 1.0))
+        np.testing.assert_allclose(np.asarray(roughness_shader.GetInput("bias").Get()), (0.6, 0.0, 0.0, 0.0))
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""

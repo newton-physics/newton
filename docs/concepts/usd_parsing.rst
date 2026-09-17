@@ -419,6 +419,14 @@ Texture inputs are handled similarly at the color-texture boundary. Newton reads
 the file attribute, and converts linear/raw color textures to display/sRGB when
 they are loaded. Display/sRGB textures stay display-encoded.
 
+Roughness texture pixels are not eagerly converted to display/sRGB. For
+standard ``UsdUVTexture`` connections, Newton retains the selected scalar
+channel together with scale, bias, fallback, wrap, and source color-space
+inputs. Direct OmniPBR roughness-map inputs use the red channel and preserve
+``reflection_roughness_texture_influence``; when that influence is not
+authored, OmniPBR's disabled-by-default value of ``0`` is used. See
+:ref:`viewer-material-support` for renderer support and fallback behavior.
+
 Mass and Inertia Precedence
 ---------------------------
 

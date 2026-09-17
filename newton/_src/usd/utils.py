@@ -1513,7 +1513,8 @@ def get_mesh(
             backward compatibility unless ``root_path`` is provided.
         load_visual_materials: If True, resolve the mesh's visual material and
             populate :attr:`newton.Mesh.color`, :attr:`newton.Mesh.texture`,
-            :attr:`newton.Mesh.metallic`, and :attr:`newton.Mesh.roughness`.
+            :attr:`newton.Mesh.metallic`, :attr:`newton.Mesh.roughness`, and
+            :attr:`newton.Mesh.roughness_texture`.
             Resolution also covers materials bound through an instance
             prototype or a ``UsdGeom.Subset`` child, and the ``displayColor``
             primvar fallback. If False, those attributes keep their
@@ -2854,8 +2855,12 @@ def _resolve_uv_texture_asset(
     prim: Usd.Prim,
     *,
     is_color: bool,
-) -> str | np.ndarray | None:
+    channel: str = "r",
+) -> Mesh.Texture | str | np.ndarray | None:
     """Resolve the file authored on a ``UsdUVTexture`` shader."""
+    channel = str(channel).lower()
+    if not is_color and channel not in {"r", "g", "b", "a"}:
+        return None
     file_input = shader.GetInput("file")
     if not file_input:
         return None
@@ -2864,7 +2869,19 @@ def _resolve_uv_texture_asset(
     asset = asset_attr.Get()
     if is_color:
         return _resolve_color_texture_asset(asset, prim, asset_attr, shader)
-    return _resolve_asset_path(asset, prim, asset_attr)
+    source = _resolve_asset_path(asset, prim, asset_attr)
+    if source is None:
+        return None
+    return Mesh.Texture(
+        source,
+        channel=channel,
+        scale=_coerce_vec4(_get_input_value(shader, ("scale",))) or (1.0, 1.0, 1.0, 1.0),
+        bias=_coerce_vec4(_get_input_value(shader, ("bias",))) or (0.0, 0.0, 0.0, 0.0),
+        fallback=_coerce_vec4(_get_input_value(shader, ("fallback",))) or (0.0, 0.0, 0.0, 1.0),
+        wrap_s=str(_get_input_value(shader, ("wrapS",)) or "useMetadata"),
+        wrap_t=str(_get_input_value(shader, ("wrapT",)) or "useMetadata"),
+        source_color_space=_get_texture_source_color_space(shader, asset_attr) or "auto",
+    )
 
 
 def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | np.ndarray | None:
@@ -3049,6 +3066,19 @@ def _coerce_vec2(value: Any) -> tuple[float, float] | None:
     return (float(result[0]), float(result[1]))
 
 
+def _coerce_vec4(value: Any) -> tuple[float, float, float, float] | None:
+    """Coerce a value to a finite four-component tuple, or ``None``."""
+    if value is None:
+        return None
+    try:
+        result = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if result.size != 4 or not np.all(np.isfinite(result)):
+        return None
+    return tuple(float(component) for component in result)
+
+
 def _extract_usd_transform2d(
     texture_shader: UsdShade.Shader,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
@@ -3172,17 +3202,18 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             if properties["texture_transform"] is None and roughness_transform is not None:
                 properties["texture_transform"] = roughness_transform
 
-            # Preserve the authored input value as the renderer's fallback when
-            # the texture cannot be sampled.
-            properties["roughness"] = _coerce_float(roughness_input.Get())
             source = roughness_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
+            roughness_value = _get_input_value(
+                source_shader,
+                ("roughness", "roughness_constant", "reflection_roughness_constant"),
+            )
+            properties["roughness"] = _coerce_float(roughness_value)
             if properties["roughness"] is None:
-                roughness_value = _get_input_value(
-                    source_shader,
-                    ("roughness", "roughness_constant", "reflection_roughness_constant"),
-                )
-                properties["roughness"] = _coerce_float(roughness_value)
+                # Texture connections have no upstream scalar. Keep the
+                # destination value as their renderer fallback, but preserve
+                # the historical upstream-first behavior for scalar graphs.
+                properties["roughness"] = _coerce_float(roughness_input.Get())
             if properties["roughness"] is None and properties["roughness_texture"] is None:
                 warnings.warn(
                     "Could not resolve connected roughness input; using the renderer default.",
@@ -3238,7 +3269,7 @@ def _default_roughness_texture_influence(input_name: str) -> float:
 def _roughness_texture_from_input(
     surface_input: UsdShade.Input,
     prim: Usd.Prim,
-) -> tuple[str | np.ndarray | None, tuple[tuple[float, float, float], tuple[float, float, float]] | None]:
+) -> tuple[Mesh.Texture | None, tuple[tuple[float, float, float], tuple[float, float, float]] | None]:
     """Return a linear roughness texture and its standard UV transform."""
     if not _is_roughness_texture_input_name(surface_input.GetBaseName()):
         return None, None
@@ -3255,7 +3286,12 @@ def _roughness_texture_from_input(
             is_uv_texture = False
         if not is_uv_texture:
             continue
-        texture = _resolve_uv_texture_asset(source_shader, prim, is_color=False)
+        texture = _resolve_uv_texture_asset(
+            source_shader,
+            prim,
+            is_color=False,
+            channel=str(attr.GetBaseName()),
+        )
         if texture is not None:
             return texture, _extract_usd_transform2d(source_shader)
 
@@ -3267,7 +3303,7 @@ def _roughness_texture_from_input(
         asset = surface_input.Get()
         texture = _resolve_asset_path(asset, prim, surface_input.GetAttr())
         if texture is not None:
-            return texture, None
+            return Mesh.Texture(texture), None
     return None, None
 
 
@@ -3430,8 +3466,11 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
                 roughness_texture_input_name = name
                 continue
 
-        is_generic_color_texture = name_lower in ("texture", "file")
-        if properties["texture"] is None and (is_generic_color_texture or _is_color_texture_input_name(name)):
+        # Preserve the legacy Material-input fallback after routing recognized
+        # roughness maps above. Shader inputs remain name-disambiguated because
+        # their normal/metallic maps are common and should not become albedo.
+        is_legacy_color_texture = "texture" in name_lower or "file" in name_lower
+        if properties["texture"] is None and is_legacy_color_texture:
             texture = _resolve_color_texture_asset(value, prim, inp.GetAttr())
             if texture is not None:
                 properties["texture"] = texture

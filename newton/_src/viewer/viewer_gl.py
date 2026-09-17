@@ -997,7 +997,7 @@ class ViewerGL(ViewerBase):
         dynamic: bool = False,
         opacity: float | None = None,
         *,
-        roughness_texture: np.ndarray | str | None = None,
+        roughness_texture: nt.Mesh.Texture | np.ndarray | str | None = None,
         roughness_texture_influence: float = 1.0,
     ):
         """
@@ -1020,8 +1020,9 @@ class ViewerGL(ViewerBase):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
-            roughness_texture: Optional linear roughness texture path/URL or image array (unused).
-            roughness_texture_influence: Blend weight between scalar and texture roughness (unused).
+            roughness_texture: Optional linear roughness texture. ViewerGL does
+                not sample it and renders with the scalar ``roughness`` fallback.
+            roughness_texture_influence: Texture blend weight (unused by ViewerGL).
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
