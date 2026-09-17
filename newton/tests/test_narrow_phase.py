@@ -2382,6 +2382,7 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             device="cuda:0",
         )
 
+        self.assertEqual(narrow_phase.split_convex_block_dim, 128)
         self.assertEqual(narrow_phase.split_convex_block_dim, narrow_phase.block_dim)
         self.assertEqual(
             narrow_phase.split_convex_total_num_threads,
