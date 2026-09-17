@@ -104,10 +104,11 @@ def _shift_jacobian_to_tool_kernel(
     ],  # (articulation_count, max_links*6, max_dofs) columns are twists about each link's COM point, in world coords
     body_q: wp.array[wp.transform],  # (body_count,) coordinate_change_world_from_body per body
     body_com_body: wp.array[wp.vec3],  # (body_count,) COM position, in the body's own local frame
-    tool_body: wp.array[wp.int32],  # (robot_count,) -> body index of each robot's tool site
-    coordinate_change_body_from_tool: wp.array[wp.transform],  # (robot_count,) tool site's body-local transform
+    tool_body: wp.array[wp.int32],  # (frame_count,) -> body index of each frame's tool site
+    coordinate_change_body_from_tool: wp.array[wp.transform],  # (frame_count,) tool site's body-local transform
+    frame_robot_idx: wp.array[wp.int32],  # (frame_count,) -> owning robot (packed slot)
     robot_articulation: wp.array[wp.int32],  # (robot_count,) -> articulation index into jacobian_com_world
-    robot_link_idx: wp.array[wp.int32],  # (robot_count,) -> row-block index of the tool's link, within its articulation
+    robot_link_idx: wp.array[wp.int32],  # (frame_count,) -> row-block index of the tool's link, within its articulation
     articulation_dof_idx_of_padded_dof_idx: wp.array2d[
         wp.int32
     ],  # (robot_count, max_dofs) padded_dof_idx -> articulation_dof_idx, jacobian_com_world's own column numbering
@@ -115,27 +116,30 @@ def _shift_jacobian_to_tool_kernel(
     # outputs
     jacobian_tool_world: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    ],  # (frame_count, 6, max_dofs) columns are twists about each frame's tool point, in world coords
 ):
-    """Shift a COM-referenced Jacobian to the tool point, one output column at a time.
+    """Shift a COM-referenced Jacobian to each frame's tool point, one output column at a time.
 
     A controlled robot's DOFs are not necessarily the first columns of its
     own articulation's Jacobian -- ``joints`` may select a non-prefix subset,
     or skip an uncontrolled joint interspersed among controlled ones -- so
     ``articulation_dof_idx_of_padded_dof_idx`` remaps each padded output
     column (``padded_dof_idx``) to the actual column ``jacobian_com_world``
-    stores it at (``articulation_dof_idx``).
+    stores it at (``articulation_dof_idx``). Several frames of the same
+    robot share that robot's own DOF layout, so stacking their output rows
+    needs no special-casing of shared columns.
     """
-    robot_idx, padded_dof_idx = wp.tid()
+    frame_idx, padded_dof_idx = wp.tid()
+    robot_idx = frame_robot_idx[frame_idx]
     if padded_dof_idx >= controlled_dofs_per_robot[robot_idx]:
         return
     articulation_idx = robot_articulation[robot_idx]
-    link_row_start = robot_link_idx[robot_idx] * 6
+    link_row_start = robot_link_idx[frame_idx] * 6
     articulation_dof_idx = articulation_dof_idx_of_padded_dof_idx[robot_idx, padded_dof_idx]
 
-    tool_body_idx = tool_body[robot_idx]
+    tool_body_idx = tool_body[frame_idx]
     coordinate_change_world_from_body = body_q[tool_body_idx]
-    tool_pose_world = coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
+    tool_pose_world = coordinate_change_world_from_body * coordinate_change_body_from_tool[frame_idx]
     tool_point_world = wp.transform_get_translation(tool_pose_world)
     body_com_world = wp.transform_point(coordinate_change_world_from_body, body_com_body[tool_body_idx])
     com_to_tool_offset_world = tool_point_world - body_com_world
@@ -153,7 +157,7 @@ def _shift_jacobian_to_tool_kernel(
         wp.spatial_bottom(jacobian_column_com_world),
     )
     for row in range(6):
-        jacobian_tool_world[robot_idx, row, padded_dof_idx] = jacobian_column_tool_world[row]
+        jacobian_tool_world[frame_idx, row, padded_dof_idx] = jacobian_column_tool_world[row]
 
 
 @wp.kernel
