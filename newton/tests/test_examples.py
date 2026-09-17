@@ -96,12 +96,12 @@ _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
-_GRAPH_CAPTURE_OUTPUT_RE = r"\[INFO\] Using graph capture\n?"
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
+_GRAPH_CAPTURE_OUTPUT_RE = r"\[INFO\] Using graph capture\n?"
 
 
 def _material_binding_warning_re(prim_root: str) -> str:
