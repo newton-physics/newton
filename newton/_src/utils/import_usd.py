@@ -491,6 +491,13 @@ def parse_usd(
         rejected because one scalar width cannot preserve a spherical particle
         under that transform.
 
+        Visual meshes load or generate normals through :func:`newton.usd.get_mesh`.
+        Sharp shading can duplicate vertices in :attr:`Model.shape_source`,
+        including for untextured meshes. Collision-only loads do not request
+        normals, and visual expansion preserves source mass properties. Use
+        :func:`newton.usd.get_mesh` with ``load_normals=False`` when source
+        vertex sharing is required for geometry processing.
+
         The returned mapping has the following entries:
 
         .. list-table::
@@ -800,15 +807,7 @@ def parse_usd(
         if key in mesh_cache:
             return mesh_cache[key]
 
-        # A mesh loaded with more data is a superset of simpler representations.
-        for cached_key in [
-            (prim_path, True, True),
-            (prim_path, load_uvs, True),
-            (prim_path, True, load_normals),
-        ]:
-            if cached_key != key and cached_key in mesh_cache:
-                return mesh_cache[cached_key]
-
+        # Normal/UV expansion can change topology, so cache each representation separately.
         mesh = usd.get_mesh(
             prim,
             load_uvs=load_uvs,
@@ -1076,17 +1075,10 @@ def parse_usd(
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
         texture = material_props.get("texture")
-        normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
-        has_normals = bool(normals_primvar and normals_primvar.HasValue())
-        if not has_normals:
-            normals_attr = UsdGeom.Mesh(prim).GetNormalsAttr()
-            has_normals = bool(normals_attr and normals_attr.HasValue())
-
-        load_visual_attributes = texture is not None or has_normals
         mesh = _get_mesh_cached(
             prim,
             load_uvs=texture is not None,
-            load_normals=load_visual_attributes,
+            load_normals=True,
         ).copy(recompute_inertia=False)
         _apply_visual_material(mesh, material_props)
         if mesh.texture is not None and mesh.uvs is None:
@@ -1185,7 +1177,6 @@ def parse_usd(
             is_solid=mesh.is_solid,
             maxhullvert=mesh.maxhullvert,
         )
-        submesh._subdivision_scheme = mesh._subdivision_scheme
 
         _apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
@@ -3561,6 +3552,7 @@ def parse_usd(
         density: float,
         is_solid: bool,
         thickness: float,
+        mesh_source: Mesh | None = None,
     ):
         """Record collider mass information used by the rigid-body fallback callback."""
         body_path = str(shape_spec.rigidBody)
@@ -3589,7 +3581,9 @@ def parse_usd(
         elif shape_type == UsdPhysics.ObjectType.MeshShape:
             shape_geo_type = GeoType.MESH
             shape_scale = wp.vec3(*shape_spec.meshScale)
-            shape_src = _get_mesh_cached(prim)
+            # Visual meshes retain source mass properties; reuse those without
+            # treating expanded visual topology as a geometry-only cache entry.
+            shape_src = mesh_source if mesh_source is not None else _get_mesh_cached(prim)
         if shape_geo_type is None:
             return
 
@@ -4156,6 +4150,7 @@ def parse_usd(
                     density=shape_density,
                     is_solid=shape_is_solid,
                     thickness=inertia_margin,
+                    mesh_source=mesh if key == UsdPhysics.ObjectType.MeshShape else None,
                 )
 
                 _collect_filtered_pairs(prim)

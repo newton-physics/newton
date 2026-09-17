@@ -1180,7 +1180,7 @@ def _get_mesh_from_source(
     uvs = np.concatenate(uvs_parts, axis=0) if all_have_uvs else None
 
     material_source = source_meshes[0] if len(source_meshes) == 1 else None
-    mesh_out = Mesh(
+    return Mesh(
         vertices,
         indices,
         normals=normals,
@@ -1195,10 +1195,6 @@ def _get_mesh_from_source(
         if material_source is not None
         else ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
     )
-    subdivision_schemes = {source_mesh._subdivision_scheme for source_mesh in source_meshes}
-    if len(subdivision_schemes) == 1:
-        mesh_out._subdivision_scheme = subdivision_schemes.pop()
-    return mesh_out
 
 
 def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Shader | None:
@@ -1431,6 +1427,14 @@ def get_mesh(
     ``UsdGeom.Mesh`` prims under ``root_path`` are merged into one
     :class:`newton.Mesh` with authored transforms applied relative to that root.
 
+    With ``load_normals=True``, shading is resolved to per-vertex normals on
+    the triangulated mesh. Missing normals are faceted for ``none`` and
+    ``bilinear`` subdivision schemes and smooth otherwise. Faceted shading
+    duplicates triangle vertices. Source subdivision control surfaces are
+    not evaluated or retained; viewers receive final triangles and normals.
+    Use ``load_normals=False`` for geometry-only loading without normal-driven
+    vertex splitting.
+
     Example:
 
         .. testcode::
@@ -1453,12 +1457,13 @@ def get_mesh(
     Args:
         source: USD mesh prim, stage, file path, or URL to load the mesh from.
         prim: Legacy keyword alias for ``source`` when loading a USD prim.
-        load_normals: Whether to load authored normals and convert them to the
-            per-vertex representation used by :class:`Mesh`.
+        load_normals: Whether to load authored normals or generate missing
+            normals and convert them to the per-vertex representation used by
+            :class:`Mesh`. This may split vertices to represent sharp shading.
         load_uvs: Whether to load the UVs.
         maxhullvert: The maximum number of vertices for the convex hull approximation.
         face_varying_normal_conversion:
-            This argument specifies how to convert "faceVarying" normals
+            This argument specifies how to convert authored "uniform" or "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
             If ``load_normals`` is False, this argument is ignored.
             The options are summarized below:
@@ -1476,11 +1481,12 @@ def get_mesh(
                 * - ``"vertex_splitting"``
                   - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
 
-        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
+        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on authored uniform or faceVarying normals when ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
         preserve_facevarying_uvs: If True, keep faceVarying UVs in their
             original corner layout and avoid UV-driven vertex splitting. The
-            returned mesh keeps its original topology. This is useful when the
+            returned mesh can still split vertices for normals when
+            ``load_normals=True``. This is useful when the
             caller needs the original UV indexing (e.g., panel-space cloth).
         return_uv_indices: If True, return a tuple ``(mesh, uv_indices)``
             where ``uv_indices`` is a flattened triangle index buffer for the
@@ -1614,8 +1620,6 @@ def get_mesh(
         if normal_indices is not None and len(normal_indices) > 0:
             normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
 
-        normal_conversion = face_varying_normal_conversion
-        normal_splitting_threshold_deg = vertex_splitting_angle_threshold_deg
         if normals_interpolation == UsdGeom.Tokens.constant:
             if len(normals) != 1:
                 raise ValueError(f"Length of constant normals ({len(normals)}) must be 1 for mesh {prim_path}")
@@ -1628,10 +1632,6 @@ def get_mesh(
                 )
             normals = np.repeat(normals, np.asarray(counts, dtype=np.int32), axis=0)
             normals_interpolation = UsdGeom.Tokens.faceVarying
-            # Uniform normals are explicitly constant per face. Split at every
-            # disagreement rather than applying the face-varying smoothing threshold.
-            normal_conversion = "vertex_splitting"
-            normal_splitting_threshold_deg = 0.0
         elif normals_interpolation in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying):
             if len(normals) != len(points):
                 raise ValueError(
@@ -1651,7 +1651,7 @@ def get_mesh(
 
             V = len(points)
             accum = np.zeros((V, 3), dtype=np.float64)
-            if normal_conversion == "vertex_splitting":
+            if face_varying_normal_conversion == "vertex_splitting":
                 C = len(indices)
                 Nfv = np.asarray(normals_fv, dtype=np.float64)
                 if indices.shape[0] != Nfv.shape[0]:
@@ -1689,13 +1689,13 @@ def get_mesh(
                         corner_uvs = corner_uvs[indices]
 
                 points, indices, normals, uvs = _split_corners_into_vertices(
-                    points, indices, Ndir, corner_uvs, normal_splitting_threshold_deg
+                    points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
                 )
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
                 did_split_vertices = True
-            elif normal_conversion == "vertex_averaging":
+            elif face_varying_normal_conversion == "vertex_averaging":
                 # basic averaging
                 for c, v in enumerate(indices):
                     accum[v] += normals_fv[c]
@@ -1704,7 +1704,7 @@ def get_mesh(
                 lengths[lengths < 1e-20] = 1.0
                 # vertex normals
                 normals = (accum / lengths).astype(np.float32)
-            elif normal_conversion == "angle_weighted":
+            elif face_varying_normal_conversion == "angle_weighted":
                 # area- or corner-angle weighting
                 offset = 0
                 for nverts in counts:
@@ -1720,7 +1720,7 @@ def get_mesh(
                 vertex_normals = accum / np.clip(np.linalg.norm(accum, axis=1, keepdims=True), 1e-20, None)
                 normals = vertex_normals.astype(np.float32)
             else:
-                raise ValueError(f"Invalid face_varying_normal_conversion: {normal_conversion}")
+                raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
 
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
@@ -1730,6 +1730,15 @@ def get_mesh(
             flip_winding = True
     corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
     faces = indices[corner_flat].reshape(-1, 3)
+
+    generate_flat_normals = False
+    if load_normals and normals is None:
+        generate_flat_normals = mesh.GetSubdivisionSchemeAttr().Get() in (UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear)
+        if not generate_flat_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            # Compute before UV expansion so texture seams do not become shading seams.
+            normals = compute_vertex_normals(points, faces)
 
     uv_indices = None
     if uvs is not None:
@@ -1765,6 +1774,23 @@ def get_mesh(
                     faces = np.arange(len(corner_flat), dtype=np.int32).reshape(-1, 3)
                 elif return_uv_indices:
                     uv_indices = corner_flat
+
+    if generate_flat_normals:
+        triangle_points = points[faces]
+        face_normals = np.cross(
+            triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
+        )
+        face_normals /= np.clip(np.linalg.norm(face_normals, axis=1, keepdims=True), 1e-20, None)
+        normals = np.repeat(face_normals, 3, axis=0)
+        vertex_indices = faces.reshape(-1)
+        points = points[vertex_indices]
+        if (
+            uvs is not None
+            and uv_indices is None
+            and not (preserve_facevarying_uvs and uvs_interpolation == UsdGeom.Tokens.faceVarying)
+        ):
+            uvs = uvs[vertex_indices]
+        faces = np.arange(len(vertex_indices), dtype=np.int32).reshape(-1, 3)
 
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
@@ -1804,9 +1830,6 @@ def get_mesh(
             is_solid=mesh_out.is_solid,
         )
         mesh_out.has_inertia = True
-    subdivision_scheme_attr = mesh.GetSubdivisionSchemeAttr()
-    subdivision_scheme = subdivision_scheme_attr.Get() if subdivision_scheme_attr.HasAuthoredValue() else None
-    mesh_out._subdivision_scheme = str(subdivision_scheme) if subdivision_scheme else None
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out

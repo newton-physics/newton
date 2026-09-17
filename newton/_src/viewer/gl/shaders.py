@@ -50,7 +50,6 @@ layout (location = 7) in vec3 aObjectColor;
 
 // material properties
 layout (location = 8) in vec4 aMaterial;
-layout (location = 10) in float aFlatShading;
 
 #ifdef ENABLE_TRANSPARENCY
 layout (location = 9) in float aOpacity;
@@ -69,7 +68,6 @@ out vec4 Material;
 out float Opacity;
 out float ViewDepth;
 #endif
-flat out float FlatShading;
 
 void main()
 {
@@ -97,7 +95,6 @@ void main()
     Opacity = clamp(aOpacity, 0.0, 1.0);
     ViewDepth = max(-view_position.z, 0.0);
 #endif
-    FlatShading = aFlatShading;
 }
 """
 
@@ -126,7 +123,6 @@ uniform float oit_inv_depth_reference;
 // and transparency falls back to single-pass alpha blending.
 uniform bool oit_enabled;
 #endif
-flat in float FlatShading;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -228,21 +224,12 @@ vec3 ReconstructCameraRelativePosition()
     return transpose(mat3(view)) * view_position;
 }
 
-vec3 surface_normal(vec3 camera_to_fragment)
-{
-    if (FlatShading > 0.5)
-        return normalize(cross(dFdx(camera_to_fragment), dFdy(camera_to_fragment)));
-
-    vec3 normal = normalize(Normal);
-    if (!gl_FrontFacing)
-        normal = -normal;
-
-    return normal;
-}
-
 float ShadowCalculation(vec3 camera_to_fragment)
 {
-    vec3 normal = surface_normal(camera_to_fragment);
+    vec3 normal = normalize(Normal);
+
+    if (!gl_FrontFacing)
+        normal = -normal;
 
     vec3 lightDir = normalize(sun_direction);
 
@@ -370,8 +357,10 @@ void main()
     albedo = mix(albedo, vec3(luma * 1.4), metallic * 0.45);
 
     // surface vectors
-    vec3 N = surface_normal(camera_to_fragment);
+    vec3 N = normalize(Normal);
     vec3 V = normalize(-camera_to_fragment);
+    // Flip normal for backfacing triangles
+    if (!gl_FrontFacing) N = -N;
     vec3 L = normalize(sun_direction);
     vec3 H = normalize(V + L);
 

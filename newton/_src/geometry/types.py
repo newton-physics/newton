@@ -218,9 +218,6 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        # USD importers populate this so viewers can preserve the source's
-        # smoothing intent without changing programmatic mesh defaults.
-        self._subdivision_scheme: str | None = None
         self._color: Vec3 | None = None
         self.color = color
         self._opacity: float | None = None
@@ -242,6 +239,7 @@ class Mesh:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._texture_hash = None
         self._edges = None
         self._collision_edges: np.ndarray | None = None
@@ -822,7 +820,6 @@ class Mesh:
             m.mass = self.mass
             m.com = self.com
             m.has_inertia = self.has_inertia
-        m._subdivision_scheme = self._subdivision_scheme
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
         # array; reusing it after a vertex/index override would feed
@@ -1156,8 +1153,11 @@ class Mesh:
         method automatically. Call it explicitly after modifying those arrays
         in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
         property setters and would otherwise leave stale cached data.
+        Also call this after modifying :attr:`normals` or :attr:`uvs` in place
+        to invalidate the rendering identity.
         """
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._edges = None
         self._collision_edges = None
         self._is_watertight = None
@@ -1667,6 +1667,17 @@ class Mesh:
             hull_mesh.com = self.com
             hull_mesh.inertia = self.inertia
             return hull_mesh
+
+    def _get_render_hash(self) -> int:
+        """Include vertex attributes without changing simulation mesh caching."""
+        if self._cached_render_attribute_hash is None:
+            self._cached_render_attribute_hash = hash(
+                (
+                    None if self._normals is None else self._normals.tobytes(),
+                    None if self._uvs is None else self._uvs.tobytes(),
+                )
+            )
+        return hash((hash(self), self._cached_render_attribute_hash))
 
     @override
     def __hash__(self) -> int:

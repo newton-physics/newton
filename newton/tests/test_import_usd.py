@@ -7579,8 +7579,8 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_visual_mesh_preserves_subdivision_scheme(self):
-        """Preserve subdivision intent on imported visual meshes."""
+    def test_visual_mesh_generates_sharp_normals(self):
+        """Resolve non-smoothing USD visuals to ordinary per-vertex normals."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7600,7 +7600,7 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
 
         shape = result["path_shape_map"]["/Body/VisualMesh"]
-        self.assertEqual(builder.shape_source[shape]._subdivision_scheme, "bilinear")
+        np.testing.assert_allclose(builder.shape_source[shape].normals, [(0, 0, 1)] * 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_polygon_mesh_preserves_authored_normals(self):
@@ -7629,7 +7629,6 @@ def Xform "Articulation" (
         shape = result["path_shape_map"]["/Body/VisualMesh"]
         visual_mesh = builder.shape_source[shape]
         self.assertEqual(get_mesh.call_count, 1)
-        self.assertEqual(visual_mesh._subdivision_scheme, "none")
         np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

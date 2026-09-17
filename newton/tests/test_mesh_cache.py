@@ -56,16 +56,23 @@ class TestMeshCache(unittest.TestCase):
         copied.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         self.assertEqual(hash(copied), hash(mesh))
 
-    def test_subdivision_scheme_is_copied_without_changing_physics_hash(self):
-        """Copy render subdivision metadata without changing physical mesh identity."""
-        mesh = _make_tet_mesh()
+    def test_render_hash_tracks_vertex_attributes(self):
+        """Refresh visual identity after normal or UV edits without changing physics."""
+        mesh = Mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [0, 1, 2],
+            normals=[[0, 0, 1]] * 3,
+            uvs=[[0, 0], [1, 0], [0, 1]],
+            compute_inertia=False,
+        )
         physics_hash = hash(mesh)
-        mesh._subdivision_scheme = "none"
-        self.assertEqual(hash(mesh), physics_hash)
-
-        copied = mesh.copy()
-        self.assertEqual(copied._subdivision_scheme, mesh._subdivision_scheme)
-        self.assertEqual(hash(copied), hash(mesh))
+        self.assertEqual(mesh._get_render_hash(), mesh.copy()._get_render_hash())
+        for attribute in (mesh.normals, mesh.uvs):
+            render_hash = mesh._get_render_hash()
+            attribute[0, 0] += 0.5
+            mesh.invalidate_cache()
+            self.assertNotEqual(mesh._get_render_hash(), render_hash)
+            self.assertEqual(hash(mesh), physics_hash)
 
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
