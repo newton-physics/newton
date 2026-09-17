@@ -98,8 +98,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
             kp=wp.array([0.0], dtype=wp.float32),
             kd=wp.array([0.0], dtype=wp.float32),
         )
-        drive.state_input_attrs = ("custom_state_input",)
-        drive.control_input_attrs = ("custom_control_input",)
+        drive.custom_state_attributes = ("custom_state_input",)
+        drive.custom_control_attributes = ("custom_control_input",)
         actuator = actuators.Actuator(indices=indices, drive=drive)
 
         state_input = object()

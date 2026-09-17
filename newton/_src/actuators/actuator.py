@@ -461,9 +461,9 @@ class Actuator:
         positions = getattr(sim_state, self.state_pos_attr)
         velocities = getattr(sim_state, self.state_vel_attr)
 
-        for attr_name in self.drive.state_input_attrs:
+        for attr_name in self.drive.custom_state_attributes:
             setattr(self.drive, attr_name, getattr(sim_state, attr_name, None))
-        for attr_name in self.drive.control_input_attrs:
+        for attr_name in self.drive.custom_control_attributes:
             setattr(self.drive, attr_name, getattr(sim_control, attr_name, None))
 
         orig_target_pos = getattr(sim_control, self.control_target_pos_attr)

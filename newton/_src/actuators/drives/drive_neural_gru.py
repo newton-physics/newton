@@ -527,7 +527,7 @@ class DriveNeuralGRU(DriveBase):
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
-        self.control_input_attrs = ("dynamic_bias",) if "dynamic_bias" in self._input_feature_keys else ()
+        self.custom_control_attributes = ("dynamic_bias",) if "dynamic_bias" in self._input_feature_keys else ()
         self.dynamic_bias: wp.array[float] | None = None
         if self._description.layers[0].input_size != len(self._input_feature_keys):
             raise ValueError(

@@ -591,14 +591,14 @@ types or nested storage implement ``assign()`` to define that copy.
 
 A drive can declare additional same-named attributes to bind from the objects
 passed to :meth:`Actuator.step` through
-:attr:`~DriveBase.state_input_attrs` and
-:attr:`~DriveBase.control_input_attrs`:
+:attr:`~DriveBase.custom_state_attributes` and
+:attr:`~DriveBase.custom_control_attributes`:
 
 .. code-block:: python
 
    class MyDrive(DriveBase):
-       state_input_attrs = ("estimated_load",)
-       control_input_attrs = ("motor_temperature",)
+       custom_state_attributes = ("estimated_load",)
+       custom_control_attributes = ("motor_temperature",)
 
        def compute(self, ...):
            # Bound immediately before this evaluation.

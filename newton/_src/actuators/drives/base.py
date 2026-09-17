@@ -67,14 +67,14 @@ class DriveBase:
     def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> None:
         """Register model attributes required by this drive."""
 
-    state_input_attrs: tuple[str, ...] = ()
+    custom_state_attributes: tuple[str, ...] = ()
     """State attributes copied onto the drive before each evaluation.
 
     The drive owns the interpretation and validation of these inputs. A missing
     attribute is bound as ``None``.
     """
 
-    control_input_attrs: tuple[str, ...] = ()
+    custom_control_attributes: tuple[str, ...] = ()
     """Control attributes copied onto the drive before each evaluation.
 
     The drive owns the interpretation and validation of these inputs. A missing
