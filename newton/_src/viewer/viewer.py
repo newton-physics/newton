@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import inspect
 import math
 import os
 import sys
@@ -63,6 +64,31 @@ def _mesh_texture_uvs(mesh: newton.Mesh, *, solidified: bool = False) -> np.ndar
     if solidified:
         uvs = np.repeat(uvs, 2, axis=0)
     return uvs
+
+
+def _roughness_texture_log_mesh_kwargs(log_mesh: Any, mesh: newton.Mesh) -> dict[str, Any]:
+    """Return roughness-texture arguments supported by a backend's ``log_mesh`` override."""
+    if mesh.roughness_texture is None:
+        return {}
+
+    try:
+        parameters = inspect.signature(log_mesh).parameters
+    except (TypeError, ValueError):
+        return {}
+
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    optional_names = ("roughness_texture", "roughness_texture_influence")
+    accepts_optional = accepts_kwargs or all(
+        name in parameters
+        and parameters[name].kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        for name in optional_names
+    )
+    if not accepts_optional:
+        return {}
+    return {
+        "roughness_texture": mesh.roughness_texture,
+        "roughness_texture_influence": mesh.roughness_texture_influence,
+    }
 
 
 class Layer:
@@ -1716,10 +1742,7 @@ class ViewerBase(ABC):
             if hasattr(geo_src, "texture"):
                 texture = geo_src.texture
 
-            material_kwargs = {}
-            if geo_src.roughness_texture is not None:
-                material_kwargs["roughness_texture"] = geo_src.roughness_texture
-                material_kwargs["roughness_texture_influence"] = geo_src.roughness_texture_influence
+            material_kwargs = _roughness_texture_log_mesh_kwargs(self.log_mesh, geo_src)
             self.log_mesh(
                 name,
                 points,
@@ -2417,10 +2440,7 @@ class ViewerBase(ABC):
         if transformed_uvs is not None:
             uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
-        material_kwargs = {}
-        if src.roughness_texture is not None:
-            material_kwargs["roughness_texture"] = src.roughness_texture
-            material_kwargs["roughness_texture_influence"] = src.roughness_texture_influence
+        material_kwargs = _roughness_texture_log_mesh_kwargs(self.log_mesh, src)
         self.log_mesh(
             name,
             points_wp,

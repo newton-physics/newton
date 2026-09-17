@@ -161,6 +161,28 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertTrue(viewer.logged)
         np.testing.assert_allclose(viewer.uvs, authored_uvs * (0.5, 2.0) + (0.25, -0.75))
 
+    def test_roughness_texture_preserves_legacy_backend_log_mesh_signature(self):
+        """Render a roughness-textured model through a legacy viewer subclass."""
+        mesh = newton.Mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [0, 1, 2],
+            uvs=[[0, 0], [1, 0], [0, 1]],
+            compute_inertia=False,
+            roughness=0.3,
+            roughness_texture=np.full((2, 2), 128, dtype=np.uint8),
+            roughness_texture_influence=0.5,
+        )
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0.0)
+        builder.add_shape_mesh(-1, mesh=mesh, cfg=cfg)
+
+        viewer = _ViewerLegacyMeshSignatureProbe()
+        viewer.set_model(builder.finalize())
+
+        self.assertTrue(viewer.logged)
+        batch = next(iter(viewer._shape_instances.values()))
+        self.assertAlmostEqual(float(batch.materials.numpy()[0, 0]), 0.3)
+
     def test_solidified_mesh_duplicates_transformed_uvs(self):
         """Keep UV rows aligned with vertices in both solidified mesh paths."""
         authored_uvs = np.array(((0.1, 0.2), (1.1, 0.2), (0.1, 1.2)), dtype=np.float32)
