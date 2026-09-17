@@ -344,9 +344,10 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime sce
 ViewerRTX is tested with the following renderer configurations:
 
 - ``ovrtx==0.3.0.312915``
-- ``ovrtx==0.4.1.364340`` with ``ovstage==0.1.1.355824``
+- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349``
 
-Other releases in these version families select the same interface but are not part of Newton's tested matrix.
+OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
+Newton's tested matrix.
 
 .. code-block:: python
 
