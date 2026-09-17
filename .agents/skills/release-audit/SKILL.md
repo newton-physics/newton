@@ -40,9 +40,17 @@ existed at that tag.
 
 1. **Determine the mode.** Look at any target-version argument supplied with the invocation:
 
-   - **Argument present AND matches an existing tag** (`git rev-parse --verify v<arg>` or `git rev-parse --verify <arg>` succeeds, AND the resolved name looks like `vX.Y.Z` / `vX.Y.ZrcN`): **Retrospective mode**. The argument is the already-shipped target version. Skip `pyproject.toml` entirely; the tag is authoritative. Record the raw version string (e.g., `1.1.0`) for the report header and filenames. Do not run the pre-release / RC reconciliation in step 4.
+   - **Argument present AND matches an existing tag** (`git rev-parse --verify v<arg>` or `git rev-parse --verify <arg>` succeeds, AND the resolved name looks like `vX.Y.Z` / `vX.Y.ZrcN`): **Retrospective mode**. The argument is the already-shipped target version. Skip `pyproject.toml` entirely; the tag is authoritative. Do not run the pre-release / RC reconciliation in step 4.
    - **Argument present but does NOT match any tag**: treat as a version override for the upcoming release. Use it as if it came from `pyproject.toml`, then fall through to the pre-release / RC detection below.
    - **No argument**: read the version string from `pyproject.toml` — the top-level `[project]` table's `version = "..."` line.
+
+   Normalize the selected version by removing one leading `v`, if present. Before using it in a title, filename, or path, require the normalized value to match `^[0-9]+\.[0-9]+\.[0-9]+(?:rc[0-9]+|\.dev[0-9]+)?$`. If it does not match, stop and report the unsupported version. Do not construct an output path from an unvalidated version string.
+
+   Record the report date at the same time. In retrospective mode, use the target tag's creator date:
+   ```bash
+   git for-each-ref --format='%(creatordate:short)' refs/tags/v<version>
+   ```
+   This returns the tagger date for an annotated tag and the commit date for a lightweight tag. For pre-release and RC modes, use the current date (`date +%F`).
 
    For the non-retrospective path, parse the version string to extract the target minor (e.g., `1.2.0.dev0` → target `1.2`) and pre-classify mode:
    - If the version string contains `"rc"` (e.g., `1.2.0rc1`) → **RC mode candidate**: this is a release-candidate readiness report.
@@ -53,13 +61,13 @@ existed at that tag.
    ```bash
    git tag --list 'v<prev-major>.<prev-minor>.*' --sort=-v:refname
    ```
-   where `<prev-major>.<prev-minor>` is `target - 0.1` (e.g., for target `1.2`, previous minor is `1.1`). Take the first result as the base candidate. Ignore pre-1.0 `beta-*` tags when a stable `vX.Y.Z` line exists.
+   where `<prev-major>.<prev-minor>` is `target - 0.1` (e.g., for target `1.2`, previous minor is `1.1`). Retain only tags matching the exact stable-release form `^v[0-9]+\.[0-9]+\.[0-9]+$`; release-candidate and other prerelease tags are not release baselines. Take the first remaining result as the base candidate. Ignore pre-1.0 `beta-*` tags when a stable `vX.Y.Z` line exists.
 
    **Major-boundary fallback.** When `target.minor == 0` (e.g., `2.0.0`), the `target - 0.1` computation yields a minor line that never existed (`1.9`), and the tag list comes back empty. In that case, enumerate the highest minor line of the previous major instead:
    ```bash
    git tag --list 'v<target-major - 1>.*' --sort=-v:refname
    ```
-   Take the first result (the last-patch of the last-minor of the previous major) as the base candidate. If both the primary and fallback searches return empty (which should only happen on a never-released line), surface that to the user in step 6 rather than silently proceeding.
+   Apply the same exact stable-release filter, then take the first result (the last-patch of the last-minor of the previous major) as the base candidate. If both the primary and fallback searches return empty (which should only happen on a never-released line), surface that to the user in step 6 rather than silently proceeding.
 
    For **retrospective mode** with target `X.Y.Z`: the base is the last `vX.Y-prev.*` tag strictly before `vX.Y.Z`. Also check whether `X.Y.Z` is itself a patch release (`.Z > 0`): if so, the "base" could be either the previous patch on the same minor (`vX.Y.<Z-1>`) OR the previous minor's latest. Present both in step 6 and let the user pick — a patch retrospective usually wants patch-on-patch; a minor-release retrospective wants previous-minor's last patch.
 
@@ -135,10 +143,10 @@ existed at that tag.
    uv run --no-project python .agents/skills/release-audit/scripts/list_commits.py \
      --base <base-ref> \
      --head <head-ref> \
-     --report-date "$(date +%F)" \
+     --report-date "<report-date>" \
      --main-ref <resolved-main-ref>
    ```
-   from the repo root (`$(git rev-parse --show-toplevel)`). Capture stdout as the `commit_list_json`.
+   from the repo root (`$(git rev-parse --show-toplevel)`). Use the date recorded in Phase 1 so retrospective bake time is measured as of the audited release rather than as of today. Capture stdout as the `commit_list_json`.
 
 2. Run the dependency and license audit helper:
    ```bash
@@ -420,7 +428,7 @@ Identify releases that shipped strictly after `X.Y.Z`:
 git tag --list 'v*' --sort=v:refname
 ```
 
-Take the sorted list, drop everything up to and including `vX.Y.Z`, keep the rest. Typical post-target history for a minor release `vX.Y.0` is:
+Before selecting post-target history, retain only tags matching the exact stable-release form `^v[0-9]+\.[0-9]+\.[0-9]+$`. Exclude release-candidate and other prerelease suffixes. From that filtered, sorted list, drop everything up to and including `vX.Y.Z` and keep the rest. Typical post-target history for a minor release `vX.Y.0` is:
 - `vX.Y.1`, `vX.Y.2`, ... (patch releases on the same minor)
 - `vX.Y+1.0`, `vX.Y+1.1`, ... (the next minor and its patches)
 
@@ -428,11 +436,13 @@ For each post-target tag, read its CHANGELOG section (the `## [<version>]` block
 
 Also collect the commits in each post-target range (`<prior-tag>..<tag>`) — one full `list_commits.py` invocation per range, with the same required args as Phase 2. `--main-ref` reuses the main ref resolved in Phase 1 (don't rely on the script's `upstream/main` default; Phase 1 may have fallen back to a different remote):
 
+For each retained post-target tag, derive `<post-target-release-date>` with the same `git for-each-ref --format='%(creatordate:short)'` command used in Phase 1. This keeps any soak-time metadata relative to that release rather than the day the retrospective audit happens.
+
 ```bash
 uv run --no-project python .agents/skills/release-audit/scripts/list_commits.py \
   --base <prior-tag> \
   --head <tag> \
-  --report-date "$(date +%F)" \
+  --report-date "<post-target-release-date>" \
   --main-ref <resolved-main-ref>
 ```
 
@@ -630,4 +640,4 @@ Never pass `--public`. Never file a destination the user did not choose.
 - **Release branch exists but contains no new commits past main**: treat as head==main effectively; skip cherry-pick detection.
 - **No rolling target section, pending `.md` fragments, or legacy `[Unreleased]` entries in pre-release / RC mode**: header warns: "No user-facing pending changelog entries found on the audited ref." Report the `.skip` count separately so an intentionally quiet release is distinguishable from missing data.
 - **`gh` installed but not authenticated**: treat as `gh` unavailable; skip gist matching and gist prompt; add one-line chat note.
-- **`pyproject.toml` version is non-standard** (not matching `X.Y.ZdevN`, `X.Y.ZrcN`, or `X.Y.Z`): treat as pre-release mode, record the raw string in the header, and continue.
+- **Selected version is unsupported** (not matching `X.Y.Z`, `X.Y.ZrcN`, or `X.Y.Z.devN` after removing an optional leading `v`): stop before constructing any output title, filename, or path and report the unsupported value.
