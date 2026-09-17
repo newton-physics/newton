@@ -82,7 +82,7 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
     dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
     task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
     damping = wp.array(damping_np, dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+    error = wp.array2d(error_np, dtype=wp.float32, device=device)
 
     u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
@@ -147,7 +147,7 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
     dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
     task_dim = wp.array(task_dim_np, dtype=wp.int32, device=device)
     threshold = wp.array(threshold_np, dtype=wp.float32, device=device)
-    error = wp.array([wp.spatial_vector(*row) for row in error_np], dtype=wp.spatial_vector, device=device)
+    error = wp.array2d(error_np, dtype=wp.float32, device=device)
 
     u = wp.zeros((robot_count, 6, 6), dtype=wp.float32, device=device)
     s = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
@@ -206,7 +206,7 @@ def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
     bandwidth_np = np.array([2.0, 0.5, 1.0], dtype=np.float32)
 
     jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    y = wp.array([wp.spatial_vector(*y_np)], dtype=wp.spatial_vector, device=device)
+    y = wp.array2d(y_np.reshape(1, -1), dtype=wp.float32, device=device)
     bandwidth = wp.array(bandwidth_np, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0, 0, 0], dtype=wp.int32, device=device)
     slot_of_dof = wp.array([0, 1, 2], dtype=wp.int32, device=device)
@@ -250,7 +250,7 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
     axis_weight = wp.full(1, wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0), dtype=wp.spatial_vector, device=device)
 
     def run(y_np):
-        y = wp.array([wp.spatial_vector(*y_np)], dtype=wp.spatial_vector, device=device)
+        y = wp.array2d(y_np.reshape(1, -1), dtype=wp.float32, device=device)
         joint_qd_target = wp.zeros(3, dtype=wp.float32, device=device)
         wp.launch(
             _qd_from_y_kernel,

@@ -444,7 +444,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # the k'th active entry in axis_weight_np[robot], in canonical
         # order; entries at or beyond that robot's own task_dim are never
         # read.
-        active_axis_of_slot_np = np.zeros((controlled_robot_count, _CANONICAL_TASK_AXIS_COUNT), dtype=np.int32)
+        max_task_dim = int(task_dim_np.max())
+        active_axis_of_slot_np = np.zeros((controlled_robot_count, max_task_dim), dtype=np.int32)
         for robot in range(controlled_robot_count):
             active = np.flatnonzero(axis_active_np[robot])
             active_axis_of_slot_np[robot, : active.size] = active
@@ -627,6 +628,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._use_null_space = use_null_space
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
+        self._max_task_dim = max_task_dim
         self._total_controlled_dofs = total_controlled_dofs
         self._requires_grad = requires_grad
 
@@ -802,7 +804,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
         self._pose_error_active_buf = wp.zeros(
-            controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
+            (controlled_robot_count, max_task_dim), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
 
         # Matrix/vector types for .view()-ing the plain wp.array3d[float]/
@@ -812,8 +814,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # Reused for both the primary task solve's SVD and (when enabled)
         # the null-space projector's own SVD, since both are the same 6 x
         # max_controlled_dofs shape.
-        svd_mat_u = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
-        svd_mat_j = wp.types.matrix(shape=(6, max_controlled_dofs), dtype=wp.float32)
+        svd_mat_u = wp.types.matrix(shape=(max_task_dim, max_task_dim), dtype=wp.float32)
+        svd_mat_j = wp.types.matrix(shape=(max_task_dim, max_controlled_dofs), dtype=wp.float32)
         svd_mat_v = wp.types.matrix(shape=(max_controlled_dofs, max_controlled_dofs), dtype=wp.float32)
         svd_vec_s = wp.types.vector(length=max_controlled_dofs, dtype=wp.float32)
 
@@ -823,14 +825,17 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # single SVD, differing only in the per-singular-direction gain
         # applied to it below.
         self._jacobian_weighted_buf = wp.zeros(
-            (controlled_robot_count, 6, max_controlled_dofs),
+            (controlled_robot_count, max_task_dim, max_controlled_dofs),
             dtype=wp.float32,
             device=self._device,
             requires_grad=requires_grad,
         )
         self._jacobian_weighted_view = self._jacobian_weighted_buf.view(svd_mat_j).reshape((controlled_robot_count,))
         self._svd_u_buf = wp.zeros(
-            (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            (controlled_robot_count, max_task_dim, max_task_dim),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
         )
         self._svd_u_view = self._svd_u_buf.view(svd_mat_u).reshape((controlled_robot_count,))
         self._svd_s_buf = wp.zeros(
@@ -872,10 +877,16 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 if self._null_space_damping_baked is None
                 else None
             )
+            # Null-space projection's own SVD is always over exactly 6
+            # canonical axes, independent of the primary task's max_task_dim,
+            # so it needs its own fixed-6 matrix types rather than reusing
+            # svd_mat_u/svd_mat_j above.
+            svd_mat_u_null = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
+            svd_mat_j_null = wp.types.matrix(shape=(6, max_controlled_dofs), dtype=wp.float32)
             self._svd_u_null_buf = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
-            self._svd_u_null_view = self._svd_u_null_buf.view(svd_mat_u).reshape((controlled_robot_count,))
+            self._svd_u_null_view = self._svd_u_null_buf.view(svd_mat_u_null).reshape((controlled_robot_count,))
             self._svd_s_null_buf = wp.zeros(
                 (controlled_robot_count, max_controlled_dofs),
                 dtype=wp.float32,
@@ -906,7 +917,9 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # doubles as the "A" input to the null-space projector's own SVD
             # directly, with no separate weighting step (unlike the primary
             # task solve's J_w).
-            self._jacobian_active_view = self._jacobian_active_buf.view(svd_mat_j).reshape((controlled_robot_count,))
+            self._jacobian_active_view = self._jacobian_active_buf.view(svd_mat_j_null).reshape(
+                (controlled_robot_count,)
+            )
             self._jacobian_pinv_transpose_slot_buf = wp.zeros(
                 (controlled_robot_count, 6, max_controlled_dofs),
                 dtype=wp.float32,
@@ -1203,7 +1216,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         )
         wp.launch(
             _gather_task_error_kernel,
-            dim=controlled_robot_count,
+            dim=(controlled_robot_count, self._max_task_dim),
             inputs=[self._pose_error_buf, self._task_dim, self._active_axis_of_slot, self._axis_weight],
             outputs=[self._pose_error_active_buf],
             device=self._device,
@@ -1235,7 +1248,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # singular value each applies to it below.
             wp.launch(
                 _gather_and_weight_jacobian_kernel,
-                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                dim=(controlled_robot_count, self._max_task_dim, self._max_controlled_dofs),
                 inputs=[jacobian, self._task_dim, self._active_axis_of_slot, self._axis_weight],
                 outputs=[self._jacobian_weighted_buf],
                 device=self._device,
