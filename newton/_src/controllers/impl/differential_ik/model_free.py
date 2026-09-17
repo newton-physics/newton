@@ -5,13 +5,14 @@
 caller-supplied Jacobian and tool pose.
 
 Every 1-D per-DOF port is compact: one entry per controlled DOF, robot 0's
-DOFs first, then robot 1's. Every per-robot port (tool pose, Jacobian,
-damping) has one entry per robot, since the task-space storage is always 6D
-regardless of a robot's own DOF count — a robot whose ``axis_weight`` zeroes
-some of the 6 canonical axes (position x/y/z, orientation x/y/z) uses only
-the active ones (see ``axis_weight``). The controller owns no index tables —
-a caller who needs to read from or write to a simulation-sized array binds
-an indexed view instead, e.g. ``sim_array[ctrl.qd_start]`` using a paired
+DOFs first, then robot 1's. Every per-frame port (tool pose, Jacobian,
+axis_weight) has one entry per tool frame, robot 0's frames first, then
+robot 1's, matching ``frames_per_robot`` — a robot may target several
+frames at once, each contributing its own (up to 6D) task, stacked into one
+combined solve (see ``axis_weight``). Every per-robot port (damping) has one
+entry per robot instead. The controller owns no index tables — a caller
+who needs to read from or write to a simulation-sized array binds an
+indexed view instead, e.g. ``sim_array[ctrl.qd_start]`` using a paired
 model-based controller's own ``q_start``/``qd_start`` properties (see
 :attr:`ControllerDifferentialIK.qd_start`).
 
@@ -28,6 +29,9 @@ pose error (position, then axis-angle orientation), shown unweighted; see
 ``axis_weight`` for the ``diag(w)``-weighted form actually solved, including
 how a zero-weighted axis is excluded from the task rather than driven to
 zero.
+
+Null-space secondary objectives (below) require every robot to target
+exactly one frame; multi-frame robots may not enable either one.
 
 A redundant robot (more controlled DOFs than its own task dimension needs —
 6, unless ``axis_weight`` zeroes some axes) may also project a secondary
@@ -147,9 +151,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
 
     Every per-DOF port is **compact**: a 1-D array with one entry per
     controlled DOF, ordered robot 0's DOFs first, then robot 1's, matching
-    ``controlled_dofs_per_robot``. Every per-robot port has one entry per
-    robot, since the task-space storage is always 6D regardless of a
-    robot's own :attr:`axis_weight`. A port may be
+    ``controlled_dofs_per_robot``. Every per-frame port has one entry per
+    tool frame, ordered robot 0's frames first, then robot 1's, matching
+    ``frames_per_robot`` — each frame's own task-space storage is always 6D
+    regardless of its :attr:`axis_weight`, and a robot's frames are stacked
+    into one combined task. A port may be
     bound either to a plain array or to an indexed view of a
     simulation-sized array, which is how a caller expresses a gather or
     scatter without the controller owning an index table — for example,
@@ -187,23 +193,30 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             :attr:`total_controlled_dofs` (the length of every compact
             port), and its maximum sets :attr:`max_controlled_dofs` (the
             padded width of the Jacobian). Every entry must be positive.
-        axis_weight: Non-negative per-axis weight for each of the 6
+        frames_per_robot: Tool-frame count for each robot, shape
+            [controlled_robot_count]. Its sum sets :attr:`total_frame_count`
+            (the length of every per-frame port). A robot's frames are
+            stacked into one combined weighted-least-squares task, solved
+            jointly — see ``axis_weight``. ``None`` (the default) gives
+            every robot exactly one frame, matching today's single-frame
+            behavior. Every entry must be positive.
+        axis_weight: Non-negative per-axis weight for each of a frame's 6
             canonical task axes (position x, y, z, then orientation x, y,
-            z), ``diag(w)`` applied to both the Jacobian and the pose error
-            for that axis before the solve (``J_w = diag(w) @ J``,
-            ``e_w = diag(w) @ e``) — a genuine soft weight for any nonzero
-            value. An axis weighted exactly ``0`` is different in kind, not
-            just degree: it is excluded from the solve structurally (its
-            error and Jacobian rows never enter it at all), not merely
-            driven toward zero by a very small weight — this also shrinks
-            the task's own dimension, so a robot with fewer than 6
-            controlled DOFs can still be redundant if enough axes are
-            zeroed. Any combination of active axes is allowed, not just a
-            leading prefix. Pass a single ``wp.spatial_vector`` to apply the
-            same weights to every robot, or an array of shape
-            [controlled_robot_count] to set them per robot. ``None`` (the
-            default) means every axis is weighted ``1`` for every robot —
-            full, equally-trusted 6D pose.
+            z), ``diag(w)`` applied to both that frame's Jacobian rows and
+            pose error before the solve (stacked across a robot's frames as
+            ``J_w = diag(w) @ J``, ``e_w = diag(w) @ e``) — a genuine soft
+            weight for any nonzero value. An axis weighted exactly ``0`` is
+            different in kind, not just degree: it is excluded from the
+            solve structurally (its error and Jacobian rows never enter it
+            at all), not merely driven toward zero by a very small weight —
+            this also shrinks the task's own dimension, so a robot with
+            fewer than 6 controlled DOFs can still be redundant if enough
+            axes are zeroed. Any combination of active axes is allowed, not
+            just a leading prefix. Pass a single ``wp.spatial_vector`` to
+            apply the same weights to every frame, or an array of shape
+            [total_frame_count] to set them per frame. ``None`` (the
+            default) means every axis is weighted ``1`` for every frame —
+            full, equally-trusted 6D pose per frame.
         bandwidth: Output velocity scale gain, applied per controlled DOF
             after the Jacobian solve. Must be non-negative, since a negative
             value would flip the output velocity's direction. Checked at
@@ -249,7 +262,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
             ``joint_limit_avoidance_gain``, ``joint_limit_avoidance_margin``,
-            ``joint_pos_lower``, and ``joint_pos_upper``.
+            ``joint_pos_lower``, and ``joint_pos_upper``. Requires every
+            robot to have exactly one frame (see ``frames_per_robot``).
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
             comes within ``joint_limit_avoidance_margin`` of either limit.
             Required (and must be positive) when
@@ -268,7 +282,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             live port.
         use_null_space_posture_control: Project a proportional pull toward
             ``inputs.q_des_null`` through the null-space projector. Enables
-            ``null_space_stiffness``.
+            ``null_space_stiffness``. Requires every robot to have exactly
+            one frame (see ``frames_per_robot``).
         null_space_stiffness: Posture-control proportional gain, applied per
             controlled DOF. Must be non-negative; checked the same way as
             ``bandwidth``. Pass a scalar to apply the same gain to every
@@ -315,18 +330,19 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         """Input struct returned by :meth:`~ControllerDifferentialIKModelFree.input`.
 
         Every compact 1-D field has shape [total_controlled_dofs]; every
-        per-robot field has shape [controlled_robot_count]. Optional fields
-        are ``None`` when the corresponding gain is baked at construction.
+        per-frame field has shape [total_frame_count]; every per-robot field
+        has shape [controlled_robot_count]. Optional fields are ``None`` when
+        the corresponding gain is baked at construction.
         """
 
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint positions [m or rad], shape [total_controlled_dofs]."""
         tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Current tool pose [m, unitless quaternion], world frame, shape [controlled_robot_count]."""
+        """Current tool pose [m, unitless quaternion], world frame, shape [total_frame_count]."""
         desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Desired tool pose [m, unitless quaternion], world frame, shape [controlled_robot_count]."""
+        """Desired tool pose [m, unitless quaternion], world frame, shape [total_frame_count]."""
         jacobian_tool_world: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3)
-        """Tool-point Jacobian, world frame, shape [controlled_robot_count, 6, max_controlled_dofs]; columns beyond a robot's own controlled-DOF count are unused. Rows 0-2 map a controlled DOF's velocity to the tool point's linear velocity [1 or m], rows 3-5 to its angular velocity [1/m or 1]."""
+        """Tool-point Jacobian, world frame, shape [total_frame_count, 6, max_controlled_dofs]; a frame's columns beyond its own robot's controlled-DOF count are unused. Rows 0-2 map a controlled DOF's velocity to the tool point's linear velocity [1 or m], rows 3-5 to its angular velocity [1/m or 1]."""
         bandwidth: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Output velocity scale gain, shape [total_controlled_dofs]. ``None`` when baked at construction."""
         damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -350,6 +366,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self,
         *,
         controlled_dofs_per_robot: wp.array[wp.int32],
+        frames_per_robot: wp.array[wp.int32] | None = None,
         axis_weight: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
@@ -402,25 +419,46 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
+        if frames_per_robot is None:
+            frames_per_robot_np = np.ones(controlled_robot_count, dtype=np.int32)
+        else:
+            _validate_array(
+                array=frames_per_robot,
+                name="frames_per_robot",
+                dtype=wp.int32,
+                shape=(controlled_robot_count,),
+                device=self._device,
+            )
+            frames_per_robot_np = frames_per_robot.numpy()
+            if frames_per_robot_np.min() < 1:
+                raise ValueError(
+                    "frames_per_robot must be positive — a robot with no tool frame has nothing to solve for; "
+                    f"got {frames_per_robot_np.tolist()}."
+                )
+        total_frame_count = int(frames_per_robot_np.sum())
+        frame_robot_idx_np = np.repeat(np.arange(controlled_robot_count, dtype=np.int32), frames_per_robot_np)
+        frame_start_np = np.zeros(controlled_robot_count, dtype=np.int32)
+        frame_start_np[1:] = np.cumsum(frames_per_robot_np[:-1])
+
         if axis_weight is None:
             axis_weight_resolved = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         else:
             axis_weight_resolved = axis_weight
         if isinstance(axis_weight_resolved, wp.spatial_vector):
-            axis_weight_np = np.tile(np.array(axis_weight_resolved, dtype=np.float32), (controlled_robot_count, 1))
+            axis_weight_np = np.tile(np.array(axis_weight_resolved, dtype=np.float32), (total_frame_count, 1))
         elif isinstance(axis_weight_resolved, wp.array):
             _validate_array(
                 array=axis_weight_resolved,
                 name="axis_weight",
                 dtype=wp.spatial_vector,
-                shape=(controlled_robot_count,),
+                shape=(total_frame_count,),
                 device=self._device,
             )
             axis_weight_np = axis_weight_resolved.numpy()
         else:
             raise TypeError(
                 "axis_weight must be a wp.spatial_vector or a wp.array[wp.spatial_vector] of shape "
-                f"(controlled_robot_count,), got {type(axis_weight_resolved).__name__}."
+                f"(total_frame_count,), got {type(axis_weight_resolved).__name__}."
             )
         if np.any(axis_weight_np < 0.0):
             raise ValueError(f"axis_weight must be non-negative, got {axis_weight_np.tolist()}.")
@@ -432,23 +470,31 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # matters once its axis has been gathered -- it is a genuine soft
         # weight there.
         axis_active_np = axis_weight_np > 0.0
-        task_dim_np = axis_active_np.sum(axis=1).astype(np.int32)
+        frame_task_dim_np = axis_active_np.sum(axis=1).astype(np.int32)
+        task_dim_np = np.bincount(
+            frame_robot_idx_np, weights=frame_task_dim_np, minlength=controlled_robot_count
+        ).astype(np.int32)
         if task_dim_np.min() < 1:
             bad_robots = np.flatnonzero(task_dim_np < 1)
             raise ValueError(
-                f"axis_weight is all-zero for robot(s) {bad_robots.tolist()}; every robot needs at least one "
-                "nonzero-weighted task axis."
+                f"axis_weight is all-zero across every frame of robot(s) {bad_robots.tolist()}; every robot "
+                "needs at least one nonzero-weighted task axis."
             )
 
-        # Compact-slot -> canonical-axis lookup, one row per robot: slot k of
-        # the k'th active entry in axis_weight_np[robot], in canonical
-        # order; entries at or beyond that robot's own task_dim are never
-        # read.
+        # Compact-slot -> (frame, canonical axis) lookup, one row per robot:
+        # slot k is the k'th active axis across that robot's frames, in
+        # frame then canonical-axis order; entries at or beyond that robot's
+        # own task_dim are never read.
         max_task_dim = int(task_dim_np.max())
+        active_frame_of_slot_np = np.zeros((controlled_robot_count, max_task_dim), dtype=np.int32)
         active_axis_of_slot_np = np.zeros((controlled_robot_count, max_task_dim), dtype=np.int32)
         for robot in range(controlled_robot_count):
-            active = np.flatnonzero(axis_active_np[robot])
-            active_axis_of_slot_np[robot, : active.size] = active
+            slot = 0
+            for frame in range(frame_start_np[robot], frame_start_np[robot] + frames_per_robot_np[robot]):
+                for axis in np.flatnonzero(axis_active_np[frame]):
+                    active_frame_of_slot_np[robot, slot] = frame
+                    active_axis_of_slot_np[robot, slot] = axis
+                    slot += 1
 
         if not (isinstance(bandwidth, (int, float)) and not isinstance(bandwidth, bool)):
             _validate_array(
@@ -528,6 +574,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             )
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
+
+        if use_null_space and np.any(frames_per_robot_np > 1):
+            raise ValueError(
+                "use_joint_limit_avoidance/use_null_space_posture_control require every robot to have exactly "
+                f"one frame (null-space protection isn't defined for a multi-frame task); got "
+                f"frames_per_robot={frames_per_robot_np.tolist()}."
+            )
 
         if use_joint_limit_avoidance:
             if joint_limit_avoidance_gain <= 0.0:
@@ -630,12 +683,14 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._max_controlled_dofs = max_controlled_dofs
         self._max_task_dim = max_task_dim
         self._total_controlled_dofs = total_controlled_dofs
+        self._total_frame_count = total_frame_count
         self._requires_grad = requires_grad
 
-        # Per-robot task dimension and compact-slot -> canonical-axis table,
-        # derived from axis_weight above. Copied, not stored, for the same
-        # reason controlled_dofs_per_robot is.
+        # Per-robot task dimension and compact-slot -> (frame, canonical
+        # axis) table, derived from axis_weight above. Copied, not stored,
+        # for the same reason controlled_dofs_per_robot is.
         self._task_dim = wp.array(task_dim_np, dtype=wp.int32, device=self._device)
+        self._active_frame_of_slot = wp.array2d(active_frame_of_slot_np, dtype=wp.int32, device=self._device)
         self._active_axis_of_slot = wp.array2d(active_axis_of_slot_np, dtype=wp.int32, device=self._device)
         self._axis_weight = wp.array(
             [wp.spatial_vector(*row) for row in axis_weight_np], dtype=wp.spatial_vector, device=self._device
@@ -778,13 +833,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
         self._tool_pose_buf = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=self._device, requires_grad=requires_grad
+            total_frame_count, dtype=wp.transform, device=self._device, requires_grad=requires_grad
         )
         self._desired_pose_buf = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=self._device, requires_grad=requires_grad
+            total_frame_count, dtype=wp.transform, device=self._device, requires_grad=requires_grad
         )
         self._jacobian_buf = wp.zeros(
-            (controlled_robot_count, 6, max_controlled_dofs),
+            (total_frame_count, 6, max_controlled_dofs),
             dtype=wp.float32,
             device=self._device,
             requires_grad=requires_grad,
@@ -801,7 +856,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         )
 
         self._pose_error_buf = wp.zeros(
-            controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
+            total_frame_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
         self._pose_error_active_buf = wp.zeros(
             (controlled_robot_count, max_task_dim), dtype=wp.float32, device=self._device, requires_grad=requires_grad
@@ -978,6 +1033,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         return self._total_controlled_dofs
 
     @property
+    def total_frame_count(self) -> int:
+        """Total tool-frame count across all robots, the length of every per-frame port."""
+        return self._total_frame_count
+
+    @property
     def device(self):
         return self._device
 
@@ -994,17 +1054,18 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         requires_grad = self._requires_grad
         total_controlled_dofs = self._total_controlled_dofs
         controlled_robot_count = self._controlled_robot_count
+        total_frame_count = self._total_frame_count
 
         inputs = ControllerDifferentialIKModelFree.Inputs()
         inputs.joint_q = wp.zeros(total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.tool_pose_world = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
+            total_frame_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
         inputs.desired_tool_pose_world = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
+            total_frame_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
         inputs.jacobian_tool_world = wp.zeros(
-            (controlled_robot_count, 6, self._max_controlled_dofs),
+            (total_frame_count, 6, self._max_controlled_dofs),
             dtype=wp.float32,
             device=device,
             requires_grad=requires_grad,
@@ -1094,6 +1155,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         """
         total_controlled_dofs = self._total_controlled_dofs
         controlled_robot_count = self._controlled_robot_count
+        total_frame_count = self._total_frame_count
 
         # (port, name, destination buffer, launch shape, dtype) for every port.
         bindings: list[tuple[Any, str, wp.array | None, tuple[int, ...], Any]] = [
@@ -1102,21 +1164,21 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 inputs.tool_pose_world,
                 "inputs.tool_pose_world",
                 self._tool_pose_buf,
-                (controlled_robot_count,),
+                (total_frame_count,),
                 wp.transform,
             ),
             (
                 inputs.desired_tool_pose_world,
                 "inputs.desired_tool_pose_world",
                 self._desired_pose_buf,
-                (controlled_robot_count,),
+                (total_frame_count,),
                 wp.transform,
             ),
             (
                 inputs.jacobian_tool_world,
                 "inputs.jacobian_tool_world",
                 self._jacobian_buf,
-                (controlled_robot_count, 6, self._max_controlled_dofs),
+                (total_frame_count, 6, self._max_controlled_dofs),
                 wp.float32,
             ),
         ]
@@ -1209,7 +1271,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
 
         wp.launch(
             _pose_error_kernel,
-            dim=controlled_robot_count,
+            dim=total_frame_count,
             inputs=[tool_pose, desired_pose],
             outputs=[self._pose_error_buf],
             device=self._device,
@@ -1217,7 +1279,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         wp.launch(
             _gather_task_error_kernel,
             dim=(controlled_robot_count, self._max_task_dim),
-            inputs=[self._pose_error_buf, self._task_dim, self._active_axis_of_slot, self._axis_weight],
+            inputs=[
+                self._pose_error_buf,
+                self._task_dim,
+                self._active_frame_of_slot,
+                self._active_axis_of_slot,
+                self._axis_weight,
+            ],
             outputs=[self._pose_error_active_buf],
             device=self._device,
         )
@@ -1235,6 +1303,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     self._robot_of_dof,
                     self._slot_of_dof,
                     self._task_dim,
+                    self._active_frame_of_slot,
                     self._active_axis_of_slot,
                     self._axis_weight,
                 ],
@@ -1249,7 +1318,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             wp.launch(
                 _gather_and_weight_jacobian_kernel,
                 dim=(controlled_robot_count, self._max_task_dim, self._max_controlled_dofs),
-                inputs=[jacobian, self._task_dim, self._active_axis_of_slot, self._axis_weight],
+                inputs=[
+                    jacobian,
+                    self._task_dim,
+                    self._active_frame_of_slot,
+                    self._active_axis_of_slot,
+                    self._axis_weight,
+                ],
                 outputs=[self._jacobian_weighted_buf],
                 device=self._device,
             )

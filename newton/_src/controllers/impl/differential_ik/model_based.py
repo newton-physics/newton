@@ -49,11 +49,13 @@ class ControllerDifferentialIK(ControllerBase):
     component of :attr:`~newton.Model.joint_label` respectively. Only joints
     spanning a single coordinate and a single DOF can be controlled.
 
-    **Tool selection.** ``tool_sites`` selects one Newton *site* per robot
-    that ends up with controlled joints — the point on the robot whose pose
-    is controlled. It follows the same ``list[index/pattern] | index |
-    pattern`` shape as ``joints``, matched against the leaf component of each
-    site's label. Every controlled robot must match exactly one site.
+    **Tool selection.** ``tool_sites`` selects one or more Newton *sites* per
+    robot that ends up with controlled joints — the point(s) on the robot
+    whose pose is controlled. It follows the same ``list[index/pattern] |
+    index | pattern`` shape as ``joints``, matched against the leaf
+    component of each site's label. Every controlled robot must match at
+    least one site; a robot matching several is solved as one combined,
+    weighted-least-squares task across all of its frames.
 
     Each articulation in ``model`` is one robot. Supports heterogeneous robot
     fleets — robots may have different controlled-DOF counts, and a robot may
@@ -77,26 +79,29 @@ class ControllerDifferentialIK(ControllerBase):
             rejected. A joint named explicitly is not filtered this way and
             still raises ``ValueError`` if it is not 1-coordinate/1-DOF.
         tool_sites: Site indices or label patterns selecting each controlled
-            robot's controlled point, as a list or as a single pattern.
-            Required — there is no default tool site. Raises if a
-            controlled robot matches zero or more than one site.
-        axis_weight: Non-negative per-axis weight for each of the 6
+            robot's controlled point(s), as a list or as a single pattern.
+            Required — there is no default tool site. Raises if a controlled
+            robot matches zero sites. The number of sites matched on a robot
+            sets its own frame count (see :class:`ControllerDifferentialIKModelFree`'s
+            ``frames_per_robot``) — there is no separate argument for it.
+        axis_weight: Non-negative per-axis weight for each of a frame's 6
             canonical task axes (position x, y, z, then orientation x, y,
-            z), ``diag(w)`` applied to both the Jacobian and the pose error
-            for that axis before the solve (``J_w = diag(w) @ J``,
-            ``e_w = diag(w) @ e``) — a genuine soft weight for any nonzero
-            value. An axis weighted exactly ``0`` is different in kind, not
-            just degree: it is excluded from the solve structurally (its
-            error and Jacobian rows never enter it at all), not merely
-            driven toward zero by a very small weight — this also shrinks
-            the task's own dimension, so a robot with fewer than 6
-            controlled DOFs can still be redundant if enough axes are
-            zeroed. Any combination of active axes is allowed, not just a
-            leading prefix. Pass a single ``wp.spatial_vector`` to apply the
-            same weights to every robot, or an array of shape
-            [controlled_robot_count] to set them per robot. ``None`` (the
-            default) means every axis is weighted ``1`` for every robot —
-            full, equally-trusted 6D pose.
+            z), ``diag(w)`` applied to both that frame's Jacobian rows and
+            pose error before the solve (stacked across a robot's frames as
+            ``J_w = diag(w) @ J``, ``e_w = diag(w) @ e``) — a genuine soft
+            weight for any nonzero value. An axis weighted exactly ``0`` is
+            different in kind, not just degree: it is excluded from the
+            solve structurally (its error and Jacobian rows never enter it
+            at all), not merely driven toward zero by a very small weight —
+            this also shrinks the task's own dimension, so a robot with
+            fewer than 6 controlled DOFs can still be redundant if enough
+            axes are zeroed. Any combination of active axes is allowed, not
+            just a leading prefix. Pass a single ``wp.spatial_vector`` to
+            apply the same weights to every frame, or an array of shape
+            [total_frame_count] (one entry per matched tool site, robot 0's
+            first, then robot 1's) to set them per frame. ``None`` (the
+            default) means every axis is weighted ``1`` for every frame —
+            full, equally-trusted 6D pose per frame.
         bandwidth: Output velocity scale gain, applied per controlled DOF
             after the Jacobian solve. Must be non-negative, since a negative
             value would flip the output velocity's direction. Pass a scalar
@@ -139,7 +144,8 @@ class ControllerDifferentialIK(ControllerBase):
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
             ``joint_limit_avoidance_gain``, ``joint_limit_avoidance_margin``,
-            ``joint_pos_lower``, and ``joint_pos_upper``.
+            ``joint_pos_lower``, and ``joint_pos_upper``. Requires every
+            controlled robot to match exactly one tool site.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
             comes within ``joint_limit_avoidance_margin`` of either limit.
             Required (and must be positive) when
@@ -158,7 +164,8 @@ class ControllerDifferentialIK(ControllerBase):
             live port.
         use_null_space_posture_control: Project a proportional pull toward
             ``inputs.q_des_null`` through the null-space projector. Enables
-            ``null_space_stiffness``.
+            ``null_space_stiffness``. Requires every controlled robot to
+            match exactly one tool site.
         null_space_stiffness: Posture-control proportional gain, applied per
             controlled DOF. Must be non-negative. Pass a scalar to apply
             the same gain to every controlled DOF, an array of shape
@@ -200,9 +207,9 @@ class ControllerDifferentialIK(ControllerBase):
 
         ``joint_q``/``joint_qd`` cover the whole model, since forward
         kinematics depends on uncontrolled joints too; every other field is
-        either per-robot or compact (one entry per controlled DOF). Optional
-        fields are ``None`` when the corresponding feature is disabled at
-        construction.
+        per-frame, per-robot, or compact (one entry per controlled DOF).
+        Optional fields are ``None`` when the corresponding feature is
+        disabled at construction.
         """
 
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
@@ -210,7 +217,7 @@ class ControllerDifferentialIK(ControllerBase):
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint velocities [m/s or rad/s], shape [model.joint_dof_count]."""
         desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Desired tool pose [m, unitless quaternion], world frame, shape [controlled_robot_count]."""
+        """Desired tool pose [m, unitless quaternion], world frame, shape [total_frame_count]."""
         bandwidth: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Output velocity scale gain, shape [total_controlled_dofs]. ``None`` when baked at construction."""
         damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -307,6 +314,15 @@ class ControllerDifferentialIK(ControllerBase):
         self._tool_body = tool_sites_resolved.tool_body
         self._tool_transform_body = tool_sites_resolved.tool_transform_body
         self._robot_link_idx = tool_sites_resolved.robot_link_idx
+        frames_per_robot = tool_sites_resolved.frames_per_robot
+        frames_per_robot_np = frames_per_robot.numpy()
+        total_frame_count = int(frames_per_robot_np.sum())
+        self._total_frame_count = total_frame_count
+        self._frame_robot_idx = wp.array(
+            np.repeat(np.arange(controlled_robot_count, dtype=np.int32), frames_per_robot_np),
+            dtype=wp.int32,
+            device=self._device,
+        )
 
         self._articulation_dof_idx_of_padded_dof_idx = wp.array(
             self._compute_articulation_dof_idx_of_padded_dof_idx(
@@ -327,17 +343,18 @@ class ControllerDifferentialIK(ControllerBase):
             requires_grad=self._requires_grad,
         )
         self._jacobian_tool_world = wp.zeros(
-            (controlled_robot_count, 6, max_controlled_dofs),
+            (total_frame_count, 6, max_controlled_dofs),
             dtype=wp.float32,
             device=self._device,
             requires_grad=self._requires_grad,
         )
         self._tool_pose_world = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=self._device, requires_grad=self._requires_grad
+            total_frame_count, dtype=wp.transform, device=self._device, requires_grad=self._requires_grad
         )
 
         self._model_free = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=controlled_dofs_per_robot,
+            frames_per_robot=frames_per_robot,
             axis_weight=axis_weight,
             bandwidth=bandwidth,
             damping=damping,
@@ -414,6 +431,11 @@ class ControllerDifferentialIK(ControllerBase):
         return self._total_controlled_dofs
 
     @property
+    def total_frame_count(self) -> int:
+        """Total tool-frame count across all robots, the length of every per-frame port."""
+        return self._total_frame_count
+
+    @property
     def q_start(self) -> wp.array[wp.int32]:
         """Model coordinate index of each controlled joint, shape [total_controlled_dofs]."""
         return self._q_idx
@@ -425,17 +447,17 @@ class ControllerDifferentialIK(ControllerBase):
 
     @property
     def tool_body(self) -> wp.array[wp.int32]:
-        """Body index of each controlled robot's tool site, shape [controlled_robot_count]."""
+        """Body index of each tool site, shape [total_frame_count]."""
         return self._tool_body
 
     @property
     def tool_transform_body(self) -> wp.array[wp.transform]:
-        """Tool site's transform [m, unitless quaternion] relative to its body, shape [controlled_robot_count]."""
+        """Tool site's transform [m, unitless quaternion] relative to its body, shape [total_frame_count]."""
         return self._tool_transform_body
 
     @property
     def tool_pose_world(self) -> wp.array[wp.transform]:
-        """World pose [m, unitless quaternion] of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
+        """World pose [m, unitless quaternion] of each tool site as of the latest ``step()``, shape [total_frame_count]."""
         return self._tool_pose_world
 
     @property
@@ -460,7 +482,7 @@ class ControllerDifferentialIK(ControllerBase):
         inputs.joint_q = wp.zeros(self._coord_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.joint_qd = wp.zeros(self._dof_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.desired_tool_pose_world = wp.zeros(
-            controlled_robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
+            self._total_frame_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
         inputs.bandwidth = (
             wp.zeros(total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
@@ -569,20 +591,21 @@ class ControllerDifferentialIK(ControllerBase):
 
         wp.launch(
             _tool_pose_kernel,
-            dim=self._controlled_robot_count,
+            dim=self._total_frame_count,
             inputs=[self._model_state.body_q, self._tool_body, self._tool_transform_body],
             outputs=[self._tool_pose_world],
             device=self._device,
         )
         wp.launch(
             _shift_jacobian_to_tool_kernel,
-            dim=(self._controlled_robot_count, self._max_controlled_dofs),
+            dim=(self._total_frame_count, self._max_controlled_dofs),
             inputs=[
                 self._jacobian_com_world,
                 self._model_state.body_q,
                 self._model.body_com,
                 self._tool_body,
                 self._tool_transform_body,
+                self._frame_robot_idx,
                 self._model_robot_index,
                 self._robot_link_idx,
                 self._articulation_dof_idx_of_padded_dof_idx,

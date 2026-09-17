@@ -104,18 +104,19 @@ def _tool_pose_kernel(
 
 @wp.kernel
 def _gather_task_error_kernel(
-    pose_error: wp.array[wp.spatial_vector],  # (robot_count,) full 6D error, canonical axis order
-    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    pose_error: wp.array[wp.spatial_vector],  # (frame_count,) full 6D error per frame, canonical axis order
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes across a robot's frames
+    active_frame_of_slot: wp.array2d[wp.int32],  # (robot_count, max_task_dim) compact slot -> flat frame index
     active_axis_of_slot: wp.array2d[
         wp.int32
-    ],  # (robot_count, max_task_dim) compact slot -> canonical axis, slot < task_dim
-    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    ],  # (robot_count, max_task_dim) compact slot -> canonical axis within that frame, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (frame_count,) per-frame per-canonical-axis weight, > 0 where active
     # outputs
     pose_error_active: wp.array2d[
         wp.float32
     ],  # (robot_count, max_task_dim) weighted; slot < task_dim real, rest exactly zero
 ):
-    """Gather a pose error's active axes into a compact, weighted representation, ``e_weighted = diag(w) @ e``.
+    """Gather a pose error's active axes, across a robot's frames, into a compact, weighted representation, ``e_weighted = diag(w) @ e``.
 
     Load-bearing for ``DifferentialIKMethod.TRANSPOSE`` (which uses this directly as
     ``y``, with nothing else to filter it); every solve that inverts ``JJᵀ``
@@ -127,8 +128,9 @@ def _gather_task_error_kernel(
     if slot >= task_dim[robot_idx]:
         pose_error_active[robot_idx, slot] = 0.0
         return
+    frame = active_frame_of_slot[robot_idx, slot]
     axis = active_axis_of_slot[robot_idx, slot]
-    pose_error_active[robot_idx, slot] = axis_weight[robot_idx][axis] * pose_error[robot_idx][axis]
+    pose_error_active[robot_idx, slot] = axis_weight[frame][axis] * pose_error[frame][axis]
 
 
 # ---------------------------------------------------------------------------
@@ -155,18 +157,23 @@ def _gather_task_error_kernel(
 def _gather_and_weight_jacobian_kernel(
     jacobian_tool_world: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords, canonical axis order
-    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    ],  # (frame_count, 6, max_dofs) columns are twists about each frame's tool point, world coords, canonical axis order
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes across a robot's frames
+    active_frame_of_slot: wp.array2d[wp.int32],  # (robot_count, max_task_dim) compact slot -> flat frame index
     active_axis_of_slot: wp.array2d[
         wp.int32
-    ],  # (robot_count, max_task_dim) compact slot -> canonical axis, slot < task_dim
-    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    ],  # (robot_count, max_task_dim) compact slot -> canonical axis within that frame, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (frame_count,) per-frame per-canonical-axis weight, > 0 where active
     # outputs
     jacobian_weighted: wp.array3d[
         float
     ],  # (robot_count, max_task_dim, max_dofs) = diag(w) @ J, gathered to compact slot rows; rows >= task_dim exactly zero
 ):
-    """Gather+weight a Jacobian's active-axis rows into compact slot order, ``J_w = diag(w) @ J``.
+    """Gather+weight a robot's frames' Jacobian active-axis rows into compact slot order, ``J_w = diag(w) @ J``.
+
+    Every frame's Jacobian columns share the same robot's padded DOF layout
+    (``max_dofs``), so stacking rows from several frames needs no
+    special-casing of shared columns.
 
     Feeds :func:`_svd_one_sided_jacobi`, which requires an all-zero row
     beyond a robot's own ``task_dim`` (unlike its column padding, which is
@@ -178,8 +185,9 @@ def _gather_and_weight_jacobian_kernel(
     if row >= task_dim[robot_idx]:
         jacobian_weighted[robot_idx, row, col] = 0.0
         return
+    frame = active_frame_of_slot[robot_idx, row]
     axis = active_axis_of_slot[robot_idx, row]
-    jacobian_weighted[robot_idx, row, col] = axis_weight[robot_idx][axis] * jacobian_tool_world[robot_idx, axis, col]
+    jacobian_weighted[robot_idx, row, col] = axis_weight[frame][axis] * jacobian_tool_world[frame, axis, col]
 
 
 @wp.func
@@ -386,25 +394,26 @@ def _qd_from_singular_basis_kernel(
 def _qd_from_y_kernel(
     jacobian_tool_world: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords, canonical axis order
+    ],  # (frame_count, 6, max_dofs) columns are twists about each frame's tool point, world coords, canonical axis order
     y: wp.array2d[
         wp.float32
     ],  # (robot_count, max_task_dim) compact slot space, solves (J_w J_wᵀ + λ²I) y = pose_error_active
     bandwidth: wp.array[wp.float32],  # (total_controlled_dofs,) output scale gain
     robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
     slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
-    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes across a robot's frames
+    active_frame_of_slot: wp.array2d[wp.int32],  # (robot_count, max_task_dim) compact slot -> flat frame index
     active_axis_of_slot: wp.array2d[
         wp.int32
-    ],  # (robot_count, max_task_dim) compact slot -> canonical axis, slot < task_dim
-    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    ],  # (robot_count, max_task_dim) compact slot -> canonical axis within that frame, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (frame_count,) per-frame per-canonical-axis weight, > 0 where active
     # outputs
     joint_qd_target: wp.array[wp.float32],  # (total_controlled_dofs,) compact = bandwidth * J_wᵀ @ y
 ):
     """Finish the damped-least-squares solve, ``q̇_target = bandwidth · J_wᵀy`` (``J_w = diag(w) @ J``), into the compact per-DOF layout.
 
-    Row ``slot`` of ``J_wᵀ`` is gathered from Jacobian axis
-    ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
+    Row ``slot`` of ``J_wᵀ`` is gathered from frame ``active_frame_of_slot[slot]``'s
+    Jacobian axis ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
     """
     dof = wp.tid()
     robot = robot_of_dof[dof]
@@ -413,8 +422,9 @@ def _qd_from_y_kernel(
 
     total = float(0.0)
     for task_slot in range(dim):
+        frame = active_frame_of_slot[robot, task_slot]
         axis = active_axis_of_slot[robot, task_slot]
-        weighted = axis_weight[robot][axis] * jacobian_tool_world[robot, axis, slot]
+        weighted = axis_weight[frame][axis] * jacobian_tool_world[frame, axis, slot]
         total += weighted * y[robot, task_slot]
 
     joint_qd_target[dof] = bandwidth[dof] * total
