@@ -579,6 +579,10 @@ class ArticulationView:
         self.model = model
         self.device = model.device
 
+        # cache of reshaped attribute views, keyed by (name, source identity, slice);
+        # entries are invalidated when the underlying source array is replaced
+        self._attribute_array_cache = {}
+
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
 
@@ -1167,9 +1171,13 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    @functools.lru_cache(maxsize=None)  # noqa
-    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
-        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+    @staticmethod
+    def _resolve_source_array(name: str, source: Model | State | Control):
+        """Look up the Warp array currently stored on `source` under `name`.
+
+        Returns the array and the colon-separated name used for frequency lookups.
+        """
+        # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
         if "." in name:
@@ -1183,6 +1191,49 @@ class ArticulationView:
             attrib = getattr(source, name)
             frequency_name = name
         assert isinstance(attrib, wp.array)
+        return attrib, frequency_name
+
+    @staticmethod
+    def _source_fingerprint(attrib: wp.array):
+        """Identify the allocation a cached view was built over.
+
+        Views are non-owning `wp.array(ptr=..., copy=False)` wrappers, so a cache entry is
+        only valid while the source array still points at the same memory with the same
+        layout. Gradient storage is included because views alias it as well.
+        """
+        grad = attrib.grad if attrib.requires_grad else None
+        return (
+            attrib.ptr,
+            attrib.shape,
+            attrib.strides,
+            None if grad is None else grad.ptr,
+            None if grad is None else grad.strides,
+        )
+
+    @staticmethod
+    def _cache_key(name: str, source: Model | State | Control, _slice: Slice | int | None):
+        if isinstance(_slice, slice):
+            slice_key = ("slice", _slice.start, _slice.stop, _slice.step)
+        else:
+            slice_key = _slice
+        return (name, id(source), slice_key)
+
+    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
+        attrib, _ = self._resolve_source_array(name, source)
+        key = self._cache_key(name, source, _slice)
+        entry = self._attribute_array_cache.get(key)
+        if entry is not None:
+            view, fingerprint, _source_ref, _array_ref = entry
+            if fingerprint == self._source_fingerprint(attrib):
+                return view
+        view = self._build_attribute_array(name, source, _slice=_slice)
+        # hold references to the source object and its array: the view is non-owning, and the
+        # cache key uses id(source), so neither may be collected while the entry is alive
+        self._attribute_array_cache[key] = (view, self._source_fingerprint(attrib), source, attrib)
+        return view
+
+    def _build_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
+        attrib, frequency_name = self._resolve_source_array(name, source)
 
         # get frequency info
         frequency = self.model.get_attribute_frequency(frequency_name)
