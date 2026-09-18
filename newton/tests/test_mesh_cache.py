@@ -56,6 +56,32 @@ class TestMeshCache(unittest.TestCase):
         copied.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         self.assertEqual(hash(copied), hash(mesh))
 
+    def test_roughness_texture_is_copied_and_changes_visual_hash(self):
+        """Preserve roughness data while keeping material variants distinct."""
+        mesh = _make_tet_mesh()
+        base_hash = hash(mesh)
+        mesh.roughness_texture = Mesh.Texture(
+            np.array([[0, 255], [255, 0]], dtype=np.uint8),
+            channel="g",
+            scale=(1.0, -1.0, 1.0, 1.0),
+            bias=(0.0, 1.0, 0.0, 0.0),
+            wrap_s="clamp",
+        )
+        texture_hash = hash(mesh)
+        mesh.roughness_texture_influence = 0.25
+
+        self.assertNotEqual(hash(mesh), base_hash)
+        self.assertNotEqual(hash(mesh), texture_hash)
+        copied = mesh.copy()
+        np.testing.assert_array_equal(copied.roughness_texture.source, mesh.roughness_texture.source)
+        self.assertIsNot(copied.roughness_texture.source, mesh.roughness_texture.source)
+        self.assertEqual(copied.roughness_texture.channel, "g")
+        self.assertEqual(copied.roughness_texture.scale, (1.0, -1.0, 1.0, 1.0))
+        self.assertEqual(copied.roughness_texture.bias, (0.0, 1.0, 0.0, 0.0))
+        self.assertEqual(copied.roughness_texture.wrap_s, "clamp")
+        self.assertEqual(copied.roughness_texture_influence, 0.25)
+        self.assertEqual(hash(copied), hash(mesh))
+
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     """Verify finalize() reuses the cached Warp mesh only for identical arguments.

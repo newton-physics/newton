@@ -7,6 +7,7 @@ import math
 import os
 import warnings
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -164,6 +165,113 @@ class Mesh:
             mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
+    @dataclass(frozen=True, eq=False)
+    class Texture:
+        """Texture source and portable sampling settings for mesh appearance.
+
+        Plain paths and arrays passed to :class:`Mesh` are promoted to this
+        representation with repeat wrapping and raw color-space sampling. USD
+        import uses the remaining fields to retain standard ``UsdUVTexture``
+        behavior without exposing a renderer-specific shader graph.
+        """
+
+        source: str | np.ndarray
+        """Image path, HTTP(S) URL, or pixel array."""
+
+        channel: str = "r"
+        """Scalar output channel: ``"r"``, ``"g"``, ``"b"``, or ``"a"``."""
+
+        scale: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+        """Per-channel scale applied after sampling."""
+
+        bias: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        """Per-channel bias applied after :attr:`scale`."""
+
+        fallback: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+        """Value sampled when the texture source cannot be read."""
+
+        wrap_s: str = "repeat"
+        """Horizontal address mode."""
+
+        wrap_t: str = "repeat"
+        """Vertical address mode."""
+
+        source_color_space: str = "raw"
+        """Color-space token used when sampling the source image."""
+
+        def __post_init__(self):
+            """Normalize and validate the portable texture settings."""
+            source = _normalize_texture_input(self.source)
+            if source is None:
+                raise ValueError("Texture source cannot be None.")
+            object.__setattr__(self, "source", source)
+
+            channel = str(self.channel).lower()
+            if channel not in {"r", "g", "b", "a"}:
+                raise ValueError("Texture channel must be one of 'r', 'g', 'b', or 'a'.")
+            object.__setattr__(self, "channel", channel)
+
+            for name in ("scale", "bias", "fallback"):
+                try:
+                    value = np.asarray(getattr(self, name), dtype=np.float64).reshape(-1)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"Texture {name} must contain four finite values.") from exc
+                if value.size != 4 or not np.all(np.isfinite(value)):
+                    raise ValueError(f"Texture {name} must contain four finite values.")
+                object.__setattr__(self, name, tuple(float(component) for component in value))
+
+            object.__setattr__(self, "wrap_s", str(self.wrap_s))
+            object.__setattr__(self, "wrap_t", str(self.wrap_t))
+            object.__setattr__(self, "source_color_space", str(self.source_color_space))
+
+        def copy(self) -> "Mesh.Texture":
+            """Return an independent copy, including array-backed pixels."""
+            source = self.source if isinstance(self.source, str) else self.source.copy()
+            return Mesh.Texture(
+                source,
+                channel=self.channel,
+                scale=self.scale,
+                bias=self.bias,
+                fallback=self.fallback,
+                wrap_s=self.wrap_s,
+                wrap_t=self.wrap_t,
+                source_color_space=self.source_color_space,
+            )
+
+        @classmethod
+        def _coerce(cls, value: "Mesh.Texture | str | np.ndarray | None") -> "Mesh.Texture | None":
+            """Promote a texture source to the portable representation."""
+            if value is None or isinstance(value, cls):
+                return value
+            return cls(value)
+
+        def _content_hash(self) -> int:
+            """Return a content hash including source and sampling behavior."""
+            return hash(
+                (
+                    compute_texture_hash(self.source),
+                    self.channel,
+                    self.scale,
+                    self.bias,
+                    self.fallback,
+                    self.wrap_s,
+                    self.wrap_t,
+                    self.source_color_space,
+                )
+            )
+
+        def _sampling_key(self) -> tuple:
+            """Return immutable sampling settings suitable for renderer caches."""
+            return (
+                self.channel,
+                self.scale,
+                self.bias,
+                self.fallback,
+                self.wrap_s,
+                self.wrap_t,
+                self.source_color_space,
+            )
+
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
@@ -182,6 +290,8 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
+        roughness_texture: Texture | str | np.ndarray | None = None,
+        roughness_texture_influence: float = 1.0,
         texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
         opacity: float | None = None,
@@ -204,10 +314,17 @@ class Mesh:
             color: Optional per-mesh base color (values in [0, 1]).
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
-            texture: Optional texture path/URL or image data (H, W, C).
+            texture: Optional base-color texture path/URL or image data (H, W, C).
+            roughness_texture: Optional linear roughness texture. Pass a path,
+                HTTP(S) URL, image array (H, W, C), or :class:`Mesh.Texture`
+                when channel and sampler settings must be retained.
+            roughness_texture_influence: Blend weight between :attr:`roughness` and
+                :attr:`roughness_texture` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
             texture_transform: Affine texture-coordinate transform as two rows
                 ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
-                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t`` and is
+                shared by the base-color and roughness textures.
             sdf: Optional prebuilt SDF object owned by this mesh.
             opacity: Optional per-mesh opacity in [0, 1].
         """
@@ -224,6 +341,8 @@ class Mesh:
         self.opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self._roughness_texture = Mesh.Texture._coerce(roughness_texture)
+        self._roughness_texture_influence = roughness_texture_influence
         self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
@@ -240,6 +359,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self._roughness_texture_hash = None
         self._edges = None
         self._collision_edges: np.ndarray | None = None
         self._is_watertight: bool | None = None
@@ -810,6 +930,8 @@ class Mesh:
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
+            roughness_texture=self._roughness_texture.copy() if self._roughness_texture is not None else None,
+            roughness_texture_influence=self._roughness_texture_influence,
             roughness=self._roughness,
             metallic=self._metallic,
             texture_transform=self._texture_transform,
@@ -1564,6 +1686,36 @@ class Mesh:
         return self._compute_texture_hash()
 
     @property
+    def roughness_texture(self) -> Texture | None:
+        """Optional linear roughness texture and its portable sampler settings."""
+        return self._roughness_texture
+
+    @roughness_texture.setter
+    def roughness_texture(self, value: Texture | str | np.ndarray | None):
+        self._roughness_texture = Mesh.Texture._coerce(value)
+        self._roughness_texture_hash = None
+        self._cached_hash = None
+
+    @property
+    def roughness_texture_hash(self) -> int:
+        """Content-based hash of the assigned roughness texture."""
+        if self._roughness_texture_hash is None:
+            self._roughness_texture_hash = (
+                self._roughness_texture._content_hash() if self._roughness_texture is not None else 0
+            )
+        return self._roughness_texture_hash
+
+    @property
+    def roughness_texture_influence(self) -> float:
+        """Blend weight between scalar and texture roughness in [0, 1]."""
+        return self._roughness_texture_influence
+
+    @roughness_texture_influence.setter
+    def roughness_texture_influence(self, value: float):
+        self._roughness_texture_influence = value
+        self._cached_hash = None
+
+    @property
     def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         """Affine transform applied to the authored UV coordinates."""
         return self._texture_transform
@@ -1703,7 +1855,12 @@ class Mesh:
                     digest.update(int(dimension).to_bytes(8, "big"))
                 digest.update(values.tobytes())
             digest.update(bytes([bool(self.is_solid)]))
-            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
+            texture_hashes = (
+                self._compute_texture_hash(),
+                self.roughness_texture_hash,
+                self._roughness_texture_influence if self._roughness_texture is not None else None,
+            )
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(texture_hashes)
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
