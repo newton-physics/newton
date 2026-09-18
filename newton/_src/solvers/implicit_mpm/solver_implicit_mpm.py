@@ -3079,7 +3079,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                     temporary_store=self.temporary_store,
+                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
+
+    def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
+        """Avoid global contact sorts when their candidate storage dominates launch overhead."""
+        return (
+            self.model.device.is_cuda
+            and self.velocity_basis == "Q1"
+            and self.collider_basis in ("S2", "S3")
+            and scratch.collider_node_count * 8 >= 1 << 20
+        )
 
     def _build_collider_rigidity_operator(
         self,

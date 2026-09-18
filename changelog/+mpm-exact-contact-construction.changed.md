@@ -1,0 +1,1 @@
+Skipped empty subgrid impulse rows and selected automatic first-sample row compression for large CUDA Q1 MPM contact maps when supported by Warp, preserving contact weights and accumulation order. Older Warp versions retained the triplet fallback. Keep existing solver configuration unchanged.
