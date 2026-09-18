@@ -312,7 +312,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`8`
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
@@ -344,6 +344,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+| :sup:`8` VBD supports per-DOF dry friction for REVOLUTE, PRISMATIC, and D6
+  joints with ``rigid_compliant_alm=True``. D6 axis groups must be orthonormal
+  and contain at most three axes. Positive joint friction on mimic-linked
+  joints is rejected. See :class:`~newton.solvers.SolverVBD` for details.
 
 **Actuation and control**
 
@@ -413,6 +417,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
 | :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
 | :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+  See note :sup:`8` for VBD joint-friction restrictions.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
