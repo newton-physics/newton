@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "ci" / "check_deprecation_allowlists.py"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-CHECK_COMMAND = "uv run --no-project --with packaging scripts/ci/check_deprecation_allowlists.py"
+CHECK_COMMAND = "uv run --no-project --with packaging==26.2 scripts/ci/check_deprecation_allowlists.py"
 
 spec = importlib.util.spec_from_file_location("check_deprecation_allowlists", SCRIPT)
 assert spec is not None and spec.loader is not None

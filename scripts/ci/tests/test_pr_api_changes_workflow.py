@@ -31,7 +31,7 @@ class TestPrApiChangesWorkflow(unittest.TestCase):
         """Run CI-tool regression tests explicitly in the main CI workflow."""
         ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
-            "uv run --no-project --with packaging -m unittest discover -s scripts/ci/tests",
+            "uv run --no-project --with packaging==26.2 -m unittest discover -s scripts/ci/tests",
             ci_workflow,
         )
 
