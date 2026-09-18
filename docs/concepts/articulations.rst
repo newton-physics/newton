@@ -301,7 +301,8 @@ impulse divided by time, nor a peak impact load. It does not populate
 
 For motor sizing and effort analysis, the optional ``joint_effort`` output
 reports feedforward actuation plus the solved drive effort, with a
-``joint_armature * (qd - qd_prev) / dt`` correction. It is indexed like
+``joint_armature * (qd - qd_prev) / dt`` correction for armature that is not
+simulated by the selected solve path. It is indexed like
 ``joint_qd``, in N or N·m. Actuation is projected onto the joint's motion
 axes, including the moving axes of multi-axis D6 joints. Friction and
 viscous loss already affect the solved motor effort; adding them again would
@@ -318,10 +319,13 @@ controller should divide it between motors. Other independent joints keep
 their own effort entries. This estimate covers revolute, prismatic, and D6
 coordinates; unsupported and disabled entries are zero.
 
-VBD still does not simulate armature inertia. The motor-side correction
-estimates the additional effort needed to reproduce the **observed motion**
-with joint-side reflected armature; it does not change the simulated reaction
-or predict the different trajectory of a simulation with that inertia added.
+The experimental block-sparse solve simulates revolute-joint armature inside
+its articulations. For those joints, the drive effort already accounts for
+that inertia, so no motor-side correction is added. The local solve and other
+joint types do not simulate armature: their correction estimates additional
+effort needed to reproduce the **observed motion** with joint-side reflected
+armature. It does not change the simulated reaction or predict the different
+trajectory of a simulation with that inertia added.
 Joint velocity/effort clamps remain unsupported. PhysX likewise distinguishes
 armature from joint-internal force mechanisms in its
 `incoming-joint force documentation <https://nvidia-omniverse.github.io/PhysX/physx/5.4.1/docs/Articulations.html#detail-on-included-forces>`_.
@@ -1215,11 +1219,11 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
      ``control.joint_f``) and joint limits are applied alongside the
      loop-closure constraint, subject to each solver's general joint-feature
      support (see :ref:`Joint feature support`).
-     :class:`~newton.solvers.SolverVBD` and
-     :class:`~newton.solvers.SolverKamino` use the same flat per-joint
-     iteration but support a narrower set of joint types and features, so
-     the same loop-closure pattern works only within their respective
-     supported subsets.
+     :class:`~newton.solvers.SolverVBD` in local mode and
+     :class:`~newton.solvers.SolverKamino` use flat constraint iterations but
+     support a narrower set of joint types and features, so the same
+     loop-closure pattern works only within their respective supported
+     subsets. SolverVBD's block-sparse mode is described below.
 
    - **Generalized-coordinate solvers** carry only tree-joint coordinates in
      their state vector and must handle the loop closure separately.
@@ -1233,6 +1237,48 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
    In all cases the loop-closing joint is invisible to :func:`newton.eval_fk`,
    :func:`newton.eval_ik`, and :class:`~newton.selection.ArticulationView` —
    those walk the articulation tree only.
+
+.. _Loop closure inside an articulation:
+
+Loop closures inside an articulation
+------------------------------------
+
+A maximal-coordinate solver that assembles and factorizes a whole articulation
+at once benefits from having the loop-closing joint inside the articulation
+range, so the closure is part of the same linear system as the tree joints. For
+that case :meth:`~newton.ModelBuilder.add_articulation` accepts
+``allow_closed_loops=True``, which relaxes the single-parent check and lets a
+body be the child of more than one joint in the range:
+
+.. code-block:: python
+
+   # Same four-bar as above, but the closure joint is declared as part of the
+   # articulation instead of being left outside it.
+   builder.add_articulation([j_root, j_a, j_b, j_loop], allow_closed_loops=True)
+
+:class:`~newton.solvers.SolverVBD` with
+``rigid_articulation_solve="block_sparse_joints"`` uses this to include the
+closure in the articulation's direct block solve.
+
+The sparse solve is deliberately articulation-centric: bodies outside every
+declared articulation continue through VBD's regular colored local solve.
+Joints between standalone bodies remain on that local path. A joint outside the
+articulation ranges may not touch an articulation body, so cross-articulation
+joints and omitted loop closures are rejected when the sparse solver is
+constructed. Put a loop-closing joint inside a single articulation to include
+it in the direct factorization, or use the local solve for models whose joints
+must cross articulation boundaries.
+
+.. warning::
+
+   An articulation built with ``allow_closed_loops=True`` is **not** a kinematic
+   tree, so routines that sweep an articulation range as a tree do not produce
+   meaningful results for it. In particular :func:`newton.eval_fk` will place a
+   body using whichever joint in the range it visits last, and
+   :class:`~newton.solvers.SolverFeatherstone` accepts the model without
+   reporting the topology. Use this option only for models driven by a solver
+   that consumes the articulation in maximal coordinates, and prefer the
+   omit-from-articulation pattern above otherwise.
 
 .. note::
 

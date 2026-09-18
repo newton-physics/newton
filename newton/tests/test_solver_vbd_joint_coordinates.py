@@ -75,7 +75,7 @@ def test_vbd_continuous_joint_output(test, device):
                             np.testing.assert_allclose(state.joint_qd.numpy(), expected_rate, atol=0.02)
 
 
-def test_vbd_multiturn_drive_limit(test, device):
+def test_vbd_multiturn_drive_limit(test, device, *, solve="local"):
     """Drive ordinary joints over multiple turns and enforce limits beyond a revolution."""
     for compliant in (True, False):
         for d6 in (False, True):
@@ -93,7 +93,9 @@ def test_vbd_multiturn_drive_limit(test, device):
                     control = model.control()
                     control.joint_target_q.fill_(target)
                     state, next_state = model.state(), model.state()
-                    solver = newton.solvers.SolverVBD(model, iterations=16, rigid_compliant_alm=compliant)
+                    solver = newton.solvers.SolverVBD(
+                        model, iterations=16, rigid_compliant_alm=compliant, rigid_articulation_solve=solve
+                    )
                     for _ in range(480):
                         solver.step(state, next_state, control, None, 1.0 / 120.0)
                         state, next_state = next_state, state
@@ -190,7 +192,7 @@ def test_vbd_joint_coordinate_reset_flags(test, device):
     test.assertIsNone(next_state.joint_q)
 
 
-def test_vbd_multiaxis_d6_drive(test, device):
+def test_vbd_multiaxis_d6_drive(test, device, *, solve="local"):
     """Drive each axis of two- and three-axis D6 joints beyond two revolutions."""
     for axes in (2, 3):
         for axis in range(axes):
@@ -203,7 +205,9 @@ def test_vbd_multiaxis_d6_drive(test, device):
                 control = model.control()
                 control.joint_target_q.assign(target)
                 state, next_state = model.state(), model.state()
-                solver = newton.solvers.SolverVBD(model, iterations=16, rigid_compliant_alm=True)
+                solver = newton.solvers.SolverVBD(
+                    model, iterations=16, rigid_compliant_alm=True, rigid_articulation_solve=solve
+                )
 
                 def advance(solver=solver, control=control):
                     nonlocal state, next_state
@@ -270,6 +274,16 @@ for test_function in (
     test_vbd_two_axis_coordinate_gradients,
 ):
     add_function_test(TestSolverVBDJointCoordinates, test_function.__name__, test_function, devices=get_test_devices())
+
+
+for test_function in (test_vbd_multiturn_drive_limit, test_vbd_multiaxis_d6_drive):
+    add_function_test(
+        TestSolverVBDJointCoordinates,
+        test_function.__name__ + "_sparse",
+        test_function,
+        devices=get_test_devices(),
+        solve="block_sparse_joints",
+    )
 
 
 if __name__ == "__main__":

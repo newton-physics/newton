@@ -31,9 +31,11 @@ def _make_joint_model(device, joint_type, *, friction=0.0, damping=0.0, **joint_
     return builder.finalize(device=device)
 
 
-def _setup(model, *, alm=True):
+def _setup(model, *, alm=True, solve="local"):
     """Allocate a solver, initialized states, and force-query buffers."""
-    solver = newton.solvers.SolverVBD(model, iterations=64, rigid_compliant_alm=alm, rigid_avbd_alpha=0.0)
+    solver = newton.solvers.SolverVBD(
+        model, iterations=64, rigid_compliant_alm=alm, rigid_avbd_alpha=0.0, rigid_articulation_solve=solve
+    )
     state, next_state = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     previous = wp.clone(state.body_q)
@@ -41,7 +43,7 @@ def _setup(model, *, alm=True):
     return solver, state, next_state, previous, wrench
 
 
-def test_vbd_joint_force_losses(test, device):
+def test_vbd_joint_force_losses(test, device, *, solve="local"):
     """Include actuation, Coulomb friction, and viscous damping in both solver modes."""
     for alm in (False, True):
         for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC):
@@ -49,7 +51,7 @@ def test_vbd_joint_force_losses(test, device):
                 with test.subTest(alm=alm, joint_type=joint_type, direction=direction):
                     model = _make_joint_model(device, joint_type, friction=0.7, damping=0.3)
                     model.joint_qd.fill_(direction * 2.0)
-                    solver, state, next_state, previous, wrench = _setup(model, alm=alm)
+                    solver, state, next_state, previous, wrench = _setup(model, alm=alm, solve=solve)
                     control = model.control()
                     control.joint_f.fill_(direction * 3.0)
                     solver.step(state, next_state, control, None, _DT)
@@ -77,7 +79,7 @@ def test_vbd_joint_force_losses(test, device):
                     np.testing.assert_array_equal(wrench.numpy(), first)
 
 
-def test_vbd_joint_force_fixed_frame(test, device):
+def test_vbd_joint_force_fixed_frame(test, device, *, solve="local"):
     """Report fixed-joint loads in the child joint frame, shifted away from the COM."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     body = builder.add_link(mass=2.0, inertia=wp.mat33(np.eye(3)), com=wp.vec3(0.4, -0.2, 0.3))
@@ -91,7 +93,7 @@ def test_vbd_joint_force_fixed_frame(test, device):
     builder.color()
     model = builder.finalize(device=device)
     newton.eval_fk(model, model.joint_q, model.joint_qd, model)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     for _ in range(80):
         wp.copy(previous, state.body_q)
         solver.step(state, next_state, None, None, _DT)
@@ -111,7 +113,7 @@ def test_vbd_joint_force_fixed_frame(test, device):
     np.testing.assert_allclose(wrench.numpy()[0], expected, atol=0.03)
 
 
-def test_vbd_joint_force_drive_limit(test, device):
+def test_vbd_joint_force_drive_limit(test, device, *, solve="local"):
     """Include converged drive and limit efforts independently of feedforward actuation."""
     for alm in (False, True):
         for limit in (False, True):
@@ -122,7 +124,7 @@ def test_vbd_joint_force_drive_limit(test, device):
                 model = _make_joint_model(device, newton.JointType.REVOLUTE, **options)
                 model.joint_q.fill_(0.3 if limit else 0.1)
                 model.joint_qd.fill_(0.5)
-                solver, state, next_state, previous, wrench = _setup(model, alm=alm)
+                solver, state, next_state, previous, wrench = _setup(model, alm=alm, solve=solve)
                 previous_qd = wp.clone(state.joint_qd)
                 effort = wp.empty_like(state.joint_qd)
                 control = model.control()
@@ -144,7 +146,7 @@ def test_vbd_joint_force_drive_limit(test, device):
                 test.assertAlmostEqual(float(effort.numpy()[0]), 0.0 if limit else expected, delta=0.03)
 
 
-def test_vbd_joint_force_mimic(test, device):
+def test_vbd_joint_force_mimic(test, device, *, solve="local", standalone=False):
     """Include both sides of multiple mimic reactions without double-counting follower loads."""
     for alm in (False, True):
         with test.subTest(alm=alm):
@@ -162,10 +164,13 @@ def test_vbd_joint_force_mimic(test, device):
             builder.set_joint_mimic(joints[1], joints[0], (0.0, -1.0))
             builder.set_joint_mimic(joints[2], joints[0], (0.0, 2.0))
             builder.joint_qd[:] = ratios.tolist()
+            if standalone:
+                # Exercise the local-body sweep after the sparse assembly.
+                builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
             builder.color()
             model = builder.finalize(device=device)
             model.joint_armature.assign([0.3, 0.5, 0.7])
-            solver, state, next_state, previous, wrench = _setup(model, alm=alm)
+            solver, state, next_state, previous, wrench = _setup(model, alm=alm, solve=solve)
             previous_qd = wp.clone(state.joint_qd)
             effort = wp.empty_like(state.joint_qd)
             control = model.control()
@@ -190,7 +195,7 @@ def test_vbd_joint_force_mimic(test, device):
             np.testing.assert_allclose(effort.numpy(), [5.0 + rotor_effort, 0.0, 0.0], atol=2.0e-4)
 
 
-def test_vbd_joint_force_serial_mimic(test, device):
+def test_vbd_joint_force_serial_mimic(test, device, *, solve="local"):
     """Keep incoming and outgoing reactions distinct on a serial mimic/passive chain."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     joints = []
@@ -206,7 +211,7 @@ def test_vbd_joint_force_serial_mimic(test, device):
     builder.joint_qd[:] = [1.0, 1.0, 0.5]
     builder.color()
     model = builder.finalize(device=device)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     initial_omega = state.body_qd.numpy()[:, 5].copy()
     control = model.control()
     control.joint_f.assign([5.0, 0.0, 0.0])
@@ -217,7 +222,7 @@ def test_vbd_joint_force_serial_mimic(test, device):
     np.testing.assert_allclose(torque - np.append(torque[1:], 0.0), acceleration, atol=0.03)
 
 
-def test_vbd_joint_force_d6(test, device):
+def test_vbd_joint_force_d6(test, device, *, solve="local"):
     """Report distinct translational and rotational D6 losses in the moving child frame."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -233,7 +238,7 @@ def test_vbd_joint_force_d6(test, device):
     builder.joint_qd[:] = [1.0, 2.0]
     builder.color()
     model = builder.finalize(device=device)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     control = model.control()
     control.joint_f.assign([2.0, 3.0])
     solver.step(state, next_state, control, None, _DT)
@@ -245,7 +250,7 @@ def test_vbd_joint_force_d6(test, device):
     np.testing.assert_allclose(wrench.numpy()[0], expected, atol=2.0e-4)
 
 
-def test_vbd_joint_force_contact(test, device):
+def test_vbd_joint_force_contact(test, device, *, solve="local"):
     """Keep transmitted actuator load nonzero when an external contact balances it."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=1.0e4, kd=10.0)
@@ -260,7 +265,7 @@ def test_vbd_joint_force_contact(test, device):
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
     contacts = pipeline.contacts()
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     control = model.control()
     control.joint_f.fill_(-5.0)
     for _ in range(80):
@@ -274,10 +279,10 @@ def test_vbd_joint_force_contact(test, device):
     test.assertAlmostEqual(float(wrench.numpy()[0, 2]), -5.0, delta=1.0e-4)
 
 
-def test_vbd_joint_force_validation(test, device):
+def test_vbd_joint_force_validation(test, device, *, solve="local"):
     """Reject invalid query inputs and clear outputs for disabled joints."""
     model = _make_joint_model(device, newton.JointType.PRISMATIC, friction=1.0)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     for dt in (0.0, -1.0, float("nan"), float("inf")):
         with test.assertRaises(ValueError):
             solver.eval_joint_forces(state, wrench, body_q_prev=previous, dt=dt)
@@ -304,12 +309,12 @@ def test_vbd_joint_force_validation(test, device):
     np.testing.assert_array_equal(wrench.numpy(), np.zeros((1, 6)))
 
 
-def test_vbd_joint_force_capture(test, device):
+def test_vbd_joint_force_capture(test, device, *, solve="local"):
     """Replay step and force-query kernels together without allocations or history loss."""
     model = _make_joint_model(device, newton.JointType.PRISMATIC, friction=0.7, damping=0.3)
     model.joint_qd.fill_(2.0)
     model.joint_armature.fill_(1.2)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     previous_qd = wp.clone(state.joint_qd)
     effort = wp.empty_like(state.joint_qd)
     control = model.control()
@@ -346,7 +351,7 @@ def test_vbd_joint_force_capture(test, device):
         test.assertAlmostEqual(float(effort.numpy()[0]), motor_effort, delta=2.0e-4)
 
 
-def test_vbd_joint_effort_multiaxis(test, device):
+def test_vbd_joint_effort_multiaxis(test, device, *, solve="local"):
     """Project D6 actuation onto its moving motion axes, not coordinate gradients."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -358,7 +363,7 @@ def test_vbd_joint_effort_multiaxis(test, device):
     builder.joint_q[:] = [0.3, 0.4, 0.5]
     builder.color()
     model = builder.finalize(device=device)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     previous_qd = wp.clone(state.joint_qd)
     effort = wp.empty_like(state.joint_qd)
     control = model.control()
@@ -382,7 +387,7 @@ def test_vbd_joint_effort_multiaxis(test, device):
     np.testing.assert_allclose(effort.numpy(), expected, atol=2.0e-5)
 
 
-def test_vbd_joint_effort_rotating_parent(test, device):
+def test_vbd_joint_effort_rotating_parent(test, device, *, solve="local"):
     """Match linear-drive reporting to the solver with a rotating kinematic parent."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), is_kinematic=True)
@@ -393,7 +398,7 @@ def test_vbd_joint_effort_rotating_parent(test, device):
     builder.joint_q[-1] = 0.4
     builder.color()
     model = builder.finalize(device=device)
-    solver, state, next_state, previous, wrench = _setup(model)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
     control = model.control()
     solver.step(state, next_state, control, None, _DT)
     state, next_state = next_state, state
@@ -419,6 +424,31 @@ def test_vbd_joint_effort_rotating_parent(test, device):
     test.assertAlmostEqual(float(effort.numpy()[-1]), float(wp.dot(axis_world, force_world)), delta=0.01)
 
 
+def test_vbd_joint_effort_simulated_armature(test, device, *, solve="local"):
+    """Avoid adding an armature estimate when sparse dynamics already simulate it."""
+    model = _make_joint_model(device, newton.JointType.REVOLUTE, armature=2.0)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
+    previous_qd = wp.clone(state.joint_qd)
+    effort = wp.empty_like(state.joint_qd)
+    control = model.control()
+    control.joint_f.fill_(3.0)
+    solver.step(state, next_state, control, None, _DT)
+    solver.eval_joint_forces(
+        next_state,
+        wrench,
+        body_q_prev=previous,
+        dt=_DT,
+        control=control,
+        joint_effort=effort,
+        joint_qd_prev=previous_qd,
+    )
+    acceleration = float(next_state.joint_qd.numpy()[0]) / _DT
+    simulated = solve == "block_sparse_joints"
+    test.assertAlmostEqual(acceleration, 1.0 if simulated else 3.0, delta=0.005)
+    test.assertAlmostEqual(float(wrench.numpy()[0, 5]), 3.0, delta=2.0e-4)
+    test.assertAlmostEqual(float(effort.numpy()[0]), 3.0 if simulated else 3.0 + 2.0 * acceleration, delta=0.005)
+
+
 class TestSolverVBDJointForces(unittest.TestCase):
     pass
 
@@ -435,10 +465,28 @@ for test_function in (
     test_vbd_joint_force_capture,
     test_vbd_joint_effort_multiaxis,
     test_vbd_joint_effort_rotating_parent,
+    test_vbd_joint_effort_simulated_armature,
 ):
     add_function_test(
         TestSolverVBDJointForces, test_function.__name__, test_function, devices=get_test_devices(mode="basic")
     )
+    add_function_test(
+        TestSolverVBDJointForces,
+        test_function.__name__ + "_sparse",
+        test_function,
+        devices=get_test_devices(mode="basic"),
+        solve="block_sparse_joints",
+    )
+
+
+add_function_test(
+    TestSolverVBDJointForces,
+    "test_vbd_joint_force_mimic_sparse_with_local_body",
+    test_vbd_joint_force_mimic,
+    devices=get_test_devices(mode="basic"),
+    solve="block_sparse_joints",
+    standalone=True,
+)
 
 
 if __name__ == "__main__":

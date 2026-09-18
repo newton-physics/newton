@@ -305,7 +305,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - 🟨 :sup:`9`
      - |yes|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
@@ -427,6 +427,7 @@ or recapturing a CUDA graph. Other VBD joint types currently ignore this propert
 | :sup:`5` XPBD uses mass-weighted mimic corrections. VBD uses its assembled body Hessians and retains the mimic reaction forces within the timestep, so drives, friction, and contacts participate in the coupled solve. Both perform one mimic solve per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`9` VBD supports revolute-joint armature with the experimental ``block_sparse_joints`` articulation solve.
 
 
 

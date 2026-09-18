@@ -10,7 +10,7 @@ The Viewer plots the force magnitude, net torque about the hinge axis, and
 motor-effort estimate. Wrenches act from parent to child, in the child joint
 frame, about the joint origin. The net torque includes friction and damping;
 it is not the motor torque alone. The motor estimate includes the drive effort
-and an armature * acceleration correction. VBD does not simulate armature
+and an armature * acceleration correction. The local VBD solve does not simulate armature
 inertia; that correction estimates extra effort for the observed motion.
 
 Each plotted sample is from the last substep, not an average over the frame.
@@ -132,7 +132,9 @@ class Example:
     def gui(self, ui):
         ui.text_wrapped("Blue pendulum: one driven hinge with friction and viscous damping. Right-drag to add a load.")
         ui.text_wrapped("Force and net torque act on the pendulum at the orange hinge, in its child joint frame.")
-        ui.text_wrapped("Motor estimate = drive effort + armature x acceleration. Armature is not simulated by VBD.")
+        ui.text_wrapped(
+            "Motor estimate = drive effort + armature x acceleration. The local solve ignores armature inertia."
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

@@ -27,6 +27,7 @@ wp.set_module_options({"enable_backward": False})
 class JointForceData:
     coordinates: JointCoordinateData
     body_q_rest: wp.array[wp.transform]
+    body_articulation_local: wp.array[int]
     joint_enabled: wp.array[bool]
     joint_target_q_start: wp.array[int]
     joint_target_ke: wp.array[float]
@@ -288,11 +289,17 @@ def evaluate_joint_forces(
         if reference >= 0 and data.joint_enabled[reference]:
             recipient = reference
             ratio = coeffs[joint][1]
+        armature_simulated = False
+        if data.body_articulation_local and jt == JointType.REVOLUTE:
+            armature_simulated = data.body_articulation_local[child] >= 0
         for component in range(c.dof_dim[joint, 0] + c.dof_dim[joint, 1]):
             dof = c.qd_start[joint] + component
             effort = _actuation_effort(c, joint, component, body_q, actuation)
             effort += _drive_effort(data, joint, component, body_q, body_q_prev, joint_target_q, joint_target_qd, dt)
-            effort += joint_armature[dof] * (joint_qd[dof] - joint_qd_prev[dof]) / dt
+            # Sparse revolute inertia already contributes to the solved drive
+            # effort. Only estimate armature that the selected path ignores.
+            if not armature_simulated:
+                effort += joint_armature[dof] * (joint_qd[dof] - joint_qd_prev[dof]) / dt
             # Virtual work: a follower's effort contributes ratio * effort at
             # its reference. Keep follower entries zero instead of counting twice.
             wp.atomic_add(joint_effort, c.qd_start[recipient] + component, ratio * effort)
