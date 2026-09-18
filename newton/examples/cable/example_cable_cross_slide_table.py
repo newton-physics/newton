@@ -179,7 +179,8 @@ def add_pulley(
 
     A parent of ``None`` means the pulley is one of the two driven blue
     inputs. Pulleys with a parent are free-spinning revolute joints on that
-    stage body.
+    stage body: their bearings are frictionless, while cable traction comes
+    from the sheave contact material.
     """
     body = builder.add_link(
         xform=wp.transform(center, wp.quat_identity()),
@@ -200,7 +201,7 @@ def add_pulley(
             parent_xform=wp.transform(center - parent_position, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             armature=1.0e-4,
-            friction=1.0,
+            friction=0.0,
             label=f"{label}_free_axle" if label else None,
         )
 
