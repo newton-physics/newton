@@ -175,6 +175,7 @@ class Contacts:
         requested_attributes: set[str] | None = None,
         contact_matching: bool = False,
         contact_report: bool = False,
+        rigid_contact_surface_velocity: bool = False,
         soft_self_contact: bool = False,
         particle_count: int = 0,
         tri_count: int = 0,
@@ -218,6 +219,9 @@ class Contacts:
                 :attr:`rigid_contact_broken_indices`,
                 :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
+            rigid_contact_surface_velocity: Allocate per-contact rigid surface
+                velocities. The collision pipeline enables this only when the
+                model contains an opted-in mesh.
             soft_self_contact: Allocate tri-mesh self-contact result buffers
                 (:attr:`soft_self_contact_data`). Requires the mesh sizes below.
             particle_count: Number of mesh vertices; used only when
@@ -267,6 +271,10 @@ class Contacts:
             """Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Body-frame contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            self.rigid_contact_surface_velocity = wp.zeros(
+                rigid_contact_max if rigid_contact_surface_velocity else 0, dtype=wp.vec3
+            )
+            """World-space surface velocity of shape 1 relative to shape 0 [m/s]. Empty when disabled."""
             self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Body-frame friction anchor offset for shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
 

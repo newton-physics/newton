@@ -1113,6 +1113,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
 
+    def test_entry_contact_buffer_detects_surface_velocity_layout_change(self):
+        """Recreate filtered contacts when surface-velocity allocation changes."""
+        contacts = newton.Contacts(1, 0, device="cpu")
+        filtered = newton.Contacts(1, 0, device="cpu", rigid_contact_surface_velocity=True)
+
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(filtered, contacts))
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(contacts, filtered))
+
     def test_entry_contacts_preserves_contact_matching_mode(self):
         """Preserve matching mode metadata when coupled entry buffers are reused."""
         coupled = SolverCoupled(

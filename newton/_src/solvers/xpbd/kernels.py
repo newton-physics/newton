@@ -2454,8 +2454,8 @@ def compute_angular_correction(
     return delta_lambda
 
 
-@wp.kernel
-def solve_body_contact_positions(
+@wp.func
+def _solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_flags: wp.array[wp.int32],
@@ -2466,6 +2466,7 @@ def solve_body_contact_positions(
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.vec3,
     contact_offset0: wp.array[wp.vec3],
     contact_offset1: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
@@ -2478,12 +2479,11 @@ def solve_body_contact_positions(
     shape_material_mu_rolling: wp.array[float],
     relaxation: float,
     dt: float,
-    # outputs
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
+    tid: int,
 ):
-    tid = wp.tid()
 
     count = contact_count[0]
     if tid >= count:
@@ -2617,6 +2617,7 @@ def solve_body_contact_positions(
         if body_b >= 0 and (body_flags[body_b] & int(BodyFlags.KINEMATIC)) != 0:
             v_b = velocity_at_point(body_qd[body_b], r_b)
             rel_v_kin_t = rel_v_kin_t + (v_b - wp.dot(n, v_b) * n)
+        rel_v_kin_t += contact_surface_velocity - wp.dot(n, contact_surface_velocity) * n
         friction_delta += rel_v_kin_t * dt
 
         perp = wp.normalize(friction_delta)
@@ -2690,6 +2691,127 @@ def solve_body_contact_positions(
 
     if contact_impulse:
         wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
+
+
+@wp.kernel
+def solve_body_contact_positions(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
+    relaxation: float,
+    dt: float,
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    _solve_body_contact_positions(
+        body_q,
+        body_qd,
+        body_flags,
+        body_com,
+        body_m_inv,
+        body_I_inv,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        wp.vec3(0.0),
+        contact_offset0,
+        contact_offset1,
+        contact_normal,
+        contact_thickness0,
+        contact_thickness1,
+        contact_shape0,
+        contact_shape1,
+        shape_material_mu,
+        shape_material_mu_torsional,
+        shape_material_mu_rolling,
+        relaxation,
+        dt,
+        deltas,
+        contact_inv_weight,
+        contact_impulse,
+        tid,
+    )
+
+
+@wp.kernel
+def solve_body_contact_positions_surface_velocity(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
+    relaxation: float,
+    dt: float,
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    _solve_body_contact_positions(
+        body_q,
+        body_qd,
+        body_flags,
+        body_com,
+        body_m_inv,
+        body_I_inv,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        contact_surface_velocity[tid],
+        contact_offset0,
+        contact_offset1,
+        contact_normal,
+        contact_thickness0,
+        contact_thickness1,
+        contact_shape0,
+        contact_shape1,
+        shape_material_mu,
+        shape_material_mu_torsional,
+        shape_material_mu_rolling,
+        relaxation,
+        dt,
+        deltas,
+        contact_inv_weight,
+        contact_impulse,
+        tid,
+    )
 
 
 @wp.kernel

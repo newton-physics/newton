@@ -378,8 +378,8 @@ def eval_triangles_body_contact(
     wp.atomic_add(tri_f, k, f_total * bary[2])
 
 
-@wp.kernel
-def eval_body_contact(
+@wp.func
+def _eval_body_contact(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
@@ -392,6 +392,7 @@ def eval_body_contact(
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.vec3,
     contact_normal: wp.array[wp.vec3],
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
@@ -402,10 +403,9 @@ def eval_body_contact(
     rigid_contact_friction_scale: wp.array[float],
     force_in_world_frame: bool,
     friction_smoothing: float,
-    # outputs
     body_f: wp.array[wp.spatial_vector],
+    tid: int,
 ):
-    tid = wp.tid()
 
     count = contact_count[0]
     if tid >= count:
@@ -505,6 +505,7 @@ def eval_body_contact(
 
     # relative velocity
     v = bv_a - bv_b
+    v -= contact_surface_velocity
 
     # print(v)
 
@@ -554,6 +555,119 @@ def eval_body_contact(
             wp.atomic_sub(body_f, body_b, wp.spatial_vector(f_total, wp.cross(bx_b, f_total)))
         else:
             wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
+
+
+@wp.kernel
+def eval_body_contact(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_kf: wp.array[float],
+    shape_material_ka: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    rigid_contact_stiffness: wp.array[float],
+    rigid_contact_damping: wp.array[float],
+    rigid_contact_friction_scale: wp.array[float],
+    force_in_world_frame: bool,
+    friction_smoothing: float,
+    body_f: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    _eval_body_contact(
+        body_q,
+        body_qd,
+        body_com,
+        shape_material_ke,
+        shape_material_kd,
+        shape_material_kf,
+        shape_material_ka,
+        shape_material_mu,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        wp.vec3(0.0),
+        contact_normal,
+        contact_shape0,
+        contact_shape1,
+        contact_margin0,
+        contact_margin1,
+        rigid_contact_stiffness,
+        rigid_contact_damping,
+        rigid_contact_friction_scale,
+        force_in_world_frame,
+        friction_smoothing,
+        body_f,
+        tid,
+    )
+
+
+@wp.kernel
+def eval_body_contact_surface_velocity(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_kf: wp.array[float],
+    shape_material_ka: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    rigid_contact_stiffness: wp.array[float],
+    rigid_contact_damping: wp.array[float],
+    rigid_contact_friction_scale: wp.array[float],
+    force_in_world_frame: bool,
+    friction_smoothing: float,
+    body_f: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    _eval_body_contact(
+        body_q,
+        body_qd,
+        body_com,
+        shape_material_ke,
+        shape_material_kd,
+        shape_material_kf,
+        shape_material_ka,
+        shape_material_mu,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        contact_surface_velocity[tid],
+        contact_normal,
+        contact_shape0,
+        contact_shape1,
+        contact_margin0,
+        contact_margin1,
+        rigid_contact_stiffness,
+        rigid_contact_damping,
+        rigid_contact_friction_scale,
+        force_in_world_frame,
+        friction_smoothing,
+        body_f,
+        tid,
+    )
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
@@ -609,6 +723,7 @@ def eval_body_contact_forces(
     body_qd: wp.array | None = None,
 ):
     if contacts is not None and contacts.rigid_contact_max:
+        has_surface_velocity = len(contacts.rigid_contact_surface_velocity) > 0
         if body_f_out is None:
             body_f_out = state.body_f
         if body_q is None:
@@ -616,7 +731,7 @@ def eval_body_contact_forces(
         if body_qd is None:
             body_qd = state.body_qd
         wp.launch(
-            kernel=eval_body_contact,
+            kernel=(eval_body_contact_surface_velocity if has_surface_velocity else eval_body_contact),
             dim=contacts.rigid_contact_max,
             inputs=[
                 body_q,
@@ -631,6 +746,7 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                *([contacts.rigid_contact_surface_velocity] if has_surface_velocity else []),
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
