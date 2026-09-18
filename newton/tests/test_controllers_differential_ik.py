@@ -2735,22 +2735,49 @@ class TestControllerDifferentialIKModelFreeMultiFrame(unittest.TestCase):
                 device=device,
             )
 
-    def test_joint_limit_avoidance_rejects_multi_frame_robot(self):
-        """Null-space secondary objectives aren't defined for a multi-frame primary task."""
+    def test_null_space_velocity_does_not_disturb_multi_frame_primary_task(self):
+        """With zero primary-task error across both frames, qd must satisfy the stacked J_active @ qd == 0.
+
+        null_space_axes defaults to axis_weight, so the null-space
+        projector's own protected task here is the same 2-frame, 6-row
+        stack (3 position rows each) the primary DLS solve combines --
+        exercising the same frame-widened null-space machinery
+        (_gather_jacobian_by_axis_kernel/_svd_reconstruct_scaled_kernel/
+        _null_space_projector_kernel) across more than one frame.
+        """
         device = wp.get_device()
-        with self.assertRaises(ValueError):
-            ControllerDifferentialIKModelFree(
-                controlled_dofs_per_robot=_dofs_arr([7], device),
-                frames_per_robot=_dofs_arr([2], device),
-                bandwidth=1.0,
-                damping=0.1,
-                use_joint_limit_avoidance=True,
-                joint_limit_avoidance_gain=1.0,
-                joint_limit_avoidance_margin=0.1,
-                joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
-                joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
-                device=device,
-            )
+        rng = np.random.default_rng(31)
+        max_dofs = 8
+        jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+        jacobian_np[0, :3, :] = rng.normal(size=(3, max_dofs))
+        jacobian_np[1, :3, :] = rng.normal(size=(3, max_dofs))
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([max_dofs], device),
+            frames_per_robot=_dofs_arr([2], device),
+            axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, _POSITION_ONLY_AXIS_WEIGHT], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=2.0,
+            joint_limit_avoidance_margin=0.3,
+            joint_pos_lower=wp.full(max_dofs, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(max_dofs, 1.0, dtype=wp.float32, device=device),
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            device=device,
+        )
+        pose = _identity_transform(2, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        inputs.q_des_null = wp.zeros(max_dofs, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        j_active_stacked = np.concatenate([jacobian_np[0, :3, :], jacobian_np[1, :3, :]], axis=0)
+        np.testing.assert_allclose(j_active_stacked.astype(np.float64) @ qd.astype(np.float64), np.zeros(6), atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
