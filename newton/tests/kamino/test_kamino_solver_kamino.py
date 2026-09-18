@@ -478,6 +478,37 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
+    def test_eager_contact_outputs_bind_during_step(self):
+        """Allocate from published native capacity and populate bound contacts."""
+        model = self._make_three_world_model()
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+        flags = {newton.solvers.SolverObservableFlags.CONTACT_F}
+        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+            solver.observables(flags)
+        pipeline = newton.CollisionPipeline(model)
+        observables = solver.observables(flags)
+        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
+        self.assertIsNone(observables.contacts)
+        contacts = pipeline.contacts()
+        pointer = observables.contact_f.ptr
+        solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.ptr, pointer)
+        self.assertTrue(np.all(np.isfinite(observables.contact_f.numpy())))
+
+        if self.default_device.is_cuda and not wp.config.verify_cuda:
+            state_in, state_out = model.state(), model.state()
+            selected = observables.select(flags)
+            control = model.control()
+            with wp.ScopedCapture() as capture:
+                solver.step(state_in, state_out, control, contacts, SIM_DT, observables=selected)
+            poses = state_in.body_q.numpy()
+            poses[:, 0] += 0.1
+            state_in.body_q.assign(poses)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(solver._contact_observable_state.body_q.numpy(), poses)
+            self.assertEqual(observables.contact_f.ptr, pointer)
+
     def test_moreau_detects_midpoint_contact(self):
         """Verify Moreau-Jean detects contacts created at the midpoint."""
         # Start the sphere surface 0.3 m above the zero-gap ground plane.
@@ -510,6 +541,58 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         # This contact exists only if detection uses the midpoint rather than state_in.
         self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
 
+    def test_contact_observables_use_input_pose(self):
+        """Export wrenches and local geometry in the input frame, even for in-place steps."""
+        for native in (False, True):
+            expected_state_out = None
+            for in_place in (False, True):
+                with self.subTest(native=native, in_place=in_place):
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+                    SolverKamino.register_custom_attributes(builder)
+                    for x in (-0.095, 0.095):
+                        body = builder.add_body(
+                            xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()),
+                            mass=1.0,
+                            com=wp.vec3(0.01, 0.0, 0.0),
+                            inertia=UNIT_INERTIA,
+                            lock_inertia=True,
+                        )
+                        builder.add_shape_sphere(body, radius=0.1)
+                    model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+                    solver = SolverKamino(
+                        model, config=SolverKamino.Config(integrator="euler", use_collision_detector=native)
+                    )
+                    pipeline = newton.CollisionPipeline(model)
+                    contacts = pipeline.contacts()
+                    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+                    state_in = model.state()
+                    state_in.body_qd.assign(
+                        np.array([[1.0, 0.0, -0.2, 0.0, 3.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -3.0, 0.0]], dtype=np.float32)
+                    )
+                    reference_state = model.state()
+                    wp.copy(reference_state.body_q, state_in.body_q)
+                    state_out = state_in if in_place else model.state()
+                    if not native:
+                        pipeline.collide(state_in, contacts)
+                    solver.step(state_in, state_out, None, contacts, 0.02, observables=observables)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    self.assertGreater(count, 0)
+                    actual_forces = observables.contact_f.numpy().copy()
+                    actual_points = contacts.rigid_contact_point0.numpy()[:count].copy()
+                    actual_points1 = contacts.rigid_contact_point1.numpy()[:count].copy()
+                    self.assertGreater(np.linalg.norm(actual_forces[:count, :3]), 0.0)
+                    self.assertFalse(np.allclose(state_out.body_q.numpy(), reference_state.body_q.numpy()))
+                    if in_place:
+                        np.testing.assert_allclose(state_out.body_q.numpy(), expected_state_out, atol=1e-6)
+                    else:
+                        expected_state_out = state_out.body_q.numpy().copy()
+                        np.testing.assert_allclose(state_in.body_q.numpy(), reference_state.body_q.numpy(), atol=1e-6)
+                    expected_forces = wp.zeros_like(observables.contact_f)
+                    solver._populate_contact_observables(contacts, reference_state, expected_forces)
+                    np.testing.assert_allclose(actual_forces, expected_forces.numpy(), atol=1e-5)
+                    np.testing.assert_allclose(actual_points, contacts.rigid_contact_point0.numpy()[:count], atol=1e-5)
+                    np.testing.assert_allclose(actual_points1, contacts.rigid_contact_point1.numpy()[:count], atol=1e-5)
+
     def test_external_contacts_use_euler(self):
         """Verify external-contact configurations warn and pick Euler."""
         model = self._make_three_world_model()
@@ -534,7 +617,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
 
         contacts = newton.CollisionPipeline(model).contacts()
-        with self.assertNoLogs(level="WARNING"):
+        with self.assertWarns(DeprecationWarning), self.assertNoLogs(level="WARNING"):
             solver.update_contacts(contacts, model.state())
 
     def test_step_with_zero_max_contacts(self):

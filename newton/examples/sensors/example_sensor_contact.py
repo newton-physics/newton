@@ -21,7 +21,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
@@ -46,7 +45,9 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = SensorContact(self.model, sensing_shapes="*Flap", verbose=True)
+        self.flap_contact_sensor = SensorContact(
+            self.model, sensing_shapes="*Flap", verbose=True, request_contact_attributes=False
+        )
 
         # String patterns return matches in ascending shape index order.
         # Plate1 has a lower index than Plate2 (added first), so row 0 → Plate1, row 1 → Plate2.
@@ -58,6 +59,7 @@ class Example:
             counterpart_shapes=counterpart_labels,
             measure_total=False,
             verbose=True,
+            request_contact_attributes=False,
         )
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -68,11 +70,11 @@ class Example:
         )
 
         # used for storing contact info required by contact sensor
-        self.contacts = Contacts(
-            self.solver.get_max_contact_count(),
-            0,
-            requested_attributes=self.model.get_requested_contact_attributes(),
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(self.plate_contact_sensor.solver_observable_flags)
 
         self.viewer.set_model(self.model)
 
@@ -125,8 +127,9 @@ class Example:
     def simulate(self):
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
-        self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
-        self.solver.update_contacts(self.contacts, self.state_0)
+        self.solver.step(
+            self.state_0, self.state_0, self.control, self.contacts, self.sim_dt, observables=self.solver_observables
+        )
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -140,7 +143,7 @@ class Example:
                 wp.capture_launch(self.graph)
             else:
                 self.simulate()
-        self.plate_contact_sensor.update(self.state_0, self.contacts)
+        self.plate_contact_sensor.update(self.state_0, self.contacts, solver_observables=self.solver_observables)
 
         # Check if any object touched the matching plate by looking up per-counterpart forces.
         net_force = self.plate_contact_sensor.force_matrix.numpy()
@@ -157,7 +160,7 @@ class Example:
             print(f"Plate {plate_label} was touched by counterpart {counterpart_label}")
             self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
-        self.flap_contact_sensor.update(self.state_0, self.contacts)
+        self.flap_contact_sensor.update(self.state_0, self.contacts, solver_observables=self.solver_observables)
         self.viewer.log_scalar(
             "Flap Contact Force",
             np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
@@ -182,7 +185,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_post_step(self):

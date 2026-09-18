@@ -54,7 +54,8 @@ class TestModelAttributeSpecs(unittest.TestCase):
         np.testing.assert_array_equal(target.numpy(), [2.0])
 
     def test_attribute_frequencies_have_count_metadata(self):
-        model = newton.Model(device="cpu")
+        """Resolve every indexed frequency through its declared count attribute."""
+        model = newton.ModelBuilder().finalize(device="cpu")
         frequency = newton.Model.AttributeFrequency
         expected_count_frequencies = set(frequency).difference({frequency.ONCE})
         actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
@@ -65,6 +66,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             "Add a count-attribute mapping for each new frequency and remove mappings for deleted frequencies.",
         )
 
+        newton.CollisionPipeline(model, rigid_contact_max=5, soft_contact_max=3)
         for attribute_frequency, count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
             with self.subTest(frequency=attribute_frequency):
                 self.assertTrue(

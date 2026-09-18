@@ -1387,7 +1387,8 @@ class TestSelection(unittest.TestCase):
     def test_get_attribute_extended_state(self):
         """Test that get_attribute works for extended state attributes."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
+        with self.assertWarns(DeprecationWarning):
+            builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
 
         link = builder.add_link()
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
