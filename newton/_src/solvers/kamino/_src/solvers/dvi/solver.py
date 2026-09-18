@@ -356,11 +356,16 @@ class DVISolver:
             self._sparse_path.contacts = contacts
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
-        """Reset scratch state and cached solution data."""
+        """
+        Resets the persistent solution cache used for internal warm-starting, for all worlds
+        or the subset selected by `world_mask`.
+
+        This does not touch the scratch solver state (`self._data.state`) or the diagnostics
+        (`self._data.info`). `state` is unconditionally reinitialized by `coldstart()`/`warmstart()`
+        before every `solve()` call, and `info.status` is unconditionally overwritten wholesale at
+        the end of every `solve()` call, so resetting either here would be redundant.
+        """
         if world_mask is None:
-            self._data.state.reset()
-            if self._data.info is not None:
-                self._data.info.zero()
             self._data.solution.zero()
         else:
             if problem is None:

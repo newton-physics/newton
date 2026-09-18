@@ -283,12 +283,14 @@ class PADMMSolver:
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """
-        Resets the all internal solver data to sentinel values.
+        Resets the persistent solution cache used for internal warm-starting, for all worlds
+        or the subset selected by `world_mask`.
+
+        This does not modify the scratch solver state (`self._data.state`), since that is
+        unconditionally reinitialized by `coldstart()`/`warmstart()`.
         """
-        # Reset the solution cache, which could be used for internal warm-starting
-        # If no world mask is provided, reset data of all worlds
+        # If no world mask is provided, reset the solution cache of all worlds
         if world_mask is None:
-            self._data.state.reset(use_acceleration=self._use_acceleration)
             self._data.solution.zero()
 
         # Otherwise, only the solution cache of the specified worlds
@@ -342,8 +344,9 @@ class PADMMSolver:
             contacts: The contacts container associated with the model.
                 If `None`, no warm-starting from contacts is performed.
         """
-        # TODO: IS THIS EVEN NECESSARY AT ALL?
-        # First reset the internal solver state to ensure proper initialization
+        # Reset the internal solver state first. Wwarmstarting will only populate
+        # the primal/dual iterate variables, all remaining fields need a clean
+        # initialization.
         self._data.state.reset(use_acceleration=self._use_acceleration)
 
         # Warm-start based on the selected mode
