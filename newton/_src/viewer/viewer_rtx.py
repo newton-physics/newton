@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import re
 import tempfile
 import warnings
 from collections.abc import Callable, Sequence
@@ -46,6 +47,14 @@ from .viewer_usd import ViewerUSD, _compute_segment_xform
 from .wind import Wind
 
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
+
+
+def _uses_ovstage(ovrtx_version: str) -> bool:
+    """Return whether an OVRTX release uses the OVStage scene interface."""
+    match = re.match(r"^(\d+)\.(\d+)", ovrtx_version)
+    if match is None:
+        raise RuntimeError(f"Unable to determine OVRTX compatibility from version {ovrtx_version!r}")
+    return (int(match.group(1)), int(match.group(2))) >= (0, 4)
 
 
 @wp.kernel(enable_backward=False)
@@ -107,8 +116,9 @@ class ViewerRTX(ViewerUSD):
     Builds a USD scene during the first simulation frame using the ViewerUSD
     base class, serializes it to disk, then creates an OVRTX renderer for
     real-time path-traced rendering.  Subsequent frames update rigid-body
-    transforms (and deforming-mesh vertices) via the OVRTX attribute API
-    and present the rendered image in a pyglet / OpenGL window.
+    transforms (and deforming-mesh vertices) via the OVRTX 0.3 attribute
+    interface or the OVStage interface used by OVRTX 0.4 and newer, and
+    presents the rendered image in a pyglet / OpenGL window.
     """
 
     _PHASE_BUILD = 0
@@ -176,9 +186,19 @@ class ViewerRTX(ViewerUSD):
         os.environ.setdefault("OVRTX_SKIP_USD_CHECK", "1")
 
         try:
-            import ovrtx  # noqa: F401
+            import ovrtx
         except ImportError as e:
             raise ImportError("ovrtx package is required for ViewerRTX. Install with: pip install ovrtx") from e
+
+        self._use_ovstage = _uses_ovstage(ovrtx.__version__)
+        if self._use_ovstage:
+            try:
+                import ovstage  # noqa: F401
+            except ImportError as e:
+                raise ImportError(
+                    "ovstage package is required for ViewerRTX with OVRTX 0.4 or newer. "
+                    "Install with: pip install ovstage"
+                ) from e
 
         if UsdGeom is None:
             raise ImportError("usd-core package is required for ViewerRTX. Install with: pip install usd-core")
@@ -199,6 +219,14 @@ class ViewerRTX(ViewerUSD):
         self._render_products = None
         self._uses_fractional_opacity = False
         self._transform_binding = None
+        self._all_instance_paths = []
+        self._ovstage = None
+        self._ovstage_attached = False
+        self._ovstage_paths = None
+        self._ovstage_queries = {}
+        self._ovstage_ordinal = 0
+        self._ovstage_population_dirty = False
+        self._pending_transform_matrices = {}
         self._async = async_rendering
 
         # The renderer output size is fixed even if window is resized
@@ -712,23 +740,40 @@ void main() {
             config = ovrtx.RendererConfig()
             config.log_level = "error"
             self._rtx = ovrtx.Renderer(config=config)
-            self._rtx.open_usd(ovrtx_usd_path)
+            if self._use_ovstage:
+                import ovstage
 
-            # Flat prim-path list for a single transform binding
-            self._all_instance_paths = []
-            for paths in self._instance_prim_paths.values():
-                self._all_instance_paths.extend(paths)
-
-            if self._all_instance_paths:
-                from ovrtx import PrimMode, Semantic
-
-                self._transform_binding = self._rtx.bind_attribute(
-                    prim_paths=self._all_instance_paths,
-                    attribute_name="omni:xform",
-                    semantic=Semantic.XFORM_MAT4x4,
-                    prim_mode=PrimMode.MUST_EXIST,
+                self._ovstage = ovstage.Stage("newton.ViewerRTX")
+                self._rtx.attach_ovstage(self._ovstage)
+                self._ovstage_attached = True
+                self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
+                self._ovstage_ordinal = 1
+                ovstage.population.open_usd(
+                    self._ovstage,
+                    ovrtx_usd_path,
+                    ordinal=self._ovstage_ordinal,
+                    time_code=0.0,
                 )
+                self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
+            else:
+                self._rtx.open_usd(ovrtx_usd_path)
+
+                self._all_instance_paths = []
+                for paths in self._instance_prim_paths.values():
+                    self._all_instance_paths.extend(paths)
+
+                if self._all_instance_paths:
+                    from ovrtx import PrimMode, Semantic
+
+                    self._transform_binding = self._rtx.bind_attribute(
+                        prim_paths=self._all_instance_paths,
+                        attribute_name="omni:xform",
+                        semantic=Semantic.XFORM_MAT4x4,
+                        prim_mode=PrimMode.MUST_EXIST,
+                    )
         except Exception as e:
+            self._release_runtime_scene()
+            self._destroy_ovrtx()
             raise RuntimeError(f"Failed to create OVRTX renderer: {e}") from e
         finally:
             try:
@@ -746,6 +791,10 @@ void main() {
             try:
                 self._init_window()
             except Exception as e:
+                # A failed GL/window setup must not leave runtime-scene
+                # resources attached while Python unwinds construction.
+                self._release_runtime_scene()
+                self._destroy_ovrtx()
                 raise RuntimeError(f"Failed to create window: {e}") from e
 
         self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
@@ -771,22 +820,21 @@ void main() {
         chunks_parents = []
         chunks_worlds = []
         chunks_scales = []
+        flat_shape_paths = []
         flat_mat44_offset = 0
         found_shape = False
 
         for name, paths in self._instance_prim_paths.items():
-            count = len(paths)
             shapes = name_to_shapes.get(name)
             if shapes is not None:
                 found_shape = True
+                flat_shape_paths.extend(paths)
                 chunks_xforms.append(shapes.xforms.numpy())
                 chunks_parents.append(shapes.parents.numpy())
                 chunks_worlds.append(shapes.worlds.numpy())
                 chunks_scales.append(shapes.scales.numpy())
             elif not found_shape:
-                # Non-shape entry (e.g. future pre-shape prim) before any shapes;
-                # keep track so the flat section starts at the right mat44d offset.
-                flat_mat44_offset += count
+                flat_mat44_offset += len(paths)
 
         if not chunks_xforms:
             return
@@ -797,7 +845,10 @@ void main() {
         self._flat_shape_worlds = wp.array(np.concatenate(chunks_worlds, axis=0), dtype=int, device=dev)
         self._flat_shape_scales = wp.array(np.concatenate(chunks_scales, axis=0), dtype=wp.vec3, device=dev)
         self._flat_total_shapes = len(self._flat_shape_xforms)
+        self._flat_shape_paths = flat_shape_paths
         self._flat_mat44_offset = flat_mat44_offset
+        if self._use_ovstage:
+            self._flat_shape_matrices = wp.empty(self._flat_total_shapes, dtype=wp.mat44d, device=dev)
 
     # ------------------------------------------------ ViewerUSD overrides
 
@@ -919,7 +970,15 @@ void main() {
 
         handle = self._line_batch_handles.pop(name, None)
         if handle is not None:
-            self._rtx.remove_usd(handle)
+            if self._use_ovstage:
+                if self._ovstage is None:
+                    return
+                import ovstage
+
+                ovstage.population.remove_usd(self._ovstage, handle)
+                self._ovstage_population_dirty = True
+            else:
+                self._rtx.remove_usd(handle)
 
     def _ensure_point_batch_primitive(self, name: str):
         if Gf is None or UsdGeom is None:
@@ -1067,7 +1126,16 @@ void main() {
             _UsdShade.MaterialBindingAPI.Apply(capsule.GetPrim())
             _UsdShade.MaterialBindingAPI(capsule).Bind(_UsdShade.Material.Get(stage, mat_path))
 
-        handle = self._rtx.add_usd_reference_from_string(stage.GetRootLayer().ExportToString(), prefix_path=target_path)
+        usd_source = stage.GetRootLayer().ExportToString()
+        if self._use_ovstage:
+            if self._ovstage is None:
+                return False
+            import ovstage
+
+            handle = ovstage.population.add_usd_reference_from_string(self._ovstage, usd_source, target_path)
+            self._ovstage_population_dirty = True
+        else:
+            handle = self._rtx.add_usd_reference_from_string(usd_source, prefix_path=target_path)
         self._line_batch_handles[name] = handle
         return True
 
@@ -1299,7 +1367,7 @@ void main() {
         elif self._use_layered_transform_updates:
             # Multiple layers carry different models and layer transforms.
             # Queue this active layer's transforms; end_frame() flushes all
-            # queued layer updates through the shared OVRTX binding.
+            # queued layer updates through the shared runtime scene.
             super().log_state(state)
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
@@ -1422,12 +1490,19 @@ void main() {
             self._init_ovrtx()
 
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
+            if self._use_ovstage:
+                self._ovstage_ordinal += 1
+                self._apply_ovstage_population_changes()
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
             self._update_ovrtx_instance_visibility()
             self._update_ovrtx_line_batches()
             self._update_ovrtx_point_batches()
             self._update_ovrtx_mesh_points()
+            if self._use_ovstage:
+                import ovstage
+
+                self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
             self._render_and_display()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
@@ -1674,73 +1749,250 @@ void main() {
 
     # --------------------------------------------------------- OVRTX updates
 
+    def _get_ovstage_query(self, prim_paths: Sequence[str]):
+        """Return a reusable ovstage query that preserves prim-path order."""
+        if self._ovstage is None or self._ovstage_paths is None:
+            raise RuntimeError("ViewerRTX runtime stage is not initialized")
+
+        key = tuple(prim_paths)
+        entry = self._ovstage_queries.get(key)
+        if entry is None:
+            path_list = self._ovstage_paths.create_path_list_from_strings(key)
+            query = self._ovstage.query_from_path_list(path_list)
+            entry = (path_list, query)
+            self._ovstage_queries[key] = entry
+        return entry[1]
+
+    def _write_runtime_attribute(
+        self,
+        prim_paths: Sequence[str],
+        attribute_name: str,
+        values: Any,
+        *,
+        is_array: bool = False,
+        is_matrix: bool = False,
+        cuda_stream: int | None = None,
+    ) -> None:
+        """Write one runtime attribute through the active scene interface."""
+        if not self._use_ovstage:
+            if self._rtx is None:
+                return
+            if is_array:
+                self._rtx.write_array_attribute(prim_paths, attribute_name, [values])
+            else:
+                kwargs = {}
+                if is_matrix:
+                    from ovrtx import Semantic
+
+                    kwargs["semantic"] = Semantic.XFORM_MAT4x4
+                self._rtx.write_attribute(
+                    prim_paths=prim_paths,
+                    attribute_name=attribute_name,
+                    tensor=values,
+                    **kwargs,
+                )
+            return
+
+        if self._ovstage is None or self._ovstage_paths is None:
+            return
+
+        import ovstage
+
+        semantic = ovstage.AttributeSemantic.MATRIX if is_matrix else 0
+        if isinstance(values, (list, tuple)) and values and isinstance(values[0], str):
+            values = np.asarray([self._ovstage_paths.intern_token(value) for value in values], dtype=np.uint64)
+            semantic = ovstage.AttributeSemantic.TOKEN_ID
+
+        query = self._get_ovstage_query(prim_paths)
+        self._ovstage.write_attribute(
+            query,
+            attribute_name,
+            ordinal=self._ovstage_ordinal,
+            tensors=values,
+            is_array=is_array,
+            semantic=semantic,
+            cuda_stream=cuda_stream,
+        ).wait()
+
+    def _write_ovstage_matrix_attribute(self, prim_paths: Sequence[str], matrices: wp.array) -> None:
+        """Write Warp ``mat44d`` values as an ovstage matrix attribute."""
+        import ovstage
+
+        matrix_dtype = ovstage.numpy_to_dldatatype(np.dtype(np.float64), lanes=16)
+        tensor = ovstage.make_dltensor(
+            matrices,
+            dtype=matrix_dtype,
+            shape=[len(matrices)],
+            ndim=1,
+        )
+        cuda_stream = matrices.device.stream.cuda_stream if matrices.device.is_cuda else None
+        self._write_runtime_attribute(
+            prim_paths,
+            "omni:xform",
+            tensor,
+            is_matrix=True,
+            cuda_stream=cuda_stream,
+        )
+
+    def _apply_ovstage_population_changes(self) -> None:
+        """Publish pending runtime USD population edits at the current ordinal."""
+        if not self._ovstage_population_dirty or self._ovstage is None:
+            return
+
+        import ovstage
+
+        ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
+        self._ovstage_population_dirty = False
+
+    def _release_ovstage(self) -> None:
+        """Release runtime-stage queries and detach the stage from OVRTX."""
+        stage = getattr(self, "_ovstage", None)
+        paths = getattr(self, "_ovstage_paths", None)
+        queries = getattr(self, "_ovstage_queries", {})
+        self._ovstage_population_dirty = False
+
+        if stage is None:
+            return
+
+        if paths is not None:
+            for path_list, query in queries.values():
+                query.release().wait()
+                paths.destroy_path_list(path_list)
+            paths.destroy()
+        queries.clear()
+        self._ovstage_paths = None
+
+        if self._rtx is not None and self._ovstage_attached:
+            self._rtx.detach_ovstage()
+            self._ovstage_attached = False
+        stage.destroy()
+        self._ovstage = None
+
+    def _release_runtime_scene(self) -> None:
+        """Release resources owned by the active scene interface."""
+        if getattr(self, "_use_ovstage", False):
+            self._release_ovstage()
+        elif (binding := getattr(self, "_transform_binding", None)) is not None:
+            binding.unbind()
+            self._transform_binding = None
+
+    def _destroy_ovrtx(self) -> None:
+        """Destroy the renderer when supported and clear its reference."""
+        if self._rtx is None:
+            return
+        destroy = getattr(self._rtx, "destroy", None)
+        if destroy is not None:
+            destroy()
+        self._rtx = None
+
     def _update_ovrtx_camera(self):
         if self._rtx is None or not self._camera_dirty:
             return
         with wp.ScopedTimer("ViewerRTX::update_camera", active=PROFILE_ENABLED, use_nvtx=True):
-            from ovrtx import Semantic
-
             mat = self._compute_camera_matrix()
 
-            self._rtx.write_attribute(
-                prim_paths=[self._camera_prim_path],
-                attribute_name="omni:xform",
-                tensor=mat[np.newaxis, ...],
-                semantic=Semantic.XFORM_MAT4x4,
+            self._write_runtime_attribute(
+                [self._camera_prim_path],
+                "omni:xform",
+                mat[np.newaxis, ...],
+                is_matrix=True,
             )
             self._camera_dirty = False
 
     def _update_ovrtx_transforms(self):
         has_flat_shape_arrays = self._flat_total_shapes > 0
-        if not self._transform_binding or (not has_flat_shape_arrays and not self._pending_xforms):
+        if self._rtx is None or (not has_flat_shape_arrays and not self._pending_xforms):
+            return
+        if self._use_ovstage and self._ovstage is None:
+            return
+        if not self._use_ovstage and self._transform_binding is None:
             return
         with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
-            from ovrtx import Device
+            body_q = self._last_state.body_q if self._last_state is not None else None
+            world_offsets = self.world_offsets
 
-            rtx_device = Device.CUDA if self.device.is_cuda else Device.CPU
-            with self._transform_binding.map(device=rtx_device) as mapping:
-                matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)  # (N, 4, 4) float64
+            if not self._use_ovstage:
+                from ovrtx import Device
 
-                body_q = self._last_state.body_q if self._last_state is not None else None
-                world_offsets = self.world_offsets
+                rtx_device = Device.CUDA if self.device.is_cuda else Device.CPU
+                with self._transform_binding.map(device=rtx_device) as mapping:
+                    matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)
 
-                if has_flat_shape_arrays:
-                    # Single kernel launch for all shape batches.
-                    wp.launch(
-                        update_and_write_shape_transforms,
-                        dim=self._flat_total_shapes,
-                        inputs=[
-                            self._flat_shape_xforms,
-                            self._flat_shape_parents,
-                            body_q,
-                            self._flat_shape_worlds,
-                            world_offsets,
-                            self.layer.xform,
-                            self._flat_shape_scales,
-                            self._flat_mat44_offset,
-                            matrices,
-                        ],
-                        device=matrices.device,
-                    )
+                    if has_flat_shape_arrays:
+                        wp.launch(
+                            update_and_write_shape_transforms,
+                            dim=self._flat_total_shapes,
+                            inputs=[
+                                self._flat_shape_xforms,
+                                self._flat_shape_parents,
+                                body_q,
+                                self._flat_shape_worlds,
+                                world_offsets,
+                                self.layer.xform,
+                                self._flat_shape_scales,
+                                self._flat_mat44_offset,
+                                matrices,
+                            ],
+                            device=matrices.device,
+                        )
 
-                # Handle any remaining pre-computed transforms (e.g. picking line).
-                if self._pending_xforms:
-                    offset = 0
-                    for name, paths in self._instance_prim_paths.items():
-                        count = len(paths)
-                        if name in self._pending_xforms:
-                            xf, sc = self._pending_xforms[name]
-                            n = min(count, len(xf))
-                            wp.launch(
-                                write_transforms,
-                                dim=n,
-                                inputs=[xf, sc, offset, matrices],
-                                device=matrices.device,
-                            )
-                        offset += count
+                    if self._pending_xforms:
+                        offset = 0
+                        for name, paths in self._instance_prim_paths.items():
+                            count = len(paths)
+                            if name in self._pending_xforms:
+                                xforms, scales = self._pending_xforms[name]
+                                wp.launch(
+                                    write_transforms,
+                                    dim=min(count, len(xforms)),
+                                    inputs=[xforms, scales, offset, matrices],
+                                    device=matrices.device,
+                                )
+                            offset += count
 
-                if matrices.device.is_cuda:
-                    mapping.unmap(stream=matrices.device.stream.cuda_stream)
+                    if matrices.device.is_cuda:
+                        mapping.unmap(stream=matrices.device.stream.cuda_stream)
+                return
+
+            if has_flat_shape_arrays:
+                # Single kernel launch for all shape batches.
+                wp.launch(
+                    update_and_write_shape_transforms,
+                    dim=self._flat_total_shapes,
+                    inputs=[
+                        self._flat_shape_xforms,
+                        self._flat_shape_parents,
+                        body_q,
+                        self._flat_shape_worlds,
+                        world_offsets,
+                        self.layer.xform,
+                        self._flat_shape_scales,
+                        0,
+                        self._flat_shape_matrices,
+                    ],
+                    device=self._flat_shape_matrices.device,
+                )
+                self._write_ovstage_matrix_attribute(self._flat_shape_paths, self._flat_shape_matrices)
+
+            # Handle any remaining pre-computed transforms (e.g. picking line).
+            for name, (xforms, scales) in self._pending_xforms.items():
+                paths = self._instance_prim_paths.get(name)
+                if not paths:
+                    continue
+                count = min(len(paths), len(xforms))
+                if count == 0:
+                    continue
+                matrices = self._pending_transform_matrices.get(name)
+                if matrices is None or len(matrices) != count or matrices.device != xforms.device:
+                    matrices = wp.empty(count, dtype=wp.mat44d, device=xforms.device)
+                    self._pending_transform_matrices[name] = matrices
+                wp.launch(
+                    write_transforms,
+                    dim=count,
+                    inputs=[xforms, scales, 0, matrices],
+                    device=matrices.device,
+                )
+                self._write_ovstage_matrix_attribute(paths[:count], matrices)
 
     def _update_ovrtx_instance_visibility(self):
         if self._rtx is None or not self._pending_instance_visibility:
@@ -1750,46 +2002,63 @@ void main() {
             paths = self._instance_prim_paths.get(name)
             if not paths:
                 continue
-            self._rtx.write_attribute(
-                prim_paths=paths,
-                attribute_name="visibility",
-                tensor=["inherited" if visible else "invisible"] * len(paths),
+            self._write_runtime_attribute(
+                paths,
+                "visibility",
+                ["inherited" if visible else "invisible"] * len(paths),
             )
 
-    @staticmethod
-    def _make_laned_array_dltensor(values_np: np.ndarray, lanes: int):
+    def _make_laned_array_dltensor(self, values_np: np.ndarray, lanes: int):
         """Create a 1D DLTensor with a fixed lane count per element."""
+        flat = np.ascontiguousarray(values_np).reshape(-1)
+        n = len(flat) // lanes
+        if self._use_ovstage:
+            import ovstage
+
+            dtype = ovstage.numpy_to_dldatatype(flat.dtype, lanes=lanes)
+            return ovstage.make_dltensor(flat, dtype=dtype, shape=[n], ndim=1)
+
         from ovrtx._src.dlpack import DLTensor
 
-        flat = np.ascontiguousarray(values_np).reshape(-1)
-        dl = DLTensor.from_dlpack(flat)
-        n = len(flat) // lanes
-        dl.dtype.lanes = lanes
-        dl.ndim = 1
-        shape_arr = (ctypes.c_int64 * 1)(n)
-        dl.shape = ctypes.cast(shape_arr, ctypes.POINTER(ctypes.c_int64))
-        dl._laned_shape = shape_arr  # prevent GC
-        return dl
+        tensor = DLTensor.from_dlpack(flat)
+        tensor.dtype.lanes = lanes
+        tensor.ndim = 1
+        shape = (ctypes.c_int64 * 1)(n)
+        tensor.shape = ctypes.cast(shape, ctypes.POINTER(ctypes.c_int64))
+        tensor._laned_shape = shape
+        return tensor
 
-    def _write_ovrtx_array_attribute(self, prim_path: str, attribute_name: str, values: Any):
-        if self._rtx is None:
+    def _write_runtime_array_attribute(self, prim_path: str, attribute_name: str, values: Any):
+        if self._use_ovstage:
+            if self._ovstage is None:
+                return
+        elif self._rtx is None:
             return
 
         if isinstance(values, wp.array):
-            # XXX For now OVRTX only supports array writes on CPU
+            # Runtime array attributes are infrequently updated and currently use CPU writes.
             values = values.numpy()
 
-        self._rtx.write_array_attribute([prim_path], attribute_name, [np.ascontiguousarray(values)])
+        values = np.ascontiguousarray(values)
+        if values.ndim > 1:
+            lanes = math.prod(values.shape[1:])
+            values = self._make_laned_array_dltensor(values, lanes=lanes)
 
-    @staticmethod
-    def _make_point3f_dltensor(points_np):
+        self._write_runtime_attribute(
+            [prim_path],
+            attribute_name,
+            values,
+            is_array=True,
+        )
+
+    def _make_point3f_dltensor(self, points_np):
         """Create a DLTensor with float3 (lanes=3) dtype from an (N,3) float32 array.
 
         OVRTX Fabric stores 'points' as point3f[] where each element is 12 bytes
         (float32 x 3 lanes). A plain DLTensor.from_dlpack on a (N,3) float32 array
         produces scalar float32 elements (4 bytes), causing an element-size mismatch.
         """
-        return ViewerRTX._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
+        return self._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
     def _update_ovrtx_mesh_points(self):
         if self._rtx is None or (
@@ -1805,36 +2074,28 @@ void main() {
                 if prim_path is None:
                     continue
                 dl = self._make_point3f_dltensor(points_np)
-                self._rtx.write_array_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="points",
-                    tensors=[dl],
-                )
+                self._write_runtime_attribute([prim_path], "points", dl, is_array=True)
             for mesh_name, normals_np in self._pending_mesh_normals.items():
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
                 normals_values = np.empty((0, 3), dtype=np.float32) if normals_np is None else normals_np
                 dl = self._make_point3f_dltensor(normals_values)
-                self._rtx.write_array_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="normals",
-                    tensors=[dl],
-                )
+                self._write_runtime_attribute([prim_path], "normals", dl, is_array=True)
             for mesh_name, (face_vertex_counts, face_vertex_indices) in self._pending_mesh_topology.items():
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                self._write_ovrtx_array_attribute(prim_path, "faceVertexCounts", face_vertex_counts)
-                self._write_ovrtx_array_attribute(prim_path, "faceVertexIndices", face_vertex_indices)
+                self._write_runtime_array_attribute(prim_path, "faceVertexCounts", face_vertex_counts)
+                self._write_runtime_array_attribute(prim_path, "faceVertexIndices", face_vertex_indices)
             for mesh_name, visible in self._pending_mesh_visibility.items():
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                self._rtx.write_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="visibility",
-                    tensor=["inherited" if visible else "invisible"],
+                self._write_runtime_attribute(
+                    [prim_path],
+                    "visibility",
+                    ["inherited" if visible else "invisible"],
                 )
 
     def _update_ovrtx_line_batches(self):
@@ -1849,10 +2110,10 @@ void main() {
                     continue
 
                 if self._line_batch_widths.get(name) != width:
-                    self._rtx.write_attribute(
-                        prim_paths=[proto_path],
-                        attribute_name="radius",
-                        tensor=np.asarray([width], dtype=np.float32),
+                    self._write_runtime_attribute(
+                        [proto_path],
+                        "radius",
+                        np.asarray([width], dtype=np.float32),
                     )
                     self._line_batch_widths[name] = width
 
@@ -1867,33 +2128,41 @@ void main() {
                 ) = self._build_line_batch_arrays(starts, ends, colors, hidden)
 
                 is_visible = not hidden and len(positions) > 0
-                self._rtx.write_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="visibility",
-                    tensor=["inherited" if is_visible else "invisible"],
+                self._write_runtime_attribute(
+                    [prim_path],
+                    "visibility",
+                    ["inherited" if is_visible else "invisible"],
                 )
                 if not is_visible:
                     continue
 
-                self._rtx.write_array_attribute(
-                    [prim_path], "positions", [self._make_laned_array_dltensor(positions.astype(np.float32), lanes=3)]
+                self._write_runtime_attribute(
+                    [prim_path],
+                    "positions",
+                    self._make_laned_array_dltensor(positions.astype(np.float32), lanes=3),
+                    is_array=True,
                 )
-                self._rtx.write_array_attribute(
+                self._write_runtime_attribute(
                     [prim_path],
                     "orientations",
-                    [self._make_laned_array_dltensor(orientations.astype(np.float16), lanes=4)],
+                    self._make_laned_array_dltensor(orientations.astype(np.float16), lanes=4),
+                    is_array=True,
                 )
-                self._rtx.write_array_attribute(
-                    [prim_path], "scales", [self._make_laned_array_dltensor(scales.astype(np.float32), lanes=3)]
+                self._write_runtime_attribute(
+                    [prim_path],
+                    "scales",
+                    self._make_laned_array_dltensor(scales.astype(np.float32), lanes=3),
+                    is_array=True,
                 )
-                self._rtx.write_array_attribute([prim_path], "protoIndices", [proto_indices])
-                self._rtx.write_array_attribute([prim_path], "ids", [ids])
-                self._rtx.write_array_attribute(
+                self._write_runtime_array_attribute(prim_path, "protoIndices", proto_indices)
+                self._write_runtime_array_attribute(prim_path, "ids", ids)
+                self._write_runtime_attribute(
                     [prim_path],
                     "primvars:displayColor",
-                    [self._make_laned_array_dltensor(colors_np.astype(np.float32), lanes=3)],
+                    self._make_laned_array_dltensor(colors_np.astype(np.float32), lanes=3),
+                    is_array=True,
                 )
-                self._rtx.write_array_attribute([prim_path], "primvars:displayColor:indices", [color_indices])
+                self._write_runtime_array_attribute(prim_path, "primvars:displayColor:indices", color_indices)
 
     def _update_ovrtx_point_batches(self):
         if self._rtx is None or not self._pending_point_batches:
@@ -1912,10 +2181,10 @@ void main() {
                         points.numpy() if isinstance(points, wp.array) else points, dtype=np.float32
                     ).reshape((-1, 3))
                 count = len(positions)
-                self._rtx.write_attribute(
-                    prim_paths=[prim_path],
-                    attribute_name="visibility",
-                    tensor=["inherited" if not hidden and count > 0 else "invisible"],
+                self._write_runtime_attribute(
+                    [prim_path],
+                    "visibility",
+                    ["inherited" if not hidden and count > 0 else "invisible"],
                 )
 
                 if hidden or count == 0:
@@ -1927,7 +2196,7 @@ void main() {
                 # is reserved for same-count updates that pass no new colors
                 # or radii — otherwise we'd skip refreshing them.
                 if count == self._point_batch_synced_counts.get(name, -1) and colors is None and radii is None:
-                    self._write_ovrtx_array_attribute(prim_path, "positions", positions)
+                    self._write_runtime_array_attribute(prim_path, "positions", positions)
                     continue
 
                 point_colors = colors if colors is not None else self._point_batch_colors.get(name)
@@ -1935,14 +2204,14 @@ void main() {
                     points, radii, point_colors
                 )
 
-                self._write_ovrtx_array_attribute(prim_path, "positions", positions)
-                self._write_ovrtx_array_attribute(prim_path, "scales", scales)
-                self._write_ovrtx_array_attribute(prim_path, "protoIndices", proto_indices)
-                self._write_ovrtx_array_attribute(prim_path, "ids", ids)
+                self._write_runtime_array_attribute(prim_path, "positions", positions)
+                self._write_runtime_array_attribute(prim_path, "scales", scales)
+                self._write_runtime_array_attribute(prim_path, "protoIndices", proto_indices)
+                self._write_runtime_array_attribute(prim_path, "ids", ids)
 
                 if colors_np is not None and color_indices is not None:
-                    self._write_ovrtx_array_attribute(prim_path, "primvars:displayColor", colors_np)
-                    self._write_ovrtx_array_attribute(prim_path, "primvars:displayColor:indices", color_indices)
+                    self._write_runtime_array_attribute(prim_path, "primvars:displayColor", colors_np)
+                    self._write_runtime_array_attribute(prim_path, "primvars:displayColor:indices", color_indices)
                     self._point_batch_colors[name] = np.array(colors_np, copy=True)
 
                 self._point_batch_synced_counts[name] = count
@@ -1966,10 +2235,13 @@ void main() {
             else:
                 # render synchronously
                 with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                    self._render_products = self._rtx.step(
-                        render_products={self._render_product_path},
-                        delta_time=1.0 / self.fps,
-                    )
+                    step_kwargs = {
+                        "render_products": {self._render_product_path},
+                        "delta_time": 1.0 / self.fps,
+                    }
+                    if self._use_ovstage:
+                        step_kwargs["ordinal"] = self._ovstage_ordinal
+                    self._render_products = self._rtx.step(**step_kwargs)
 
             # blit to window if not headless
             if self._render_products is not None and self._window is not None and self._window.context is not None:
@@ -1988,10 +2260,13 @@ void main() {
             if self._async:
                 # kick off next async rendering frame
                 with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
-                    self._render_result = self._rtx.step_async(
-                        render_products={self._render_product_path},
-                        delta_time=1.0 / self.fps,
-                    )
+                    step_kwargs = {
+                        "render_products": {self._render_product_path},
+                        "delta_time": 1.0 / self.fps,
+                    }
+                    if self._use_ovstage:
+                        step_kwargs["ordinal"] = self._ovstage_ordinal
+                    self._render_result = self._rtx.step_async(**step_kwargs)
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Upload *pixels* to a GL texture and draw a fullscreen triangle (GPU sRGB + flip)."""
@@ -2165,14 +2440,9 @@ void main() {
             self._render_result = None
         self._render_products = None
 
-        # Release OVRTX resources
-        if self._transform_binding is not None:
-            self._transform_binding.unbind()
-            self._transform_binding = None
-
-        # Release OVRTX renderer
-        if self._rtx is not None:
-            self._rtx = None
+        # Release runtime-scene resources before destroying the renderer.
+        self._release_runtime_scene()
+        self._destroy_ovrtx()
 
         # Return to build phase so the next example creates fresh USD prims
         self._phase = self._PHASE_BUILD
@@ -2197,11 +2467,15 @@ void main() {
         self._pending_mesh_visibility = {}
         self._pending_line_batches = {}
         self._pending_point_batches = {}
+        self._pending_transform_matrices = {}
+        self._ovstage_population_dirty = False
 
         self._flat_shape_xforms = None
         self._flat_shape_parents = None
         self._flat_shape_worlds = None
         self._flat_shape_scales = None
+        self._flat_shape_paths = []
+        self._flat_shape_matrices = None
         self._flat_total_shapes = 0
         self._flat_mat44_offset = 0
         self._use_layered_transform_updates = False
@@ -2324,8 +2598,8 @@ void main() {
     def close(self) -> None:
         """Close the viewer and release rendering resources.
 
-        Waits for any in-flight asynchronous render, releases the OVRTX
-        renderer, transform bindings, and the underlying pyglet window.
+        Waits for any in-flight asynchronous render, releases the runtime
+        scene and OVRTX renderer, and closes the underlying pyglet window.
         """
         # wait for async rendering results before closing
         if self._render_result is not None:
@@ -2335,13 +2609,9 @@ void main() {
         # release render products
         self._render_products = None
 
-        # release transform binding
-        if self._transform_binding is not None:
-            self._transform_binding.unbind()
-            self._transform_binding = None
-
-        # release ovrtx renderer
-        self._rtx = None
+        # release runtime-scene resources and renderer
+        self._release_runtime_scene()
+        self._destroy_ovrtx()
 
         if getattr(self, "_plot_logger", None) is not None:
             self._plot_logger.clear()
