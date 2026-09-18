@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -25,6 +25,9 @@ BELT_TOP_Z = 0.5
 BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
+
+_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+_MUJOCO_LS_ITERATIONS_OUTPUT_RE = r"^linesearch iterations limit reached - please increase ls_iterations \w+ \d+\n?"
 
 
 def _make_solver(solver_name, model):
@@ -36,7 +39,12 @@ def _make_solver(solver_name, model):
     if solver_name == "mujoco":
         # MuJoCo configuration for Newton-generated contacts.
         return newton.solvers.SolverMuJoCo(
-            model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100, ls_iterations=100
+            model,
+            cone="elliptic",
+            use_mujoco_contacts=False,
+            njmax=200,
+            nconmax=100,
+            ls_iterations=100,
         )
     return newton.solvers.SolverXPBD(model)
 
@@ -447,8 +455,14 @@ def test_backend_parity(test, device, _solver_name):
     test.assertLess(spread, 0.6, f"backends disagree on transport distance: {ys}")
 
 
-class TestConveyorForces(unittest.TestCase):
+class TestConveyorForces(NewtonTestCase):
     """Scenario matrix for the force-based conveyor model."""
+
+    def setUp(self):
+        """Allow the lazy module-load and MuJoCo linesearch messages these scenes emit."""
+        super().setUp()
+        self.allowOutputRegex(_MODULE_LOAD_OUTPUT_RE, stream="stdout")
+        self.allowOutputRegex(_MUJOCO_LS_ITERATIONS_OUTPUT_RE, stream="stdout")
 
 
 _devices = get_test_devices()

@@ -78,6 +78,56 @@ class TestUSDDeformableGroups(unittest.TestCase):
         self.assertEqual(view.ranges("particle"), [(4 * w, 4 * w + 4) for w in range(3)])
         self.assertEqual(list(view.starts("particle").numpy()), [0, 4, 8])
 
+    def test_cable_groups_replicate_with_free_and_attached_roots(self):
+        """Keep one selectable cable per world with either free or attached roots."""
+        from pxr import UsdGeom, UsdPhysics
+
+        for attached_point in (None, 0, len(_CABLE_PTS) - 1):
+            with self.subTest(attached_point=attached_point):
+                stage = _deformable_stage()
+                _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
+                if attached_point is not None:
+                    plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                    plug.CreateSizeAttr(0.1)
+                    UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+                    _add_physics_attachment(
+                        stage,
+                        "/World/Attachment",
+                        src0="/World/Cable",
+                        src1="/World/Plug",
+                        type0="point",
+                        indices0=[attached_point],
+                        coords1=[_CABLE_PTS[attached_point]],
+                    )
+
+                source = newton.ModelBuilder()
+                result = source.add_usd(stage, return_deformable_results=True)
+                bodies, joints = result["path_cable_map"]["/World/Cable"]
+                self.assertEqual(source.curve_label, ["/World/Cable"])
+                self.assertEqual(len(bodies), 3)
+                self.assertEqual(len(joints), 2)
+                if attached_point is not None:
+                    (attachment,) = result["path_attachment_map"]["/World/Attachment"]
+                    plug_body = result["path_body_map"]["/World/Plug"]
+                    plug_joint = next(j for j, child in enumerate(source.joint_child) if child == plug_body)
+                    self.assertEqual(source.joint_parent[attachment], plug_body)
+                    self.assertEqual(source.joint_child[attachment], bodies[0 if attached_point == 0 else -1])
+                    self.assertEqual(source.joint_articulation[attachment], source.joint_articulation[plug_joint])
+
+                scene = newton.ModelBuilder()
+                scene.replicate(source, 2)
+                view = DeformableView(scene.finalize(device="cpu"), "/World/Cable", family="curve")
+                self.assertEqual((view.count, view.worlds), (2, [0, 1]))
+                self.assertEqual(
+                    view.ranges("body"),
+                    [(bodies[0] + w * source.body_count, bodies[-1] + 1 + w * source.body_count) for w in range(2)],
+                )
+                self.assertEqual(
+                    view.ranges("joint"),
+                    [(joints[0] + w * source.joint_count, joints[-1] + 1 + w * source.joint_count) for w in range(2)],
+                )
+
     def test_heterogeneous_worlds_resolve_with_world_tags(self):
         """Worlds holding different deformables each resolve with the right world tag."""
         cloth_stage = _deformable_stage()

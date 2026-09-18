@@ -471,7 +471,7 @@ class TestModelMesh(unittest.TestCase):
             lower_angle_threshold_rad=0.0,
             upper_angle_threshold_rad=np.pi,
             enable_box_absorption=False,
-            enable_inward_filter=False,
+            edge_concave_filter=False,
             sign_method="normal",
             half_normal=0.0,
             half_lateral=0.0,
@@ -1404,7 +1404,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
-                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                self.assertNotIn(tuple(sorted((shape, extra_shape))), filter_pairs)
                 parent_pair = tuple(sorted((parent_shape, extra_shape)))
                 self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
 
@@ -1613,6 +1613,70 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
+    def test_replicated_same_body_filters_are_inherent(self):
+        """Keep replicated same-body collision filters out of explicit pair storage."""
+
+        source = ModelBuilder()
+        body = source.add_body()
+        for _ in range(8):
+            source.add_shape_box(body)
+
+        builder = ModelBuilder()
+        builder.replicate(source, 16)
+
+        self.assertEqual(len(builder._shape_collision_filter_pairs), 0)  # pyright: ignore[reportPrivateUsage]
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.shape_collision_filter_pairs, set())
+        self.assertEqual(model.shape_contact_pair_count, 0)
+
+    def test_heterogeneous_world_contact_template_tracks_body_topology(self):
+        """Keep cached world contact pairs isolated by body attachment topology."""
+
+        same_body = ModelBuilder()
+        body = same_body.add_body()
+        same_body.add_shape_box(body=body)
+        same_body.add_shape_box(body=body)
+
+        different_bodies = ModelBuilder()
+        body_a = different_bodies.add_body()
+        body_b = different_bodies.add_body()
+        different_bodies.add_shape_box(body=body_a)
+        different_bodies.add_shape_box(body=body_b)
+
+        for worlds, expected_pairs in (
+            ((same_body, different_bodies), {(2, 3)}),
+            ((different_bodies, same_body), {(0, 1)}),
+        ):
+            with self.subTest(worlds=worlds):
+                builder = ModelBuilder()
+                for world in worlds:
+                    builder.add_world(world)
+
+                model = builder.finalize(device="cpu")
+                contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+                self.assertEqual(contact_pairs, expected_pairs)
+
+    def test_world_contact_pairs_with_out_of_world_body_attachment(self):
+        """Preserve contacts when a world's shape references a global body."""
+
+        builder = ModelBuilder()
+        global_body = builder.add_body()
+
+        builder.begin_world()
+        builder.add_shape_box(body=-1)
+        builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        builder.begin_world()
+        shape_a = builder.add_shape_box(body=global_body)
+        shape_b = builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(shape_a, shape_b)})
 
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
         """Keep large replicated filters compact and read-only while preserving contacts."""
@@ -3566,21 +3630,23 @@ class TestModelJoints(unittest.TestCase):
         builder.add_articulation([j3])
 
         # Add mimic constraints
-        _c1 = builder.add_constraint_mimic(
-            joint0=j2,
-            joint1=j1,
-            coef0=-0.25,
-            coef1=1.5,
-            label="mimic1",
-        )
-        _c2 = builder.add_constraint_mimic(
-            joint0=j3,
-            joint1=j1,
-            coef0=0.0,
-            coef1=-1.0,
-            enabled=False,
-            label="mimic2",
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            _c1 = builder.add_constraint_mimic(
+                joint0=j2,
+                joint1=j1,
+                coef0=-0.25,
+                coef1=1.5,
+                label="mimic1",
+            )
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            _c2 = builder.add_constraint_mimic(
+                joint0=j3,
+                joint1=j1,
+                coef0=0.0,
+                coef1=-1.0,
+                enabled=False,
+                label="mimic2",
+            )
 
         model = builder.finalize()
 
@@ -3601,6 +3667,108 @@ class TestModelJoints(unittest.TestCase):
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
         self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
         self.assertEqual(model.constraint_mimic_label[1], "mimic2")
+
+    def test_joint_mimic_metadata_and_evaluation(self):
+        """Verify joint-owned mimic metadata evaluates scalar coordinates."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(2)]
+        reference = builder.add_joint_revolute(parent=-1, child=bodies[0], axis=newton.Axis.Z)
+        follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
+        builder.add_articulation([reference, follower])
+
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        self.assertEqual(builder.joint_mimic_joint, [-1, reference])
+        np.testing.assert_allclose(
+            builder.joint_mimic_coeffs,
+            [(0.0, 1.0), (0.5, 2.0)],
+        )
+
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
+        np.testing.assert_allclose(
+            model.joint_mimic_coeffs.numpy(),
+            [(0.0, 1.0), (0.5, 2.0)],
+        )
+        self.assertEqual(model.constraint_mimic_count, 0)
+
+        state_in = model.state()
+        state_out = model.state()
+        state_in.joint_q.assign([1.25, 99.0])
+        state_in.joint_qd.assign([2.0, 99.0])
+
+        newton.eval_mimic(model, state_in, state_out)
+
+        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 99.0])
+        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 99.0])
+        np.testing.assert_allclose(state_out.joint_q.numpy(), [1.25, 3.0])
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), [2.0, 4.0])
+
+        newton.eval_mimic(model, state_in)
+        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 3.0])
+        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 4.0])
+
+    def test_joint_mimic_vectorized_evaluation(self):
+        """Verify mimic coefficients apply componentwise to multi-DOF joints."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(2)]
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y), axis(newton.Axis.Z)]
+        reference = builder.add_joint_d6(parent=-1, child=bodies[0], linear_axes=axes)
+        follower = builder.add_joint_d6(parent=bodies[0], child=bodies[1], linear_axes=axes)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (-0.5, 2.0))
+
+        model = builder.finalize()
+        state = model.state()
+        state.joint_q.assign([1.0, 2.0, 3.0, 99.0, 99.0, 99.0])
+        state.joint_qd.assign([4.0, 5.0, 6.0, 99.0, 99.0, 99.0])
+
+        newton.eval_mimic(model, state)
+
+        np.testing.assert_allclose(state.joint_q.numpy(), [1.0, 2.0, 3.0, 1.5, 3.5, 5.5])
+        np.testing.assert_allclose(state.joint_qd.numpy(), [4.0, 5.0, 6.0, 8.0, 10.0, 12.0])
+
+    def test_joint_mimic_rejects_chains(self):
+        """Verify mimic relationships cannot form chains in either authoring order."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(3)]
+        joint0 = builder.add_joint_revolute(parent=-1, child=bodies[0])
+        joint1 = builder.add_joint_revolute(parent=bodies[0], child=bodies[1])
+        joint2 = builder.add_joint_revolute(parent=bodies[1], child=bodies[2])
+
+        builder.set_joint_mimic(joint1, joint0)
+        with self.assertRaisesRegex(ValueError, "Reference joint 1 is already a mimic joint"):
+            builder.set_joint_mimic(joint2, joint1)
+        with self.assertRaisesRegex(ValueError, "Follower joint 0 is already referenced"):
+            builder.set_joint_mimic(joint0, joint2)
+
+        builder.set_joint_mimic(joint1, None)
+        self.assertEqual(builder.joint_mimic_joint[joint1], -1)
+        self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
+
+    def test_joint_mimic_validates_dimensions(self):
+        """Verify mimic relationships accept joint types only when their dimensions match."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(3)]
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+        d6_scalar = builder.add_joint_d6(
+            parent=bodies[0],
+            child=bodies[1],
+            angular_axes=[axis(newton.Axis.Z)],
+        )
+        d6_vector = builder.add_joint_d6(
+            parent=bodies[1],
+            child=bodies[2],
+            linear_axes=[axis(newton.Axis.X), axis(newton.Axis.Y)],
+        )
+
+        builder.set_joint_mimic(d6_scalar, reference)
+        self.assertEqual(builder.joint_mimic_joint[d6_scalar], reference)
+        with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
+            builder.set_joint_mimic(d6_vector, reference)
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""

@@ -222,7 +222,7 @@ def _invert_spd_block_kernel(
     then back-substituting ``L^T x = y``. No dense-inverse routine (cofactor
     expansion, Gauss-Jordan) is used — this is the numerically standard way to
     invert a small SPD matrix, and the same recipe
-    ``newton/_src/actuators/response_oracle.py`` uses for the same reason.
+    ``newton/_src/actuators/joint_space_response.py`` uses for the same reason.
 
     Backward disabled: this kernel's forward/back-substitution loops read
     values written earlier in the same launch (an intra-kernel recurrence),

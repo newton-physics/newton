@@ -398,12 +398,16 @@ welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the
 geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
 the same curves still import as described above.
 
-Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
-(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
-The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
-A welded rod graph gets one articulation per connected component; each of its curves keeps its
-own body range but shares that articulation. Attachment joints that tie a cable to other bodies
-close a loop, so they stay outside the articulation.
+An imported cable incorporated into an existing rigid-body articulation keeps that articulation's
+existing label. Only cable-owned articulations use the cable-derived label ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``). A free cable gets a free
+root joint to the world. When an open cable has exactly one supported hard attachment at an
+endpoint, that ball joint becomes the cable's root instead. An attachment to a rigid body joins
+the cable to that body's articulation, whether the articulation has a fixed or floating base.
+Attachments at interior points and additional attachments remain separate constraints outside
+the articulation. A welded rod graph gets one free-rooted articulation per connected component;
+each of its curves keeps its own body range but shares that articulation. The imported model is
+ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
 .. code-block:: python
 
@@ -1499,16 +1503,20 @@ Limitations
 -----------
 
 Importing USD files where many (> 30) mesh colliders are under the same rigid body
-can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
-thread-safety issue in OpenUSD and will be fixed in a future release of
-``usd-core``.  It can be worked around by setting the work concurrency limit to 1
-before ``pxr`` initializes its thread pool.
+can result in a crash in OpenUSD's native physics parser.  This is a known
+thread-safety issue in OpenUSD, **fixed in OpenUSD 26.08**: no workaround is needed
+when the USD runtime is 26.08 or newer, whether it comes from ``usd-core`` or from
+the OpenUSD build bundled in ``usd-exchange``.
+
+Newton still supports older ``usd-core`` releases, so the workaround below remains
+relevant when running against a USD runtime older than 26.08.  It can be applied by
+setting the work concurrency limit to 1 before ``pxr`` initializes its thread pool.
 
 .. note::
 
    Setting the concurrency limit to 1 disables multi-threaded USD processing
    globally and may degrade performance of other OpenUSD workloads in the same
-   process.
+   process.  Prefer upgrading to OpenUSD 26.08 or newer instead.
 
 Choose **one** of the two approaches below — do not combine them.
 ``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and

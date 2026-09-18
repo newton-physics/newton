@@ -2520,7 +2520,9 @@ def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
 
     paired_channels, paired = collide(True)
     scalar_channels, scalar = collide(False)
-    test.assertEqual(paired_channels, 2)
+    toolkit_version = wp.get_cuda_toolkit_version()
+    paired_samples_supported = device.arch >= 90 or (toolkit_version is not None and toolkit_version >= (13, 1))
+    test.assertEqual(paired_channels, 2 if paired_samples_supported else 1)
     test.assertEqual(scalar_channels, 1)
     test.assertEqual(len(scalar[0]), len(paired[0]))
     paired = _canonicalize_contact_records(paired)

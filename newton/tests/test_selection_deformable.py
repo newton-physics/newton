@@ -925,12 +925,14 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         """Dropping an incomplete curve leaves an unrelated rigid view valid."""
         builder = newton.ModelBuilder()
         _add_test_articulation(builder)
-        bodies, _joints = builder.add_rod(
+        bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
+            wrap_in_articulation=False,
             body_frame_origin="com",
         )
-        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        builder.add_articulation([*joints, anchor])
 
         with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
             builder.collapse_fixed_joints()
@@ -1079,7 +1081,9 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
         closed = DeformableView(closed_builder.finalize(), "closed", family="curve")
         self.assertEqual((closed.count, closed.elements_per_group("body")), (1, 3))
-        self.assertEqual(closed.elements_per_group("joint"), 3)
+        # Native groups include the automatic free root as well as the rod joints.
+        self.assertEqual(closed.elements_per_group("joint"), 4)
+        self.assertEqual(closed_builder.joint_type[0], newton.JointType.FREE)
 
         graph_builder = newton.ModelBuilder()
         graph_builder.add_rod(
@@ -1093,7 +1097,8 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
         graph = DeformableView(graph_builder.finalize(), "graph", family="curve")
         self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
-        self.assertEqual(graph.elements_per_group("joint"), 2)
+        self.assertEqual(graph.elements_per_group("joint"), 3)
+        self.assertEqual(graph_builder.joint_type[0], newton.JointType.FREE)
 
     def test_deprecated_curve_inputs_still_record_groups(self):
         """Deprecated rod inputs keep their group-selection behavior."""
@@ -1124,7 +1129,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         """Curve, surface, and volume groups retain disjoint ranges after replication."""
         prototype = newton.ModelBuilder()
 
-        # Curve first: three segment bodies connected by two graph joints.
+        # Curve first: three segment bodies, two rod joints, and a free root.
         prototype.add_rod(
             rod=newton.Rod(
                 [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
@@ -1165,7 +1170,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         self.assertEqual((curve.count, curve.worlds, curve.count_per_world), (2, [0, 1], 1))
         np.testing.assert_array_equal(curve.world_starts.numpy(), [0, 1, 2])
         self.assertEqual(curve.ranges("body"), [(0, 3), (3, 6)])
-        self.assertEqual(curve.ranges("joint"), [(0, 2), (2, 4)])
+        self.assertEqual(curve.ranges("joint"), [(0, 3), (3, 6)])
         self.assertEqual(curve.get_body_transforms(state).shape, (2, 3))
 
         surface = DeformableView(model, "surface", family="surface")
@@ -1222,7 +1227,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
 
         cable = DeformableView(model, "cable_proto", family="curve")
         self.assertEqual((cable.count, cable.worlds, cable.bodies_per_group), (2, [0, 1], 2))
-        self.assertEqual(cable.elements_per_group("joint"), 1)
+        self.assertEqual(cable.elements_per_group("joint"), 2)
 
         # State access round-trips through the offset ranges.
         positions = soft.get_particle_positions(state)
@@ -1251,12 +1256,14 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
     def test_fixed_joint_collapse_drops_incomplete_curve_group(self):
         """A label does not prevent collapse; an incomplete curve is not selectable."""
         builder = newton.ModelBuilder()
-        bodies, _joints = builder.add_rod(
+        bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
+            wrap_in_articulation=False,
             body_frame_origin="com",
         )
-        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        builder.add_articulation([*joints, anchor])
 
         with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
             builder.collapse_fixed_joints()
@@ -1272,12 +1279,14 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
 
         def anchored_rod(label):
             builder = newton.ModelBuilder()
-            bodies, _joints = builder.add_rod(
+            bodies, joints = builder.add_rod(
                 rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
                 label=label,
+                wrap_in_articulation=False,
                 body_frame_origin="com",
             )
-            builder.add_joint_fixed(-1, bodies[0], label="anchor")
+            anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
+            builder.add_articulation([*joints, anchor])
             return builder
 
         unlabeled = anchored_rod(None)
@@ -1293,12 +1302,14 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
     def test_fixed_joint_collapse_preserves_explicitly_kept_curve(self):
         """joints_to_keep retains a complete curve group when requested."""
         builder = newton.ModelBuilder()
-        bodies, _joints = builder.add_rod(
+        bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
             label="anchored_curve",
+            wrap_in_articulation=False,
             body_frame_origin="com",
         )
-        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        anchor = builder.add_joint_fixed(-1, bodies[0], label="anchor")
+        builder.add_articulation([*joints, anchor])
 
         self.assertEqual((builder.curve_label, builder.curve_world), (["anchored_curve"], [-1]))
         builder.collapse_fixed_joints(joints_to_keep=["anchor"])

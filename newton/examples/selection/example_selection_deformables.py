@@ -334,7 +334,7 @@ class Example:
 
         expected_counts = {
             (self.curve, "body"): 3,
-            (self.curve, "joint"): 2,
+            (self.curve, "joint"): 3,  # Two rod joints and the automatic free root.
             (self.surface, "particle"): 4,
             (self.surface, "triangle"): 2,
             (self.surface, "edge"): 5,
