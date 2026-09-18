@@ -1,0 +1,1 @@
+Add experimental `DriveNeuralGRU` support for ONNX checkpoints evaluated with Warp-NN, using metadata-selected joint and target features with optional caller-populated `control.dynamic_bias` conditioning and stateful explicit inference.

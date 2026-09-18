@@ -1861,7 +1861,7 @@ class ArticulationView:
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            Assumes SISO actuators (one DOF per actuator).
+            Assumes one DOF per actuator.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
