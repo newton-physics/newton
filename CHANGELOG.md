@@ -286,6 +286,7 @@
 - Fix MJCF contact pairs ignoring properties inherited from pair default classes.
 - Fix disabled USD colliders participating in particle collisions when visual shape loading is disabled.
 - Fix `ArticulationView.is_fixed_base` for roots with zero effective degrees of freedom, including fully locked D6 joints. (#3727)
+- Fix MJCF `<position dampratio="...">` being dropped for joint-target actuators, which imported a drive the asset author tuned as critically damped with `joint_target_kd` left at zero. The ratio is now resolved against the compiled reflected inertia using MuJoCo's own formula. (#3698)
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
 - Exclude active particles with non-finite positions from rebuildable `SolverImplicitMPM` sparse-grid packing.
