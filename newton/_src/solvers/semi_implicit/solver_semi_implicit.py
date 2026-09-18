@@ -78,7 +78,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         model: Model,
         *,
         angular_damping: float = 0.05,
-        friction_smoothing: float = 1.0,
+        friction_smoothing: float = 1.0e-3,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
         joint_mimic_ke: float = 1.0e2,
@@ -90,7 +90,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor to be used in rigid body integration. Defaults to 0.05.
-            friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`). Defaults to 1.0.
+            friction_smoothing: Slip speed [m/s] below which friction fades out, passed as ``delta`` to :func:`warp.norm_pseudo_huber`. Friction is ``min(kf * |v_t|, mu * |f_n|)`` scaled by ``|v_t| / sqrt(delta^2 + |v_t|^2)``, so keep it well under the slip speeds in the scene. Must be positive. Defaults to 1.0e-3.
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
             joint_mimic_ke: Global position-error gain for joint mimic penalty springs. The units are
@@ -105,6 +105,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
         """
+        if not math.isfinite(friction_smoothing) or friction_smoothing <= 0.0:
+            raise ValueError(f"friction_smoothing must be finite and > 0 (got {friction_smoothing}).")
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []

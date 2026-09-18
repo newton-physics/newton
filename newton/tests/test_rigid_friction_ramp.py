@@ -51,6 +51,12 @@ BOX_HY = 0.2
 BOX_HZ = 0.05
 BOX_GAP = 0.001  # initial offset above the ramp surface to avoid initial contact transient
 VBD_STOPPING_CONTACT_KE = 1.0e6  # Near-rigid normal for VBD kinetic-friction oracle
+# Stick stiffness [N·s/m] for SemiImplicit and Featherstone. Their stick branch is
+# viscous, so a box below the critical angle creeps at v = m g sin(theta) / kf
+# instead of stopping. The grid box is 16 kg, so at 40 deg that is 10 mm/s, or
+# 2.5 mm over the measurement window. The ShapeConfig default of 1e3 creeps 25 mm
+# and fails eps_pos.
+PENALTY_CONTACT_KF = 1.0e4
 
 SIM_DT = 1.0 / 60.0
 SIM_SUBSTEPS = 30
@@ -85,6 +91,9 @@ _DEFAULT_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.10, eps_pos=0.02, min
 # VBD's min_slide is loose: finite-step / finite-iteration contact error can
 # creep borderline cells a few mm in 0.25 s rather than sliding fully.
 _VBD_THRESHOLDS = _Thresholds(margin_deg=5.0, v_rest=0.12, eps_pos=0.10, min_slide=0.005)
+# Creep is ~2.5 mm so eps_pos stays at the default, but v_rest is tightened:
+# creep speed is the clearest signal that the cone is binding.
+_PENALTY_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.05, eps_pos=0.02, min_slide=0.02)
 
 # --- Stopping-distance config ---
 
@@ -373,8 +382,11 @@ def test_friction_stopping_distance(
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
-# Featherstone and SemiImplicit use viscous (kf) friction rather than Coulomb,
-# so the critical-angle criterion does not apply; excluded here.
+# SemiImplicit and Featherstone evaluate min(kf * |v_t|, mu * |f_n|), which is a
+# Coulomb cone, so the critical-angle criterion applies to them too. They creep
+# rather than stick, so PENALTY_CONTACT_KF keeps the creep inside eps_pos. The
+# viscous tail rules out the stopping-distance oracle, same as
+# mujoco_warp_newton_contacts below.
 # stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
 # solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD still has finite-step and
 # finite-iteration error, so keep a small empirical margin above the precise
@@ -458,6 +470,22 @@ _SOLVERS = {
         "stopping_distance_contact_ke": VBD_STOPPING_CONTACT_KE,
         "stopping_distance_rel_tol": 0.02,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
+    },
+    "semi_implicit": {
+        "factory": newton.solvers.SolverSemiImplicit,
+        "mus": _DEFAULT_MUS,
+        "angles_deg": _DEFAULT_ANGLES_DEG,
+        "thresholds": _PENALTY_THRESHOLDS,
+        "friction_ramp_contact_kf": PENALTY_CONTACT_KF,
+        "run_stopping_distance": False,
+    },
+    "featherstone": {
+        "factory": newton.solvers.SolverFeatherstone,
+        "mus": _DEFAULT_MUS,
+        "angles_deg": _DEFAULT_ANGLES_DEG,
+        "thresholds": _PENALTY_THRESHOLDS,
+        "friction_ramp_contact_kf": PENALTY_CONTACT_KF,
+        "run_stopping_distance": False,
     },
     "kamino": {
         "factory": newton.solvers.SolverKamino,

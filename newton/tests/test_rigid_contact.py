@@ -156,14 +156,12 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = newton.solvers.SolverFeatherstone(
             model,
             angular_damping=0.15,  # Increased for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     elif isinstance(temp_solver, newton.solvers.SolverSemiImplicit):
         # Recreate with stability parameters for SemiImplicit
         solver = newton.solvers.SolverSemiImplicit(
             model,
             angular_damping=0.15,  # Increased from default 0.05 for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     else:
         solver = temp_solver
