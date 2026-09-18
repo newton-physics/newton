@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 import time
 import unittest
 from enum import Enum
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -25,7 +27,7 @@ from newton._src.geometry.sdf_hydroelastic import (
     unpack_hydro_voxel_coords,
     vec8f,
 )
-from newton._src.geometry.sdf_mc import get_triangle_fraction
+from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_fraction
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
@@ -202,7 +204,7 @@ def test_mc_corner_offsets_match_canonical(test, device):
     """Verify canonical marching-cubes corner offsets."""
     offsets = wp.empty(8, dtype=wp.vec3i, device=device)
     wp.launch(_test_mc_corner_offsets, dim=8, inputs=[offsets], device=device)
-    expected = np.asarray(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=np.int32)
+    expected = np.asarray(_get_marching_cubes_class().CUBE_CORNER_OFFSETS, dtype=np.int32)
     np.testing.assert_array_equal(offsets.numpy(), expected)
 
 
@@ -2578,6 +2580,16 @@ def test_fixed_point_extreme_exponents(test, device):
 
 
 class TestHydroelastic(unittest.TestCase):
+    def test_marching_cubes_class_prefers_geometry_namespace(self):
+        """Prefer the non-deprecated marching-cubes class when Warp provides it."""
+        replacement = object()
+        geometry = mock.Mock(IsoSurfaceMarchingCubes=replacement)
+        with (
+            mock.patch.dict(sys.modules, {"warp.geometry": geometry}),
+            mock.patch.object(wp, "geometry", None, create=True),
+        ):
+            self.assertIs(_get_marching_cubes_class(), replacement)
+
     def test_fixed_point_extreme_exponents(self):
         """Handle sentinel and high finite pressure contributions without overflow."""
         test_fixed_point_extreme_exponents(self, wp.get_device("cpu"))

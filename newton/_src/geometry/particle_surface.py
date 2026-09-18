@@ -9,8 +9,7 @@ Symposium on Computer Animation, 2010.
 
 The pipeline computes per-particle anisotropy matrices via Weighted PCA,
 then evaluates a smooth scalar field on a sparse volume using oriented
-ellipsoidal kernels, and extracts the isosurface with
-:class:`warp.MarchingCubes`.
+ellipsoidal kernels, and extracts the isosurface with marching cubes.
 
 Typical usage::
 
@@ -33,6 +32,7 @@ import warp as wp
 from . import particle_surface_kernels as kernels
 from . import particle_surface_sparse_kernels as sparse_kernels
 from .hashtable import HashTable
+from .sdf_mc import _get_marching_cubes_class
 
 __all__ = ["ParticleSurface", "extract_particle_surface"]
 
@@ -206,16 +206,17 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
         self.topology_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
         self.topology_voxel_count = wp.zeros(1, dtype=wp.uint32, device=self.device)
         self.rebuild_status = wp.zeros(5, dtype=wp.uint32, device=self.device)
-        corner_offsets = wp.MarchingCubes.CUBE_CORNER_OFFSETS
+        marching_cubes = _get_marching_cubes_class()
+        corner_offsets = marching_cubes.CUBE_CORNER_OFFSETS
         edge_offsets: list[tuple[int, int, int]] = []
         edge_axes: list[int] = []
-        for first, second in wp.MarchingCubes.EDGE_TO_CORNERS:
+        for first, second in marching_cubes.EDGE_TO_CORNERS:
             first_corner = corner_offsets[first]
             second_corner = corner_offsets[second]
             edge_offsets.append(tuple(min(first_corner[a], second_corner[a]) for a in range(3)))
             edge_axes.append(next(a for a in range(3) if first_corner[a] != second_corner[a]))
-        self.case_ranges = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=self.device)
-        self.local_edges = wp.array(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=wp.int32, device=self.device)
+        self.case_ranges = wp.array(marching_cubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=self.device)
+        self.local_edges = wp.array(marching_cubes.TRI_LOCAL_INDICES, dtype=wp.int32, device=self.device)
         self.corner_offsets = wp.array(corner_offsets, dtype=wp.vec3i, device=self.device)
         self.edge_offsets = wp.array(edge_offsets, dtype=wp.vec3i, device=self.device)
         self.edge_axes = wp.array(edge_axes, dtype=wp.int32, device=self.device)
