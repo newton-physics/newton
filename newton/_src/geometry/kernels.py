@@ -1114,6 +1114,9 @@ def create_soft_contacts(
     shape_source_ptr: wp.array[wp.uint64],
     shape_mesh_properties: wp.array[wp.int32],
     shape_world: wp.array[int],  # World indices for shapes
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],
     margin: float,
     shape_margin: wp.array[float],
     soft_contact_max: int,
@@ -1154,6 +1157,28 @@ def create_soft_contacts(
     px = particle_q[particle_index]
     radius = particle_radius[particle_index]
 
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+
+    # The rigid broad-phase AABB already includes its shape margin and rigid-contact gap. Expand it
+    # only by the particle radius and any additional soft-contact gap before doing shape-specific work.
+    # Plane distance is cheaper than this bound; heightfields also remain solid below their surface.
+    can_cull = shape_aabb_lower.shape[0] > 0 and geo_type != GeoType.PLANE and geo_type != GeoType.HFIELD
+    if can_cull:
+        extent = radius + wp.max(margin - shape_gap[shape_index], 0.0)
+        lower = shape_aabb_lower[shape_index] - wp.vec3(extent)
+        upper = shape_aabb_upper[shape_index] + wp.vec3(extent)
+        if (
+            px[0] < lower[0]
+            or px[0] > upper[0]
+            or px[1] < lower[1]
+            or px[1] > upper[1]
+            or px[2] < lower[2]
+            or px[2] > upper[2]
+        ):
+            return
+
     X_wb = wp.transform_identity()
     if rigid_index >= 0:
         X_wb = body_q[rigid_index]
@@ -1165,11 +1190,6 @@ def create_soft_contacts(
 
     # transform particle position to shape local space
     x_local = wp.transform_point(X_sw, px)
-
-    # geo description
-    geo_type = shape_type[shape_index]
-    geo_scale = shape_scale[shape_index]
-    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
 
     # evaluate shape sdf
     d = 1.0e6

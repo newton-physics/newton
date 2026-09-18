@@ -1167,6 +1167,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 rigid_body_particle_contact_buffer_size if model.shape_count > 0 and model.particle_count > 0 else 0
             )
             self.body_particle_contact_buffer_pre_alloc = bp_pre_alloc
+            # Large cloths need more lanes to accumulate their contacts onto each rigid body.
+            self._body_particle_contact_threads = (
+                128 if self.device.is_cuda and model.particle_count // max(model.body_count, 1) >= 4096 else 4
+            )
             self.body_particle_contact_counts = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
             self.body_particle_contact_indices = wp.zeros(
                 model.body_count * bp_pre_alloc, dtype=wp.int32, device=self.device
@@ -3806,10 +3810,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             if model.particle_count > 0 and contacts is not None:
                 wp.launch(
                     kernel=accumulate_body_particle_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
+                    dim=color_group.size * self._body_particle_contact_threads,
                     inputs=[
                         dt,
                         color_group,
+                        self._body_particle_contact_threads,
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
