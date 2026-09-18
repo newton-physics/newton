@@ -2119,7 +2119,7 @@ def _scatter_group_spatial_kernel(
     dst[starts[group] + j] = values[source, j]
 
 
-class DeformableView:
+class _DeformableViewBase:
     """Select finalized deformable groups and read or update their existing state.
 
     .. experimental::
@@ -2550,7 +2550,9 @@ class DeformableView:
             device=self.device,
         )
 
-    # particle state (surface / volume) --------------------------------------
+
+class _DeformableParticleView(_DeformableViewBase):
+    """Share particle state access without prescribing a geometric family."""
 
     @property
     def particles_per_group(self) -> int:
@@ -2673,7 +2675,9 @@ class DeformableView:
             source_indices,
         )
 
-    # body state (curve) --------------------------------------------------
+
+class _DeformableBodyView(_DeformableViewBase):
+    """Share body state access without prescribing a geometric family."""
 
     @property
     def bodies_per_group(self) -> int:
@@ -2804,3 +2808,7 @@ class DeformableView:
             group_indices,
             source_indices,
         )
+
+
+class DeformableView(_DeformableParticleView, _DeformableBodyView):
+    __doc__ = _DeformableViewBase.__doc__
