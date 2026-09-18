@@ -1,0 +1,8 @@
+﻿newton.sensors.SensorIMU
+========================
+
+.. autoclass:: newton.sensors.SensorIMU
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

@@ -1,0 +1,6 @@
+﻿newton.utils.create\_parallel\_transport\_cable\_quaternions
+============================================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: create_parallel_transport_cable_quaternions
