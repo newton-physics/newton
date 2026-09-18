@@ -1939,8 +1939,8 @@ class CollisionPipeline:
         margin: float = 0.2,
         gap: float = 0.0,
         rest_shape_exclusion_radius: float = 0.0,
-        vertex_buffer_pre_alloc: int = 32,
-        edge_buffer_pre_alloc: int = 64,
+        vertex_buffer_pre_alloc: int = 8,
+        edge_buffer_pre_alloc: int = 16,
         edge_edge_parallel_epsilon: float = 1e-5,
         record_triangle_contacting_vertices: bool = False,
         topological_filter_threshold: int = 2,
@@ -1968,10 +1968,12 @@ class CollisionPipeline:
                 in the rest shape (``model.particle_q``) are excluded from
                 detection — for meshes whose regions are close by design
                 (layered cloth, seams). ``0`` disables the filter.
-            vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
-            edge_buffer_pre_alloc: Per-edge collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
+            vertex_buffer_pre_alloc: Sizes the global vertex-triangle contact
+                buffer shared by all vertices: capacity = this value x
+                ``particle_count``; excess pairs are dropped and flagged.
+            edge_buffer_pre_alloc: Sizes the global edge-edge contact buffer
+                shared by all edges: capacity = this value x ``edge_count``;
+                excess pairs are dropped and flagged.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
             record_triangle_contacting_vertices: Also record per-triangle
                 contacting vertices.
