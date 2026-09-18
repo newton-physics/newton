@@ -117,13 +117,15 @@ class TestMuJoCoDeterminismConfig(unittest.TestCase):
         solver._deterministic = solver_mujoco.wp.DeterministicMode.RUN_TO_RUN
         solver._deterministic_max_records = 17
         smooth_module = types.SimpleNamespace(__name__="mujoco_warp._src.smooth")
-        forward_module = types.SimpleNamespace(__name__="mujoco_warp._src.forward")
+        # sleep's atomics all sit in statically bounded loops, so Warp's
+        # code-generated record bound is sufficient for it.
+        sleep_module = types.SimpleNamespace(__name__="mujoco_warp._src.sleep")
 
         with (
             mock.patch.object(
                 solver_mujoco,
                 "_mujoco_warp_deterministic_modules",
-                return_value=[smooth_module, forward_module],
+                return_value=[smooth_module, sleep_module],
             ),
             mock.patch.object(solver, "_set_module_options") as set_module_options,
         ):
@@ -141,7 +143,7 @@ class TestMuJoCoDeterminismConfig(unittest.TestCase):
             set_module_options.call_args_list,
             [
                 mock.call(dynamic_options, module=smooth_module),
-                mock.call(generated_options, module=forward_module),
+                mock.call(generated_options, module=sleep_module),
                 mock.call(generated_options, module=solver_mujoco.kernels),
             ],
         )
