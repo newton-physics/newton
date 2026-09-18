@@ -30,11 +30,8 @@ pose error (position, then axis-angle orientation), shown unweighted; see
 how a zero-weighted axis is excluded from the task rather than driven to
 zero.
 
-Null-space secondary objectives (below) require every robot to target
-exactly one frame; multi-frame robots may not enable either one.
-
 A redundant robot (more controlled DOFs than its own task dimension needs —
-6, unless ``axis_weight`` zeroes some axes) may also project a secondary
+6 per frame, unless ``axis_weight``/``null_space_axes`` zero some axes) may also project a secondary
 joint-space objective — joint-limit avoidance and/or a
 posture target — through a damped kinematic (Moore-Penrose) null-space
 projector ``N = I - Jᵀ(JJᵀ + λ_null²I)⁻¹J``, so it (approximately) never
@@ -86,12 +83,9 @@ from ._common import (
     _qd_from_y_kernel,
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
-    _scatter_pinv_transpose_by_axis_kernel,
     _svd_one_sided_jacobi_kernel,
     _svd_reconstruct_scaled_kernel,
 )
-
-_CANONICAL_TASK_AXIS_COUNT = 6
 
 
 def _validate_non_negative_gain(value: wp.array[wp.float32] | float | None, name: str) -> None:
@@ -262,8 +256,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
             ``joint_limit_avoidance_gain``, ``joint_limit_avoidance_margin``,
-            ``joint_pos_lower``, and ``joint_pos_upper``. Requires every
-            robot to have exactly one frame (see ``frames_per_robot``).
+            ``joint_pos_lower``, and ``joint_pos_upper``.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
             comes within ``joint_limit_avoidance_margin`` of either limit.
             Required (and must be positive) when
@@ -282,8 +275,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             live port.
         use_null_space_posture_control: Project a proportional pull toward
             ``inputs.q_des_null`` through the null-space projector. Enables
-            ``null_space_stiffness``. Requires every robot to have exactly
-            one frame (see ``frames_per_robot``).
+            ``null_space_stiffness``.
         null_space_stiffness: Posture-control proportional gain, applied per
             controlled DOF. Must be non-negative; checked the same way as
             ``bandwidth``. Pass a scalar to apply the same gain to every
@@ -308,19 +300,22 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             caller's responsibility there, since it needs the null-space
             task dimension and ``controlled_dofs_per_robot`` compared per
             robot, not just a sign check.
-        null_space_axes: Which of the 6 canonical axes the null-space
+        null_space_axes: Which of a frame's 6 canonical axes the null-space
             projector guarantees the secondary objective (joint-limit
             avoidance/posture control) won't disturb — zero leaves that
             axis unprotected, nonzero protects it; only the sign matters,
             unlike ``axis_weight``'s own soft magnitude. Defaults to
             ``axis_weight`` (every solved axis protected), but the two are
-            independent: an axis can be softly solved for yet left
-            unprotected, e.g. an under-actuated arm with too few DOFs to
-            protect every solved axis and still have a usable null space
+            independent, per frame: an axis can be softly solved for yet
+            left unprotected, e.g. an under-actuated arm with too few DOFs
+            to protect every solved axis and still have a usable null space
             left over. Unlike ``axis_weight``, an all-zero row is legal —
             it protects no axes, so the secondary objective is free to
-            move all of them. Only meaningful when
-            ``use_joint_limit_avoidance`` or
+            move all of them; a robot may leave every one of its frames
+            entirely unprotected this way. Pass a single ``wp.spatial_vector``
+            to apply the same protected axes to every frame, or an array of
+            shape [total_frame_count] to set them per frame. Only meaningful
+            when ``use_joint_limit_avoidance`` or
             ``use_null_space_posture_control`` is enabled.
         device: Warp device.
         requires_grad: Not supported at this time; must be ``False``.
@@ -575,13 +570,6 @@ class ControllerDifferentialIKModelFree(ControllerBase):
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
 
-        if use_null_space and np.any(frames_per_robot_np > 1):
-            raise ValueError(
-                "use_joint_limit_avoidance/use_null_space_posture_control require every robot to have exactly "
-                f"one frame (null-space protection isn't defined for a multi-frame task); got "
-                f"frames_per_robot={frames_per_robot_np.tolist()}."
-            )
-
         if use_joint_limit_avoidance:
             if joint_limit_avoidance_gain <= 0.0:
                 raise ValueError(
@@ -636,38 +624,56 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         if use_null_space:
             null_space_axes_resolved = axis_weight_resolved if null_space_axes is None else null_space_axes
             if isinstance(null_space_axes_resolved, wp.spatial_vector):
-                null_space_axes_np = np.tile(
-                    np.array(null_space_axes_resolved, dtype=np.float32), (controlled_robot_count, 1)
-                )
+                null_space_axes_np = np.tile(np.array(null_space_axes_resolved, dtype=np.float32), (total_frame_count, 1))
             elif isinstance(null_space_axes_resolved, wp.array):
                 _validate_array(
                     array=null_space_axes_resolved,
                     name="null_space_axes",
                     dtype=wp.spatial_vector,
-                    shape=(controlled_robot_count,),
+                    shape=(total_frame_count,),
                     device=self._device,
                 )
                 null_space_axes_np = null_space_axes_resolved.numpy()
             else:
                 raise TypeError(
                     "null_space_axes must be a wp.spatial_vector or a wp.array[wp.spatial_vector] of shape "
-                    f"(controlled_robot_count,), got {type(null_space_axes_resolved).__name__}."
+                    f"(total_frame_count,), got {type(null_space_axes_resolved).__name__}."
                 )
             if np.any(null_space_axes_np < 0.0):
                 raise ValueError(f"null_space_axes must be non-negative, got {null_space_axes_np.tolist()}.")
 
             # Unlike axis_weight, an all-zero row is legal here: it means
-            # that robot's null-space projector is unconstrained (N = I),
-            # not an error -- there's no "nothing to solve for" problem the
-            # way there is for the primary task.
+            # that frame is entirely unprotected, not an error -- there's no
+            # "nothing to solve for" problem the way there is for the
+            # primary task, so a robot may end up with null_space_task_dim
+            # == 0 across all of its frames.
             null_space_axis_active_np = null_space_axes_np > 0.0
-            null_space_task_dim_np = null_space_axis_active_np.sum(axis=1).astype(np.int32)
+            frame_null_space_task_dim_np = null_space_axis_active_np.sum(axis=1).astype(np.int32)
+            null_space_task_dim_np = np.bincount(
+                frame_robot_idx_np, weights=frame_null_space_task_dim_np, minlength=controlled_robot_count
+            ).astype(np.int32)
+
+            # Compact-slot -> (frame, canonical axis) lookup, same pattern
+            # as active_frame_of_slot/active_axis_of_slot above, but for the
+            # null-space projector's own notion of "the task"
+            # (null_space_axes), independent of the primary solve's
+            # axis_weight -- see step()'s null-space section for where each
+            # is used. At least width 1 so the SVD matrix types below stay
+            # constructible even when every robot is entirely unprotected.
+            max_null_space_task_dim = max(1, int(null_space_task_dim_np.max()))
+            null_space_active_frame_of_slot_np = np.zeros(
+                (controlled_robot_count, max_null_space_task_dim), dtype=np.int32
+            )
             null_space_active_axis_of_slot_np = np.zeros(
-                (controlled_robot_count, _CANONICAL_TASK_AXIS_COUNT), dtype=np.int32
+                (controlled_robot_count, max_null_space_task_dim), dtype=np.int32
             )
             for robot in range(controlled_robot_count):
-                active = np.flatnonzero(null_space_axis_active_np[robot])
-                null_space_active_axis_of_slot_np[robot, : active.size] = active
+                slot = 0
+                for frame in range(frame_start_np[robot], frame_start_np[robot] + frames_per_robot_np[robot]):
+                    for axis in np.flatnonzero(null_space_axis_active_np[frame]):
+                        null_space_active_frame_of_slot_np[robot, slot] = frame
+                        null_space_active_axis_of_slot_np[robot, slot] = axis
+                        slot += 1
         elif null_space_axes is not None:
             raise ValueError(
                 "null_space_axes was given but neither use_joint_limit_avoidance nor "
@@ -682,6 +688,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
         self._max_task_dim = max_task_dim
+        self._max_null_space_task_dim = max_null_space_task_dim if use_null_space else None
         self._total_controlled_dofs = total_controlled_dofs
         self._total_frame_count = total_frame_count
         self._requires_grad = requires_grad
@@ -696,12 +703,18 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             [wp.spatial_vector(*row) for row in axis_weight_np], dtype=wp.spatial_vector, device=self._device
         )
 
-        # Same shape as task_dim/active_axis_of_slot above, but for the
-        # null-space projector's own notion of "the task" (null_space_axes),
-        # independent of the primary solve's axis_weight -- see step()'s
-        # null-space section for where each is used.
+        # Same pattern as task_dim/active_frame_of_slot/active_axis_of_slot
+        # above, but for the null-space projector's own notion of "the
+        # task" (null_space_axes), independent of the primary solve's
+        # axis_weight -- see step()'s null-space section for where each is
+        # used.
         self._null_space_task_dim = (
             wp.array(null_space_task_dim_np, dtype=wp.int32, device=self._device) if use_null_space else None
+        )
+        self._null_space_active_frame_of_slot = (
+            wp.array2d(null_space_active_frame_of_slot_np, dtype=wp.int32, device=self._device)
+            if use_null_space
+            else None
         )
         self._null_space_active_axis_of_slot = (
             wp.array2d(null_space_active_axis_of_slot_np, dtype=wp.int32, device=self._device)
@@ -932,14 +945,19 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 if self._null_space_damping_baked is None
                 else None
             )
-            # Null-space projection's own SVD is always over exactly 6
-            # canonical axes, independent of the primary task's max_task_dim,
-            # so it needs its own fixed-6 matrix types rather than reusing
-            # svd_mat_u/svd_mat_j above.
-            svd_mat_u_null = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
-            svd_mat_j_null = wp.types.matrix(shape=(6, max_controlled_dofs), dtype=wp.float32)
+            # Null-space projection's own SVD is over its own protected-axis
+            # task dimension (up to 6 per protected frame), independent of
+            # the primary task's max_task_dim, so it needs its own matrix
+            # types rather than reusing svd_mat_u/svd_mat_j above.
+            svd_mat_u_null = wp.types.matrix(
+                shape=(max_null_space_task_dim, max_null_space_task_dim), dtype=wp.float32
+            )
+            svd_mat_j_null = wp.types.matrix(shape=(max_null_space_task_dim, max_controlled_dofs), dtype=wp.float32)
             self._svd_u_null_buf = wp.zeros(
-                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                (controlled_robot_count, max_null_space_task_dim, max_null_space_task_dim),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
             )
             self._svd_u_null_view = self._svd_u_null_buf.view(svd_mat_u_null).reshape((controlled_robot_count,))
             self._svd_s_null_buf = wp.zeros(
@@ -963,7 +981,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 requires_grad=requires_grad,
             )
             self._jacobian_active_buf = wp.zeros(
-                (controlled_robot_count, 6, max_controlled_dofs),
+                (controlled_robot_count, max_null_space_task_dim, max_controlled_dofs),
                 dtype=wp.float32,
                 device=self._device,
                 requires_grad=requires_grad,
@@ -971,18 +989,16 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # jacobian_active_buf is unweighted (every axis weight 1), so it
             # doubles as the "A" input to the null-space projector's own SVD
             # directly, with no separate weighting step (unlike the primary
-            # task solve's J_w).
+            # task solve's J_w). It also feeds _null_space_projector_kernel
+            # directly as jacobian_tool -- both it and the reconstructed
+            # pinv-transpose below share the same compact slot order, so no
+            # scatter back to canonical axis order is needed (see the
+            # section comment above _gather_jacobian_by_axis_kernel).
             self._jacobian_active_view = self._jacobian_active_buf.view(svd_mat_j_null).reshape(
                 (controlled_robot_count,)
             )
             self._jacobian_pinv_transpose_slot_buf = wp.zeros(
-                (controlled_robot_count, 6, max_controlled_dofs),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=requires_grad,
-            )
-            self._jacobian_pinv_transpose_buf = wp.zeros(
-                (controlled_robot_count, 6, max_controlled_dofs),
+                (controlled_robot_count, max_null_space_task_dim, max_controlled_dofs),
                 dtype=wp.float32,
                 device=self._device,
                 requires_grad=requires_grad,
@@ -1408,21 +1424,25 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 else sources["inputs.null_space_damping"]
             )
             # _null_space_projector_kernel (shared with other controller
-            # families) knows nothing about axis_weight -- gather the
-            # Jacobian into compact slot order before feeding it, then
-            # scatter the reconstructed pinv-transpose back to canonical
-            # axis order afterward, so it sees a consistent pair of inputs.
-            # The null-space projector's own regularization stays
+            # families) knows nothing about axis_weight or frames -- gather
+            # the protected frames' Jacobian rows into compact slot order
+            # first. The null-space projector's own regularization stays
             # deliberately unweighted (every axis weight 1), so
             # jacobian_active_buf itself -- not a separately weighted
-            # buffer -- is the SVD's own input. Gathered/scattered by
-            # null_space_active_axis_of_slot/null_space_task_dim, not the
-            # primary solve's own active_axis_of_slot/task_dim -- see
+            # buffer -- is the SVD's own input. Gathered by
+            # null_space_active_frame_of_slot/null_space_active_axis_of_slot/
+            # null_space_task_dim, not the primary solve's own
+            # active_frame_of_slot/active_axis_of_slot/task_dim -- see
             # null_space_axes.
             wp.launch(
                 _gather_jacobian_by_axis_kernel,
-                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[jacobian, self._null_space_active_axis_of_slot, self._null_space_task_dim],
+                dim=(controlled_robot_count, self._max_null_space_task_dim, self._max_controlled_dofs),
+                inputs=[
+                    jacobian,
+                    self._null_space_active_frame_of_slot,
+                    self._null_space_active_axis_of_slot,
+                    self._null_space_task_dim,
+                ],
                 outputs=[self._jacobian_active_buf],
                 device=self._device,
             )
@@ -1452,32 +1472,26 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             )
             wp.launch(
                 _svd_reconstruct_scaled_kernel,
-                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                dim=(controlled_robot_count, self._max_null_space_task_dim, self._max_controlled_dofs),
                 inputs=[
                     self._svd_u_null_buf,
                     self._pinv_singular_value_null_buf,
                     self._svd_v_null_buf,
+                    self._null_space_task_dim,
                     self._controlled_dofs_per_robot,
                 ],
                 outputs=[self._jacobian_pinv_transpose_slot_buf],
                 device=self._device,
             )
             wp.launch(
-                _scatter_pinv_transpose_by_axis_kernel,
-                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                _null_space_projector_kernel,
+                dim=(controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 inputs=[
+                    self._jacobian_active_buf,
                     self._jacobian_pinv_transpose_slot_buf,
-                    self._null_space_active_axis_of_slot,
                     self._null_space_task_dim,
                     self._controlled_dofs_per_robot,
                 ],
-                outputs=[self._jacobian_pinv_transpose_buf],
-                device=self._device,
-            )
-            wp.launch(
-                _null_space_projector_kernel,
-                dim=(controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
-                inputs=[jacobian, self._jacobian_pinv_transpose_buf, self._controlled_dofs_per_robot],
                 outputs=[self._null_space_projector_buf],
                 device=self._device,
             )

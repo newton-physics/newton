@@ -636,7 +636,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         wp.launch(
             _null_space_projector_kernel,
             dim=(1, max_dofs, max_dofs),
-            inputs=[jacobian_tool_world, jacobian_pinv_transpose, dof_count],
+            inputs=[jacobian_tool_world, jacobian_pinv_transpose, task_dim, dof_count],
             outputs=[null_space_projector],
             device=device,
         )

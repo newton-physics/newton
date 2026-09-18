@@ -164,10 +164,11 @@ def _shift_jacobian_to_tool_kernel(
 def _null_space_projector_kernel(
     jacobian_tool: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are per-DOF twists about the tool point, in the caller's task frame
+    ],  # (robot_count, max_task_dim, max_dofs) columns are per-DOF twists about the tool point, in the caller's task frame
     jacobian_pinv_transpose: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) either pseudo-inverse-transpose variant; zero beyond dof_count
+    ],  # (robot_count, max_task_dim, max_dofs) either pseudo-inverse-transpose variant; zero beyond dof_count
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of genuine rows of jacobian_tool/jacobian_pinv_transpose
     dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
     # outputs
     null_space_projector: wp.array3d[
@@ -179,7 +180,9 @@ def _null_space_projector_kernel(
     Frame-agnostic: ``jacobian_tool`` and ``jacobian_pinv_transpose`` just
     need to be expressed in the same frame as each other, whatever that is
     (e.g. world for differential IK, the operational frame for hybrid
-    force/motion control).
+    force/motion control), in the same row order as each other -- canonical
+    6-axis order for a single fixed-6D task, or any other consistent
+    compact ordering (e.g. gathered across several protected frames).
 
     A joint torque built as ``N @ M @ a``, for any joint acceleration ``a``
     and the joint-space mass matrix ``M``, produces zero task-space
@@ -202,7 +205,7 @@ def _null_space_projector_kernel(
         identity_entry = 1.0
 
     total = float(0.0)
-    for k in range(6):
+    for k in range(task_dim[robot_idx]):
         total += jacobian_tool[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
     null_space_projector[robot_idx, row, col] = identity_entry - total
 

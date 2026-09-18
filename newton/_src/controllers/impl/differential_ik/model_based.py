@@ -144,8 +144,7 @@ class ControllerDifferentialIK(ControllerBase):
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
             ``joint_limit_avoidance_gain``, ``joint_limit_avoidance_margin``,
-            ``joint_pos_lower``, and ``joint_pos_upper``. Requires every
-            controlled robot to match exactly one tool site.
+            ``joint_pos_lower``, and ``joint_pos_upper``.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
             comes within ``joint_limit_avoidance_margin`` of either limit.
             Required (and must be positive) when
@@ -164,8 +163,7 @@ class ControllerDifferentialIK(ControllerBase):
             live port.
         use_null_space_posture_control: Project a proportional pull toward
             ``inputs.q_des_null`` through the null-space projector. Enables
-            ``null_space_stiffness``. Requires every controlled robot to
-            match exactly one tool site.
+            ``null_space_stiffness``.
         null_space_stiffness: Posture-control proportional gain, applied per
             controlled DOF. Must be non-negative. Pass a scalar to apply
             the same gain to every controlled DOF, an array of shape
@@ -186,18 +184,20 @@ class ControllerDifferentialIK(ControllerBase):
             otherwise the projector's own ``JJᵀ`` is rank-deficient. That
             stronger, per-robot requirement is checked at construction only
             when baked; a live value is the caller's responsibility there.
-        null_space_axes: Which of the 6 canonical axes the null-space
+        null_space_axes: Which of a frame's 6 canonical axes the null-space
             projector guarantees the secondary objective (joint-limit
             avoidance/posture control) won't disturb — zero leaves that
             axis unprotected, nonzero protects it; only the sign matters,
             unlike ``axis_weight``'s own soft magnitude. Defaults to
             ``axis_weight`` (every solved axis protected), but the two are
-            independent: an axis can be softly solved for yet left
-            unprotected, e.g. an under-actuated arm with too few DOFs to
-            protect every solved axis and still have a usable null space
+            independent, per frame: an axis can be softly solved for yet
+            left unprotected, e.g. an under-actuated arm with too few DOFs
+            to protect every solved axis and still have a usable null space
             left over. Unlike ``axis_weight``, an all-zero row is legal —
             it protects no axes, so the secondary objective is free to
-            move all of them. Only meaningful when
+            move all of them. Pass a single ``wp.spatial_vector`` to apply
+            the same protected axes to every frame, or an array of shape
+            [total_frame_count] to set them per frame. Only meaningful when
             ``use_joint_limit_avoidance`` or
             ``use_null_space_posture_control`` is enabled.
     """

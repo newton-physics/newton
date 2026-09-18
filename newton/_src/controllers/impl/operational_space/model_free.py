@@ -1789,6 +1789,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 inputs=[
                     self._jacobian_operational_buf,
                     self._null_space_jacobian_pinv_transpose,
+                    self._task_dim,
                     self._controlled_dofs_per_robot,
                 ],
                 outputs=[self._null_space_projector],

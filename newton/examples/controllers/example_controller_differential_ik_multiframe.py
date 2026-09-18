@@ -22,6 +22,13 @@
 # robot B's extra DOF isn't auto-centered by a posture target -- it's just
 # slack the solver is free to use however the combined task allows.
 #
+# Robot C is a single-tool-site, 4-DOF arm on its own separate
+# ControllerDifferentialIK instance (multi-frame robots can't use
+# use_joint_limit_avoidance), redundant by 1 against its own 3D position
+# task -- demonstrating that same null-space joint-limit avoidance actually
+# working: its last joint starts near its upper limit and gets pulled back
+# toward mid-range without disturbing its own tool's tracked position.
+#
 # Kinematics only: the controller's joint targets are applied directly to
 # the sim state each frame (no physics solver), keeping the demo focused on
 # the IK itself.
@@ -65,6 +72,20 @@ ROBOT_B_BASE_POSITION = wp.vec3(0.0, -1.6, 0.6)
 ROBOT_B_JOINT_AXES = [_AXIS_Z, _AXIS_Y, _AXIS_Y]
 ROBOT_B_READY_POSE = [0.0, 0.5, -0.8, 0.3, 0.5, -0.8, 0.3]
 
+# A single-tool-site, single-frame robot: use_joint_limit_avoidance requires
+# every robot on its own controller to have exactly one frame, unlike A and
+# B above, so this one gets its own ControllerDifferentialIK instance. 4
+# DOFs against a 3D position-only task -- redundant by 1, giving the
+# null-space projector a genuine (1D) direction to work in. Its own last
+# joint starts deliberately close to its upper limit, so the joint-limit
+# avoidance bias visibly pulls it back toward mid-range over the first few
+# seconds, even with zero primary-task error the whole time.
+ROBOT_C_BASE_POSITION = wp.vec3(0.0, 1.6, 0.6)
+ROBOT_C_JOINT_AXES = [_AXIS_Z, _AXIS_Y, _AXIS_Y, _AXIS_Y]
+ROBOT_C_READY_POSE = [0.2, 0.4, -0.5, 1.3]
+ROBOT_C_JOINT_POS_LOWER = [-1.4, -1.4, -1.4, -1.4]
+ROBOT_C_JOINT_POS_UPPER = [1.4, 1.4, 1.4, 1.4]
+
 
 class Example:
     def __init__(self, viewer, args):
@@ -88,7 +109,11 @@ class Example:
             joint_axes=ROBOT_B_JOINT_AXES,
             label="robot_b",
         )
-        for coord, angle in enumerate(ROBOT_A_READY_POSE + ROBOT_B_READY_POSE):
+        c_joints, tip_c, tf_c = self._add_arm(
+            builder, parent=-1, side_offset=ROBOT_C_BASE_POSITION, side_label="c", joint_axes=ROBOT_C_JOINT_AXES
+        )
+        builder.add_articulation(c_joints, label="robot_c")
+        for coord, angle in enumerate(ROBOT_A_READY_POSE + ROBOT_B_READY_POSE + ROBOT_C_READY_POSE):
             builder.joint_q[coord] = angle
 
         builder.add_ground_plane()
@@ -96,12 +121,16 @@ class Example:
         self.state_0 = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # ---- Differential-kinematics controller, two frames per robot ----
-        # One call handles both robots; frames_per_robot is inferred from
-        # how many sites tool_sites matches on each one's own articulation
-        # (2 here, for both) -- there's no separate argument for it.
+        # ---- Differential-kinematics controllers -------------------------
+        # One call handles robots A and B, restricted to just those two
+        # articulations (robot C has no "tool_left"/"tool_right" site, so
+        # leaving articulations at its None default would make tool_sites
+        # fail to match on it). frames_per_robot is inferred from how many
+        # sites tool_sites matches on each one's own articulation (2 here,
+        # for both) -- there's no separate argument for it.
         self.controller = ControllerDifferentialIK(
             self.model,
+            articulations=["robot_a", "robot_b"],
             tool_sites=["tool_left", "tool_right"],
             axis_weight=POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=10.0,
@@ -116,15 +145,46 @@ class Example:
         self._output.joint_q_target = self.state_0.joint_q[self.controller.q_start]
         self._output.joint_qd_target = self.state_0.joint_qd[self.controller.qd_start]
 
+        # Robot C: its own controller, single frame, with joint-limit
+        # avoidance enabled -- ControllerDifferentialIKModelFree requires
+        # every robot on a controller to have exactly one frame whenever
+        # use_joint_limit_avoidance/use_null_space_posture_control is set,
+        # so this can't be folded into self.controller above.
+        joint_pos_lower = wp.array(ROBOT_C_JOINT_POS_LOWER, dtype=wp.float32, device=self.device)
+        joint_pos_upper = wp.array(ROBOT_C_JOINT_POS_UPPER, dtype=wp.float32, device=self.device)
+        self.controller_c = ControllerDifferentialIK(
+            self.model,
+            articulations="robot_c",
+            tool_sites="tool_c",
+            axis_weight=POSITION_ONLY_AXIS_WEIGHT,
+            bandwidth=10.0,
+            damping=0.1,
+            ik_method=DifferentialIKMethod.DAMPED_LEAST_SQUARES,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=3.0,
+            joint_limit_avoidance_margin=0.3,
+            joint_pos_lower=joint_pos_lower,
+            joint_pos_upper=joint_pos_upper,
+            null_space_damping=0.05,
+        )
+        self._input_c = self.controller_c.input()
+        self._output_c = self.controller_c.output()
+        self._input_c.joint_q = self.state_0.joint_q
+        self._input_c.joint_qd = self.state_0.joint_qd
+        self._output_c.joint_q_target = self.state_0.joint_q[self.controller_c.q_start]
+        self._output_c.joint_qd_target = self.state_0.joint_qd[self.controller_c.qd_start]
+
         # One draggable gizmo per frame, seeded at each tip's actual
         # starting world pose. Order matches tool_sites's own resolution:
-        # robot 0's frames first (left, then right), then robot 1's.
+        # robot 0's frames first (left, then right), then robot 1's; robot
+        # C's single frame is tracked separately, appended last.
         body_q_np = self.state_0.body_q.numpy()
         self.gizmo_tfs = [
             wp.transform(*body_q_np[left_tip_a].tolist()) * left_tf_a,
             wp.transform(*body_q_np[right_tip_a].tolist()) * right_tf_a,
             wp.transform(*body_q_np[left_tip_b].tolist()) * left_tf_b,
             wp.transform(*body_q_np[right_tip_b].tolist()) * right_tf_b,
+            wp.transform(*body_q_np[tip_c].tolist()) * tf_c,
         ]
 
         if hasattr(self.viewer, "set_camera"):
@@ -133,7 +193,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         self.graph = None
-        if self.controller.is_graphable() and self.device.is_cuda:
+        if self.controller.is_graphable() and self.controller_c.is_graphable() and self.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self._simulate()
             self.graph = capture.graph
@@ -221,6 +281,7 @@ class Example:
 
     def _simulate(self):
         self.controller.step(inputs=self._input, outputs=self._output, dt=self.frame_dt)
+        self.controller_c.step(inputs=self._input_c, outputs=self._output_c, dt=self.frame_dt)
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
     def step(self):
@@ -228,7 +289,8 @@ class Example:
         for i, tf in enumerate(self.gizmo_tfs):
             pose[i, :3] = wp.transform_get_translation(tf)
             pose[i, 3:] = wp.transform_get_rotation(tf)
-        self._input.desired_tool_pose_world.assign(pose)
+        self._input.desired_tool_pose_world.assign(pose[:4])
+        self._input_c.desired_tool_pose_world.assign(pose[4:])
 
         if self.graph:
             wp.capture_launch(self.graph)
@@ -240,7 +302,9 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        tool_pose_world = self.controller.tool_pose_world.numpy()
+        tool_pose_world = np.concatenate(
+            [self.controller.tool_pose_world.numpy(), self.controller_c.tool_pose_world.numpy()]
+        )
         for i, tf in enumerate(self.gizmo_tfs):
             self.viewer.log_gizmo(
                 f"target_{i}",
@@ -251,13 +315,38 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify both robots stay near their ready pose, since gizmos aren't dragged in headless test mode."""
+        """Verify A and B stay near their ready pose, and C's redundant joint moved off its near-limit start."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
         assert np.all(np.isfinite(joint_qd)), f"joint_qd has NaN/Inf: {joint_qd}"
-        ready_q = np.array(ROBOT_A_READY_POSE + ROBOT_B_READY_POSE, dtype=np.float32)
-        assert np.all(np.abs(joint_q - ready_q) < 0.2), f"Arm joints drifted from ready pose: {joint_q}"
+
+        ab_count = len(ROBOT_A_READY_POSE) + len(ROBOT_B_READY_POSE)
+        ab_ready_q = np.array(ROBOT_A_READY_POSE + ROBOT_B_READY_POSE, dtype=np.float32)
+        assert np.all(np.abs(joint_q[:ab_count] - ab_ready_q) < 0.2), (
+            f"Robot A/B joints drifted from ready pose: {joint_q[:ab_count]}"
+        )
+
+        # Robot C: the null-space direction is a *combination* of all 4
+        # joints that leaves the tool position fixed while joint 4 moves --
+        # not "joint 4 moves, the other 3 stay put" -- so the invariant to
+        # check is the tool position itself staying near its (unmoved)
+        # target, not individual joint values.
+        c_q = joint_q[ab_count:]
+        tool_pos = np.array(wp.transform_get_translation(self.gizmo_tfs[4]))
+        tracked_pos = np.array(
+            wp.transform_get_translation(wp.transform(*self.controller_c.tool_pose_world.numpy()[0]))
+        )
+        assert np.allclose(tracked_pos, tool_pos, atol=0.05), (
+            f"Robot C's tool drifted from its target despite zero task error: {tracked_pos} vs {tool_pos}"
+        )
+        # The redundant 4th joint started at 1.3, within the 0.3 margin of
+        # its 1.4 upper limit; joint-limit avoidance should pull it clear
+        # of that margin band, to its natural equilibrium right at the
+        # margin's edge (1.4 - 0.3 = 1.1) -- the bias ramps to exactly zero
+        # once a DOF clears the margin, so it doesn't get pulled any
+        # further than that, all the way to mid-range.
+        assert c_q[3] < 1.4 - 0.3 + 0.05, f"Robot C's redundant joint did not clear its limit margin: {c_q[3]}"
 
 
 if __name__ == "__main__":
