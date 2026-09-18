@@ -224,6 +224,70 @@ needs the operation before it is available upstream:
 - treat any temporary public helper as supported API, including the normal
   deprecation requirements when migrating users to Warp.
 
+USD schema support
+------------------
+
+Use only supported schema sources
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+New or extended USD schema support must use a supported source. These rules
+govern what Newton reads, authors, and models, including importers, exporters,
+viewers, and public data models. Existing schema support and compatibility
+paths are grandfathered; editing nearby code does not authorize their removal
+or changes to their compatibility tests. Three tiers are supported, in order
+of preference:
+
+- OpenUSD schemas published by the OpenUSD project or ratified by AOUSD, such
+  as ``UsdGeom``, ``UsdShade``, ``UsdPhysics``, and the USD Preview Surface
+  shading model. These are the default source for both physics and visual
+  data, including ``UsdGeom``'s ``primvars:displayColor`` and
+  ``primvars:displayOpacity`` when no material is bound.
+- Newton physics schemas, including those registered by ``newton-usd-schemas``
+  and the documented ``newton:*`` attribute namespace. These extend the
+  ``UsdPhysics`` specification to configure the Newton runtime data model,
+  including Newton-specific concepts that do not belong in OpenUSD.
+- Solver-native physics schemas such as ``physx*:*`` or ``mjc:*``, as a bounded
+  fallback for physics data the tiers above do not cover. Newly added fallbacks
+  must read these schemas through an opt-in schema resolver rather than a
+  direct schema dependency and stay out of the default import path. A new
+  fallback should name the gap it fills and the solver data model it mirrors.
+
+See :ref:`schema_resolvers` for the resolver mechanism.
+
+Do not add proprietary shading support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The solver-native fallback covers physics data only. It does not extend to
+shading, materials, or any other visual concept.
+
+Newton must not add support for a proprietary or vendor-specific shading
+system, including MDL shader networks and OmniPBR parameter conventions such
+as ``diffuse_color_constant``, ``reflection_roughness_constant``, and
+``reflection_roughness_texture_influence``. Such a shading model sits outside
+Newton's physics domain, has no open specification Newton can hold it to, and
+commits Newton to tracking a vendor's material vocabulary indefinitely. Do not
+branch on a vendor shader identity, and do not encode a vendor's parameter
+semantics, such as the default blend weight a shader assigns to a texture
+input. This also applies to exporter or viewer authoring of vendor blends
+and to new public data-model parameters that encode those vendor semantics.
+
+Read visual material data from supported OpenUSD schemas, including the
+``UsdGeom`` display primvars above. For shader networks, resolve
+the material through ``UsdShade`` and read the ``UsdPreviewSurface`` and
+``UsdUVTexture`` inputs defined by the USD Preview Surface specification. When
+an asset authors no OpenUSD shading, import what a supported schema does
+define and leave the remaining properties at Newton's documented defaults.
+Under-importing a vendor material is the expected outcome, not a defect to be
+resolved by widening the parser.
+
+Existing vendor-shading parsing is frozen. If a reviewer finds an unsupported
+source in existing code, note it without removing it as part of an unrelated
+change. Do not initiate cleanup solely to enforce this policy. Removal or
+migration requires a separately scoped behavioral change with compatibility
+review. When implementing an agreed boundary change, add regression tests so
+an unsupported vocabulary cannot reappear one input name at a time. Keep
+existing compatibility tests until that behavior changes.
+
 Python source conventions
 -------------------------
 
