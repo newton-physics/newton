@@ -16,5 +16,4 @@ newton.selection
    ArticulationView
    DeformableCurveView
    DeformableSurfaceView
-   DeformableView
    DeformableVolumeView

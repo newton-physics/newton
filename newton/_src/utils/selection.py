@@ -9,7 +9,7 @@ import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import warp as wp
 from warp.types import is_array
@@ -2120,90 +2120,16 @@ def _scatter_group_spatial_kernel(
 
 
 class _DeformableViewBase:
-    """Select finalized deformable groups and read or update their existing state.
-
-    .. experimental::
-
-       This API may change while deformable selection is developed.
-
-    ``pattern`` uses the label matching shared by Newton selection APIs. It accepts
-    glob strings, lists of glob strings, and compiled regular expressions.
-    Results keep model order: world order followed by builder order. The public
-    families are ``"curve"``, ``"surface"``, and ``"volume"``. ``family`` is an
-    optional filter and is inferred when all matches belong to one family. A mixed-family
-    match without a filter is rejected.
-
-    Native deformables and deformables loaded by
-    :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
-    builder calls may provide stable labels for later lookup; otherwise Newton assigns
-    family-specific labels such as ``surface_0``. USD deformables use their prim paths.
-
-    A group is one independently addressable curve, surface, or volume together
-    with the ranges of its simulation elements. Fixed-joint collapse does not preserve
-    joints merely because a curve is labeled. A curve group is omitted if collapse
-    removes any of its segment bodies or joints; pass those fixed joints through
-    :meth:`~newton.ModelBuilder.collapse_fixed_joints` using ``joints_to_keep`` when
-    complete post-collapse access is required.
-
-    Selected groups use one flat axis. :attr:`world_starts` partitions that axis by
-    model world, including worlds without a match, and :attr:`world_ids` identifies
-    the world of each group. :meth:`ranges` and :meth:`starts` work even when selected
-    groups have different element counts. Batched getters and setters require equal
-    counts for the requested element kind, which must be recorded by every selected
-    group, and otherwise direct callers to the raw ranges. Global groups (world ``-1``)
-    cannot be mixed with per-world groups.
-
-    Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
-    changes its initial arrays; writing a state changes only that state. Host
-    ``group_indices`` select flat group rows. Host group indices are bounds-checked
-    and duplicates are rejected. Device ``int32`` group indices stay on the device:
-    out-of-range entries are ignored and the last value wins for duplicates.
-    Setters accept optional ``source_indices`` to choose the row in ``values`` for
-    each destination group; without them, values use compact row order. Host source
-    indices are bounds-checked and may repeat. Invalid device source rows ignore the
-    corresponding write.
-    Indexed setters and internally staged getters can be captured after view
-    construction and kernel warm-up. Regular getter layouts return zero-copy views;
-    irregular layouts reuse an internal contiguous staging array.
-
-    Example:
-
-    .. code-block:: python
-
-        import warp as wp
-
-        import newton
-
-        surface = newton.selection.DeformableView(
-            model,
-            "/World/Cloth",
-            family="surface",
-        )
-        positions = surface.get_particle_positions(state)
-        lifted = positions.numpy()
-        lifted[:, :, 2] += 1.0
-        surface.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
-
-    Args:
-        model: Model containing the finalized deformable groups.
-        pattern: Label glob, list of label globs, or compiled regular expression.
-        family: Optional family filter: ``"curve"``, ``"surface"``, or
-            ``"volume"``. Inferred when the match contains one family.
-        verbose: If True, print a short selection summary.
-    """
-
-    _FAMILIES: ClassVar[frozenset[str]] = frozenset(("curve", "surface", "volume"))
+    """Share family-filtered selection, element ranges, and state-array access."""
 
     def __init__(
         self,
         model: Model,
         pattern: str | list[str] | re.Pattern[str],
         *,
-        family: Literal["curve", "surface", "volume"] | None = None,
+        family: Literal["curve", "surface", "volume"],
         verbose: bool | None = None,
     ) -> None:
-        if family is not None and family not in self._FAMILIES:
-            raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILIES)}")
         self.model = model
         self.device = model.device
 
@@ -2212,7 +2138,7 @@ class _DeformableViewBase:
 
         # Model group metadata is private (the view is the public addressability surface);
         # resolve the selection from the per-group records emitted by finalize().
-        groups = [g for g in model._deformable_groups if family is None or g.family == family]
+        groups = [g for g in model._deformable_groups if g.family == family]
         labels = [g.label for g in groups]
         group_worlds = [g.world for g in groups]
 
@@ -2238,8 +2164,7 @@ class _DeformableViewBase:
             group_ids = [global_group_ids]
 
         if group_count == 0:
-            family_description = f"{family} " if family is not None else "deformable "
-            raise KeyError(f"No {family_description}groups matching pattern '{pattern}'")
+            raise KeyError(f"{type(self).__name__}: No {family} groups matching pattern '{pattern}'")
 
         self.count = group_count
         """Number of selected groups across all worlds."""
@@ -2249,15 +2174,8 @@ class _DeformableViewBase:
         """Number of selected groups per world, or None when the counts vary."""
         flat_ids = [i for ids in group_ids for i in ids]
         selected = [groups[i] for i in flat_ids]
-        matched_families = {group.family for group in selected}
-        if family is None:
-            if len(matched_families) > 1:
-                raise ValueError(
-                    f"Deformable pattern '{pattern}' matches multiple families {sorted(matched_families)}; "
-                    "pass family= or use a narrower pattern"
-                )
-            family = next(iter(matched_families))
         self.family = family
+        """Geometric family selected by this view."""
         self.labels = [g.label for g in selected]
         """Label of each selected group, ordered world by world."""
         self.worlds = [g.world for g in selected]
@@ -2309,17 +2227,19 @@ class _DeformableViewBase:
     ) -> int:
         """Elements of ``kind`` in each selected group (homogeneous across the selection).
 
-        ``kind`` is ``body``/``joint`` for curves, ``particle``/``triangle``/``edge`` for
-        surfaces, and ``particle``/``tetrahedron`` for volumes.
+        Current rods record ``body``/``joint`` ranges, triangle surfaces record
+        ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
+        ``particle``/``tetrahedron`` ranges. The selected records determine which
+        element kinds are available.
 
         Args:
-            kind: Element kind belonging to this view's family.
+            kind: Element kind recorded by every selected group.
 
         Returns:
             Common number of elements in every selected group.
 
         Raises:
-            AttributeError: If ``kind`` does not belong to this view's family.
+            AttributeError: If the selected groups do not all record ``kind``.
             ValueError: If the selected groups have different element counts.
         """
         return self._element_count(kind)
@@ -2335,13 +2255,13 @@ class _DeformableViewBase:
         :meth:`elements_per_group` for the valid ``kind`` values.
 
         Args:
-            kind: Element kind belonging to this view's family.
+            kind: Element kind recorded by every selected group.
 
         Returns:
             One ``[start, end)`` range per selected group.
 
         Raises:
-            AttributeError: If ``kind`` does not belong to this view's family.
+            AttributeError: If the selected groups do not all record ``kind``.
         """
         self._validate_kind(kind)
         return list(self._ranges[kind])
@@ -2357,13 +2277,13 @@ class _DeformableViewBase:
         the same array. Treat the returned internal array as read-only.
 
         Args:
-            kind: Element kind belonging to this view's family.
+            kind: Element kind recorded by every selected group.
 
         Returns:
             Device array containing one start index per selected group.
 
         Raises:
-            AttributeError: If ``kind`` does not belong to this view's family.
+            AttributeError: If the selected groups do not all record ``kind``.
         """
         self._validate_kind(kind)
         return self._starts[kind]
@@ -2556,14 +2476,14 @@ class _DeformableParticleView(_DeformableViewBase):
 
     @property
     def particles_per_group(self) -> int:
-        """Particles in each selected surface or volume group."""
+        """Particles in each selected group."""
         return self._element_count("particle")
 
     def get_particle_positions(
         self,
         source: Model | State,
     ) -> wp.array2d[wp.vec3]:
-        """Return particle positions [m] for the selected surface or volume groups.
+        """Return particle positions [m] for the selected groups.
 
         Args:
             source: Model initial state or simulation state to read.
@@ -2572,7 +2492,7 @@ class _DeformableParticleView(_DeformableViewBase):
             Particle positions with shape ``(count, particles_per_group)``.
 
         Raises:
-            AttributeError: If this is not a surface or volume view.
+            AttributeError: If the selected groups do not all record particles.
             ValueError: If the selected groups have different particle counts.
         """
         return self._gather("particle", source.particle_q, _gather_group_vec3_kernel)
@@ -2602,7 +2522,7 @@ class _DeformableParticleView(_DeformableViewBase):
                 group. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If this is not a surface or volume view.
+            AttributeError: If the selected groups do not all record particles.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
@@ -2621,7 +2541,7 @@ class _DeformableParticleView(_DeformableViewBase):
         self,
         source: Model | State,
     ) -> wp.array2d[wp.vec3]:
-        """Return particle velocities [m/s] for the selected surface or volume groups.
+        """Return particle velocities [m/s] for the selected groups.
 
         Args:
             source: Model initial state or simulation state to read.
@@ -2630,7 +2550,7 @@ class _DeformableParticleView(_DeformableViewBase):
             Particle velocities with shape ``(count, particles_per_group)``.
 
         Raises:
-            AttributeError: If this is not a surface or volume view.
+            AttributeError: If the selected groups do not all record particles.
             ValueError: If the selected groups have different particle counts.
         """
         return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel)
@@ -2660,7 +2580,7 @@ class _DeformableParticleView(_DeformableViewBase):
                 group. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If this is not a surface or volume view.
+            AttributeError: If the selected groups do not all record particles.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
@@ -2700,7 +2620,7 @@ class _DeformableBodyView(_DeformableViewBase):
             Segment transforms with shape ``(count, bodies_per_group)``.
 
         Raises:
-            AttributeError: If this is not a curve view.
+            AttributeError: If the selected groups do not all record bodies.
             ValueError: If the selected groups have different body counts.
         """
         return self._gather("body", source.body_q, _gather_group_transform_kernel)
@@ -2731,7 +2651,7 @@ class _DeformableBodyView(_DeformableViewBase):
                 group. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If this is not a curve view.
+            AttributeError: If the selected groups do not all record bodies.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
@@ -2762,7 +2682,7 @@ class _DeformableBodyView(_DeformableViewBase):
             Segment velocities with shape ``(count, bodies_per_group)``.
 
         Raises:
-            AttributeError: If this is not a curve view.
+            AttributeError: If the selected groups do not all record bodies.
             ValueError: If the selected groups have different body counts.
         """
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel)
@@ -2794,7 +2714,7 @@ class _DeformableBodyView(_DeformableViewBase):
                 group. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If this is not a curve view.
+            AttributeError: If the selected groups do not all record bodies.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
@@ -2808,10 +2728,6 @@ class _DeformableBodyView(_DeformableViewBase):
             group_indices,
             source_indices,
         )
-
-
-class DeformableView(_DeformableParticleView, _DeformableBodyView):
-    __doc__ = _DeformableViewBase.__doc__
 
 
 class DeformableCurveView(_DeformableBodyView):

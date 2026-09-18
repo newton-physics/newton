@@ -4,7 +4,7 @@
 .. _deformable-selection:
 
 Deformable Selection
-===================
+====================
 
 .. experimental::
 

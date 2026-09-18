@@ -14,7 +14,6 @@ from newton.selection import (
     ArticulationView,
     DeformableCurveView,
     DeformableSurfaceView,
-    DeformableView,
     DeformableVolumeView,
 )
 
@@ -100,51 +99,6 @@ def _add_test_soft_body(builder, label="soft"):
 class TestDeformableFamilyViews(unittest.TestCase):
     """Select each geometric family without a family argument."""
 
-    def test_family_views_match_old_view_during_migration(self):
-        """Temporarily compare the new views with the old view before its removal."""
-        builder = newton.ModelBuilder()
-        _add_test_cable(builder, label="object")
-        _add_test_cloth(builder, label="object")
-        _add_test_soft_body(builder, label="object")
-        scene = newton.ModelBuilder()
-        scene.replicate(builder, 2)
-        model = scene.finalize(device="cpu")
-
-        for view_type, family, kinds, attributes in (
-            (newton.selection.DeformableCurveView, "curve", ("body", "joint"), ("body_transforms", "body_velocities")),
-            (
-                newton.selection.DeformableSurfaceView,
-                "surface",
-                ("particle", "triangle", "edge"),
-                ("particle_positions", "particle_velocities"),
-            ),
-            (
-                newton.selection.DeformableVolumeView,
-                "volume",
-                ("particle", "tetrahedron"),
-                ("particle_positions", "particle_velocities"),
-            ),
-        ):
-            for pattern in ("*", ["object", "missing"], re.compile("object")):
-                with self.subTest(family=family, pattern=pattern):
-                    old = DeformableView(model, pattern, family=family)
-                    new = view_type(model, pattern)
-                    self.assertEqual((new.labels, new.worlds), (old.labels, old.worlds))
-                    np.testing.assert_array_equal(new.world_starts.numpy(), old.world_starts.numpy())
-                    for kind in kinds:
-                        self.assertEqual(new.ranges(kind), old.ranges(kind))
-                        np.testing.assert_array_equal(new.starts(kind).numpy(), old.starts(kind).numpy())
-                    for attribute in attributes:
-                        old_state, new_state = model.state(), model.state()
-                        values = getattr(old, f"get_{attribute}")(model).numpy().copy()
-                        values[..., 0] += 0.1
-                        for view, state in ((old, old_state), (new, new_state)):
-                            getattr(view, f"set_{attribute}")(state, values, group_indices=[1], source_indices=[0])
-                        np.testing.assert_array_equal(
-                            getattr(new, f"get_{attribute}")(new_state).numpy(),
-                            getattr(old, f"get_{attribute}")(old_state).numpy(),
-                        )
-
     def test_curve_view_filters_shared_labels(self):
         """Select only curve bodies when all families share the same label."""
         builder = newton.ModelBuilder()
@@ -202,21 +156,6 @@ class TestDeformableFamilyViews(unittest.TestCase):
 class TestDeformableSelection(unittest.TestCase):
     """Label-pattern selection and batched state access over deformable groups."""
 
-    def test_constructor_rejects_positional_family(self):
-        """The new view API keeps family keyword-only without a compatibility grace period."""
-        model = _replicated_model(1, device="cpu")
-
-        with self.assertRaises(TypeError):
-            DeformableView(model, "/World/Cloth", "surface")
-
-    def test_family_is_inferred_for_one_family_match(self):
-        """Callers can omit family when the matched labels identify one semantic family."""
-        model = _replicated_model(2, device="cpu")
-
-        view = DeformableView(model, "/World/Cloth")
-
-        self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
-
     def test_compiled_regex_uses_shared_label_matching(self):
         """Deformable selection accepts the shared compiled-regex selector."""
         model = _replicated_model(2, device="cpu")
@@ -224,16 +163,6 @@ class TestDeformableSelection(unittest.TestCase):
         view = DeformableSurfaceView(model, re.compile(r"/World/Cloth"))
 
         self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
-
-    def test_family_filters_or_disambiguates_mixed_matches(self):
-        """A family filters broad matches, while an unfiltered mixed match fails clearly."""
-        model = _replicated_model(2, device="cpu")
-
-        surface = DeformableSurfaceView(model, "/World/*")
-        self.assertEqual((surface.family, surface.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
-
-        with self.assertRaisesRegex(ValueError, "multiple families.*curve.*surface"):
-            DeformableView(model, "/World/*")
 
     def test_cloth_view_selects_and_batches_across_worlds(self):
         """A replicated cloth selects one group per world with batched particle state."""
@@ -439,8 +368,6 @@ class TestDeformableSelection(unittest.TestCase):
             view.get_particle_positions(model.state())
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
-        with self.assertRaisesRegex(ValueError, "Unknown deformable family"):
-            DeformableView(model, "/World/ClothA", family="ropes")
         view = DeformableSurfaceView(model, "/World/ClothA")
         with self.assertRaisesRegex(AttributeError, "no body elements"):
             view.ranges("body")
@@ -851,7 +778,7 @@ class TestDeformableSelection(unittest.TestCase):
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_array_equal(after[1], values[1])
 
-    def test_group_indices_are_the_only_indexed_write_selector(self):
+    def test_single_group_per_world_uses_world_ids(self):
         """Environment IDs use the flat group axis when each world has one match."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
@@ -869,9 +796,6 @@ class TestDeformableSelection(unittest.TestCase):
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[:2], before[:2])
         np.testing.assert_allclose(after[2], moved[0], atol=1e-6)
-
-        with self.assertRaises(TypeError):
-            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), world_indices=[2])
 
 
 class TestDeformableAndArticulationViews(unittest.TestCase):
