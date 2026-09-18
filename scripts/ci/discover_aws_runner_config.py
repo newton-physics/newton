@@ -22,6 +22,13 @@ from typing import Any
 AwsCall = Callable[..., Any]
 Warn = Callable[[str], None]
 AWS_CLI_TIMEOUT_SECONDS = 120
+ALLOWED_REGIONS = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-2",
+    "ap-northeast-1",
+    "ap-northeast-2",
+)
 
 
 def warning(message: str) -> None:
@@ -246,9 +253,32 @@ def set_output(name: str, value: str) -> None:
             output_file.write(f"{name}={value}\n")
 
 
+def parse_region_candidates(value: str) -> list[str]:
+    """Return ordered runner regions after enforcing the cleanup allowlist.
+
+    Args:
+        value: Space-separated AWS region candidates.
+
+    Returns:
+        Region candidates in caller-specified order.
+
+    Raises:
+        ValueError: If a candidate is outside the watchdog allowlist.
+    """
+    regions = value.split()
+    unsupported_regions = sorted(set(regions).difference(ALLOWED_REGIONS))
+    if unsupported_regions:
+        raise ValueError(f"Unsupported AWS runner regions: {', '.join(unsupported_regions)}")
+    return regions
+
+
 def main() -> int:
     """Entry point for the workflow step."""
-    regions = os.environ["AWS_REGION_CANDIDATES"].split()
+    try:
+        regions = parse_region_candidates(os.environ["AWS_REGION_CANDIDATES"])
+    except ValueError as exc:
+        error(str(exc))
+        return 1
     instance_type = os.environ["AWS_INSTANCE_TYPE"]
     tag_key = os.environ["AWS_RUNNER_RESOURCE_TAG"]
 
