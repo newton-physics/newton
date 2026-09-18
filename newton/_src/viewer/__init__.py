@@ -46,7 +46,7 @@ from .viewer_null import ViewerNull
 from .viewer_rerun import ViewerRerun
 from .viewer_rtx import ViewerRTX
 from .viewer_usd import ViewerUSD
-from .viewer_viser import ViewerViser
+from .viewer_viser import ViewerViser, ViewerViserExtensionContext
 
 __all__ = [
     "Layer",
@@ -58,4 +58,5 @@ __all__ = [
     "ViewerRerun",
     "ViewerUSD",
     "ViewerViser",
+    "ViewerViserExtensionContext",
 ]
