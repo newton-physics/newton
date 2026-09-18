@@ -5,9 +5,10 @@
 
 Currently, this script mainly checks that the examples can run. When the test
 runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
-treat deprecation warnings as failures so examples do not regress onto deprecated
-APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
-``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
+treat non-allowlisted deprecation warnings as failures so examples do not regress
+onto deprecated APIs; otherwise deprecations are non-fatal. (The broader newton.*
+escalation of ``--strict-warnings`` applies to the in-process tests, not example
+subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -15,7 +16,9 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import subprocess
@@ -23,6 +26,7 @@ import sys
 import tempfile
 import unittest
 from typing import Any
+from unittest import mock
 from unittest.mock import call, create_autospec
 
 import warp as wp
@@ -191,13 +195,9 @@ def add_example_test(
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
         # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
         # environment cannot turn a lenient run strict; govern the policy solely
-        # through the -W flag below.
+        # through the -W flags below.
         env_vars.pop("PYTHONWARNINGS", None)
-
-        # Escalate deprecations from interpreter startup for strict runs.
-        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
-        # so this governs instead of the helper's lenient "default" filter.
-        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
+        warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -259,7 +259,10 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
-            _register_example_allow_output_regexes(test, is_cuda=is_cuda)
+            _register_example_allow_output_regexes(
+                test,
+                is_cuda=is_cuda,
+            )
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -298,13 +301,102 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
-def _register_example_allow_output_regexes(test: NewtonTestCase, *, is_cuda: bool) -> None:
+def _register_example_allow_output_regexes(
+    test: NewtonTestCase,
+    *,
+    is_cuda: bool,
+) -> None:
     _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
     if not is_cuda:
         test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def _run_example_with_stderr(self, stderr: str, allowed_prefix: str) -> unittest.TestResult:
+        process_result = subprocess.CompletedProcess(
+            args=[sys.executable, "-m", "newton.examples.basic.example_basic_pendulum"],
+            returncode=0,
+            stdout="",
+            stderr=stderr,
+        )
+
+        class ExampleWithAllowedDeprecation(NewtonTestCase):
+            pass
+
+        add_example_test(
+            ExampleWithAllowedDeprecation,
+            name="basic.example_basic_pendulum",
+            use_viewer=True,
+        )
+
+        with (
+            mock.patch.object(subprocess, "run", return_value=process_result),
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(
+                newton.tests.unittest_utils,
+                "allowed_deprecation_warnings",
+                (allowed_prefix,),
+            ),
+        ):
+            result = unittest.TestResult()
+            unittest.defaultTestLoader.loadTestsFromTestCase(ExampleWithAllowedDeprecation).run(result)
+
+        return result
+
+    def test_allowlisted_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted by an example subprocess."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+        stderr = (
+            f"{__file__}:1: DeprecationWarning: {allowed_message}\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+        )
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
+    def test_allowlisted_warp_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted in Warp's log format."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
+    def test_allowlisted_deprecation_does_not_hide_other_example_stderr(self):
+        """Reject unrelated stderr following an acknowledged deprecation."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = (
+            f"{__file__}:1: DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+            "unexpected stderr\n"
+        )
+
+        result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stderr:\nunexpected stderr", result.failures[0][1])
+        self.assertNotIn(allowed_prefix, result.failures[0][1])
+
+    def test_unlisted_example_deprecations_remain_failures(self):
+        """Reject a deprecation record whose message does not match the allowlist."""
+        stderr = "<string>:1: DeprecationWarning: unexpected deprecation\n"
+        result = self._run_example_with_stderr(stderr, "dependency.old_api is deprecated")
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])
+
     def test_warp_cuda_unavailable_output_is_registered_only_for_cpu(self):
         """Register CUDA driver initialization diagnostics only for CPU examples."""
         cpu_test = create_autospec(NewtonTestCase, instance=True)
