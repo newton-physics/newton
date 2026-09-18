@@ -14,7 +14,6 @@ import warp as wp
 import newton
 from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 from newton._src.solvers.vbd.particle_vbd_kernels import (
-    NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     apply_planar_truncation_parallel_by_collision,
     build_particle_body_contact_adjacency_active,
@@ -5985,28 +5984,37 @@ def _run_soft_self_dat_truncation(
         device=device,
     )
 
+    # rows are exact-length CSR: place the single prescribed pair at the front
+    # of its family's rows and describe it through the offsets
     vertex_counts = np.zeros(particle_count, dtype=np.int32)
+    vertex_offsets = np.zeros(particle_count + 1, dtype=np.int32)
     if vertex_triangle_pair is not None:
         vertex_index, triangle_index = vertex_triangle_pair
-        vertex_pairs = np.zeros(2 * particle_count, dtype=np.int32)
-        vertex_pairs[2 * vertex_index : 2 * vertex_index + 2] = (vertex_index, triangle_index)
-        collision_info.vertex_colliding_triangles.assign(vertex_pairs)
+        vertex_rows = np.zeros(max(2 * particle_count, 1), dtype=np.int32)
+        vertex_rows[0:2] = (vertex_index, triangle_index)
+        collision_info.vertex_colliding_triangles.assign(vertex_rows)
         vertex_counts[vertex_index] = 1
+        vertex_offsets[vertex_index + 1 :] = 1
     collision_info.vertex_colliding_triangles_count.assign(vertex_counts)
+    collision_info.vertex_colliding_triangles_offsets.assign(vertex_offsets)
 
     edge_counts = np.zeros(edge_count, dtype=np.int32)
+    edge_offsets = np.zeros(edge_count + 1, dtype=np.int32)
     if edge_edge_pair is not None:
         first_edge, second_edge = edge_edge_pair
-        edge_pairs = np.zeros(2 * edge_count, dtype=np.int32)
-        edge_pairs[2 * first_edge : 2 * first_edge + 2] = (first_edge, second_edge)
-        collision_info.edge_colliding_edges.assign(edge_pairs)
+        edge_rows = np.zeros(max(2 * edge_count, 1), dtype=np.int32)
+        edge_rows[0:2] = (first_edge, second_edge)
+        collision_info.edge_colliding_edges.assign(edge_rows)
         edge_counts[first_edge] = 1
+        edge_offsets[first_edge + 1 :] = 1
     collision_info.edge_colliding_edges_count.assign(edge_counts)
+    collision_info.edge_colliding_edges_offsets.assign(edge_offsets)
 
+    stride = 64
     truncation_t = wp.ones(particle_count, dtype=float, device=device)
     wp.launch(
         apply_planar_truncation_parallel_by_collision,
-        dim=max(particle_count, edge_count) * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+        dim=stride,
         inputs=[
             wp.array(positions, dtype=wp.vec3, device=device),
             wp.array(displacements, dtype=wp.vec3, device=device),
@@ -6014,6 +6022,7 @@ def _run_soft_self_dat_truncation(
             wp.array(edges, dtype=wp.int32, ndim=2, device=device),
             wp.array([collision_info], dtype=TriMeshCollisionInfo, device=device),
             0.85,
+            stride,
         ],
         outputs=[truncation_t],
         device=device,
