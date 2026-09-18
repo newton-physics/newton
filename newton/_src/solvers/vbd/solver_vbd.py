@@ -37,6 +37,7 @@ from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .joint_coordinates import JointCoordinates
+from .joint_forces import JointForceData, add_mimic_joint_forces, evaluate_joint_forces
 from .joint_mimic import JointMimicSolver
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -3748,6 +3749,251 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_drive_lambda,  # input/output
                     self.joint_limit_lambda,  # input/output
                 ],
+                device=self.device,
+            )
+
+    def eval_joint_forces(
+        self,
+        state: State,
+        joint_wrench: wp.array[wp.spatial_vector],
+        *,
+        body_q_prev: wp.array[wp.transform],
+        dt: float,
+        control: Control | None = None,
+        joint_effort: wp.array[float] | None = None,
+        joint_qd_prev: wp.array[float] | None = None,
+    ) -> None:
+        """Reconstruct the wrench transmitted through each joint after a VBD step.
+
+        .. experimental::
+
+            This VBD-only force-reporting prototype may change without notice.
+
+        Positive wrench acts from parent to child. Each output is expressed in
+        the **child joint frame**, about its origin (not the child COM): first
+        three components are force [N], last three are torque [N·m]. For a
+        revolute joint, project the torque onto its axis expressed in this frame.
+        Fixed joints also report their full six-component reaction.
+
+        Includes structural reactions, drives, limits, feedforward
+        :attr:`~newton.Control.joint_f`, Coulomb friction, passive viscous
+        damping, and both sides of mimic reactions. Gravity, contacts, and
+        external body forces affect the solved reaction; they are not added
+        again as incoming joint forces. Disabled joints report zero.
+
+        This evaluates the final-iterate force laws and retained multipliers,
+        as opposed to summing impulses or estimating an impact peak. At finite
+        iteration counts it is a reconstructed force estimate, not an exact
+        discrete momentum balance. Uses the same force laws in compliant ALM
+        and legacy VBD, without changing simulation or solver history.
+
+        Optionally also write ``joint_effort``, a motor-side generalized effort
+        estimate for the observed motion: feedforward actuation plus the solved
+        drive effort plus ``joint_armature * (qd - qd_prev) / dt``. Friction and
+        viscous losses already affect the solved actuator effort and must not
+        be added again. Passive limit and mimic reactions are not motor effort.
+        Each enabled mimic follower contributes ``ratio * effort`` to its
+        independent reference; follower entries are zero. This is aggregate
+        effort at the reference, not an allocation among multiple physical
+        motors. Other independent joints retain their own entries.
+
+        This estimate is supported for REVOLUTE, PRISMATIC, and D6 DOFs;
+        unsupported and disabled entries are zero. It uses joint-side reflected
+        armature, not raw motor-shaft inertia. Armature is **not simulated by
+        VBD**: the correction estimates additional effort needed for the same
+        observed trajectory, without changing the simulated wrench or motion.
+        It is not an exact prediction of a simulation with armature enabled.
+        VBD's unsupported velocity/effort clamps are not included.
+
+        Call immediately after :meth:`step`, before reset, another step, or
+        changes to controls, poses, or model properties. The solver updates
+        poses in place and advances ``body_q_prev`` during the step: preserve
+        the effective previous poses beforehand. On first/reset steps, use the
+        input body poses for the selected worlds instead of stale history.
+        The same pose snapshot is used to reconstruct feedforward actuation;
+        body poses must not be teleported without :meth:`reset`.
+
+        The method performs no allocations or device-to-host copies and may
+        be included after :meth:`step` in a CUDA graph. It does not populate
+        :attr:`~newton.State.body_parent_f`, whose frame and indexing differ.
+
+        Args:
+            state: Output state from the most recent step of this solver.
+            joint_wrench: Caller-owned output, shape ``(model.joint_count,)``,
+                dtype :class:`warp.spatial_vector`, on the model device.
+                Overwritten on every call, including disabled joints.
+            body_q_prev: Saved effective previous body poses, shape
+                ``(model.body_count,)``, on the model device. Do not alias
+                ``state.body_q`` or the solver's advanced pose history.
+            dt: Timestep of that solver step [s], finite and positive.
+            control: Unchanged control supplied to that step. ``None`` uses
+                the model defaults, just as :meth:`step` does.
+            joint_effort: Optional caller-owned motor-side effort estimate
+                [N or N·m], shape ``(model.joint_dof_count,)``, dtype float32,
+                on the model device. Overwritten, using ``joint_qd`` indexing.
+                When supplied, ``joint_qd_prev`` and ``state.joint_qd`` are required.
+            joint_qd_prev: Independent snapshot of joint velocities before the
+                step, shape ``(model.joint_dof_count,)``, dtype float32. VBD also
+                overwrites its input state's velocities, so aliasing that state
+                does not preserve the previous values.
+
+        Raises:
+            ValueError: If timestep or buffer shape, dtype, or device is invalid.
+            RuntimeError: If an external solver owns rigid-body integration.
+        """
+        if not self._integrates_rigid_bodies:
+            raise RuntimeError("Joint force reporting requires VBD-owned rigid-body integration.")
+        if not np.isfinite(dt) or dt <= 0.0:
+            raise ValueError("dt must be finite and positive.")
+        model = self.model
+        for name, array, size, dtype in (
+            ("state.body_q", state.body_q, model.body_count, wp.transform),
+            ("body_q_prev", body_q_prev, model.body_count, wp.transform),
+            ("joint_wrench", joint_wrench, model.joint_count, wp.spatial_vector),
+        ):
+            if array is None or array.shape != (size,) or array.dtype != dtype or array.device != self.device:
+                raise ValueError(f"{name} must have shape ({size},), dtype {dtype}, and device {self.device}.")
+        if model.body_count and body_q_prev.ptr in (state.body_q.ptr, self.body_q_prev.ptr):
+            raise ValueError("body_q_prev must be a separate snapshot taken before step().")
+        if joint_effort is not None:
+            for name, array in (
+                ("joint_effort", joint_effort),
+                ("joint_qd_prev", joint_qd_prev),
+                ("state.joint_qd", state.joint_qd),
+            ):
+                if (
+                    array is None
+                    or array.shape != (model.joint_dof_count,)
+                    or array.dtype != wp.float32
+                    or array.device != self.device
+                ):
+                    raise ValueError(
+                        f"{name} must have shape ({model.joint_dof_count},), dtype float32, and device {self.device}."
+                    )
+            if model.joint_dof_count and (
+                joint_qd_prev.ptr == state.joint_qd.ptr
+                or joint_effort.ptr in (state.joint_qd.ptr, joint_qd_prev.ptr, model.joint_armature.ptr)
+            ):
+                raise ValueError(
+                    "joint_effort and joint_qd_prev must not alias each other or the input velocities/armature."
+                )
+        elif joint_qd_prev is not None:
+            raise ValueError("joint_qd_prev is only used when joint_effort is requested.")
+        if model.joint_count == 0:
+            return
+        if control is None:
+            control = model.control(clone_variables=False)
+        for name, array in (
+            ("joint_f", control.joint_f),
+            ("joint_target_q", control.joint_target_q),
+            ("joint_target_qd", control.joint_target_qd),
+        ):
+            if array is not None and array.device != self.device:
+                raise ValueError(f"control.{name} must be on device {self.device}.")
+            if array is not None and joint_effort is not None and array.ptr == joint_effort.ptr:
+                raise ValueError("joint_effort must not alias a control array.")
+
+        # Reuse the step's actuation mapping exactly, including its frame and
+        # COM convention. Scratch integration forces are unused after the step.
+        joint_wrench.zero_()
+        if joint_effort is not None:
+            joint_effort.zero_()
+        if control.joint_f is not None:
+            self._body_f_for_integration.zero_()
+            wp.launch(
+                apply_joint_forces,
+                dim=model.joint_count,
+                inputs=[
+                    body_q_prev,
+                    model.body_com,
+                    model.joint_type,
+                    model.joint_enabled,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                    control.joint_f,
+                    1.0,  # Request force units, not impulse units.
+                ],
+                outputs=[self._body_f_for_integration, joint_wrench],
+                device=self.device,
+            )
+
+        data = JointForceData()
+        data.coordinates = self._joint_coordinates.data
+        data.body_q_rest = model.body_q
+        data.alpha = self.rigid_joint_alpha
+        data.compliant_alm = int(self.rigid_compliant_alm)
+        for name in (
+            "joint_enabled",
+            "joint_target_q_start",
+            "joint_target_ke",
+            "joint_target_kd",
+            "joint_limit_lower",
+            "joint_limit_upper",
+            "joint_limit_ke",
+            "joint_limit_kd",
+            "joint_friction",
+            "joint_damping",
+        ):
+            setattr(data, name, getattr(model, name))
+        for name in (
+            "joint_rod_rest_kb_local",
+            "joint_rod_rest_twist",
+            "joint_constraint_start",
+            "joint_penalty_k",
+            "joint_rho",
+            "joint_material_k",
+            "joint_penalty_kd",
+            "joint_sigma_start",
+            "joint_C_fric",
+            "joint_drive_limit_support",
+            "joint_drive_lambda",
+            "joint_limit_lambda",
+            "joint_lambda_lin",
+            "joint_lambda_ang",
+            "joint_C0_lin",
+            "joint_C0_ang",
+            "joint_is_hard",
+        ):
+            setattr(data, name, getattr(self, name))
+        wp.launch(
+            evaluate_joint_forces,
+            dim=model.joint_count,
+            inputs=[
+                data,
+                state.body_q,
+                body_q_prev,
+                control.joint_target_q,
+                control.joint_target_qd,
+                joint_wrench,
+                model.joint_armature,
+                state.joint_qd,
+                joint_qd_prev,
+                model.joint_mimic_joint,
+                model.joint_mimic_coeffs,
+                dt,
+            ],
+            outputs=[joint_wrench, joint_effort],
+            device=self.device,
+        )
+        if self._mimic_solver is not None:
+            wp.launch(
+                add_mimic_joint_forces,
+                dim=self._mimic_solver.followers.size,
+                inputs=[
+                    data.coordinates,
+                    model.joint_enabled,
+                    model.joint_mimic_joint,
+                    model.joint_mimic_coeffs,
+                    self._mimic_solver.followers,
+                    self._mimic_solver.multipliers,
+                    state.body_q,
+                ],
+                outputs=[joint_wrench],
                 device=self.device,
             )
 

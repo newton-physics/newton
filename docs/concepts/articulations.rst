@@ -241,6 +241,91 @@ motion. This does not remove the existing Euler-coordinate singularities of
 three-axis D6 joints. This pose-based turn tracking is currently implemented
 only in VBD, not XPBD or SemiImplicit.
 
+Reporting joint forces in VBD
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. experimental::
+
+    :meth:`newton.solvers.SolverVBD.eval_joint_forces` is a VBD-only prototype.
+
+After a solver step, ``eval_joint_forces`` reconstructs the load transmitted
+from parent to child through each joint. The output has one six-component
+wrench per joint: three force components [N], then three torque components
+[N·m]. Both are expressed in the **child joint frame**, about that frame's
+origin, not the body's center of mass. A fixed joint can therefore act as a
+six-axis load cell. A revolute joint's axial torque can be obtained by
+projecting the last three components onto its axis expressed in this frame.
+
+The report includes joint constraints, drives, limits, commanded effort,
+Coulomb friction, viscous damping, and reactions on both sides of each mimic
+relationship. Contacts and gravity affect the solved joint reaction; they
+are not added a second time as joint forces. The net transmitted torque is
+not necessarily the motor command: friction and damping can oppose it, and
+mimic relationships transfer effort between joints.
+
+Allocate the output and previous-pose buffer once. In an ordinary stepping
+loop, with no edits to body poses between steps:
+
+.. code-block:: python
+
+    previous_body_q = wp.empty_like(state_in.body_q)
+    previous_joint_qd = wp.empty_like(state_in.joint_qd)
+    joint_wrench = wp.empty(model.joint_count, dtype=wp.spatial_vector, device=model.device)
+    joint_effort = wp.empty_like(state_in.joint_qd)
+
+    # Save before step(): VBD modifies its input poses and advances its history.
+    wp.copy(previous_body_q, state_in.body_q)
+    wp.copy(previous_joint_qd, state_in.joint_qd)
+    solver.step(state_in, state_out, control, contacts, dt)
+    solver.eval_joint_forces(
+        state_out,
+        joint_wrench,
+        body_q_prev=previous_body_q,
+        dt=dt,
+        control=control,
+        joint_effort=joint_effort,       # Optional motor-side estimate.
+        joint_qd_prev=previous_joint_qd,
+    )
+
+The call performs no device allocations or host readbacks and can be captured
+in a CUDA graph. It adds no work to steps where forces are not requested.
+Query before another step, reset, or edits to controls or model properties.
+For externally prescribed kinematic motion, preserve the effective previous
+poses from ``solver.body_q_prev`` instead; first/reset worlds use their input
+poses. This is the same previous-pose requirement as VBD contact-force reporting.
+
+This prototype evaluates the final-iterate force laws and retained reactions.
+Its accuracy depends on solver convergence; it is not an exact accumulated
+impulse divided by time, nor a peak impact load. It does not populate
+``state.body_parent_f``, which uses body indexing and a world-frame COM wrench.
+
+For motor sizing and effort analysis, the optional ``joint_effort`` output
+reports feedforward actuation plus the solved drive effort, with a
+``joint_armature * (qd - qd_prev) / dt`` correction. It is indexed like
+``joint_qd``, in N or N·m. Actuation is projected onto the joint's motion
+axes, including the moving axes of multi-axis D6 joints. Friction and
+viscous loss already affect the solved motor effort; adding them again would
+count those losses twice. Passive limit reactions are not motor effort.
+
+For a mimic relationship ``q_follower = offset + ratio * q_reference``,
+follower effort contributes ``ratio * effort_follower`` to the reference.
+Follower entries are zero in this reduced effort output, while their full
+transmitted wrench remains available in ``joint_wrench``. Consequently,
+follower armature contributes ``ratio**2 * armature_follower`` to the
+reference's equivalent inertia when motion follows the mimic relationship.
+If both joints have motors, this reports their combined effort, not how a
+controller should divide it between motors. Other independent joints keep
+their own effort entries. This estimate covers revolute, prismatic, and D6
+coordinates; unsupported and disabled entries are zero.
+
+VBD still does not simulate armature inertia. The motor-side correction
+estimates the additional effort needed to reproduce the **observed motion**
+with joint-side reflected armature; it does not change the simulated reaction
+or predict the different trajectory of a simulation with that inertia added.
+Joint velocity/effort clamps remain unsupported. PhysX likewise distinguishes
+armature from joint-internal force mechanisms in its
+`incoming-joint force documentation <https://nvidia-omniverse.github.io/PhysX/physx/5.4.1/docs/Articulations.html#detail-on-included-forces>`_.
+
 Initializing body poses
 -----------------------
 
