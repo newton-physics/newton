@@ -980,61 +980,41 @@ class ForwardKinematicsSolverConfig:
     A container to hold configurations for the Gauss-Newton forward kinematics solver used for state resets.
     """
 
-    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
-    """
-    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled
-    Changing this setting after the solver's initialization leads to undefined behavior.
-    Defaults to `jacobi_block_diagonal`.
-    """
-
-    max_newton_iterations: int = 30
-    """
-    Maximal number of Gauss-Newton iterations.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `30`.
-    """
-
-    max_line_search_iterations: int = 20
-    """
-    Maximal line search iterations in the inner loop.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `20`.
-    """
-
-    tolerance: float = 1e-6
+    tolerance: wp.float32 = 1e-6
     """
     Maximal absolute kinematic constraint value that is acceptable at the solution.
-    Changes to this setting after the solver's initialization will have no effect.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `1e-6`.
     """
 
-    use_sparsity: bool = False
+    max_newton_iterations: wp.int32 = 30
     """
-    Whether to use sparse Jacobian and solver; otherwise, dense versions are used.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
-    Defaults to `False`.
+    Maximal number of Gauss-Newton iterations.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `30`.
     """
 
-    use_adaptive_cg_tolerance: bool = True
+    max_line_search_iterations: wp.int32 = 20
     """
-    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
-    is enabled, which reduces the number of CG iterations in most cases.
-    Changes to this setting after graph capture will have no effect.
-    Defaults to `True`.
+    Maximal line search iterations in the inner loop.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `20`.
     """
 
     reset_state: bool = True
     """
-    Whether to reset the state to initial states, to use as initial guess.
-    Changes to this setting after graph capture will have no effect.
+    Whether to reset the state before the FK solve, using the reference state of the system as initial guess.
+    If False, the current body poses are used as initial guess, which often leads to faster convergence
+    when solving forward kinematics along a trajectory (as opposed to isolated poses).
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `True`.
     """
 
     add_axis_joints: bool = True
     """
-    Whether to automatically add axis joints to take out superfluous DoFs at tie rods,
+    Whether to automatically add axis joints to take out superfluous DoFs at tie rods (i.e. bodies
+    between two passive spherical or gimbal joints, that may rotate freely about the connecting axis),
     that otherwise render the FK problem ill-posed.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `True`.
     """
 
@@ -1042,7 +1022,6 @@ class ForwardKinematicsSolverConfig:
     """
     Whether to automatically split large steps in actuator coordinates into smaller steps
     in the FK solve, to improve the solver's robustness for a mild added cost.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `True`.
     """
 
@@ -1050,7 +1029,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in linear actuator coordinates
     per solver iteration, in meters. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `0.05`.
     """
 
@@ -1058,7 +1036,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in angular actuator coordinates
     per solver iteration, in radians. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
@@ -1074,15 +1051,34 @@ class ForwardKinematicsSolverConfig:
     For systems that are only underactuated due to tie rods being free to rotate about their own axis,
     enabling `add_axis_joints` is recommended instead.
 
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `False`.
     """
 
-    regularization_weight: float = 1e-5
+    regularization_weight: wp.float32 = 1e-5
     """
     Weight applied to the rigid body pose least-squares regularizer, if regularization is enabled.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `1e-5`.
+    """
+
+    use_sparsity: bool = False
+    """
+    Whether to use sparse Jacobian and solver; else dense versions are used (recommended for most systems).
+    Defaults to `False`.
+    """
+
+    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
+    """
+    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled.
+    Defaults to `jacobi_block_diagonal`.
+    """
+
+    use_adaptive_cg_tolerance: bool = True
+    """
+    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
+    is enabled, which reduces the number of CG iterations in most cases.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `True`.
     """
 
     @override
