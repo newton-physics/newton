@@ -6,12 +6,13 @@
 Run with:
     uv run --extra examples -m newton.examples vbd_joint_forces
 
-The Viewer plots the force magnitude, net torque about the hinge axis, and
+The Viewer plots the force magnitude, reported torque about the hinge axis, and
 motor-effort estimate. Wrenches act from parent to child, in the child joint
-frame, about the joint origin. The net torque includes friction and damping;
-it is not the motor torque alone. The motor estimate includes the drive effort
-and an armature * acceleration correction. The local VBD solve does not simulate armature
-inertia; that correction estimates extra effort for the observed motion.
+frame, about the joint origin. The hinge torque includes friction and damping;
+it is not the motor torque alone. The experimental block-sparse VBD solve
+simulates this hinge's armature inertia, so the motor estimate is the solved
+drive effort with no extra armature correction. The reported hinge wrench
+excludes the rotor-inertia reaction; it is not a separate load-side sensor.
 
 Each plotted sample is from the last substep, not an average over the frame.
 Right-drag the pendulum to apply an external load and see the readings change.
@@ -73,7 +74,12 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=12, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=12,
+            rigid_compliant_alm=True,
+            rigid_articulation_solve="block_sparse_joints",
+        )
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.control = self.model.control()
@@ -131,9 +137,13 @@ class Example:
 
     def gui(self, ui):
         ui.text_wrapped("Blue pendulum: one driven hinge with friction and viscous damping. Right-drag to add a load.")
-        ui.text_wrapped("Force and net torque act on the pendulum at the orange hinge, in its child joint frame.")
+        ui.text_wrapped("Force and torque are reported at the orange hinge, in its child joint frame.")
         ui.text_wrapped(
-            "Motor estimate = drive effort + armature x acceleration. The local solve ignores armature inertia."
+            "Sparse VBD simulates armature inertia. Motor effort is the solved drive torque, with no extra correction."
+        )
+        ui.text_wrapped(
+            "Hinge torque includes friction and viscous damping, but not the rotor-inertia reaction. "
+            "It is not a separate load-side sensor."
         )
 
     def render(self):
@@ -141,7 +151,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_scalar("Hinge force magnitude [N]", np.linalg.norm(self.wrench[:3]))
         # This hinge rotates about child-joint Y: spatial_vector[4] is Ty.
-        self.viewer.log_scalar("Hinge net torque Y [N*m]", self.wrench[4])
+        self.viewer.log_scalar("Hinge reported torque Y [N*m]", self.wrench[4])
         self.viewer.log_scalar("Motor effort estimate [N*m]", self.motor_effort)
         self.viewer.end_frame()
 

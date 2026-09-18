@@ -6,3 +6,5 @@ with CUDA graph support. Optionally estimate motor-side effort, including
 joint-side armature inertia and mimic-ratio reflection, for the observed
 motion without changing VBD dynamics. Do not add an armature estimate for
 revolute joints whose inertia is already simulated by the block-sparse solve.
+Include a VBD joint-force plotting example using the block-sparse solve to
+simulate the driven hinge's armature inertia.
