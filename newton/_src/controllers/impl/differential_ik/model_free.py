@@ -624,7 +624,9 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         if use_null_space:
             null_space_axes_resolved = axis_weight_resolved if null_space_axes is None else null_space_axes
             if isinstance(null_space_axes_resolved, wp.spatial_vector):
-                null_space_axes_np = np.tile(np.array(null_space_axes_resolved, dtype=np.float32), (total_frame_count, 1))
+                null_space_axes_np = np.tile(
+                    np.array(null_space_axes_resolved, dtype=np.float32), (total_frame_count, 1)
+                )
             elif isinstance(null_space_axes_resolved, wp.array):
                 _validate_array(
                     array=null_space_axes_resolved,
@@ -949,9 +951,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # task dimension (up to 6 per protected frame), independent of
             # the primary task's max_task_dim, so it needs its own matrix
             # types rather than reusing svd_mat_u/svd_mat_j above.
-            svd_mat_u_null = wp.types.matrix(
-                shape=(max_null_space_task_dim, max_null_space_task_dim), dtype=wp.float32
-            )
+            svd_mat_u_null = wp.types.matrix(shape=(max_null_space_task_dim, max_null_space_task_dim), dtype=wp.float32)
             svd_mat_j_null = wp.types.matrix(shape=(max_null_space_task_dim, max_controlled_dofs), dtype=wp.float32)
             self._svd_u_null_buf = wp.zeros(
                 (controlled_robot_count, max_null_space_task_dim, max_null_space_task_dim),
