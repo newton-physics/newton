@@ -2808,6 +2808,7 @@ f 4 5 8
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
   <compiler autolimits="false"/>
+  <default><joint limited="true"/></default>
   <worldbody>
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1"/>
@@ -9241,6 +9242,195 @@ class TestMjcfPlaneInfinite(unittest.TestCase):
         np.testing.assert_allclose(
             scale, [0.0, 0.0, 0.0], atol=1e-7, err_msg="MJCF plane should be infinite (zero extents)"
         )
+
+
+class TestMjcfJointLimited(unittest.TestCase):
+    @staticmethod
+    def _xml(joint_type="hinge", angle="radian", limited="false", autolimits="true", inherited=False):
+        limit_attr = f'limited="{limited}"' if limited is not None else ""
+        joint_attrs = f'{limit_attr} range="-1 2" ref="0.5"'
+        defaults = f"<default><joint {joint_attrs}/></default>" if inherited else ""
+        return f"""<mujoco>
+            <compiler angle="{angle}" autolimits="{autolimits}"/>
+            {defaults}
+            <worldbody><body name="body">
+                <joint name="joint" type="{joint_type}" {"" if inherited else joint_attrs}/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body></worldbody>
+        </mujoco>"""
+
+    def test_disabled_joint_limits_use_unlimited_generic_bounds(self):
+        """Disable generic limits even when builder defaults or MJCF ranges are finite."""
+        for joint_type in ("hinge", "slide"):
+            for inherited in (False, True):
+                with self.subTest(joint_type=joint_type, inherited=inherited):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.limit_lower = -0.25
+                    builder.default_joint_cfg.limit_upper = 0.25
+                    builder.add_mjcf(self._xml(joint_type=joint_type, inherited=inherited))
+                    self.assertLess(builder.joint_limit_lower[0], -1.0e5)
+                    self.assertGreater(builder.joint_limit_upper[0], 1.0e5)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_joint_limited_round_trip_matches_native(self):
+        """Preserve disabled ranges and enabled limits across units and backends."""
+        import mujoco
+
+        cases = (
+            ("false", "true"),
+            ("true", "true"),
+            ("auto", "true"),
+            (None, "true"),
+            ("false", "false"),
+            ("true", "false"),
+        )
+        with wp.ScopedDevice("cpu"):
+            for joint_type in ("hinge", "slide"):
+                for angle in ("degree", "radian"):
+                    for limited, autolimits in cases:
+                        xml = self._xml(joint_type, angle, limited, autolimits, inherited=True)
+                        native = mujoco.MjModel.from_xml_string(xml)
+                        builder = newton.ModelBuilder()
+                        builder.add_mjcf(xml)
+                        model = builder.finalize(device="cpu")
+                        for use_cpu in (True, False):
+                            with self.subTest(
+                                joint_type=joint_type,
+                                angle=angle,
+                                limited=limited,
+                                autolimits=autolimits,
+                                use_cpu=use_cpu,
+                            ):
+                                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu)
+                                np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
+                                np.testing.assert_allclose(solver.mj_model.jnt_range, native.jnt_range, atol=1e-6)
+                                np.testing.assert_allclose(
+                                    solver.mjw_model.jnt_range.numpy()[0], native.jnt_range, atol=1e-6
+                                )
+                                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                                np.testing.assert_allclose(
+                                    solver.mjw_model.jnt_range.numpy()[0], native.jnt_range, atol=1e-6
+                                )
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_auto_joint_range_requires_compiler_autolimits(self):
+        """Reject ambiguous finite ranges when automatic limits are disabled."""
+        import mujoco
+
+        for limited in (None, "auto"):
+            for parse_options in (False, True):
+                with self.subTest(limited=limited, parse_options=parse_options):
+                    xml = self._xml(limited=limited, autolimits="false")
+                    with self.assertRaises(ValueError):
+                        mujoco.MjModel.from_xml_string(xml)
+                    with self.assertRaisesRegex(ValueError, "autolimits"):
+                        newton.ModelBuilder().add_mjcf(xml, parse_mujoco_options=parse_options)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_disabled_joint_range_survives_export(self):
+        """Keep disabled range metadata through saving and a second import."""
+        import mujoco
+
+        with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as tmpdir:
+            xml = self._xml()
+            native = mujoco.MjModel.from_xml_string(xml)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml)
+            path = os.path.join(tmpdir, "disabled.xml")
+            SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True, save_to_mjcf=path)
+            saved = mujoco.MjModel.from_xml_path(path)
+            np.testing.assert_array_equal(saved.jnt_limited, native.jnt_limited)
+            np.testing.assert_allclose(saved.jnt_range, native.jnt_range, atol=1e-6)
+            imported = newton.ModelBuilder()
+            imported.add_mjcf(path)
+            restored = SolverMuJoCo(imported.finalize(device="cpu"), use_mujoco_cpu=True)
+            np.testing.assert_array_equal(restored.mj_model.jnt_limited, native.jnt_limited)
+            np.testing.assert_allclose(restored.mj_model.jnt_range, native.jnt_range, atol=1e-6)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_disabled_ranges_follow_combined_joint_dof_order(self):
+        """Keep each disabled range with its axis when scalar joints become D6."""
+        xml = """<mujoco><worldbody><body>
+            <joint type="hinge" limited="false" range="-1 2"/>
+            <joint type="slide" limited="false" range="-3 4"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body></worldbody></mujoco>"""
+        with wp.ScopedDevice("cpu"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml)
+            solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+            # Newton stores linear DOFs before angular DOFs.
+            np.testing.assert_array_equal(solver.mj_model.jnt_type, [2, 3])
+            np.testing.assert_array_equal(solver.mj_model.jnt_limited, [False, False])
+            np.testing.assert_allclose(solver.mj_model.jnt_range, [[-3, 4], [-1, 2]], atol=1e-6)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_actuator_inherits_disabled_joint_range(self):
+        """Retain finite position-control ranges inherited from disabled joint limits."""
+        import mujoco
+
+        with wp.ScopedDevice("cpu"):
+            for angle in ("degree", "radian"):
+                with self.subTest(angle=angle):
+                    xml = self._xml(angle=angle).replace(
+                        "</mujoco>",
+                        '<actuator><position joint="joint" kp="1" inheritrange="0.5"/></actuator></mujoco>',
+                    )
+                    native = mujoco.MjModel.from_xml_string(xml)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(xml)
+                    solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+                    np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native.actuator_ctrlrange, atol=1e-6)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_disabled_ranges_survive_world_composition(self):
+        """Preserve per-world disabled ranges on CPU and available CUDA devices."""
+        for device in wp.get_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                builder = newton.ModelBuilder()
+                for bounds in ("-1 2", "-3 4"):
+                    source = newton.ModelBuilder()
+                    source.add_mjcf(self._xml().replace('range="-1 2"', f'range="{bounds}"'))
+                    builder.add_world(source)
+                solver = SolverMuJoCo(builder.finalize(device=device))
+                np.testing.assert_array_equal(solver.mj_model.jnt_limited, [False])
+                expected = [[[-1, 2]], [[-3, 4]]]
+                np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy(), expected, atol=1e-6)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy(), expected, atol=1e-6)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_auto_zero_joint_range_is_unlimited(self):
+        """Treat an all-zero automatic range as unauthored, like native MuJoCo."""
+        import mujoco
+
+        with wp.ScopedDevice("cpu"):
+            for autolimits in ("false", "true"):
+                with self.subTest(autolimits=autolimits):
+                    xml = self._xml(limited=None, autolimits=autolimits).replace('range="-1 2"', 'range="0 0"')
+                    native = mujoco.MjModel.from_xml_string(xml)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(xml)
+                    self.assertLess(builder.joint_limit_lower[0], -1.0e5)
+                    solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+                    np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
+                    np.testing.assert_array_equal(solver.mj_model.jnt_range, native.jnt_range)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco"), "Requires MuJoCo")
+    def test_edited_generic_bounds_override_disabled_range_metadata(self):
+        """Honor subsequent finite bound edits instead of stale imported ranges."""
+        with wp.ScopedDevice("cpu"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(self._xml())
+            model = builder.finalize(device="cpu")
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+            model.joint_limit_lower.assign([-0.25])
+            model.joint_limit_upper.assign([0.75])
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], [[0.25, 1.25]], atol=1e-6)
+            rebuilt = SolverMuJoCo(model, use_mujoco_cpu=True)
+            np.testing.assert_array_equal(rebuilt.mj_model.jnt_limited, [True])
+            np.testing.assert_allclose(rebuilt.mj_model.jnt_range, [[0.25, 1.25]], atol=1e-6)
 
 
 class TestJointFrictionloss(unittest.TestCase):
