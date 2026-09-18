@@ -845,7 +845,7 @@ class Mesh:
         paired_samples: bool = True,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
-        edge_inward_filter: bool = True,
+        edge_concave_filter: bool = True,
         edge_box_absorption: bool = False,
         edge_box_half_normal: float | None = None,
         edge_box_half_normal_rel: float | None = None,
@@ -890,8 +890,11 @@ class Mesh:
             paired_samples: Store each SDF sample with its positive-X
                 neighbor for faster software interpolation. Disable to halve
                 texture memory at the cost of slower hydroelastic sampling.
-                When the mesh is added to a :class:`ModelBuilder`, this value
-                must match :attr:`ModelBuilder.sdf_texture_paired_samples`.
+                This optimization is automatically disabled on CUDA devices
+                with architectures older than SM90 when Warp was built with
+                CUDA Toolkit 13.0 or earlier. When the mesh is added to a
+                :class:`ModelBuilder`, its effective layout must match the
+                builder's effective layout.
             edge_lower_angle_threshold_rad: Drop internal edges whose
                 dihedral angle is below this value [rad]. Set to 0 to keep
                 every manifold edge. A negative value opts out of edge
@@ -901,8 +904,13 @@ class Mesh:
             edge_upper_angle_threshold_rad: Maximum dihedral angle [rad] for
                 an absorbed edge to be removed. Only consulted when
                 ``edge_box_absorption`` is ``True``.
-            edge_inward_filter: Drop concave edges whose endpoints both have
-                fully inward manifold one-rings. Defaults to ``True``.
+            edge_concave_filter: Drop a concave manifold edge when both of its
+                endpoints are fully concave. An endpoint is fully concave when
+                every neighbor in its closed manifold one-ring lies on or
+                outward from its angle-weighted tangent plane, with at least
+                one neighbor strictly outward. Ignored when
+                ``sign_method="normal"`` because pseudo-normal SDFs do not
+                define an unambiguous solid interior. Defaults to ``True``.
             edge_box_absorption: Drop manifold edges fully covered by
                 another edge's oriented box.
             edge_box_half_normal: Absolute box half-extent [m] along the
@@ -971,7 +979,7 @@ class Mesh:
                 lower_angle_threshold_rad=edge_lower_angle_threshold_rad,
                 upper_angle_threshold_rad=edge_upper_angle_threshold_rad,
                 enable_box_absorption=edge_box_absorption,
-                enable_inward_filter=edge_inward_filter,
+                edge_concave_filter=edge_concave_filter,
                 sign_method=sign_method,
                 half_normal=edge_half_normal,
                 half_lateral=edge_half_lateral,
@@ -1040,7 +1048,7 @@ class Mesh:
         lower_angle_threshold_rad: float,
         upper_angle_threshold_rad: float,
         enable_box_absorption: bool,
-        enable_inward_filter: bool = True,
+        edge_concave_filter: bool = True,
         sign_method: "SignMethod" = "auto",
         half_normal: float,
         half_lateral: float,
@@ -1071,8 +1079,8 @@ class Mesh:
 
         canonical = None
         topology = None
-        run_inward_filter = enable_inward_filter and sign_method != "normal" and self._indices.size > 0
-        if run_inward_filter:
+        run_concave_filter = edge_concave_filter and sign_method != "normal" and self._indices.size > 0
+        if run_concave_filter:
             canonical = self._canonical_vertex_ids()
             topology = self._build_edge_slot_topology(canonical)
 
@@ -1113,11 +1121,11 @@ class Mesh:
                 full_edges = full_edges[~np.isin(full_keys, remove_keys)]
 
         # Pseudo-normal SDFs define a sided sheet rather than a closed solid,
-        # so they have no unambiguous fully inward features to remove.
-        if run_inward_filter and len(full_edges) > 0:
-            from .edge_inward_filter import filter_fully_inward_edges  # noqa: PLC0415
+        # so they have no unambiguous fully concave features to remove.
+        if run_concave_filter and len(full_edges) > 0:
+            from .edge_concave_filter import filter_fully_concave_edges  # noqa: PLC0415
 
-            full_edges = filter_fully_inward_edges(
+            full_edges = filter_fully_concave_edges(
                 self,
                 full_edges,
                 canonical_vertex_ids=canonical,

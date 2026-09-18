@@ -22,6 +22,7 @@ from .enums import (
     StateFlags,
 )
 from .inverse_dynamics import eval_inverse_dynamics_passive
+from .joint_mimic import eval_mimic
 from .model import Model
 from .rod import Rod
 from .state import State
@@ -50,5 +51,6 @@ __all__ = [
     "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
+    "eval_mimic",
     "eval_rigid_contact_kinematics",
 ]

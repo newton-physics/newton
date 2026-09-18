@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
+import gc
 import inspect
 import math
 import os
@@ -15,6 +16,7 @@ import warnings
 import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -49,6 +51,7 @@ from ..geometry import (
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
@@ -158,6 +161,7 @@ _ADD_ROD_GRAPH_DEPRECATION_MSG = (
 # dispatch through overload resolution and would initialize the Warp runtime at import.
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+
 
 _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 """Memoizes :meth:`ModelBuilder._validate_builder_merge` as ``dest -> {source: schema epochs}``.
@@ -1502,15 +1506,18 @@ class ModelBuilder:
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
                 halve SDF texture memory at the cost of slower hydroelastic
-                sampling. Every prebuilt mesh SDF added to this builder must
-                use the same layout, selected by the ``paired_samples``
-                argument to :meth:`Mesh.build_sdf`.
+                sampling. This optimization is automatically disabled on CUDA
+                devices with architectures older than SM90 when Warp was built
+                with CUDA Toolkit 13.0 or earlier. Every prebuilt mesh SDF
+                added to this builder must use the same effective layout,
+                selected by the ``paired_samples`` argument to
+                :meth:`Mesh.build_sdf` and the target device.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
-        """Whether generated SDF textures store adjacent X samples together."""
+        """Whether generated SDF textures should store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -1873,6 +1880,10 @@ class ModelBuilder:
         """World indices accumulated for :attr:`Model.joint_world`."""
         self.joint_articulation: list[int] = []
         """Articulation indices accumulated for :attr:`Model.joint_articulation`."""
+        self.joint_mimic_joint: list[int] = []
+        """Reference joint indices accumulated for :attr:`Model.joint_mimic_joint`."""
+        self.joint_mimic_coeffs: list[Vec2] = []
+        """Mimic offset and multiplier pairs accumulated for :attr:`Model.joint_mimic_coeffs`."""
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
@@ -1959,7 +1970,7 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # mimic constraints
+        # deprecated sparse mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
         self.constraint_mimic_joint1: list[int] = []
@@ -2020,6 +2031,35 @@ class ModelBuilder:
         from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
 
         _register_equality_constraint_attributes(self)
+
+        self._array_backed_attributes: dict[str, _ArrayBackedAttribute] = {}
+        """Array-backed attributes and their list-materialization descriptors."""
+
+        self._raw_array_access_active = False
+        """Whether an internal operation is consuming raw array-backed attributes."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # assign an attribute, invalidating any array-backed attribute
+        if name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+            attributes = object.__getattribute__(self, "__dict__").get("_array_backed_attributes")
+            if attributes is not None:
+                attributes.pop(name, None)
+        object.__setattr__(self, name, value)
+
+    def _set_array_backed_attribute(self, name: str, value: np.ndarray, descriptor: _ArrayBackedListDescriptor) -> None:
+        """Store an attribute as an array that materializes as a list on ordinary access."""
+        self._array_backed_attributes[name] = (value, descriptor)
+        self.__dict__.pop(name, None)
+
+    @contextmanager
+    def _raw_array_access(self):
+        """Temporarily expose array-backed attributes as raw arrays."""
+        previous_value = self._raw_array_access_active
+        self._raw_array_access_active = True
+        try:
+            yield
+        finally:
+            self._raw_array_access_active = previous_value
 
     def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
@@ -3044,15 +3084,25 @@ class ModelBuilder:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
-    def _project_target_q_to_dof(self) -> list[float]:
+    def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
-        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
+        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
 
         Under :data:`newton.use_coord_layout_targets` ``False`` the builder
         stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
         and a placeholder ``1.0`` in the 4th — this method just slices the
         placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
         """
+        if isinstance(self.joint_target_q, np.ndarray):
+            joint_types = np.asarray(self.joint_type, dtype=np.int32)
+            ball_mask = joint_types == int(JointType.BALL)
+            padding_mask = ball_mask | (joint_types == int(JointType.FREE)) | (joint_types == int(JointType.DISTANCE))
+            padding_indices = np.asarray(self.joint_q_start, dtype=np.int64)[padding_mask]
+            padding_indices += np.where(ball_mask[padding_mask], 3, 6)
+            keep = np.ones(len(self.joint_target_q), dtype=np.bool_)
+            keep[padding_indices] = False
+            return self.joint_target_q[keep]
+
         result: list[float] = []
         for j, jtype in enumerate(self.joint_type):
             q_start = self.joint_q_start[j]
@@ -3127,6 +3177,9 @@ class ModelBuilder:
             `set_world_offsets()` method instead of physical spacing. This improves numerical
             stability by keeping all worlds at the origin in the physics simulation.
 
+            Python's cyclic garbage collector is temporarily disabled during this operation.
+            Its previous state is restored before returning or propagating an exception.
+
         .. important::
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
@@ -3154,41 +3207,51 @@ class ModelBuilder:
                 world. Must be passed with ``source_path_prefix`` and contain
                 ``world_count`` entries.
         """
-        if world_count <= 0:
-            return
-        if self.current_world != -1:
-            raise RuntimeError(
-                f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
-                "Call end_world() first to close the current world context."
-            )
-        if xforms is None:
-            offsets = compute_world_offsets(world_count, spacing, self.up_axis)
-            xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
-        elif len(xforms) != world_count:
-            raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
-        if label_prefixes is None:
-            label_prefixes = [None] * world_count
-        elif len(label_prefixes) != world_count:
-            raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
-
-        if (source_path_prefix is None) != (destination_path_prefixes is None):
-            raise ValueError("source_path_prefix and destination_path_prefixes must be passed together")
-        if destination_path_prefixes is None:
-            path_prefixes = [None] * world_count
-        else:
-            if len(destination_path_prefixes) != world_count:
-                raise ValueError(
-                    f"destination_path_prefixes must contain {world_count} entries, "
-                    f"got {len(destination_path_prefixes)}"
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            if world_count <= 0:
+                return
+            if self.current_world != -1:
+                raise RuntimeError(
+                    f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
+                    "Call end_world() first to close the current world context."
                 )
-            path_prefixes = [(source_path_prefix, destination) for destination in destination_path_prefixes]
+            if xforms is None:
+                if tuple(spacing) == (0, 0, 0):
+                    xforms = [None] * world_count
+                else:
+                    offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                    xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
+            elif len(xforms) != world_count:
+                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+            if label_prefixes is None:
+                label_prefixes = [None] * world_count
+            elif len(label_prefixes) != world_count:
+                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
 
-        base_world = self.world_count
-        worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(builder, worlds, xforms, label_prefixes, path_prefixes)
+            if (source_path_prefix is None) != (destination_path_prefixes is None):
+                raise ValueError("source_path_prefix and destination_path_prefixes must be passed together")
+            if destination_path_prefixes is None:
+                path_prefixes = [None] * world_count
+            else:
+                if len(destination_path_prefixes) != world_count:
+                    raise ValueError(
+                        f"destination_path_prefixes must contain {world_count} entries, "
+                        f"got {len(destination_path_prefixes)}"
+                    )
+                path_prefixes = [(source_path_prefix, destination) for destination in destination_path_prefixes]
 
-        self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
-        self.world_count += world_count
+            base_world = self.world_count
+            worlds = list(range(base_world, base_world + world_count))
+            with self._raw_array_access():
+                self._merge_builder_copies(builder, worlds, xforms, label_prefixes, path_prefixes, array_backed=True)
+
+            self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
+            self.world_count += world_count
+        finally:
+            if gc_was_enabled:
+                gc.enable()
 
     def _merge_builder_copies(
         self,
@@ -3197,6 +3260,7 @@ class ModelBuilder:
         xforms: Sequence[Transform | None],
         label_prefixes: Sequence[str | None],
         path_prefixes: Sequence[tuple[str, str] | None] | None = None,
+        array_backed: bool = False,
     ) -> None:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
@@ -3245,20 +3309,6 @@ class ModelBuilder:
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
-        world_range = np.arange(world_count, dtype=np.int64)
-        start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
-        start_arrays["muscle_point"] = len(self.muscle_bodies) + world_range * len(builder.muscle_bodies)
-
-        def starts(kind: str) -> np.ndarray:
-            return start_arrays[kind]
-
-        visual_parent_kinds = {
-            DeformableVisualMesh.Kind.PARTICLE: "particle",
-            DeformableVisualMesh.Kind.TRIANGLE: "triangle",
-            DeformableVisualMesh.Kind.TET: "tetrahedron",
-            DeformableVisualMesh.Kind.BODY: "body",
-        }
-
         def rebase_path(
             value: str | None,
             prefixes: tuple[str, str] | None,
@@ -3278,6 +3328,7 @@ class ModelBuilder:
             leading_slash = "/" if destination.startswith("/") else ""
             return leading_slash + "/".join(part for part in rebased_parts if part)
 
+        # Reject invalid paths before array-backed replication mutates the destination.
         deformable_visual_specs = (
             builder._deformable_visual_meshes,
             builder._deformable_visual_gaussians,
@@ -3289,6 +3340,57 @@ class ModelBuilder:
                 for spec in specs:
                     for name in ("body_path", "sim_path", "graphics_path"):
                         rebase_path(spec.get(name), prefixes, required=True)
+
+        array_starts = {}
+        if array_backed:
+            for attr, warp_dtype in _ARRAY_BACKED_ATTRIBUTE_DTYPES.items():
+                spec = attribute_specs.get(attr)
+                if spec is None or spec.compaction_policy != "generic":
+                    continue
+                prefix_values = getattr(self, attr)
+                source_values = getattr(builder, attr)
+                if len(prefix_values) == 0 and len(source_values) == 0:
+                    continue
+
+                prefix = np.asarray(prefix_values)
+                source = np.asarray(source_values)
+                populated = [values for values in (prefix, source) if len(values) > 0]
+                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
+                numpy_dtype = np.result_type(wp.dtype_to_numpy(scalar_dtype), *(values.dtype for values in populated))
+                shaped = source if len(source) > 0 else prefix
+                element_shape = shaped.shape[1:] if shaped.ndim > 1 else ()
+                existing = self._array_backed_attributes.get(attr)
+                if len(source_values) > 0:
+                    descriptor = _describe_array_backed_list(source_values[0])
+                elif existing is not None:
+                    descriptor = existing[1]
+                else:
+                    descriptor = _describe_array_backed_list(prefix_values[0])
+
+                prefix = np.asarray(prefix, dtype=numpy_dtype)
+                source = np.asarray(source, dtype=numpy_dtype)
+                prefix = prefix.reshape((-1, *element_shape))
+                source = source.reshape((-1, *element_shape))
+                values = np.empty((len(prefix) + world_count * len(source), *element_shape), dtype=numpy_dtype)
+                values[: len(prefix)] = prefix
+                values[len(prefix) :].reshape((world_count, len(source), *element_shape))[:] = source
+                self._set_array_backed_attribute(attr, values, descriptor)
+                array_starts[attr] = len(prefix)
+
+        world_range = np.arange(world_count, dtype=np.int64)
+        start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
+        muscle_point_base = array_starts.get("muscle_bodies", len(self.muscle_bodies))
+        start_arrays["muscle_point"] = muscle_point_base + world_range * len(builder.muscle_bodies)
+
+        def starts(kind: str) -> np.ndarray:
+            return start_arrays[kind]
+
+        visual_parent_kinds = {
+            DeformableVisualMesh.Kind.PARTICLE: "particle",
+            DeformableVisualMesh.Kind.TRIANGLE: "triangle",
+            DeformableVisualMesh.Kind.TET: "tetrahedron",
+            DeformableVisualMesh.Kind.BODY: "body",
+        }
 
         for world_index in range(world_count):
             for source_specs, destination_specs in (
@@ -3306,10 +3408,18 @@ class ModelBuilder:
                         merged[name] = rebase_path(spec.get(name), path_prefixes[world_index], required=True)
                     destination_specs.append(merged)
 
-        def extend_referenced(dst: list, values: Sequence[Any], kind: str) -> None:
-            if not values:
+        def extend_referenced(attr: str, dst: list | np.ndarray, values: Sequence[Any], kind: str) -> None:
+            if len(values) == 0:
                 return
             source = np.asarray(values, dtype=np.int64)
+            if isinstance(dst, np.ndarray):
+                target = dst[array_starts[attr] :].reshape((world_count, *source.shape))
+                target[:] = source
+                reference_starts = np.asarray(starts(kind), dtype=dst.dtype).reshape(
+                    (world_count,) + (1,) * source.ndim
+                )
+                np.add(target, reference_starts, out=target, where=target >= 0)
+                return
             if world_count == 1:
                 start = int(start_arrays[kind][0])
                 dst.extend(np.where(source >= 0, source + start, source).tolist())
@@ -3328,14 +3438,18 @@ class ModelBuilder:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
-            self.particle_q.extend(particle_q.tolist())
+            if "particle_q" in array_starts:
+                self.particle_q[array_starts["particle_q"] :] = particle_q
+            else:
+                self.particle_q.extend(particle_q.tolist())
 
         shape_starts = starts("shape")
         body_starts = starts("body")
 
         attribute_specs.pop("shape_transform")
-        shape_transform_start = len(self.shape_transform)
-        self.shape_transform.extend(source_list("shape_transform") * world_count)
+        shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
+        if "shape_transform" not in array_starts:
+            self.shape_transform.extend(source_list("shape_transform") * world_count)
         if counts["shape"]:
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
             for world_index, xform in enumerate(xforms):
@@ -3344,7 +3458,8 @@ class ModelBuilder:
                 for shape in static_shapes.tolist():
                     source = wp.transform(*builder.shape_transform[shape])
                     target = shape_transform_start + world_index * counts["shape"] + shape
-                    self.shape_transform[target] = transform_mul(xform, source)
+                    transformed = transform_mul(xform, source)
+                    self.shape_transform[target] = transformed
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
@@ -3360,8 +3475,9 @@ class ModelBuilder:
 
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
-        joint_X_p_start = len(self.joint_X_p)
-        self.joint_X_p.extend(source_list("joint_X_p") * world_count)
+        joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
+        if "joint_X_p" not in array_starts:
+            self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
@@ -3373,7 +3489,8 @@ class ModelBuilder:
                 for joint in nonfree_roots.tolist():
                     source = wp.transform(*builder.joint_X_p[joint])
                     target = joint_X_p_start + world_index * counts["joint"] + joint
-                    self.joint_X_p[target] = transform_mul(xform, source)
+                    transformed = transform_mul(xform, source)
+                    self.joint_X_p[target] = transformed
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
             if len(free_roots) and any(xform is not None for xform in xforms):
@@ -3394,7 +3511,10 @@ class ModelBuilder:
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
 
-        self.joint_q.extend(joint_q.tolist())
+        if "joint_q" in array_starts:
+            self.joint_q[array_starts["joint_q"] :] = joint_q
+        else:
+            self.joint_q.extend(joint_q.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -3412,14 +3532,28 @@ class ModelBuilder:
                 body_q = np.tile(np.asarray(builder.body_q, dtype=np.float32).reshape((-1, 7)), (world_count, 1))
                 if np.any(offsets):
                     body_q[:, :3] += np.repeat(offsets, counts["body"], axis=0)
-                # Own each transform without retaining per-row views into the tiled array.
-                self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
+                if "body_q" in array_starts:
+                    self.body_q[array_starts["body_q"] :] = body_q
+                else:
+                    # Own each transform without retaining per-row views into the tiled array.
+                    self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
             else:
+                body_q_target = array_starts.get("body_q", int(bases["body"]))
                 for xform in xforms:
                     if xform is None:
-                        self.body_q.extend(wp.transform(*body_q) for body_q in builder.body_q)
+                        if "body_q" not in array_starts:
+                            self.body_q.extend(wp.transform(*source_body_q) for source_body_q in builder.body_q)
+                        body_q_target += counts["body"]
+                        continue
+                    if "body_q" in array_starts:
+                        for body, source_body_q in enumerate(builder.body_q):
+                            transformed = transform_mul(xform, wp.transform(*source_body_q))
+                            self.body_q[body_q_target + body] = transformed
                     else:
-                        self.body_q.extend(transform_mul(xform, wp.transform(*body_q)) for body_q in builder.body_q)
+                        self.body_q.extend(
+                            transform_mul(xform, wp.transform(*source_body_q)) for source_body_q in builder.body_q
+                        )
+                    body_q_target += counts["body"]
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
@@ -3440,10 +3574,24 @@ class ModelBuilder:
         for attr, spec in attribute_specs.items():
             if spec.compaction_policy in {"world_start", "passthrough"}:
                 continue
-            source = source_list(attr)
-            if not source:
+            source_values = getattr(builder, attr)
+            if len(source_values) == 0:
                 continue
             destination = getattr(self, attr)
+            if attr in array_starts:
+                if spec.references in {Model.AttributeFrequency.WORLD, "world"}:
+                    source_count = counts.get(self._builder_frequency_key(spec.frequency), len(source_values))
+                    destination[array_starts[attr] :] = np.repeat(worlds, source_count)
+                elif spec.references is not None:
+                    extend_referenced(
+                        attr,
+                        destination,
+                        source_values,
+                        self._builder_frequency_key(spec.references),
+                    )
+                continue
+
+            source = source_list(attr)
             if spec.compaction_policy == "color_groups":
                 kind = self._builder_frequency_key(spec.frequency)
                 source_groups = [np.asarray(group, dtype=np.int64) for group in source]
@@ -3471,7 +3619,7 @@ class ModelBuilder:
                 source_count = counts.get(self._builder_frequency_key(spec.frequency), len(source))
                 destination.extend(np.repeat(worlds, source_count).tolist())
             elif spec.references is not None:
-                extend_referenced(destination, source, self._builder_frequency_key(spec.references))
+                extend_referenced(attr, destination, source, self._builder_frequency_key(spec.references))
             else:
                 destination.extend(source * world_count)
 
@@ -5244,6 +5392,8 @@ class ModelBuilder:
         self.joint_collision_filter_parent.append(collision_filter_parent)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
+        self.joint_mimic_joint.append(-1)
+        self.joint_mimic_coeffs.append((0.0, 1.0))
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -6177,6 +6327,95 @@ class ModelBuilder:
                 twist_stiffness=None if twist_rigidity is None else twist_rigidity / dual_length,
             )
 
+    def set_joint_mimic(
+        self,
+        joint: int,
+        reference_joint: int | None,
+        coeffs: Vec2 = (0.0, 1.0),
+    ) -> None:
+        """Configure a joint to mimic another joint with matching dimensions.
+
+        The relationship is applied componentwise to every position and
+        velocity coordinate. The follower coordinates are defined by
+        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
+        ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
+        ``reference_joint`` clears the relationship.
+
+        Mimic chains are not supported: the reference joint must be independent,
+        and a joint referenced by another mimic joint cannot become a follower.
+
+        Args:
+            joint: Index of the follower joint.
+            reference_joint: Index of the reference joint, or ``None`` to make
+                ``joint`` independent.
+            coeffs: Offset and multiplier applied componentwise to the reference
+                coordinates [m or rad, dimensionless].
+
+        Raises:
+            ValueError: If an index is invalid, the joint dimensions differ, the
+                joints belong to different worlds or articulations, the
+                coefficients are not finite, or the relationship creates a mimic
+                chain.
+        """
+        joint_count = self.joint_count
+        if joint < 0 or joint >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint}; expected 0..{joint_count - 1}")
+
+        if reference_joint is None:
+            self.joint_mimic_joint[joint] = -1
+            self.joint_mimic_coeffs[joint] = (0.0, 1.0)
+            return
+
+        if reference_joint < 0 or reference_joint >= joint_count:
+            raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
+        if joint == reference_joint:
+            raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
+        reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
+        if follower_dimensions != reference_dimensions:
+            follower_qd_dim, follower_q_dim = follower_dimensions
+            reference_qd_dim, reference_q_dim = reference_dimensions
+            raise ValueError(
+                "Mimic joints must have matching position and velocity dimensions. "
+                f"Follower joint {joint} has (q={follower_q_dim}, qd={follower_qd_dim}); "
+                f"reference joint {reference_joint} has (q={reference_q_dim}, qd={reference_qd_dim})."
+            )
+
+        follower_world = self.joint_world[joint]
+        reference_world = self.joint_world[reference_joint]
+        if follower_world != reference_world:
+            raise ValueError(
+                "Mimic joints must belong to the same world. "
+                f"follower_world={follower_world}, reference_world={reference_world}."
+            )
+
+        follower_articulation = self.joint_articulation[joint]
+        reference_articulation = self.joint_articulation[reference_joint]
+        if (
+            follower_articulation >= 0
+            and reference_articulation >= 0
+            and follower_articulation != reference_articulation
+        ):
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"follower_articulation={follower_articulation}, "
+                f"reference_articulation={reference_articulation}."
+            )
+
+        offset = float(coeffs[0])
+        multiplier = float(coeffs[1])
+        if not math.isfinite(offset) or not math.isfinite(multiplier):
+            raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
+
+        if self.joint_mimic_joint[reference_joint] != -1:
+            raise ValueError(f"Reference joint {reference_joint} is already a mimic joint")
+        if joint in self.joint_mimic_joint:
+            raise ValueError(f"Follower joint {joint} is already referenced by another mimic joint")
+
+        self.joint_mimic_joint[joint] = reference_joint
+        self.joint_mimic_coeffs[joint] = (offset, multiplier)
+
     def add_constraint_mimic(
         self,
         joint0: int,
@@ -6188,6 +6427,11 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
+
+        .. deprecated:: 1.6
+            Use :meth:`set_joint_mimic` for joints with matching dimensions.
+            Mimic metadata is now stored per joint rather than as a separate
+            constraint.
 
         A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
@@ -6206,6 +6450,12 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        warnings.warn(
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "use set_joint_mimic() for joints with matching dimensions instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
             raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
@@ -6453,6 +6703,8 @@ class ModelBuilder:
                 "collision_filter_parent": self.joint_collision_filter_parent[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
+                "mimic_joint": self.joint_mimic_joint[i],
+                "mimic_coeffs": self.joint_mimic_coeffs[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
@@ -6925,6 +7177,8 @@ class ModelBuilder:
         self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
+        self.joint_mimic_joint.clear()
+        self.joint_mimic_coeffs.clear()
         for joint in retained_joints:
             self.joint_label.append(joint["label"])
             self.joint_type.append(joint["type"])
@@ -6956,6 +7210,9 @@ class ModelBuilder:
                 self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
+            mimic_joint = joint["mimic_joint"]
+            self.joint_mimic_joint.append(joint_remap.get(mimic_joint, -1))
+            self.joint_mimic_coeffs.append(joint["mimic_coeffs"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
@@ -7372,12 +7629,6 @@ class ModelBuilder:
 
         self.shape_body.append(body)
         shape = self.shape_count
-        if cfg.has_shape_collision:
-            # no contacts between shapes of the same body
-            for same_body_shape in self.body_shapes[body]:
-                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
-                    continue
-                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -8774,10 +9025,7 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Use the graph core to create bodies and internal joints.
-        # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
-        # - open chains are wrapped into a single articulation (tree), and
-        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -8792,17 +9040,12 @@ class ModelBuilder:
             twist_stiffness=twist_stiffness,
             twist_damping=twist_damping,
             label=label,
-            wrap_in_articulation=False,
+            wrap_in_articulation=wrap_in_articulation,
             quaternions=quaternions,
             junction_collision_filter=True,
             color=color,
             body_frame_origin=body_frame_origin,
         )
-
-        # Wrap all joints into an articulation if requested.
-        if wrap_in_articulation and link_joints:
-            rod_art_label = f"{label}_articulation" if label else None
-            self.add_articulation(link_joints, label=rod_art_label)
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
@@ -8963,19 +9206,21 @@ class ModelBuilder:
             A pair ``(body_indices, joint_indices)``. Bodies follow segment
             order. An open ordered chain has one fewer joint than segments; a
             closed ordered chain has one joint per segment. Graph joint count
-            depends on topology and articulation wrapping.
+            depends on topology and articulation wrapping. Automatically
+            generated root joints are not included in ``joint_indices``.
 
         Articulations:
-            With ``wrap_in_articulation=True`` (the default), Newton places an
-            ordered chain's non-closure joints in one articulation; for a
-            closed chain, the loop-closing joint remains outside it. For an
-            explicit graph, Newton creates one articulation-safe spanning tree
-            per connected component; cyclic adjacency joints are omitted. With
-            ``wrap_in_articulation=False``, Newton creates no articulations.
-            Before :meth:`finalize <ModelBuilder.finalize>`, callers must place
-            the tree or forest joints in articulations. Loop-closing joints
-            whose child is already reachable through those articulations may
-            remain outside them.
+            With ``wrap_in_articulation=True`` (the default), Newton creates a
+            free joint to the world and places it with an ordered chain's
+            non-closure joints in one articulation. A closed chain's
+            loop-closing joint remains outside it. For an explicit graph,
+            Newton creates one free-rooted, articulation-safe spanning tree per
+            connected component; cyclic adjacency joints are omitted. With
+            ``wrap_in_articulation=False``, Newton creates no root joints or
+            articulations. Before :meth:`finalize <ModelBuilder.finalize>`,
+            callers must place the tree or forest joints in articulations.
+            Loop-closing joints whose child is already reachable through those
+            articulations may remain outside them.
 
         Raises:
             ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
@@ -9100,16 +9345,16 @@ class ModelBuilder:
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (local +Z points toward ``v``).
         - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent when wrapped into an articulation.
+          traversal so that each body has a single parent in an articulation.
 
         Notes:
 
         - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          articulation per connected component). This keeps the joint graph articulation-safe
-          (tree/forest), avoiding cycles at junctions.
+          free-rooted articulation per connected component). This keeps the joint graph
+          articulation-safe (tree/forest), avoiding cycles at junctions.
         - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
           ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without articulation wrapping.
+          you need closed loops, build them explicitly without placing the joints in an articulation.
         - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
           all incident edges. This can preserve rings/loops, but does not produce an articulation
           tree (edges may effectively have multiple "parents" in the joint graph).
@@ -9136,8 +9381,8 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
                 joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, wraps the generated joint forest into one articulation
-                per connected component.
+            wrap_in_articulation: If True, places each connected component's generated joints and a
+                free joint to the world in one articulation.
             quaternions: Optional per-edge orientations in world space. If provided, must have
                 ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
                 the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
@@ -9158,7 +9403,8 @@ class ModelBuilder:
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``.
+            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
+            not the automatically-created free root joints.
 
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
@@ -9210,8 +9456,10 @@ class ModelBuilder:
         junction_collision_filter: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"] | None,
+        articulation_root_node: int | None = None,
+        articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Internal graph-assembly implementation shared by the rod input forms."""
+        """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -9238,6 +9486,13 @@ class ModelBuilder:
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
+        if articulation_root_node is not None:
+            if articulation_root_joint_factory is None:
+                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+            if articulation_root_node < 0 or articulation_root_node >= num_nodes:
+                raise ValueError(
+                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
                 f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
@@ -9335,14 +9590,17 @@ class ModelBuilder:
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
 
-        def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
+        def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
                 z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
-            return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
+            rotation = (
+                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi) if reverse_tangent else wp.quat_identity()
+            )
+            return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
         joint_counter = 0
         jointed_body_pairs: set[tuple[int, int]] = set()
@@ -9412,14 +9670,43 @@ class ModelBuilder:
             visited = [False] * num_edges
             component_index = 0
 
-            for start_edge in range(num_edges):
+            start_edges = list(range(num_edges))
+            if articulation_root_node is not None:
+                root_edges = node_incidence[articulation_root_node]
+                if not root_edges:
+                    raise ValueError(
+                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
+                    )
+                start_edges.remove(root_edges[0])
+                start_edges.insert(0, root_edges[0])
+
+            for start_edge in start_edges:
                 if visited[start_edge]:
                     continue
 
                 # BFS over edges
                 queue: deque[int] = deque([start_edge])
                 visited[start_edge] = True
-                component_joints: list[int] = []
+                use_imported_root = articulation_root_joint_factory is not None and component_index == 0
+                if not use_imported_root:
+                    root_label = None
+                    if label:
+                        root_label = (
+                            f"{label}_free_joint_{component_index}" if component_index > 0 else f"{label}_free_joint"
+                        )
+                    root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
+                else:
+                    assert articulation_root_joint_factory is not None
+                    root_node = articulation_root_node if articulation_root_node is not None else edge_u[start_edge]
+                    root_joint = articulation_root_joint_factory(
+                        edge_bodies[start_edge],
+                        _edge_anchor_xform(
+                            start_edge,
+                            root_node,
+                            reverse_tangent=root_node == edge_v[start_edge],
+                        ),
+                    )
+                component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []
 
                 while queue:
@@ -9437,8 +9724,16 @@ class ModelBuilder:
                                 raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
-                            parent_xform = _edge_anchor_xform(parent_edge, shared_node)
-                            child_xform = _edge_anchor_xform(child_edge, shared_node)
+                            parent_xform = _edge_anchor_xform(
+                                parent_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_u[parent_edge],
+                            )
+                            child_xform = _edge_anchor_xform(
+                                child_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_v[child_edge],
+                            )
 
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
@@ -9488,15 +9783,19 @@ class ModelBuilder:
                         )
 
                 # Wrap the connected component into an articulation.
-                if component_joints:
-                    if label:
-                        art_label = (
-                            f"{label}_articulation_{component_index}"
-                            if component_index > 0
-                            else f"{label}_articulation"
-                        )
-                    else:
-                        art_label = None
+                if label:
+                    art_label = (
+                        f"{label}_articulation_{component_index}" if component_index > 0 else f"{label}_articulation"
+                    )
+                else:
+                    art_label = None
+                if use_imported_root:
+                    self._finalize_imported_articulation(
+                        component_joints,
+                        parent_body=self.joint_parent[root_joint],
+                        articulation_label=art_label,
+                    )
+                else:
                     self.add_articulation(component_joints, label=art_label)
 
                 component_index += 1
@@ -12018,20 +12317,21 @@ class ModelBuilder:
             ValueError: If any validation check fails.
         """
         # List of all world arrays to validate
-        world_arrays = [
-            ("particle_world", self.particle_world),
-            ("body_world", self.body_world),
-            ("shape_world", self.shape_world),
-            ("joint_world", self.joint_world),
-            ("articulation_world", self.articulation_world),
-            ("equality_constraint_world", self._eq_list("equality_constraint_world")),
-            ("constraint_mimic_world", self.constraint_mimic_world),
-        ]
+        with self._raw_array_access():
+            world_arrays = [
+                ("particle_world", self.particle_world),
+                ("body_world", self.body_world),
+                ("shape_world", self.shape_world),
+                ("joint_world", self.joint_world),
+                ("articulation_world", self.articulation_world),
+                ("equality_constraint_world", self._eq_list("equality_constraint_world")),
+                ("constraint_mimic_world", self.constraint_mimic_world),
+            ]
 
         all_world_indices = set()
 
         for array_name, world_array in world_arrays:
-            if not world_array:
+            if len(world_array) == 0:
                 continue
 
             arr = np.array(world_array, dtype=np.int32)
@@ -12120,41 +12420,27 @@ class ModelBuilder:
         Raises:
             ValueError: If any validation check fails.
         """
-        if self.joint_count > 0:
-            # First, find all bodies reachable via articulated joints
-            articulated_bodies = set()
-            articulated_bodies.add(-1)  # World is always reachable
-            for i, art in enumerate(self.joint_articulation):
-                if art >= 0:  # Joint is in an articulation
-                    parent = self.joint_parent[i]
-                    child = self.joint_child[i]
-                    articulated_bodies.add(parent)
-                    articulated_bodies.add(child)
+        if self.joint_count == 0:
+            return
 
-            # Now check for true orphan joints: non-articulated joints whose child
-            # is NOT reachable via other articulated joints
-            orphan_joints = []
-            for i, art in enumerate(self.joint_articulation):
-                if art < 0:  # Joint is not in an articulation
-                    parent = self.joint_parent[i]
-                    child = self.joint_child[i]
-                    if parent == -1:
-                        # Exception: a standalone world-root joint is valid without
-                        # articulation metadata. Supported solvers consume it directly
-                        # or provide a topology-specific fallback.
-                        continue
-                    if child not in articulated_bodies:
-                        # This is a true orphan - the child body has no articulated path
-                        orphan_joints.append(i)
-                    # else: this is a loop joint - child is already reachable, so it's allowed
+        with self._raw_array_access():
+            joint_articulation = np.asarray(self.joint_articulation)
+            if np.all(joint_articulation >= 0):
+                return
+            joint_parent = np.asarray(self.joint_parent)
+            joint_child = np.asarray(self.joint_child)
 
-            if orphan_joints:
-                joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
-                raise ValueError(
-                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
-                    f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
-                    + ("..." if len(orphan_joints) > 5 else "")
-                )
+        articulated = joint_articulation >= 0
+        articulated_bodies = np.concatenate((joint_parent[articulated], joint_child[articulated]))
+        orphan_joints = np.flatnonzero(~articulated & (joint_parent != -1) & ~np.isin(joint_child, articulated_bodies))
+
+        if len(orphan_joints) > 0:
+            joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
+            raise ValueError(
+                f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
+                + ("..." if len(orphan_joints) > 5 else "")
+            )
 
     def _validate_shapes(self) -> bool:
         """Validate shape gaps for stable broad phase detection.
@@ -12175,16 +12461,21 @@ class ModelBuilder:
         """
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_gap = []
+        with self._raw_array_access():
+            shape_flags = _list_for_iteration(self.shape_flags)
+            shape_margin = _list_for_iteration(self.shape_margin)
+            shape_gap = _list_for_iteration(self.shape_gap)
+
         for i in range(self.shape_count):
             # Skip shapes that don't participate in any collisions (e.g., sites, visual-only)
-            if not (self.shape_flags[i] & collision_flags_mask):
+            if not (shape_flags[i] & collision_flags_mask):
                 continue
-            margin = self.shape_margin[i]
-            gap = self.shape_gap[i]
+            margin = shape_margin[i]
+            gap = shape_gap[i]
             sdf_padding = self.shape_sdf_padding[i]
             if (
-                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
-                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
                 and sdf_padding is not None
                 and sdf_padding < margin + gap
                 and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
@@ -12194,8 +12485,8 @@ class ModelBuilder:
                     f"({margin + gap:.6g}), got {sdf_padding:.6g}."
                 )
             if (
-                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
-                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
                 and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
             ):
                 shape_src = self.shape_source[i]
@@ -12257,16 +12548,24 @@ class ModelBuilder:
         Raises:
             ValueError: If any structural validation check fails.
         """
-        body_count = self.body_count
-        joint_count = self.joint_count
+        with self._raw_array_access():
+            body_count = self.body_count
+            joint_count = self.joint_count
+            particle_count = self.particle_count
+            spring_count = self.spring_count
+            tri_count = self.tri_count
+            edge_count = self.edge_count
+            tet_count = self.tet_count
 
         # Validate per-body flags: each body must be either dynamic or
         # kinematic. Filter masks such as BodyFlags.ALL are not valid stored
         # body states.
-        if len(self.body_flags) != body_count:
-            raise ValueError(f"Invalid body_flags length: expected {body_count} entries, got {len(self.body_flags)}.")
+        with self._raw_array_access():
+            body_flags_values = self.body_flags
+        if len(body_flags_values) != body_count:
+            raise ValueError(f"Invalid body_flags length: expected {body_count} entries, got {len(body_flags_values)}.")
         if body_count > 0:
-            body_flags = np.array(self.body_flags, dtype=np.int32)
+            body_flags = np.array(body_flags_values, dtype=np.int32)
             valid_mask = (body_flags == int(BodyFlags.DYNAMIC)) | (body_flags == int(BodyFlags.KINEMATIC))
             if not np.all(valid_mask):
                 idx = int(np.where(~valid_mask)[0][0])
@@ -12278,7 +12577,9 @@ class ModelBuilder:
 
         # Validate shape_body references: must be in [-1, body_count-1]
         if self.shape_count > 0:
-            shape_body = np.array(self.shape_body, dtype=np.int32)
+            with self._raw_array_access():
+                shape_body_values = self.shape_body
+            shape_body = np.array(shape_body_values, dtype=np.int32)
             invalid_mask = (shape_body < -1) | (shape_body >= body_count)
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
@@ -12291,7 +12592,10 @@ class ModelBuilder:
 
         # Validate joint_parent references: must be in [-1, body_count-1]
         if joint_count > 0:
-            joint_parent = np.array(self.joint_parent, dtype=np.int32)
+            with self._raw_array_access():
+                joint_parent_values = self.joint_parent
+                joint_child_values = self.joint_child
+            joint_parent = np.array(joint_parent_values, dtype=np.int32)
             invalid_mask = (joint_parent < -1) | (joint_parent >= body_count)
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
@@ -12303,7 +12607,7 @@ class ModelBuilder:
                 )
 
             # Validate joint_child references: must be in [0, body_count-1] (child cannot be world)
-            joint_child = np.array(self.joint_child, dtype=np.int32)
+            joint_child = np.array(joint_child_values, dtype=np.int32)
             invalid_mask = (joint_child < 0) | (joint_child >= body_count)
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
@@ -12438,14 +12742,14 @@ class ModelBuilder:
                     f"{next_start[idx]}."
                 )
 
-        particle_count = self.particle_count
-        particle_arrays = (
-            ("particle_qd", self.particle_qd),
-            ("particle_mass", self.particle_mass),
-            ("particle_radius", self.particle_radius),
-            ("particle_flags", self.particle_flags),
-            ("particle_world", self.particle_world),
-        )
+        with self._raw_array_access():
+            particle_arrays = (
+                ("particle_qd", self.particle_qd),
+                ("particle_mass", self.particle_mass),
+                ("particle_radius", self.particle_radius),
+                ("particle_flags", self.particle_flags),
+                ("particle_world", self.particle_world),
+            )
         for name, values in particle_arrays:
             if len(values) != particle_count:
                 raise ValueError(
@@ -12486,10 +12790,15 @@ class ModelBuilder:
                     f"{index}, but valid range is [0, {particle_count - 1}] (particle count={particle_count})."
                 )
 
-        spring_indices = _topology_array("spring_indices", self.spring_indices, (self.spring_count * 2,)).reshape(-1, 2)
-        tri_indices = _topology_array("tri_indices", self.tri_indices, (self.tri_count, 3))
-        edge_indices = _topology_array("edge_indices", self.edge_indices, (self.edge_count, 4))
-        tet_indices = _topology_array("tet_indices", self.tet_indices, (self.tet_count, 4))
+        with self._raw_array_access():
+            spring_indices_values = self.spring_indices
+            tri_indices_values = self.tri_indices
+            edge_indices_values = self.edge_indices
+            tet_indices_values = self.tet_indices
+        spring_indices = _topology_array("spring_indices", spring_indices_values, (spring_count * 2,)).reshape(-1, 2)
+        tri_indices = _topology_array("tri_indices", tri_indices_values, (tri_count, 3))
+        edge_indices = _topology_array("edge_indices", edge_indices_values, (edge_count, 4))
+        tet_indices = _topology_array("tet_indices", tet_indices_values, (tet_count, 4))
 
         _validate_particle_topology("spring_indices", spring_indices)
         _validate_particle_topology("tri_indices", tri_indices)
@@ -12509,23 +12818,35 @@ class ModelBuilder:
             _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
-            # Per-DOF arrays should have length == joint_dof_count
-            dof_arrays = [
-                ("joint_axis", self.joint_axis),
-                ("joint_armature", self.joint_armature),
-                ("joint_target_ke", self.joint_target_ke),
-                ("joint_target_kd", self.joint_target_kd),
-                ("joint_damping", self.joint_damping),
-                ("joint_limit_lower", self.joint_limit_lower),
-                ("joint_limit_upper", self.joint_limit_upper),
-                ("joint_limit_ke", self.joint_limit_ke),
-                ("joint_limit_kd", self.joint_limit_kd),
-                ("joint_target_qd", self.joint_target_qd),
-                ("joint_effort_limit", self.joint_effort_limit),
-                ("joint_velocity_limit", self.joint_velocity_limit),
-                ("joint_friction", self.joint_friction),
-                ("joint_target_mode", self.joint_target_mode),
+            joint_arrays = [
+                ("joint_mimic_joint", self.joint_mimic_joint),
+                ("joint_mimic_coeffs", self.joint_mimic_coeffs),
             ]
+            for name, arr in joint_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
+            # Per-DOF arrays should have length == joint_dof_count
+            with self._raw_array_access():
+                dof_arrays = [
+                    ("joint_axis", self.joint_axis),
+                    ("joint_armature", self.joint_armature),
+                    ("joint_target_ke", self.joint_target_ke),
+                    ("joint_target_kd", self.joint_target_kd),
+                    ("joint_damping", self.joint_damping),
+                    ("joint_limit_lower", self.joint_limit_lower),
+                    ("joint_limit_upper", self.joint_limit_upper),
+                    ("joint_limit_ke", self.joint_limit_ke),
+                    ("joint_limit_kd", self.joint_limit_kd),
+                    ("joint_target_qd", self.joint_target_qd),
+                    ("joint_effort_limit", self.joint_effort_limit),
+                    ("joint_velocity_limit", self.joint_velocity_limit),
+                    ("joint_friction", self.joint_friction),
+                    ("joint_target_mode", self.joint_target_mode),
+                ]
             for name, arr in dof_arrays:
                 if len(arr) != self.joint_dof_count:
                     raise ValueError(
@@ -12534,10 +12855,11 @@ class ModelBuilder:
                     )
 
             # Per-coord arrays should have length == joint_coord_count
-            coord_arrays = [
-                ("joint_q", self.joint_q),
-                ("joint_target_q", self.joint_target_q),
-            ]
+            with self._raw_array_access():
+                coord_arrays = [
+                    ("joint_q", self.joint_q),
+                    ("joint_target_q", self.joint_target_q),
+                ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
                     raise ValueError(
@@ -12579,9 +12901,13 @@ class ModelBuilder:
         if self.joint_count == 0:
             return True
 
-        joint_parent = np.array(self.joint_parent, dtype=np.int32)
-        joint_child = np.array(self.joint_child, dtype=np.int32)
-        joint_articulation = np.array(self.joint_articulation, dtype=np.int32)
+        with self._raw_array_access():
+            joint_parent_values = self.joint_parent
+            joint_child_values = self.joint_child
+            joint_articulation_values = self.joint_articulation
+        joint_parent = np.array(joint_parent_values, dtype=np.int32)
+        joint_child = np.array(joint_child_values, dtype=np.int32)
+        joint_articulation = np.array(joint_articulation_values, dtype=np.int32)
 
         # Get unique articulations (excluding -1 which means not in any articulation)
         articulation_ids = np.unique(joint_articulation)
@@ -12841,10 +13167,10 @@ class ModelBuilder:
         if not self._deformable_visual_meshes:
             return []
 
-        particle_world = np.array(self.particle_world, dtype=np.int32) if self.particle_world else None
-        tri_indices = np.array(self.tri_indices, dtype=np.int32).reshape(-1, 3) if self.tri_indices else None
-        tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if self.tet_indices else None
-        body_world = np.array(self.body_world, dtype=np.int32) if self.body_world else None
+        particle_world = np.array(self.particle_world, dtype=np.int32) if len(self.particle_world) else None
+        tri_indices = np.array(self.tri_indices, dtype=np.int32).reshape(-1, 3) if len(self.tri_indices) else None
+        tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if len(self.tet_indices) else None
+        body_world = np.array(self.body_world, dtype=np.int32) if len(self.body_world) else None
 
         def _world_of(spec: dict, parent: np.ndarray) -> int:
             kind = spec["kind"]
@@ -12983,31 +13309,48 @@ class ModelBuilder:
             - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
+            - Python's cyclic garbage collector is temporarily disabled during this operation. Its previous state
+              is restored before returning or propagating an exception.
         """
 
-        # ensure the world count is set correctly
-        self.world_count = max(1, self.world_count)
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            # ensure the world count is set correctly
+            self.world_count = max(1, self.world_count)
 
-        # validate world ordering and contiguity
-        if not skip_all_validations and not skip_validation_worlds:
-            self._validate_world_ordering()
+            # validate world ordering and contiguity
+            if not skip_all_validations and not skip_validation_worlds:
+                self._validate_world_ordering()
 
-        # validate joints belong to an articulation
-        if not skip_all_validations and not skip_validation_joints:
-            self._validate_joints()
+            # validate joints belong to an articulation
+            if not skip_all_validations and not skip_validation_joints:
+                self._validate_joints()
 
-        # validate shapes have valid contact margins
-        if not skip_all_validations and not skip_validation_shapes:
-            self._validate_shapes()
+            # validate shapes have valid contact margins
+            if not skip_all_validations and not skip_validation_shapes:
+                self._validate_shapes()
 
-        # validate structural invariants (body/joint references, array lengths)
-        if not skip_all_validations and not skip_validation_structure:
-            self._validate_structure()
+            # validate structural invariants (body/joint references, array lengths)
+            if not skip_all_validations and not skip_validation_structure:
+                self._validate_structure()
 
-        # validate DFS topological joint ordering (opt-in, skipped by default)
-        if not skip_all_validations and not skip_validation_joint_ordering:
-            self.validate_joint_ordering()
+            # validate DFS topological joint ordering (opt-in, skipped by default)
+            if not skip_all_validations and not skip_validation_joint_ordering:
+                self.validate_joint_ordering()
 
+            with self._raw_array_access():
+                return self._finalize_impl(device=device, requires_grad=requires_grad)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    def _finalize_impl(
+        self,
+        device: Devicelike | None = None,
+        *,
+        requires_grad: bool = False,
+    ) -> Model:
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
         # This method also performs relevant validation checks on the start.
@@ -13018,14 +13361,24 @@ class ModelBuilder:
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
-        shape_collision_filter_packed = self._build_shape_collision_filter_packed()
+        # Keep the compact arrays for device transfer, while using Python lists in the
+        # large per-shape loops below. Iterating NumPy rows and scalars from Python is
+        # substantially more expensive than iterating their built-in equivalents.
+        shape_flags_list = _list_for_iteration(self.shape_flags)
+        shape_scale_list = _list_for_iteration(self.shape_scale)
+        shape_margin_list = _list_for_iteration(self.shape_margin)
+        shape_gap_list = _list_for_iteration(self.shape_gap)
 
+        shape_collision_filter_packed = self._build_shape_collision_filter_packed()
         with wp.ScopedDevice(device):
+            current_device = wp.get_device()
+            sdf_texture_paired_samples = _resolve_paired_samples_flag(self.sdf_texture_paired_samples, current_device)
+
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
-            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
+            m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -13042,7 +13395,12 @@ class ModelBuilder:
             m.particle_mass = wp.array(self.particle_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
-            m.particle_flags = wp.array([flag_to_int(f) for f in self.particle_flags], dtype=wp.int32)
+            particle_flags = (
+                self.particle_flags
+                if isinstance(self.particle_flags, np.ndarray)
+                else [flag_to_int(f) for f in self.particle_flags]
+            )
+            m.particle_flags = wp.array(particle_flags, dtype=wp.int32)
             m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
@@ -13070,7 +13428,7 @@ class ModelBuilder:
 
             def _shape_requests_planar_sdf(shape_idx: int) -> bool:
                 """Whether a shape needs texture SDF data for planar-faced contact."""
-                if not (self.shape_flags[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
+                if not (shape_flags_list[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
                     return False
                 stype = self.shape_type[shape_idx]
                 if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
@@ -13083,7 +13441,7 @@ class ModelBuilder:
                 return stype == GeoType.BOX and (
                     self.shape_sdf_max_resolution[shape_idx] is not None
                     or self.shape_sdf_target_voxel_size[shape_idx] is not None
-                    or bool(self.shape_flags[shape_idx] & ShapeFlags.HYDROELASTIC)
+                    or bool(shape_flags_list[shape_idx] & ShapeFlags.HYDROELASTIC)
                 )
 
             generated_shape_sources = list(self.shape_source)
@@ -13208,7 +13566,7 @@ class ModelBuilder:
             shape_mesh_properties = []
             mesh_properties_by_geo_hash: dict[int, int] = {}
             for shape_type, geo, shape_flags in zip(
-                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
             ):
                 mesh_properties = 0
                 is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
@@ -13235,7 +13593,7 @@ class ModelBuilder:
             vertex_offset = 0
             neighbor_offset = 0
             for shape_type, source, shape_flags in zip(
-                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+                self.shape_type, generated_shape_sources, shape_flags_list, strict=True
             ):
                 metadata = (-1, -1, -1, 0)
                 if (
@@ -13362,7 +13720,7 @@ class ModelBuilder:
 
             site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+                zip(self.shape_type, self.shape_source, shape_scale_list, strict=True)
             ):
                 site_size_is_display = bool(
                     site_display_size_attr
@@ -13480,7 +13838,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
@@ -13488,7 +13845,7 @@ class ModelBuilder:
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
                 and getattr(ssrc, "sdf", None) is not None
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
+                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, shape_flags_list, strict=True)
             )
             # Catch meshes whose SDF is still deferred (built during finalize) so
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
@@ -13501,7 +13858,7 @@ class ModelBuilder:
                 for stype, ssrc, sflags, smax, svox in zip(
                     self.shape_type,
                     generated_shape_sources,
-                    self.shape_flags,
+                    shape_flags_list,
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
                     strict=True,
@@ -13509,7 +13866,7 @@ class ModelBuilder:
             )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                for sflags in self.shape_flags
+                for sflags in shape_flags_list
             )
             if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
@@ -13550,9 +13907,9 @@ class ModelBuilder:
             for i in range(len(self.shape_type)):
                 shape_type = self.shape_type[i]
                 shape_src = self.shape_source[i]
-                shape_flags = self.shape_flags[i]
-                shape_scale = self.shape_scale[i]
-                shape_gap = self.shape_gap[i]
+                shape_flags = shape_flags_list[i]
+                shape_scale = shape_scale_list[i]
+                shape_gap = shape_gap_list[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
@@ -13561,7 +13918,7 @@ class ModelBuilder:
                 is_hydroelastic = bool(
                     shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
                 )
-                required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
+                required_sdf_padding = shape_gap + shape_margin_list[i] if is_hydroelastic else shape_gap
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
@@ -13581,7 +13938,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
-                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        sdf_kwargs["paired_samples"] = sdf_texture_paired_samples
                         # Convex collision geometry is deduplicated before finalization,
                         # so build and cache its deferred SDF against that same topology.
                         sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
@@ -13607,13 +13964,13 @@ class ModelBuilder:
                     if mesh_sdf is not None:
                         coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
                         if coarse_texture is not None and (
-                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                            (coarse_texture.num_channels == 2) != sdf_texture_paired_samples
                         ):
-                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            mode = "paired" if sdf_texture_paired_samples else "scalar"
                             raise ValueError(
                                 f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
                                 "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
-                                f"{self.sdf_texture_paired_samples})."
+                                f"{sdf_texture_paired_samples})."
                             )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
@@ -13668,7 +14025,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
-                                    paired_samples=self.sdf_texture_paired_samples,
+                                    paired_samples=sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -13681,7 +14038,7 @@ class ModelBuilder:
                                 warnings.warn(
                                     f"Texture SDF construction failed for shape {i} "
                                     f"(type={shape_type}): {e}. Falling back to BVH.",
-                                    stacklevel=2,
+                                    stacklevel=3,
                                 )
                                 tex_data = create_empty_texture_sdf_data()
                                 c_tex = None
@@ -13710,7 +14067,7 @@ class ModelBuilder:
                     if (
                         shape_sdf_index[i] >= 0
                         or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
-                        or not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES)
+                        or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
                         or self.shape_source[i] is None
                         or not (
                             self.shape_force_sdf[i]
@@ -13721,7 +14078,7 @@ class ModelBuilder:
                         continue
                     src = self.shape_source[i]
                     sdf_padding_i = self.shape_sdf_padding[i]
-                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else shape_gap_list[i]
                     # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
                     # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
                     # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
@@ -13755,13 +14112,13 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
-                            paired_samples=self.sdf_texture_paired_samples,
+                            paired_samples=sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
                             f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
                             "back to the legacy per-particle soft-contact path.",
-                            stacklevel=2,
+                            stacklevel=3,
                         )
                         continue
                     wt_idx = len(compact_texture_sdf_data)
@@ -13792,7 +14149,7 @@ class ModelBuilder:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
                     "contacts between heightfield pairs will be skipped.",
-                    stacklevel=2,
+                    stacklevel=3,
                 )
             from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
@@ -13814,7 +14171,7 @@ class ModelBuilder:
                         # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
-                        sx, sy, sz = self.shape_scale[i]
+                        sx, sy, sz = shape_scale_list[i]
                         hd.hx = abs(hf.hx * sx)
                         hd.hy = abs(hf.hy * sy)
                         hd.min_z = hf.min_z * sz
@@ -13854,10 +14211,10 @@ class ModelBuilder:
                 if (
                     self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
                     and generated_shape_sources[i] is not None
-                    and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
+                    and (shape_flags_list[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
-                    shape_scale = np.asarray(self.shape_scale[i], dtype=np.float32)
+                    shape_scale = np.asarray(shape_scale_list[i], dtype=np.float32)
                     scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
@@ -13970,7 +14327,7 @@ class ModelBuilder:
             # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
-                if self.edge_indices
+                if len(self.edge_indices) > 0
                 else np.empty((0, 4), dtype=np.int32)
             )
             m.soft_mesh_adjacency = MeshAdjacency(
@@ -14093,7 +14450,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
                             f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=2,
+                            stacklevel=3,
                         )
 
                     # Use the corrected arrays directly on the Model.
@@ -14146,6 +14503,8 @@ class ModelBuilder:
             parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
+            m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
+            m.joint_mimic_coeffs = wp.array(self.joint_mimic_coeffs, dtype=wp.vec2)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -14167,7 +14526,7 @@ class ModelBuilder:
                         "will be removed. Set newton.use_coord_layout_targets = True before "
                         "building models and index targets via Model.joint_target_q_start.",
                         DeprecationWarning,
-                        stacklevel=2,
+                        stacklevel=3,
                     )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
@@ -14248,7 +14607,7 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # mimic constraints
+            # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
@@ -14401,7 +14760,7 @@ class ModelBuilder:
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
                             UserWarning,
-                            stacklevel=2,
+                            stacklevel=3,
                         )
 
             # Store custom frequency counts on the model for selection.py and other consumers
@@ -14600,6 +14959,7 @@ class ModelBuilder:
             validated_templates.add(template_key)
 
     def _find_shape_contact_pairs(self, model: Model) -> None:
+        shape_body_values = self.shape_body
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -14633,6 +14993,14 @@ class ModelBuilder:
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
                 use_world_templates = np.array_equal(segment_worlds, shape_world_np)
+                if use_world_templates:
+                    shape_body_np = np.asarray(shape_body_values, dtype=np.int32)
+                    body_world_np = np.asarray(self.body_world, dtype=np.int32)
+                    attached = shape_body_np >= 0
+                    # Body-relative template keys are valid only when shapes and their bodies share a world.
+                    use_world_templates = np.array_equal(
+                        shape_world_np[attached], body_world_np[shape_body_np[attached]]
+                    )
 
         if use_world_templates:
             blocks_by_world = {}
@@ -14685,12 +15053,15 @@ class ModelBuilder:
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
-                    (int(shape_idx), self.shape_collision_group[shape_idx])
+                    (int(shape_idx), self.shape_collision_group[shape_idx], int(shape_body_np[shape_idx]))
                     for shape_idx in np.flatnonzero((shape_world_np == -1) & colliding_np)
                 ]
 
-                for i1, (shape_a, group_a) in enumerate(colliding_globals):
-                    for shape_b, group_b in colliding_globals[i1 + 1 :]:
+                for i1, (shape_a, group_a, body_a) in enumerate(colliding_globals):
+                    for shape_b, group_b, body_b in colliding_globals[i1 + 1 :]:
+                        # Same-body and static-static shape pairs are inherently filtered.
+                        if body_a == body_b or (body_a < 0 and body_b < 0):
+                            continue
                         if not self._test_group_pair(group_a, group_b):
                             continue
                         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
@@ -14711,12 +15082,19 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
+                    world_shape_bodies_np = shape_body_np[world_start:world_end]
+                    body_key = np.where(
+                        world_shape_bodies_np >= 0,
+                        world_shape_bodies_np - self.body_world_start[world],
+                        -1,
+                    ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
                     # tuples; re-hashing per-shape tuples per world dominates
                     # this loop at high world counts.
                     cache_key = (
                         shape_flags_np[world_start:world_end].tobytes(),
                         shape_group_np[world_start:world_end].tobytes(),
+                        body_key,
                         block_key,
                         explicit_filter_specs,
                     )
@@ -14724,6 +15102,7 @@ class ModelBuilder:
 
                     if cached_pairs is None:
                         collision_groups = self.shape_collision_group[world_start:world_end]
+                        world_shape_bodies = _list_for_iteration(world_shape_bodies_np)
                         local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
 
                         # Replicated-block filters are local to the source block;
@@ -14749,8 +15128,12 @@ class ModelBuilder:
                         # Cache global/local pairs separately: the global id is
                         # absolute, while the local id is shifted during replay.
                         global_local_pairs = []
-                        for global_shape, global_group in colliding_globals:
+                        for global_shape, global_group, global_body in colliding_globals:
                             for local_shape in local_colliding_indices:
+                                local_body = world_shape_bodies[local_shape]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if global_body == local_body or (global_body < 0 and local_body < 0):
+                                    continue
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
                                     pair = (global_shape, local_shape)
                                     if pair not in global_local_filters:
@@ -14759,7 +15142,12 @@ class ModelBuilder:
                         local_pairs = []
                         for i1, shape_a in enumerate(local_colliding_indices):
                             group_a = collision_groups[shape_a]
+                            body_a = world_shape_bodies[shape_a]
                             for shape_b in local_colliding_indices[i1 + 1 :]:
+                                body_b = world_shape_bodies[shape_b]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if body_a == body_b or (body_a < 0 and body_b < 0):
+                                    continue
                                 if not self._test_group_pair(group_a, collision_groups[shape_b]):
                                     continue
 
@@ -14811,6 +15199,7 @@ class ModelBuilder:
                 return
 
         contact_pairs: list[tuple[int, int]] = []
+        shape_body = _list_for_iteration(shape_body_values)
         shape_world = self.shape_world
         shape_collision_group = self.shape_collision_group
 
@@ -14822,6 +15211,7 @@ class ModelBuilder:
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = shape_world[s1]
+            body1 = shape_body[s1]
             collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
@@ -14834,6 +15224,11 @@ class ModelBuilder:
                 # be in different worlds, so we can break early.
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
+
+                body2 = shape_body[s2]
+                # Same-body and static-static shape pairs are inherently filtered.
+                if body1 == body2 or (body1 < 0 and body2 < 0):
+                    continue
 
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
@@ -14854,3 +15249,182 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(candidate_pairs)
+
+
+_ArrayBackedListDescriptor = tuple[Literal["ctypes", "tuple", "list", "ndarray", "scalar"], Any]
+_ArrayBackedAttribute = tuple[np.ndarray, _ArrayBackedListDescriptor]
+
+
+_ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
+    "particle_q": wp.vec3,
+    "particle_qd": wp.vec3,
+    "particle_mass": wp.float32,
+    "particle_radius": wp.float32,
+    "particle_flags": wp.int32,
+    "particle_world": wp.int32,
+    "shape_transform": wp.transform,
+    "shape_body": wp.int32,
+    "shape_material_ke": wp.float32,
+    "shape_material_kd": wp.float32,
+    "shape_material_kf": wp.float32,
+    "shape_material_ka": wp.float32,
+    "shape_material_mu": wp.float32,
+    "shape_material_restitution": wp.float32,
+    "shape_material_mu_torsional": wp.float32,
+    "shape_material_mu_rolling": wp.float32,
+    "shape_material_kh": wp.float32,
+    "shape_gap": wp.float32,
+    "shape_is_solid": wp.bool,
+    "shape_margin": wp.float32,
+    "shape_scale": wp.vec3,
+    "shape_color": wp.vec3,
+    "shape_opacity": wp.float32,
+    "shape_collision_group": wp.int32,
+    "shape_collision_radius": wp.float32,
+    "shape_world": wp.int32,
+    "spring_indices": wp.int32,
+    "spring_rest_length": wp.float32,
+    "spring_stiffness": wp.float32,
+    "spring_damping": wp.float32,
+    "spring_control": wp.float32,
+    "tri_indices": wp.int32,
+    "tri_poses": wp.mat22,
+    "tri_activations": wp.float32,
+    "tri_materials": wp.float32,
+    "tri_areas": wp.float32,
+    "tri_color": wp.vec3,
+    "tri_opacity": wp.float32,
+    "edge_indices": wp.int32,
+    "edge_rest_angle": wp.float32,
+    "edge_rest_length": wp.float32,
+    "edge_bending_properties": wp.float32,
+    "tet_indices": wp.int32,
+    "tet_poses": wp.mat33,
+    "tet_activations": wp.float32,
+    "tet_materials": wp.float32,
+    "muscle_params": wp.float32,
+    "muscle_bodies": wp.int32,
+    "muscle_points": wp.vec3,
+    "muscle_activations": wp.float32,
+    "body_q": wp.transform,
+    "body_qd": wp.spatial_vector,
+    "body_com": wp.vec3,
+    "body_inertia": wp.mat33,
+    "body_inv_inertia": wp.mat33,
+    "body_mass": wp.float32,
+    "body_inv_mass": wp.float32,
+    "body_flags": wp.int32,
+    "body_world": wp.int32,
+    "joint_q": wp.float32,
+    "joint_qd": wp.float32,
+    "joint_f": wp.float32,
+    "joint_target_q": wp.float32,
+    "joint_target_qd": wp.float32,
+    "joint_act": wp.float32,
+    "joint_articulation": wp.int32,
+    "joint_parent": wp.int32,
+    "joint_child": wp.int32,
+    "joint_X_p": wp.transform,
+    "joint_X_c": wp.transform,
+    "joint_axis": wp.vec3,
+    "joint_armature": wp.float32,
+    "joint_target_mode": wp.int32,
+    "joint_target_ke": wp.float32,
+    "joint_target_kd": wp.float32,
+    "joint_damping": wp.float32,
+    "joint_effort_limit": wp.float32,
+    "joint_velocity_limit": wp.float32,
+    "joint_friction": wp.float32,
+    "joint_enabled": wp.bool,
+    "joint_limit_lower": wp.float32,
+    "joint_limit_upper": wp.float32,
+    "joint_limit_ke": wp.float32,
+    "joint_limit_kd": wp.float32,
+    "joint_twist_lower": wp.float32,
+    "joint_twist_upper": wp.float32,
+    "joint_world": wp.int32,
+    "articulation_world": wp.int32,
+    "constraint_mimic_joint0": wp.int32,
+    "constraint_mimic_joint1": wp.int32,
+    "constraint_mimic_coef0": wp.float32,
+    "constraint_mimic_coef1": wp.float32,
+    "constraint_mimic_enabled": wp.bool,
+    "constraint_mimic_world": wp.int32,
+}
+"""Builder attributes retained as NumPy arrays between replication and finalization."""
+# could be replaced by introspection if Model instance attribute annotations were moved to class level
+
+
+def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:
+    """Return built-in list values for efficient Python iteration."""
+    return values.tolist() if isinstance(values, np.ndarray) else values
+
+
+def _describe_array_backed_list(element: Any) -> _ArrayBackedListDescriptor:
+    """Describe how to reconstruct a list element without retaining the element itself."""
+    if isinstance(element, ctypes.Array):
+        return ("ctypes", type(element))
+    if isinstance(element, tuple):
+        return ("tuple", None)
+    if isinstance(element, list):
+        return ("list", np.asarray(element).shape)
+    if isinstance(element, np.ndarray):
+        return ("ndarray", None)
+    return ("scalar", None)
+
+
+def _materialize_array_backed_list(value: np.ndarray, descriptor: _ArrayBackedListDescriptor) -> list[Any]:
+    """Convert an array-backed builder attribute to its original list representation.
+
+    Cyclic GC is disabled during materialization and its previous state is restored afterward.
+    """
+    gc_was_enabled = gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    try:
+        kind, detail = descriptor
+        if kind == "ctypes":
+            element_type = detail
+            compatible = np.asarray(value, dtype=np.asarray(element_type()).dtype)
+            return [element_type.from_buffer_copy(row) for row in compatible]
+        if kind == "tuple":
+            return list(map(tuple, value.tolist()))
+        if kind == "list":
+            return value.tolist()
+        if kind == "ndarray":
+            return [np.array(row, copy=True) for row in value]
+        return value.tolist()
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+
+class _ArrayBackedAttributeAccess:
+    """Expose an array-backed attribute only while its instance list is absent."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __get__(self, instance: ModelBuilder | None, owner: type[ModelBuilder]):
+        if instance is None:
+            return self
+
+        instance_dict = instance.__dict__
+        attributes = instance_dict.get("_array_backed_attributes")
+        if attributes is None or self.name not in attributes:
+            raise AttributeError(
+                f"{type(instance).__name__!r} has neither list nor array storage for attribute {self.name!r}"
+            ) from None
+
+        value, descriptor = attributes[self.name]
+        if instance_dict.get("_raw_array_access_active", False):
+            return value
+
+        materialized = _materialize_array_backed_list(value, descriptor)
+        setattr(instance, self.name, materialized)
+        return materialized
+
+
+for _array_backed_attribute_name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+    setattr(ModelBuilder, _array_backed_attribute_name, _ArrayBackedAttributeAccess(_array_backed_attribute_name))
+del _array_backed_attribute_name

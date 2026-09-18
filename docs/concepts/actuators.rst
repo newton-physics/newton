@@ -306,18 +306,18 @@ other applied force, other actuators driving the same articulation, and joint
 drive applied without the actuator are all absent from it.
 
 The implicit effort mode necessarily requires the joint-space inverse mass
-matrix. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which
+matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
 
 .. code-block:: python
 
-   from newton.actuators import ResponseOracle
+   from newton.actuators import JointSpaceResponse
 
-   oracle = ResponseOracle(model)
-   actuator.set_effort_mode_implicit(response=oracle)
+   response = JointSpaceResponse(model)
+   actuator.set_effort_mode_implicit(response=response)
 
    # Simulation loop
-   oracle.refresh(sim_state)
+   response.refresh(sim_state)
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
@@ -329,13 +329,13 @@ together as one coupled system.
 
 The inverse mass matrix, called *the response* below, is computed for a whole
 articulation. The actuator then reads only the entries for the DOFs it drives.
-:class:`~newton.actuators.ResponseOracle` is responsible for providing that
+:class:`~newton.actuators.JointSpaceResponse` is responsible for providing that
 matrix, and there are two ways to obtain it: compute it from scratch
-(:meth:`ResponseOracle.refresh <newton.actuators.ResponseOracle.refresh>`), or
-reuse what the solver already has (:meth:`ResponseOracle.refresh_from_solve
-<newton.actuators.ResponseOracle.refresh_from_solve>`).
+(:meth:`JointSpaceResponse.refresh <newton.actuators.JointSpaceResponse.refresh>`), or
+reuse what the solver already has (:meth:`JointSpaceResponse.refresh_from_solve
+<newton.actuators.JointSpaceResponse.refresh_from_solve>`).
 
-:meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
+:meth:`~newton.actuators.JointSpaceResponse.refresh` builds the mass matrix itself,
 from :func:`~newton.eval_mass_matrix` and joint armature. This comes with
 approximations. First, joint damping, joint limits, friction, contacts and
 constraint regularization are absent. All of those resist motion, so the
@@ -344,13 +344,13 @@ the control law and so yields a smaller effort than would have been evaluated
 without the simplifications listed above. Second, kinematic loop closures are
 also ignored.
 
-The approximations inherent in :meth:`ResponseOracle.refresh
-<newton.actuators.ResponseOracle.refresh>` may be avoided when working with a
+The approximations inherent in :meth:`JointSpaceResponse.refresh
+<newton.actuators.JointSpaceResponse.refresh>` may be avoided when working with a
 solver that is able to evaluate the inverse mass matrix more directly, with the
 exception of loop closure effects. To this end,
-:meth:`ResponseOracle.refresh_from_solve
-<newton.actuators.ResponseOracle.refresh_from_solve>` takes a callable that
-computes ``x = M^-1 y``. The oracle recovers the response one column at a time,
+:meth:`JointSpaceResponse.refresh_from_solve
+<newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
+computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
 Newton solver that provides one.
 
@@ -360,8 +360,8 @@ Newton solver that provides one.
        # x = M^-1 y, using the factorization the solver already built
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-   # Simulation loop, in place of oracle.refresh(sim_state)
-   oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   # Simulation loop, in place of response.refresh(sim_state)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.

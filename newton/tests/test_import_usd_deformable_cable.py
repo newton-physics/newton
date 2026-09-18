@@ -306,8 +306,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         ):
             bodies, _ = result["path_cable_map"][path]
             body_lengths.update(zip(bodies, lengths, strict=True))
-        self.assertGreater(builder.joint_count, 0)
-        for joint_idx in range(builder.joint_count):
+        rod_joints = [
+            joint_idx for joint_idx, joint_type in enumerate(builder.joint_type) if joint_type == newton.JointType.ROD
+        ]
+        self.assertGreater(len(rod_joints), 0)
+        for joint_idx in rod_joints:
             joint_length = 0.5 * (
                 body_lengths[builder.joint_parent[joint_idx]] + body_lengths[builder.joint_child[joint_idx]]
             )
@@ -913,9 +916,16 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, r"/World/Mat.*physics:youngsModulus.*numeric"):
-            builder.add_usd(stage)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
-        self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in builder.joint_target_ke))
+        cable_joints = result["path_cable_map"]["/World/Cable"][1]
+        cable_stiffness = []
+        for joint in cable_joints:
+            dof_start = builder.joint_qd_start[joint]
+            dof_end = builder.joint_qd_start[joint + 1] if joint + 1 < builder.joint_count else len(builder.joint_qd)
+            cable_stiffness.extend(builder.joint_target_ke[dof_start:dof_end])
+        self.assertTrue(cable_stiffness)
+        self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in cable_stiffness))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
         """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
@@ -1515,7 +1525,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 builder.add_usd(stage)
                 # Dynamics are intact either way; only the collision flags differ.
                 self.assertEqual(builder.body_count, 3)
-                self.assertEqual(builder.joint_count, 2)
+                self.assertEqual(builder.joint_count, 3)
                 for i in range(builder.shape_count):
                     is_colliding = bool(int(builder.shape_flags[i]) & collide)
                     self.assertEqual(is_colliding, expected_colliding, f"shape {i}")
@@ -1605,7 +1615,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 self.assertNotIn("/World/Bad", result["path_cable_map"])
                 self.assertNotIn("/World/Bad", result["path_cable_attrs"])
                 self.assertEqual(builder.body_count, 3)
-                self.assertEqual(builder.joint_count, 2)
+                self.assertEqual(builder.joint_count, 3)
                 builder.finalize()
 
     def test_malformed_curve_is_excluded_from_weld_prepass(self):

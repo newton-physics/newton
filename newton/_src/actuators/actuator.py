@@ -14,7 +14,7 @@ from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
-from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
+from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
 
 _DEPRECATED_UNSET = object()
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
@@ -366,7 +366,7 @@ class Actuator:
 
     def set_effort_mode_implicit(
         self,
-        response: ResponseOracle,
+        response: JointSpaceResponse,
         options: Actuator.ImplicitOptions | None = None,
     ) -> None:
         """Switch effort computation to implicit mode.
@@ -376,7 +376,7 @@ class Actuator:
         computation of effort in the implicit mode, its caveats, and its expected use.
 
         Args:
-            response: :class:`~newton.actuators.ResponseOracle` supplying the
+            response: :class:`~newton.actuators.JointSpaceResponse` supplying the
                 coupled effective inverse mass [1/kg or 1/(kg·m²)]. Refresh it
                 once per step before :meth:`step`.
             options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
