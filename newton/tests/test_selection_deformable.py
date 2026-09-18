@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for DeformableView batched selection over finalized deformable groups."""
+"""Tests for family-specific batched selection over finalized deformable groups."""
 
 import re
 import unittest
@@ -10,7 +10,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.selection import ArticulationView, DeformableView
+from newton.selection import (
+    ArticulationView,
+    DeformableCurveView,
+    DeformableSurfaceView,
+    DeformableView,
+    DeformableVolumeView,
+)
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 
@@ -193,7 +199,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
                     np.testing.assert_array_equal(getter(state).numpy()[1], np.full((4, 3), 7.0))
 
 
-class TestDeformableView(unittest.TestCase):
+class TestDeformableSelection(unittest.TestCase):
     """Label-pattern selection and batched state access over deformable groups."""
 
     def test_constructor_rejects_positional_family(self):
@@ -215,7 +221,7 @@ class TestDeformableView(unittest.TestCase):
         """Deformable selection accepts the shared compiled-regex selector."""
         model = _replicated_model(2, device="cpu")
 
-        view = DeformableView(model, re.compile(r"/World/Cloth"), family="surface")
+        view = DeformableSurfaceView(model, re.compile(r"/World/Cloth"))
 
         self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
 
@@ -223,7 +229,7 @@ class TestDeformableView(unittest.TestCase):
         """A family filters broad matches, while an unfiltered mixed match fails clearly."""
         model = _replicated_model(2, device="cpu")
 
-        surface = DeformableView(model, "/World/*", family="surface")
+        surface = DeformableSurfaceView(model, "/World/*")
         self.assertEqual((surface.family, surface.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
 
         with self.assertRaisesRegex(ValueError, "multiple families.*curve.*surface"):
@@ -234,7 +240,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
 
-        view = DeformableView(model, "/World/Cloth", family="surface")
+        view = DeformableSurfaceView(model, "/World/Cloth")
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.worlds, [0, 1, 2])
         self.assertEqual(view.particles_per_group, 4)
@@ -259,7 +265,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(2)
         state = model.state()
 
-        view = DeformableView(model, "/World/Cable", family="curve")
+        view = DeformableCurveView(model, "/World/Cable")
         self.assertEqual((view.count, view.bodies_per_group), (2, 3))
 
         transforms = view.get_body_transforms(state)
@@ -278,7 +284,7 @@ class TestDeformableView(unittest.TestCase):
         _add_test_soft_body(builder, label="/World/Soft")
         model = builder.finalize()
 
-        view = DeformableView(model, "/World/Soft", family="volume")
+        view = DeformableVolumeView(model, "/World/Soft")
         self.assertEqual((view.count, view.world_count), (1, 1))
         self.assertEqual(view.get_particle_positions(model.state()).shape, (1, 4))
 
@@ -291,7 +297,7 @@ class TestDeformableView(unittest.TestCase):
         scene.replicate(sub, 2)
         model = scene.finalize()
 
-        view = DeformableView(model, "/World/Cloth*", family="surface")
+        view = DeformableSurfaceView(model, "/World/Cloth*")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
         self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
@@ -308,7 +314,7 @@ class TestDeformableView(unittest.TestCase):
         scene.add_world(second)
         scene.add_world(newton.ModelBuilder())
 
-        view = DeformableView(scene.finalize(), "/World/Cloth*", family="surface")
+        view = DeformableSurfaceView(scene.finalize(), "/World/Cloth*")
 
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, None))
         self.assertEqual(view.worlds, [0, 1, 1])
@@ -327,7 +333,7 @@ class TestDeformableView(unittest.TestCase):
         scene.replicate(sub, 2)
         model = scene.finalize()
 
-        view = DeformableView(model, ["/World/ClothA", "/World/ClothB"], family="surface")
+        view = DeformableSurfaceView(model, ["/World/ClothA", "/World/ClothB"])
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
 
@@ -336,7 +342,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(2, device="cpu")
         state = model.state()
 
-        view = DeformableView(model, "/World/Cloth", family="surface")
+        view = DeformableSurfaceView(model, "/World/Cloth")
         positions = view.get_particle_positions(state)
         self.assertTrue(positions.device.is_cpu)
         lifted = positions.numpy()
@@ -348,7 +354,7 @@ class TestDeformableView(unittest.TestCase):
         """A regular selection aliases state data like an ArticulationView getter."""
         model = _replicated_model(2, device="cpu")
         state = model.state()
-        view = DeformableView(model, "/World/Cloth", family="surface")
+        view = DeformableSurfaceView(model, "/World/Cloth")
         positions = view.get_particle_positions(state)
         moved = positions.numpy().copy()
         moved[..., 2] += 1.0
@@ -361,7 +367,7 @@ class TestDeformableView(unittest.TestCase):
         """An indexed selection reuses its internally owned contiguous result."""
         model = _irregular_model(device="cpu")
         state = model.state()
-        view = DeformableView(model, "selected_cloth_*", family="surface")
+        view = DeformableSurfaceView(model, "selected_cloth_*")
         first = view.get_particle_positions(state)
         moved = first.numpy().copy()
         moved[..., 2] += 1.0
@@ -378,8 +384,8 @@ class TestDeformableView(unittest.TestCase):
         device = wp.get_device("cuda:0")
         model = _irregular_model(device=device)
         state = model.state()
-        cloth = DeformableView(model, "selected_cloth_*", family="surface")
-        cable = DeformableView(model, "selected_cable_*", family="curve")
+        cloth = DeformableSurfaceView(model, "selected_cloth_*")
+        cable = DeformableCurveView(model, "selected_cable_*")
 
         for name, getter, setter, dtype in (
             ("particle_positions", cloth.get_particle_positions, cloth.set_particle_positions, wp.vec3),
@@ -423,8 +429,8 @@ class TestDeformableView(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(KeyError):
-            DeformableView(model, "/World/DoesNotExist", family="surface")
-        view = DeformableView(model, "/World/Cloth*", family="surface")
+            DeformableSurfaceView(model, "/World/DoesNotExist")
+        view = DeformableSurfaceView(model, "/World/Cloth*")
         self.assertEqual([end - start for start, end in view.ranges("particle")], [4, 5])
         np.testing.assert_array_equal(view.starts("particle").numpy(), [0, 4])
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
@@ -435,9 +441,9 @@ class TestDeformableView(unittest.TestCase):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
         with self.assertRaisesRegex(ValueError, "Unknown deformable family"):
             DeformableView(model, "/World/ClothA", family="ropes")
-        view = DeformableView(model, "/World/ClothA", family="surface")
+        view = DeformableSurfaceView(model, "/World/ClothA")
         with self.assertRaisesRegex(AttributeError, "no body elements"):
-            view.get_body_transforms(model.state())
+            view.ranges("body")
         with self.assertRaises(ValueError):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 
@@ -447,7 +453,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
 
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
         moved = before[[1]].copy()
         moved[..., 2] += 5.0
@@ -456,7 +462,7 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_allclose(after[1], moved[0], atol=1e-6)
 
-        cable = DeformableView(model, "/World/Cable", family="curve")
+        cable = DeformableCurveView(model, "/World/Cable")
         velocities = np.zeros((1, cable.bodies_per_group, 6), dtype=np.float32)
         velocities[..., 3] = 2.0
         device_indices = wp.array([2], dtype=wp.int32, device=model.device)
@@ -478,7 +484,7 @@ class TestDeformableView(unittest.TestCase):
         """Source rows can be mapped independently to destination groups."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy().copy()
         values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
         values[1].fill(10.0)
@@ -500,7 +506,7 @@ class TestDeformableView(unittest.TestCase):
         """Particle velocity writes use the same source-to-group mapping."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
         values[0].fill(2.0)
         values[3].fill(7.0)
@@ -521,7 +527,7 @@ class TestDeformableView(unittest.TestCase):
         """Cable transform writes map source rows independently."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cable = DeformableView(model, "/World/Cable", family="curve")
+        cable = DeformableCurveView(model, "/World/Cable")
         before = cable.get_body_transforms(state).numpy().copy()
         values = np.repeat(before[[0]], 4, axis=0)
         values[1, :, 0] += 2.0
@@ -543,7 +549,7 @@ class TestDeformableView(unittest.TestCase):
         """Cable velocity writes map source rows independently."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cable = DeformableView(model, "/World/Cable", family="curve")
+        cable = DeformableCurveView(model, "/World/Cable")
         values = np.zeros((4, cable.bodies_per_group, 6), dtype=np.float32)
         values[0, :, 0] = 2.0
         values[3, :, 4] = -5.0
@@ -564,7 +570,7 @@ class TestDeformableView(unittest.TestCase):
         """Host source rows are integral, in range, and aligned with destinations."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         values = wp.zeros((4, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
 
         for invalid_indices in ([-1], [4]):
@@ -612,7 +618,7 @@ class TestDeformableView(unittest.TestCase):
         device = wp.get_device("cuda:0")
         model = _replicated_model(3, device=device)
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         initial = cloth.get_particle_positions(state).numpy().copy()
         values_np = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
         values_np[0].fill(2.0)
@@ -660,7 +666,7 @@ class TestDeformableView(unittest.TestCase):
     def test_host_indices_require_integral_values(self):
         """Host selectors reject lossy coercions before they can write another group."""
         model = _replicated_model(3, device="cpu")
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         values = wp.full((1, cloth.particles_per_group), 9.0, dtype=wp.vec3, device="cpu")
 
         for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
@@ -688,7 +694,7 @@ class TestDeformableView(unittest.TestCase):
         """An out-of-range device group index cannot address another group's state."""
         model = _replicated_model(3)
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
         values = np.full((1, cloth.particles_per_group, 3), 17.0, dtype=np.float32)
 
@@ -704,7 +710,7 @@ class TestDeformableView(unittest.TestCase):
         """Device index arrays fail clearly before reaching one-dimensional kernel inputs."""
         model = _replicated_model(3)
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
         indices = wp.zeros((1, 2), dtype=wp.int32, device=model.device)
 
@@ -717,7 +723,7 @@ class TestDeformableView(unittest.TestCase):
         """Warp selectors must be int32 arrays on the view's device."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
 
         indices = wp.array([0], dtype=wp.int64, device="cpu")
@@ -738,7 +744,7 @@ class TestDeformableView(unittest.TestCase):
         """Captured indexed setters reuse changing device values without unsafe writes."""
         device = wp.get_device("cuda:0")
         model = _replicated_model(3, device=device)
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
 
         state = model.state()
         initial = cloth.get_particle_positions(state).numpy().copy()
@@ -782,7 +788,7 @@ class TestDeformableView(unittest.TestCase):
         """Captured cable setters replay transform and spatial-vector device writes."""
         device = wp.get_device("cuda:0")
         model = _replicated_model(3, device=device)
-        cable = DeformableView(model, "/World/Cable", family="curve")
+        cable = DeformableCurveView(model, "/World/Cable")
 
         for name, getter, setter, dtype in (
             ("transforms", cable.get_body_transforms, cable.set_body_transforms, wp.transform),
@@ -829,7 +835,7 @@ class TestDeformableView(unittest.TestCase):
         """Device duplicate indices are deterministic: the last row wins."""
         model = _replicated_model(3)
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
         values = np.empty((2, cloth.particles_per_group, 3), dtype=np.float32)
         values[0].fill(3.0)
@@ -849,7 +855,7 @@ class TestDeformableView(unittest.TestCase):
         """Environment IDs use the flat group axis when each world has one match."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
         moved = before[[2]].copy()
         moved[..., 2] += 4.0
@@ -894,9 +900,9 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
         rigid = ArticulationView(model, "robot")
-        cable = DeformableView(model, "cable", family="curve")
-        cloth = DeformableView(model, "cloth", family="surface")
-        soft = DeformableView(model, "soft", family="volume")
+        cable = DeformableCurveView(model, "cable")
+        cloth = DeformableSurfaceView(model, "cloth")
+        soft = DeformableVolumeView(model, "soft")
 
         self.assertEqual(rigid.get_root_transforms(state).shape, (1, 1))
         self.assertEqual(cable.get_body_transforms(state).shape, (1, 2))
@@ -960,8 +966,8 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         state = model.state()
 
         rigid = ArticulationView(model, "robot")
-        cloth = DeformableView(model, "cloth", family="surface")
-        soft = DeformableView(model, "soft", family="volume")
+        cloth = DeformableSurfaceView(model, "cloth")
+        soft = DeformableVolumeView(model, "soft")
         self.assertEqual(rigid.get_root_transforms(state).shape, (2, 1))
         self.assertEqual(cloth.get_particle_positions(state).shape, (2, 4))
         self.assertEqual(soft.get_particle_positions(state).shape, (2, 4))
@@ -1014,9 +1020,9 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         model = scene.finalize()
 
         rigid = ArticulationView(model, "robot")
-        cloth = DeformableView(model, "cloth", family="surface")
-        soft = DeformableView(model, "soft", family="volume")
-        cable = DeformableView(model, "cable", family="curve")
+        cloth = DeformableSurfaceView(model, "cloth")
+        soft = DeformableVolumeView(model, "soft")
+        cable = DeformableCurveView(model, "cable")
         self.assertEqual((rigid.count, rigid.world_count, rigid.count_per_world), (3, 3, 1))
         self.assertEqual(rigid.get_root_transforms(model).shape, (3, 1))
         np.testing.assert_array_equal(cloth.world_starts.numpy(), [0, 1, 1, 2])
@@ -1043,10 +1049,10 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         rigid = ArticulationView(model, "robot")
         self.assertEqual(rigid.get_root_transforms(model).shape, (1, 1))
         with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableView(model, "anchored_curve", family="curve")
+            DeformableCurveView(model, "anchored_curve")
 
 
-class TestDeformableViewBuilderGroups(unittest.TestCase):
+class TestDeformableBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
 
     def test_builder_deformable_identities_are_public_and_mutable(self):
@@ -1068,13 +1074,13 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         builder.volume_label[:] = ["/World/envs/env_0/SoftBody"]
 
         model = builder.finalize(device="cpu")
-        for label, family in (
-            ("/World/envs/env_0/Cable", "curve"),
-            ("/World/envs/env_0/Cloth", "surface"),
-            ("/World/envs/env_0/SoftBody", "volume"),
+        for label, view_type in (
+            ("/World/envs/env_0/Cable", DeformableCurveView),
+            ("/World/envs/env_0/Cloth", DeformableSurfaceView),
+            ("/World/envs/env_0/SoftBody", DeformableVolumeView),
         ):
-            with self.subTest(family=family):
-                view = DeformableView(model, label, family=family)
+            with self.subTest(label=label):
+                view = view_type(model, label)
                 self.assertEqual((view.labels, view.worlds), ([label], [-1]))
 
     def test_unlabeled_curve_builders_get_default_group_labels(self):
@@ -1084,7 +1090,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS, radius=0.02),
             body_frame_origin="com",
         )
-        rod = DeformableView(rod_builder.finalize(), "curve_0", family="curve")
+        rod = DeformableCurveView(rod_builder.finalize(), "curve_0")
         self.assertEqual((rod.labels, rod.bodies_per_group), (["curve_0"], 3))
 
         graph_builder = newton.ModelBuilder()
@@ -1092,14 +1098,14 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             rod=newton.Rod(_CABLE_PTS, edges=[(0, 1), (1, 2), (2, 3)], radius=0.02),
             body_frame_origin="com",
         )
-        graph = DeformableView(graph_builder.finalize(), "curve_0", family="curve")
+        graph = DeformableCurveView(graph_builder.finalize(), "curve_0")
         self.assertEqual((graph.labels, graph.bodies_per_group), (["curve_0"], 3))
 
     def test_unlabeled_volume_builders_get_default_group_labels(self):
         """Mesh and grid volume constructors record a group without an explicit label."""
         mesh_builder = newton.ModelBuilder()
         _add_test_soft_body(mesh_builder, label=None)
-        mesh = DeformableView(mesh_builder.finalize(), "volume_0", family="volume")
+        mesh = DeformableVolumeView(mesh_builder.finalize(), "volume_0")
         self.assertEqual((mesh.labels, mesh.particles_per_group), (["volume_0"], 4))
 
         grid_builder = newton.ModelBuilder()
@@ -1118,7 +1124,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             k_lambda=1.0,
             k_damp=0.0,
         )
-        grid = DeformableView(grid_builder.finalize(), "volume_0", family="volume")
+        grid = DeformableVolumeView(grid_builder.finalize(), "volume_0")
         self.assertEqual((grid.labels, grid.particles_per_group), (["volume_0"], 8))
 
     def test_default_group_labels_survive_replication(self):
@@ -1132,9 +1138,13 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         scene.replicate(prototype, 2)
         model = scene.finalize(device="cpu")
 
-        for label, family in (("curve_0", "curve"), ("surface_0", "surface"), ("volume_0", "volume")):
+        for label, view_type in (
+            ("curve_0", DeformableCurveView),
+            ("surface_0", DeformableSurfaceView),
+            ("volume_0", DeformableVolumeView),
+        ):
             with self.subTest(label=label):
-                view = DeformableView(model, label, family=family)
+                view = view_type(model, label)
                 self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
 
     def test_rebased_builder_identities_survive_replication(self):
@@ -1160,13 +1170,13 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             self.assertEqual(worlds, [0, 1])
 
         model = scene.finalize(device="cpu")
-        for label, family in (
-            ("/Template/Cable", "curve"),
-            ("/Template/Cloth", "surface"),
-            ("/Template/SoftBody", "volume"),
+        for label, view_type in (
+            ("/Template/Cable", DeformableCurveView),
+            ("/Template/Cloth", DeformableSurfaceView),
+            ("/Template/SoftBody", DeformableVolumeView),
         ):
-            with self.subTest(family=family):
-                view = DeformableView(model, label, family=family)
+            with self.subTest(label=label):
+                view = view_type(model, label)
                 self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
 
     def test_labeled_curve_builders_record_one_complete_group(self):
@@ -1181,7 +1191,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             label="closed",
             body_frame_origin="com",
         )
-        closed = DeformableView(closed_builder.finalize(), "closed", family="curve")
+        closed = DeformableCurveView(closed_builder.finalize(), "closed")
         self.assertEqual((closed.count, closed.elements_per_group("body")), (1, 3))
         # Native groups include the automatic free root as well as the rod joints.
         self.assertEqual(closed.elements_per_group("joint"), 4)
@@ -1197,7 +1207,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             label="graph",
             body_frame_origin="com",
         )
-        graph = DeformableView(graph_builder.finalize(), "graph", family="curve")
+        graph = DeformableCurveView(graph_builder.finalize(), "graph")
         self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
         self.assertEqual(graph.elements_per_group("joint"), 3)
         self.assertEqual(graph_builder.joint_type[0], newton.JointType.FREE)
@@ -1212,7 +1222,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
                 label="legacy_chain",
                 body_frame_origin="com",
             )
-        chain = DeformableView(chain_builder.finalize(), "legacy_chain", family="curve")
+        chain = DeformableCurveView(chain_builder.finalize(), "legacy_chain")
         self.assertEqual((chain.count, chain.bodies_per_group), (1, 3))
 
         graph_builder = newton.ModelBuilder()
@@ -1224,7 +1234,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
                 label="legacy_graph",
                 body_frame_origin="com",
             )
-        graph = DeformableView(graph_builder.finalize(), "legacy_graph", family="curve")
+        graph = DeformableCurveView(graph_builder.finalize(), "legacy_graph")
         self.assertEqual((graph.count, graph.bodies_per_group), (1, 3))
 
     def test_mixed_native_deformables_replicate_with_offset_ranges(self):
@@ -1268,14 +1278,14 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
-        curve = DeformableView(model, "curve", family="curve")
+        curve = DeformableCurveView(model, "curve")
         self.assertEqual((curve.count, curve.worlds, curve.count_per_world), (2, [0, 1], 1))
         np.testing.assert_array_equal(curve.world_starts.numpy(), [0, 1, 2])
         self.assertEqual(curve.ranges("body"), [(0, 3), (3, 6)])
         self.assertEqual(curve.ranges("joint"), [(0, 3), (3, 6)])
         self.assertEqual(curve.get_body_transforms(state).shape, (2, 3))
 
-        surface = DeformableView(model, "surface", family="surface")
+        surface = DeformableSurfaceView(model, "surface")
         self.assertEqual((surface.count, surface.worlds, surface.count_per_world), (2, [0, 1], 1))
         np.testing.assert_array_equal(surface.world_starts.numpy(), [0, 1, 2])
         self.assertEqual(surface.ranges("particle"), [(0, 4), (12, 16)])
@@ -1283,7 +1293,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         self.assertEqual(surface.ranges("edge"), [(0, 5), (23, 28)])
         self.assertEqual(surface.get_particle_positions(state).shape, (2, 4))
 
-        volume = DeformableView(model, "volume", family="volume")
+        volume = DeformableVolumeView(model, "volume")
         self.assertEqual((volume.count, volume.worlds, volume.count_per_world), (2, [0, 1], 1))
         np.testing.assert_array_equal(volume.world_starts.numpy(), [0, 1, 2])
         self.assertEqual(volume.ranges("particle"), [(4, 12), (16, 24)])
@@ -1321,13 +1331,13 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         model = scene.finalize()
         state = model.state()
 
-        soft = DeformableView(model, "soft_proto", family="volume")
+        soft = DeformableVolumeView(model, "soft_proto")
         self.assertEqual((soft.count, soft.worlds, soft.particles_per_group), (2, [0, 1], 4))
         (r0, r1) = soft.ranges("particle")
         self.assertEqual(r1[0] - r0[0], 4)
         self.assertNotEqual(r0, r1)
 
-        cable = DeformableView(model, "cable_proto", family="curve")
+        cable = DeformableCurveView(model, "cable_proto")
         self.assertEqual((cable.count, cable.worlds, cable.bodies_per_group), (2, [0, 1], 2))
         self.assertEqual(cable.elements_per_group("joint"), 2)
 
@@ -1351,7 +1361,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             density=0.1,
         )
         model = builder.finalize()
-        view = DeformableView(model, "surface_0", family="surface")
+        view = DeformableSurfaceView(model, "surface_0")
         self.assertEqual(view.labels, ["surface_0"])
         self.assertEqual(view.ranges("particle"), [(0, 4)])
 
@@ -1374,7 +1384,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaisesRegex(KeyError, "anchored_curve"):
-            DeformableView(model, "anchored_curve", family="curve")
+            DeformableCurveView(model, "anchored_curve")
 
     def test_fixed_joint_collapse_is_label_neutral(self):
         """Otherwise identical labeled and unlabeled rods collapse identically."""
@@ -1417,7 +1427,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         builder.collapse_fixed_joints(joints_to_keep=["anchor"])
         self.assertEqual((builder.curve_label, builder.curve_world), (["anchored_curve"], [-1]))
         model = builder.finalize()
-        view = DeformableView(model, "anchored_curve", family="curve")
+        view = DeformableCurveView(model, "anchored_curve")
 
         self.assertEqual((model.body_count, model.joint_count), (2, 2))
         self.assertEqual(view.ranges("body"), [(0, 2)])
@@ -1444,7 +1454,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
 
         model = builder.finalize()
-        view = DeformableView(model, "soft_grid", family="volume")
+        view = DeformableVolumeView(model, "soft_grid")
 
         self.assertEqual(view.ranges("particle"), [(0, 8)])
         self.assertEqual(view.ranges("tetrahedron"), [(0, 5)])

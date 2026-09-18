@@ -1884,7 +1884,7 @@ class ModelBuilder:
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
-        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`.
+        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableCurveView`, aligned with :attr:`curve_world`.
 
         .. experimental::
 
@@ -1909,7 +1909,7 @@ class ModelBuilder:
         """Nesting depth for private curve-group recording suppression."""
 
         self.surface_label: list[str] = []
-        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`.
+        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableSurfaceView`, aligned with :attr:`surface_world`.
 
         .. experimental::
 
@@ -1936,7 +1936,7 @@ class ModelBuilder:
         """Exclusive edge-range end of each surface group."""
 
         self.volume_label: list[str] = []
-        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`volume_world`.
+        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableVolumeView`, aligned with :attr:`volume_world`.
 
         .. experimental::
 
@@ -9162,7 +9162,7 @@ class ModelBuilder:
                 ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
                 selectable curve group. If None, the group receives a generated ``curve_N``
-                label. See :class:`~newton.selection.DeformableView`. Generated joint labels retain
+                label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates
                 articulations for the generated tree joints. Defaults to True.
@@ -9367,7 +9367,7 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
                 selectable curve group. If None, the group receives a generated ``curve_N``
-                label. See :class:`~newton.selection.DeformableView`. Generated joint labels retain
+                label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, places each connected component's generated joints and a
                 free joint to the world in one articulation.
@@ -10566,7 +10566,7 @@ class ModelBuilder:
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
                 The same name labels the selectable surface group; if None, the group receives
-                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
             color: Display color in [0, 1] for the cloth surface. If a single
                 RGB value, applied to all triangles. If array-like, RGB values
                 are applied per triangle.
@@ -10711,7 +10711,7 @@ class ModelBuilder:
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify this cloth.
                 The same name labels the selectable surface group; if None, the group receives
-                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
 
         Note:
             The mesh should be two-manifold.
@@ -10993,7 +10993,7 @@ class ModelBuilder:
             label: Optional name for the selectable volume group. If None, the group receives
                 a generated ``volume_N`` label. Currently unused by mesh-quality diagnostics
                 because the generated grid is degenerate-free by construction. See
-                :class:`~newton.selection.DeformableView`.
+                :class:`~newton.selection.DeformableVolumeView`.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -11180,7 +11180,7 @@ class ModelBuilder:
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
                 ``validate_mesh=True`` can identify this soft body. The same name labels the
                 selectable volume group; if None, the group receives a generated ``volume_N``
-                label. See :class:`~newton.selection.DeformableView`.
+                label. See :class:`~newton.selection.DeformableVolumeView`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -14018,7 +14018,7 @@ class ModelBuilder:
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
             # Combine public group identities and private simulation ranges into finalized
-            # records. DeformableView is the public interface for selecting those records and
+            # records. The selection views are the public interface for selecting those records and
             # accessing their state and topology.
             deformable_groups: list[_DeformableGroup] = []
 

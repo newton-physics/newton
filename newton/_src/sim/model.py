@@ -129,8 +129,8 @@ class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
 class _DeformableGroup:
     """One finalized curve, surface, or volume deformable group.
 
-    Private backing data for :class:`newton.selection.DeformableView`; the view is the
-    public way to address deformables, so this representation can change freely.
+    Private backing data for the public deformable selection views. Applications
+    use those views to address deformables, so this representation can change freely.
     ``ranges`` maps an element kind to its ``[start, end)`` index range.
     """
 
@@ -1149,7 +1149,7 @@ class Model:
 
         # Each curve, surface, or volume recorded by the builder is a world-tagged
         # group with [start, end) index ranges into the per-element arrays. Kept private so
-        # :class:`newton.selection.DeformableView` stays the public addressability surface;
+        # the family-specific selection views remain the public way to address groups;
         # the representation is free to evolve into a general selection layer.
         self._deformable_groups: tuple[_DeformableGroup, ...] = ()
 

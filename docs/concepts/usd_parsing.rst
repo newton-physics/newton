@@ -340,18 +340,20 @@ resolved element type under ``simulation``; a legacy untyped mass entry is also 
 
 On the finalized
 :class:`~newton.Model`, select groups by label pattern with
-:class:`~newton.selection.DeformableView` (following
-:class:`~newton.selection.ArticulationView`): it batches each group's state on one flat group
-axis as ``(group_count, elements_per_group)`` arrays. The family is inferred when a pattern
-matches only curves, only surfaces, or only volumes; pass ``family`` to filter a broader
-pattern. ``world_starts`` partitions the flat axis by model world, including empty worlds, and
+:class:`~newton.selection.DeformableCurveView`,
+:class:`~newton.selection.DeformableSurfaceView`, or
+:class:`~newton.selection.DeformableVolumeView` (following
+:class:`~newton.selection.ArticulationView`). Each view batches its family's state on one flat
+group axis as ``(group_count, elements_per_group)`` arrays. The class supplies the family
+filter, so a broad pattern still selects only that family.
+``world_starts`` partitions the flat axis by model world, including empty worlds, and
 ``world_ids`` identifies the world of every group. Setters use ``group_indices`` to select flat
 destination rows and optional ``source_indices`` to select rows from the supplied values. When
 exactly one group matches in each world, the flat group indices coincide with model world IDs.
 Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
 zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
 first call and can be replayed in a CUDA graph. The view also exposes raw per-group ranges
-(:meth:`~newton.selection.DeformableView.ranges`) for deformables with different element counts
+(``ranges(kind)``) for deformables with different element counts
 and for consumers that need slices of the flat model arrays. The ranges stay valid through
 :meth:`~newton.ModelBuilder.finalize`,
 :meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
@@ -360,13 +362,14 @@ survive (its ranges follow their new indices). Deformable labels do not change w
 joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
 group is omitted with a warning; pass the relevant joint through
 ``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
+See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
 
 Before finalization, :class:`~newton.ModelBuilder` exposes the label and world of every recorded
 deformable through ``curve_label`` / ``curve_world``, ``surface_label`` / ``surface_world``, and
 ``volume_label`` / ``volume_world``. Applications may change existing entries when composing or
 cloning a builder, for example to replace a template label with an application asset path. Keep
 each label list the same length as its corresponding world list. The simulation ranges remain
-private builder details; use :class:`~newton.selection.DeformableView` to access them after
+private builder details; use the family-specific selection views to access them after
 finalization.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
@@ -416,7 +419,7 @@ ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
     # Post-finalize selection by label pattern:
-    cable = newton.selection.DeformableView(model, "/World/Cable")
+    cable = newton.selection.DeformableCurveView(model, "/World/Cable")
     ((body_start, body_end),) = cable.ranges("body")
     # With one matching cable per world, flat group indices equal model world IDs.
     cable.set_body_velocities(state, reset_velocities, group_indices=environment_ids)

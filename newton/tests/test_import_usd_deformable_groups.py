@@ -3,8 +3,8 @@
 
 """Lifecycle tests for addressing deformable groups on the finalized model.
 
-Groups are addressed through :class:`newton.selection.DeformableView` (the public
-surface; the Model-side group table is private). Every other deformable test locates
+Groups are addressed through the public family-specific selection views
+(the Model-side group table is private). Every other deformable test locates
 groups through the builder-registry seam in ``_usd_deformable_test_utils``; this module
 covers the post-``finalize()`` path across lifecycle transformations (replication,
 heterogeneous worlds, fixed-joint collapse).
@@ -14,7 +14,7 @@ import os
 import unittest
 
 import newton
-from newton.selection import DeformableView
+from newton.selection import DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -41,14 +41,14 @@ class TestUSDDeformableGroups(unittest.TestCase):
         builder.add_usd(_MIXED_ASSET)
         model = builder.finalize()
 
-        cable = DeformableView(model, "/World/CableA/sim", family="curve")
+        cable = DeformableCurveView(model, "/World/CableA/sim")
         self.assertEqual(cable.count, 1)
         self.assertEqual(cable.bodies_per_group, 3)
         self.assertEqual(cable.elements_per_group("joint"), 2)  # open 3-segment chain
-        cloth = DeformableView(model, "/World/Cloth/sim", family="surface")
+        cloth = DeformableSurfaceView(model, "/World/Cloth/sim")
         self.assertEqual(cloth.particles_per_group, 4)
         self.assertEqual(cloth.ranges("triangle"), [(0, 2)])
-        soft = DeformableView(model, "/World/Soft*/sim", family="volume")
+        soft = DeformableVolumeView(model, "/World/Soft*/sim")
         self.assertEqual(soft.count, 2)
         soft_ranges = soft.ranges("particle")
         self.assertNotEqual(soft_ranges[0], soft_ranges[1])
@@ -56,7 +56,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         # No begin_world -> global groups.
         self.assertEqual(cable.worlds, [-1])
         with self.assertRaises(KeyError):
-            DeformableView(model, "/World/DoesNotExist", family="curve")
+            DeformableCurveView(model, "/World/DoesNotExist")
 
     def test_replicated_groups_select_per_world(self):
         """replicate() duplicates labels across worlds: one group per world, ranges
@@ -71,7 +71,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.replicate(sub, 3)
         model = scene.finalize()
 
-        view = DeformableView(model, "/World/Cloth", family="surface")
+        view = DeformableSurfaceView(model, "/World/Cloth")
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.labels, ["/World/Cloth"] * 3)
         self.assertEqual(view.worlds, [0, 1, 2])
@@ -117,7 +117,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
 
                 scene = newton.ModelBuilder()
                 scene.replicate(source, 2)
-                view = DeformableView(scene.finalize(device="cpu"), "/World/Cable", family="curve")
+                view = DeformableCurveView(scene.finalize(device="cpu"), "/World/Cable")
                 self.assertEqual((view.count, view.worlds), (2, [0, 1]))
                 self.assertEqual(
                     view.ranges("body"),
@@ -146,8 +146,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.add_world(cable_sub)  # world 1: cable only
         model = scene.finalize()
 
-        self.assertEqual(DeformableView(model, "/World/Cloth", family="surface").worlds, [0])
-        self.assertEqual(DeformableView(model, "/World/Cable", family="curve").worlds, [1])
+        self.assertEqual(DeformableSurfaceView(model, "/World/Cloth").worlds, [0])
+        self.assertEqual(DeformableCurveView(model, "/World/Cable").worlds, [1])
 
     def test_cable_group_survives_fixed_joint_collapse(self):
         """Cable body ranges ride the reindexing of collapse_fixed_joints onto the Model."""
@@ -168,7 +168,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         builder.add_usd(stage, collapse_fixed_joints=True)
         model = builder.finalize()
 
-        view = DeformableView(model, "/World/Cable", family="curve")
+        view = DeformableCurveView(model, "/World/Cable")
         ((b0, b1),) = view.ranges("body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))
@@ -208,7 +208,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
             self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
         model = builder.finalize()
         for path in ("/World/Trunk", "/World/Branch"):
-            view = DeformableView(model, path, family="curve")
+            view = DeformableCurveView(model, path)
             ((j0, j1),) = view.ranges("joint")
             self.assertEqual(j0, j1, "finalized welded-graph curves own no tree joints")
             self.assertLessEqual(j1, model.joint_count, f"{path}: finalized empty range points past the joint array")

@@ -263,8 +263,8 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             model = builder.finalize()
             self.assertEqual(model.body_count, 5)
-            trunk = newton.selection.DeformableView(model, "/World/Trunk", family="curve")
-            branch = newton.selection.DeformableView(model, "/World/Branch", family="curve")
+            trunk = newton.selection.DeformableCurveView(model, "/World/Trunk")
+            branch = newton.selection.DeformableCurveView(model, "/World/Branch")
             self.assertEqual(trunk.get_body_transforms(model.state()).shape, (1, 3))
             self.assertEqual(branch.get_body_transforms(model.state()).shape, (1, 2))
 

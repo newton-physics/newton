@@ -18,7 +18,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.selection import DeformableView
+from newton.selection import DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
 
 
 def _add_surface(builder: newton.ModelBuilder, label: str, y: float, z: float) -> None:
@@ -119,10 +119,10 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
-        self.curve = DeformableView(self.model, "hanging_cable")
-        self.surface = DeformableView(self.model, "surface_primary")
-        self.surfaces = DeformableView(self.model, "surface_*", family="surface")
-        self.volume = DeformableView(self.model, "soft_cube")
+        self.curve = DeformableCurveView(self.model, "hanging_cable")
+        self.surface = DeformableSurfaceView(self.model, "surface_primary")
+        self.surfaces = DeformableSurfaceView(self.model, "surface_*")
+        self.volume = DeformableVolumeView(self.model, "soft_cube")
 
         # These host ranges are sufficient for one-time renderer/Fabric offset setup.
         self.curve_body_ranges = self.curve.ranges("body")
