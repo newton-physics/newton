@@ -91,6 +91,108 @@ def _add_test_soft_body(builder, label="soft"):
     )
 
 
+class TestDeformableFamilyViews(unittest.TestCase):
+    """Select each geometric family without a family argument."""
+
+    def test_family_views_match_old_view_during_migration(self):
+        """Temporarily compare the new views with the old view before its removal."""
+        builder = newton.ModelBuilder()
+        _add_test_cable(builder, label="object")
+        _add_test_cloth(builder, label="object")
+        _add_test_soft_body(builder, label="object")
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, 2)
+        model = scene.finalize(device="cpu")
+
+        for view_type, family, kinds, attributes in (
+            (newton.selection.DeformableCurveView, "curve", ("body", "joint"), ("body_transforms", "body_velocities")),
+            (
+                newton.selection.DeformableSurfaceView,
+                "surface",
+                ("particle", "triangle", "edge"),
+                ("particle_positions", "particle_velocities"),
+            ),
+            (
+                newton.selection.DeformableVolumeView,
+                "volume",
+                ("particle", "tetrahedron"),
+                ("particle_positions", "particle_velocities"),
+            ),
+        ):
+            for pattern in ("*", ["object", "missing"], re.compile("object")):
+                with self.subTest(family=family, pattern=pattern):
+                    old = DeformableView(model, pattern, family=family)
+                    new = view_type(model, pattern)
+                    self.assertEqual((new.labels, new.worlds), (old.labels, old.worlds))
+                    np.testing.assert_array_equal(new.world_starts.numpy(), old.world_starts.numpy())
+                    for kind in kinds:
+                        self.assertEqual(new.ranges(kind), old.ranges(kind))
+                        np.testing.assert_array_equal(new.starts(kind).numpy(), old.starts(kind).numpy())
+                    for attribute in attributes:
+                        old_state, new_state = model.state(), model.state()
+                        values = getattr(old, f"get_{attribute}")(model).numpy().copy()
+                        values[..., 0] += 0.1
+                        for view, state in ((old, old_state), (new, new_state)):
+                            getattr(view, f"set_{attribute}")(state, values, group_indices=[1], source_indices=[0])
+                        np.testing.assert_array_equal(
+                            getattr(new, f"get_{attribute}")(new_state).numpy(),
+                            getattr(old, f"get_{attribute}")(old_state).numpy(),
+                        )
+
+    def test_curve_view_filters_shared_labels(self):
+        """Select only curve bodies when all families share the same label."""
+        builder = newton.ModelBuilder()
+        _add_test_cable(builder, label="object")
+        _add_test_cloth(builder, label="object")
+        _add_test_soft_body(builder, label="object")
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, 2)
+        model = scene.finalize(device="cpu")
+
+        view = newton.selection.DeformableCurveView(model, "*")
+
+        self.assertEqual((view.family, view.labels, view.worlds), ("curve", ["object", "object"], [0, 1]))
+        self.assertEqual(view.ranges("body"), [(0, 3), (3, 6)])
+        self.assertEqual(view.world_ranges(), [(0, 1), (1, 2)])
+        np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1])
+        self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
+        with self.assertRaisesRegex(AttributeError, "no particle elements"):
+            view.ranges("particle")
+
+    def test_particle_views_filter_shared_labels_and_isolate_writes(self):
+        """Write only the requested family and group with independent source rows."""
+        builder = newton.ModelBuilder()
+        _add_test_cable(builder, label="object")
+        _add_test_cloth(builder, label="object")
+        _add_test_soft_body(builder, label="object")
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, 2)
+        model = scene.finalize(device="cpu")
+
+        for view_type, family, ranges in (
+            (newton.selection.DeformableSurfaceView, "surface", [(0, 4), (8, 12)]),
+            (newton.selection.DeformableVolumeView, "volume", [(4, 8), (12, 16)]),
+        ):
+            with self.subTest(family=family):
+                view = view_type(model, "*")
+                self.assertEqual((view.family, view.labels, view.worlds), (family, ["object", "object"], [0, 1]))
+                self.assertEqual(view.ranges("particle"), ranges)
+                for attribute, getter, setter in (
+                    ("particle_q", view.get_particle_positions, view.set_particle_positions),
+                    ("particle_qd", view.get_particle_velocities, view.set_particle_velocities),
+                ):
+                    state = model.state()
+                    expected = getattr(state, attribute).numpy().copy()
+                    values = wp.array(np.full((2, 4, 3), 7.0, dtype=np.float32), dtype=wp.vec3, device="cpu")
+
+                    setter(state, values, group_indices=[1], source_indices=[0])
+
+                    start, end = ranges[1]
+                    expected[start:end] = 7.0
+                    np.testing.assert_array_equal(getattr(state, attribute).numpy(), expected)
+                    np.testing.assert_array_equal(getter(state).numpy()[1], np.full((4, 3), 7.0))
+
+
 class TestDeformableView(unittest.TestCase):
     """Label-pattern selection and batched state access over deformable groups."""
 

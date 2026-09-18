@@ -2291,7 +2291,7 @@ class _DeformableViewBase:
             elements = ", ".join(
                 f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
             )
-            print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
+            print(f"{type(self).__name__} '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
 
     # raw ranges -------------------------------------------------------------
 
@@ -2812,3 +2812,100 @@ class _DeformableBodyView(_DeformableViewBase):
 
 class DeformableView(_DeformableParticleView, _DeformableBodyView):
     __doc__ = _DeformableViewBase.__doc__
+
+
+class DeformableCurveView(_DeformableBodyView):
+    """Select curves by label and read or update their segment body state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports rod-backed curves with body and joint ranges. The family
+    describes geometry, not a solver: particle-based curves are not supported yet.
+    Matching surfaces and volumes are excluded from the selection.
+
+    Fixed-joint collapse can remove an incomplete curve group. Preserve required
+    joints with :meth:`~newton.ModelBuilder.collapse_fixed_joints` using
+    ``joints_to_keep`` when complete curve access is needed.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    indexed writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable groups.
+        pattern: Label glob, list of label globs, or compiled regular expression.
+        verbose: If True, print a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="curve", verbose=verbose)
+
+
+class DeformableSurfaceView(_DeformableParticleView):
+    """Select surfaces by label and read or update their particle state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports triangle surfaces with particle, triangle, and edge ranges.
+    The family describes geometry, not a solver. Matching curves and volumes are
+    excluded from the selection.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    indexed writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable groups.
+        pattern: Label glob, list of label globs, or compiled regular expression.
+        verbose: If True, print a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="surface", verbose=verbose)
+
+
+class DeformableVolumeView(_DeformableParticleView):
+    """Select volumes by label and read or update their particle state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports tetrahedral volumes with particle and tetrahedron ranges.
+    The family describes geometry, not a solver: solver-owned MPM data is not
+    supported. Matching curves and surfaces are excluded from the selection.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    indexed writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable groups.
+        pattern: Label glob, list of label globs, or compiled regular expression.
+        verbose: If True, print a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="volume", verbose=verbose)

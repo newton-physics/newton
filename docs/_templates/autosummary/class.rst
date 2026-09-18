@@ -3,5 +3,6 @@
 .. autoclass:: {{ fullname }}
    :members:
    :undoc-members:
-   :show-inheritance:
-   :member-order: groupwise
+{% if fullname in ("newton.selection.DeformableCurveView", "newton.selection.DeformableSurfaceView", "newton.selection.DeformableVolumeView") %}   :inherited-members:
+{% else %}   :show-inheritance:
+{% endif %}   :member-order: groupwise
