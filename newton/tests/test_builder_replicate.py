@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Mesh, Model, ModelBuilder
+from newton import Mesh, Model, ModelBuilder, eval_fk
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -196,6 +196,152 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual.replicate(source, len(xforms), xforms=xforms)
 
         self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_composition_transforms_particle_state(self):
+        """Transform copied particle positions and velocities without changing the prefix."""
+        source = ModelBuilder()
+        source.add_particle((1.0, 2.0, 3.0), (2.0, -1.0, 0.5), 1.0)
+        rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        offset = np.array([3.0, -2.0, 1.0])
+        xforms = [
+            wp.transform(),
+            wp.transform(offset),
+            wp.transform(offset, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
+        ]
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                target = ModelBuilder()
+                target.add_particle((7.0, 8.0, 9.0), (4.0, 5.0, 6.0), 1.0)
+                if method == "replicate":
+                    target.replicate(source, len(xforms), xforms=xforms)
+                else:
+                    for xform in xforms:
+                        target.add_builder(source, xform)
+                for i, (rot, shift) in enumerate(
+                    ((np.eye(3), np.zeros(3)), (np.eye(3), offset), (rotation, offset)), 1
+                ):
+                    with self.subTest(copy=i, field="position"):
+                        np.testing.assert_allclose(
+                            target.particle_q[i], rot @ np.array(source.particle_q[0]) + shift, atol=1e-6, rtol=0
+                        )
+                    with self.subTest(copy=i, field="velocity"):
+                        np.testing.assert_allclose(
+                            target.particle_qd[i], rot @ np.array(source.particle_qd[0]), atol=1e-6, rtol=0
+                        )
+                np.testing.assert_array_equal(target.particle_q[0], [7.0, 8.0, 9.0])
+                np.testing.assert_array_equal(target.particle_qd[0], [4.0, 5.0, 6.0])
+                np.testing.assert_array_equal(source.particle_q, [[1.0, 2.0, 3.0]])
+                np.testing.assert_array_equal(source.particle_qd, [[2.0, -1.0, 0.5]])
+
+    def test_composition_transforms_free_state_and_targets(self):
+        """Transform free-root state and targets in the parent frame in both target layouts."""
+        rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        anchor_rotation = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+        anchor_position = np.array([0.25, -0.5, 1.0])
+        offset = np.array([3.0, -2.0, 1.0])
+        xforms = [
+            wp.transform(),
+            wp.transform(offset),
+            wp.transform(offset, wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
+        ]
+        for coord_layout in (False, True):
+            with mock.patch("newton.use_coord_layout_targets", coord_layout), warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
+                    category=DeprecationWarning,
+                )
+                source = ModelBuilder()
+                root = source.add_link(
+                    xform=wp.transform((1.0, 2.0, 3.0)), mass=1.0, inertia=wp.mat33(np.eye(3)), com=(0.2, 0.1, 0.0)
+                )
+                free = source.add_joint_free(
+                    root,
+                    parent_xform=wp.transform(anchor_position, wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 2)),
+                )
+                child = source.add_link(xform=wp.transform((1.0, 2.0, 4.0)), mass=1.0, inertia=wp.mat33(np.eye(3)))
+                hinge = source.add_joint_revolute(root, child, target_pos=0.3, target_vel=0.4)
+                source.add_articulation([free, hinge])
+                source.joint_qd[:] = [1.0, 2.0, 0.5, 0.5, -1.0, 0.25, 0.7]
+                target_position = np.array([2.0, 1.0, -0.5])
+                target_angles = wp.vec3(0.2, -0.3, 0.4)
+                target_quat = wp.quat_from_euler(target_angles, 2, 1, 0)
+                source.joint_target_q[:7] = [
+                    *target_position,
+                    *(target_quat if coord_layout else [*target_angles, 1.0]),
+                ]
+                source.joint_target_qd[:6] = [2.0, -0.5, 1.0, -0.5, 0.25, 1.0]
+                original_model = source.finalize(device="cpu")
+                original_state = original_model.state()
+                eval_fk(original_model, original_model.joint_q, original_model.joint_qd, original_state)
+                source.body_qd = original_state.body_qd.numpy().tolist()
+                for method in ("add_builder", "replicate"):
+                    with self.subTest(layout=coord_layout, method=method):
+                        target = ModelBuilder()
+                        target.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                        prefix_target = np.asarray(target.joint_target_q).copy()
+                        if method == "replicate":
+                            target.replicate(source, len(xforms), xforms=xforms)
+                        else:
+                            for xform in xforms:
+                                target.add_builder(source, xform)
+                        model = target.finalize(device="cpu")
+                        control = model.control()
+                        state = model.state()
+                        fk_state = model.state()
+                        eval_fk(model, model.joint_q, model.joint_qd, fk_state)
+                        body_velocities = state.body_qd.numpy()
+                        joint_velocities = state.joint_qd.numpy()
+                        target_velocities = control.joint_target_qd.numpy()
+                        target_positions = control.joint_target_q.numpy()
+                        for i, (rot, shift) in enumerate(
+                            ((np.eye(3), np.zeros(3)), (np.eye(3), offset), (rotation, offset))
+                        ):
+                            body_start, q_start, qd_start = 1 + 2 * i, 7 + 8 * i, 6 + 7 * i
+                            local_rotation = anchor_rotation.T @ rot @ anchor_rotation
+                            with self.subTest(copy=i, field="body_qd"):
+                                expected = (np.asarray(source.body_qd).reshape(-1, 3) @ rot.T).reshape(2, 6)
+                                np.testing.assert_allclose(
+                                    body_velocities[body_start : body_start + 2], expected, atol=2e-6, rtol=0
+                                )
+                            for field, velocities in (
+                                ("joint_qd", joint_velocities),
+                                ("joint_target_qd", target_velocities),
+                            ):
+                                with self.subTest(copy=i, field=field):
+                                    expected = (
+                                        np.asarray(getattr(source, field)[:6]).reshape(2, 3) @ local_rotation.T
+                                    ).ravel()
+                                    np.testing.assert_allclose(
+                                        velocities[qd_start : qd_start + 6], expected, atol=2e-6, rtol=0
+                                    )
+                            target_start = q_start if coord_layout else qd_start
+                            values = target_positions[target_start : target_start + (7 if coord_layout else 6)]
+                            with self.subTest(copy=i, field="target_position"):
+                                world_position = anchor_rotation @ values[:3] + anchor_position
+                                np.testing.assert_allclose(
+                                    world_position,
+                                    rot @ (anchor_rotation @ target_position + anchor_position) + shift,
+                                    atol=2e-6,
+                                    rtol=0,
+                                )
+                            with self.subTest(copy=i, field="target_orientation"):
+                                quat = (
+                                    wp.quat(*values[3:])
+                                    if coord_layout
+                                    else wp.quat_from_euler(wp.vec3(*values[3:]), 2, 1, 0)
+                                )
+                                np.testing.assert_allclose(
+                                    anchor_rotation @ np.asarray(wp.quat_to_matrix(quat)).reshape(3, 3),
+                                    rot @ anchor_rotation @ np.asarray(wp.quat_to_matrix(target_quat)).reshape(3, 3),
+                                    atol=2e-6,
+                                    rtol=0,
+                                )
+                            self.assertAlmostEqual(target.joint_qd[qd_start + 6], 0.7)
+                            self.assertAlmostEqual(target.joint_target_q[q_start + 7], 0.3)
+                            self.assertAlmostEqual(target.joint_target_qd[qd_start + 6], 0.4)
+                        np.testing.assert_allclose(fk_state.body_qd.numpy(), body_velocities, atol=2e-6, rtol=0)
+                        np.testing.assert_array_equal(target.joint_target_q[:7], prefix_target)
 
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""
