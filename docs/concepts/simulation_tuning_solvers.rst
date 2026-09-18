@@ -175,7 +175,7 @@ repository examples spend tuning effort, not a shared solver API.
        selects contact behavior only on that legacy path.
 
        Compliant ALM also supports dry joint friction for revolute, prismatic,
-       and D6 joints through :attr:`~Model.joint_friction`; see
+       ball, and D6 joints through :attr:`~Model.joint_friction`; see
        :ref:`Joint feature support` for restrictions.
 
        ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.

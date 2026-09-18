@@ -203,17 +203,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
           Multi-axis D6 efforts use transported axes, not the generalized
           Euler-coordinate directions used by joint friction at finite angles.
+          BALL efforts are world-frame torques; BALL friction uses the
+          parent-anchor frame.
         - :attr:`~newton.Model.joint_friction` provides independent per-DOF dry
           Coulomb force or torque bounds [N or N·m] for REVOLUTE, PRISMATIC,
-          and D6 joints with ``rigid_compliant_alm=True``. Projected reactions
+          BALL, and D6 joints with ``rigid_compliant_alm=True``. Projected reactions
           provide static sticking at convergence and saturated sliding.
           Finite positive values enable friction; nonpositive values disable it.
           Bounds are read live, including during CUDA graph replay; legacy AVBD
           ignores them. Positive bounds are invalid on either joint of a supported
           mimic pair, even when disabled. D6 friction supports at most three linear
           and three angular axes, with each nonempty axis group orthonormal.
-          Multi-axis angular friction also requires nonsingular Euler coordinates
-          and substeps small enough to resolve angular motion.
+          Multi-axis D6 friction requires nonsingular Euler coordinates. BALL
+          friction uses per-step rotation vectors in the parent-anchor frame.
+          Angular friction requires substeps small enough to resolve angular motion.
           Invalid configurations raise :class:`ValueError` at construction and
           after :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. Direct edits must remain

@@ -6980,7 +6980,9 @@ _JOINT_FRICTION_DT = 1.0 / 240.0
 @wp.kernel
 def _sample_joint_friction_coordinates_kernel(
     joint: int,
+    joint_type: wp.array[int],
     poses: wp.array[wp.transform],
+    previous_poses: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -6994,7 +6996,9 @@ def _sample_joint_friction_coordinates_kernel(
 ):
     frame = _prepare_joint_friction_frame(
         joint,
+        joint_type[joint],
         poses,
+        previous_poses,
         body_com,
         joint_parent,
         joint_child,
@@ -7016,11 +7020,13 @@ def _sample_joint_friction_coordinates_kernel(
         gradients[component, 1] = child
 
 
-def _joint_friction_coordinate_inputs(model, joint, poses):
+def _joint_friction_coordinate_inputs(model, joint, poses, previous_poses=None):
     """Collect the model arrays used to sample friction coordinates."""
     return [
         joint,
+        model.joint_type,
         poses,
+        poses if previous_poses is None else previous_poses,
         model.body_com,
         model.joint_parent,
         model.joint_child,
@@ -7164,7 +7170,7 @@ def _simulate_joint_friction(
 
 
 def _build_friction_scalar_model(device, joint_type, friction):
-    """Build one free scalar joint with unit mass and inertia."""
+    """Build a unit-mass, unit-inertia joint for single-DOF friction tests."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(
         mass=1.0,
@@ -7183,6 +7189,8 @@ def _build_friction_scalar_model(device, joint_type, friction):
     }
     if joint_type == newton.JointType.REVOLUTE:
         joint = builder.add_joint_revolute(**kwargs)
+    elif joint_type == newton.JointType.BALL:
+        joint = builder.add_joint_ball(parent=-1, child=body, friction=friction)
     else:
         joint = builder.add_joint_prismatic(**kwargs)
     builder.joint_qd[0] = 2.0
@@ -7288,6 +7296,92 @@ def test_vbd_d6_joint_friction(test, device):
             np.testing.assert_allclose(velocity, expected, atol=3.0e-5)
 
 
+def test_vbd_ball_joint_friction(test, device):
+    """Apply independent BALL torque bounds in the parent-anchor frame, not Euler axes."""
+    for sign in (-1.0, 1.0):
+        with test.subTest(sign=sign):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+            joint = builder.add_joint_ball(
+                parent=-1,
+                child=body,
+                parent_xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7)),
+                friction=1.0,
+            )
+            # This orientation is singular for Euler coordinates, but not for BALL motion.
+            builder.joint_q[:] = sign * np.asarray(wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 2))
+            builder.add_articulation([joint])
+            builder.color()
+            model = builder.finalize(device=device)
+            model.joint_friction.assign([1.0, 2.0, 3.0])
+            torque = wp.quat_rotate(wp.transform_get_rotation(builder.joint_X_p[joint]), wp.vec3(0.5, -4.0, 6.0))
+            _, velocity, reaction = _simulate_joint_friction(
+                model, steps=1, body_force=[[0.0, 0.0, 0.0, *torque]], iterations=20, capture=True
+            )
+            np.testing.assert_allclose(
+                velocity, [0.0, -2.0 * _JOINT_FRICTION_DT, 3.0 * _JOINT_FRICTION_DT], atol=5.0e-5
+            )
+            np.testing.assert_allclose(reaction, [0.5, -2.0, 3.0], atol=0.01)
+
+
+def test_vbd_ball_friction_gradients(test, device):
+    """Differentiate relative rotation increments, including parent motion and anchor frames."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    root = builder.add_joint_free(child=parent)
+    joint = builder.add_joint_ball(
+        parent=parent,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.7)),
+        child_xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -0.4)),
+    )
+    builder.add_articulation([root, joint])
+    builder.joint_q[-4:] = np.asarray(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 2.8))
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    previous = wp.clone(state.body_q)
+    original = previous.numpy().copy()
+    delta = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 3.0)), 0.2)
+    original[child, 3:] = np.asarray(delta * wp.quat(*original[child, 3:]))
+    coordinates = wp.empty(3, dtype=float, device=device)
+    gradients = wp.empty((3, 2), dtype=wp.spatial_vector, device=device)
+
+    def sample(poses):
+        state.body_q.assign(poses)
+        wp.launch(
+            _sample_joint_friction_coordinates_kernel,
+            dim=1,
+            inputs=_joint_friction_coordinate_inputs(model, joint, state.body_q, previous),
+            outputs=[coordinates, gradients],
+            device=device,
+        )
+        return coordinates.numpy().copy(), gradients.numpy().copy()
+
+    actual, analytic = sample(original)
+    expected = wp.quat_rotate_inv(
+        wp.transform_get_rotation(builder.joint_X_p[joint]), wp.normalize(wp.vec3(1.0, -2.0, 3.0)) * 0.2
+    )
+    np.testing.assert_allclose(actual, expected, atol=1.0e-6)
+    epsilon = 1.0e-3
+    for body in (parent, child):
+        for axis in range(3):
+            samples = []
+            for sign in (-1.0, 1.0):
+                poses = original.copy()
+                direction = wp.vec3()
+                direction[axis] = 1.0
+                poses[body, 3:] = np.asarray(
+                    wp.quat_from_axis_angle(direction, sign * epsilon) * wp.quat(*original[body, 3:])
+                )
+                samples.append(sample(poses)[0])
+            np.testing.assert_allclose(
+                analytic[:, body, axis + 3], (samples[1] - samples[0]) / (2 * epsilon), atol=2.0e-4
+            )
+    np.testing.assert_array_equal(analytic[:, :, :3], 0.0)
+
+
 def test_vbd_joint_friction_euler_branch(test, device):
     """Preserve resting rows and reaction history across equivalent Euler branches."""
     for axes in (
@@ -7361,7 +7455,7 @@ def test_vbd_joint_friction_euler_branch(test, device):
     np.testing.assert_allclose(solver.joint_q_prev.numpy(), canonical.numpy(), atol=1.0e-6)
 
 
-def test_vbd_joint_friction_ignores_rigid_corotation(test, device):
+def test_vbd_joint_friction_ignores_rigid_corotation(test, device, joint_type=newton.JointType.D6):
     """Keep the friction reaction zero when parent and child rotate together."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -7378,23 +7472,28 @@ def test_vbd_joint_friction_ignores_rigid_corotation(test, device):
         )
         for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
     ]
-    relative = builder.add_joint_d6(parent=parent, child=child, angular_axes=axes)
+    if joint_type == newton.JointType.BALL:
+        relative = builder.add_joint_ball(parent=parent, child=child, friction=4.0)
+        builder.joint_q[-4:] = np.asarray(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 2.8))
+    else:
+        relative = builder.add_joint_d6(parent=parent, child=child, angular_axes=axes)
     builder.joint_qd[3:6] = [0.4, -0.7, 1.1]
     builder.add_articulation([root, relative])
     builder.color()
     model = builder.finalize(device=device)
     _, velocity, friction_lambda = _simulate_joint_friction(model, steps=120, iterations=8)
-    np.testing.assert_allclose(velocity[-3:], 0.0, atol=2.0e-5)
-    np.testing.assert_allclose(friction_lambda[-3:], 0.0, atol=2.0e-5)
+    # Finite quaternion poses resolve velocity to O(eps / dt) and reaction to O(eps / dt^2).
+    np.testing.assert_allclose(velocity[-3:], 0.0, atol=1.0e-4 if joint_type == newton.JointType.BALL else 2.0e-5)
+    np.testing.assert_allclose(friction_lambda[-3:], 0.0, atol=0.01 if joint_type == newton.JointType.BALL else 2.0e-5)
 
 
 def test_vbd_joint_friction_stop(test, device):
     """Prevent friction from reversing or amplifying a nearly stopped joint's velocity."""
-    for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC):
+    for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC, newton.JointType.BALL):
         for iterations in (1, 6, 7, 20):
             with test.subTest(joint_type=joint_type, iterations=iterations):
                 model = _build_friction_scalar_model(device, joint_type, friction=100.0)
-                model.joint_qd.assign([0.05])
+                model.joint_qd.assign([0.05, *[0.0] * (model.joint_dof_count - 1)])
                 _, velocity, _ = _simulate_joint_friction(model, steps=1, iterations=iterations)
                 velocity = float(velocity[0])
                 test.assertGreaterEqual(velocity, -1.0e-5)
@@ -7456,6 +7555,8 @@ def test_vbd_joint_friction_matches_background_response(test, device):
     frame_matrix = np.asarray(wp.quat_to_matrix(frame), dtype=np.float64).reshape(3, 3)
     # Expected structural projector diagonals in the joint frame.
     cases = (
+        (newton.JointType.BALL, False, 1.0e8, (1, 1, 1), (0, 0, 0)),
+        (newton.JointType.BALL, True, 1.0e4, (1, 1, 1), (0, 0, 0)),
         (newton.JointType.REVOLUTE, False, 0.0, (1, 1, 1), (1, 1, 0)),
         (newton.JointType.REVOLUTE, False, 1.0e4, (1, 1, 1), (1, 1, 0)),
         (newton.JointType.REVOLUTE, True, 1.0e8, (1, 1, 1), (1, 1, 0)),
@@ -7556,10 +7657,15 @@ def test_vbd_joint_friction_matches_background_response(test, device):
                 constraint[3:, index * 6 + 3 : index * 6 + 6] = sign * angular_projector @ frame_matrix.T
             matrix /= _JOINT_FRICTION_DT**2
             c_start = int(solver.joint_constraint_start.numpy()[joint])
-            rho = solver.joint_rho.numpy()[c_start : c_start + 2].astype(np.float64)
-            material = solver.joint_material_k.numpy()[c_start : c_start + 2].astype(np.float64)
-            effective = np.divide(material * rho, material + rho, out=np.zeros(2), where=material + rho > 0.0)
-            effective += solver.joint_penalty_kd.numpy()[c_start : c_start + 2] / _JOINT_FRICTION_DT
+            c_dim = int(solver.joint_constraint_dim.numpy()[joint])
+            slots = slice(c_start, c_start + min(c_dim, 2))
+            rho = solver.joint_rho.numpy()[slots].astype(np.float64)
+            material = solver.joint_material_k.numpy()[slots].astype(np.float64)
+            effective = np.zeros(2)
+            effective[: len(rho)] = np.divide(
+                material * rho, material + rho, out=np.zeros_like(rho), where=material + rho > 0.0
+            )
+            effective[: len(rho)] += solver.joint_penalty_kd.numpy()[slots] / _JOINT_FRICTION_DT
             matrix += constraint.T @ np.diag(np.repeat(effective, 3)) @ constraint
             expected = []
             for component in range(count):
@@ -7638,7 +7744,7 @@ def test_vbd_d6_friction_holds_finite_pose_load(test, device):
 
 def test_vbd_joint_friction_persists_and_rebalances(test, device):
     """Retain static reaction without creep, then remove and reverse it with the load."""
-    for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC):
+    for joint_type in (newton.JointType.REVOLUTE, newton.JointType.PRISMATIC, newton.JointType.BALL):
         with test.subTest(joint_type=joint_type):
             model = _build_friction_scalar_model(device, joint_type, friction=4.0)
             model.joint_qd.zero_()
@@ -7667,7 +7773,7 @@ def test_vbd_joint_friction_persists_and_rebalances(test, device):
                 joint_qd=joint_qd,
             ):
                 nonlocal state_in, state_out
-                control.joint_f.assign([force])
+                control.joint_f.assign([force, *[0.0] * (model.joint_dof_count - 1)])
                 for _ in range(steps):
                     solver.step(state_in, state_out, control, None, _JOINT_FRICTION_DT)
                     state_in, state_out = state_out, state_in
@@ -7729,14 +7835,14 @@ def test_vbd_joint_friction_timestep_scaling(test, device):
     np.testing.assert_allclose(stopping_positions, 2.0, atol=0.04)
 
 
-def test_vbd_joint_friction_live_update_and_reset(test, device):
+def test_vbd_joint_friction_live_update_and_reset(test, device, joint_type=newton.JointType.REVOLUTE):
     """Read friction bounds dynamically under capture and clear their history on reset."""
-    model = _build_friction_scalar_model(device, newton.JointType.REVOLUTE, friction=0.0)
+    model = _build_friction_scalar_model(device, joint_type, friction=0.0)
     model.joint_qd.zero_()
     state_in = model.state()
     state_out = model.state()
     control = model.control()
-    control.joint_f.assign([2.0])
+    control.joint_f.assign([2.0, *[0.0] * (model.joint_dof_count - 1)])
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
     solver = newton.solvers.SolverVBD(model, iterations=12, rigid_compliant_alm=True)
 
@@ -7760,7 +7866,7 @@ def test_vbd_joint_friction_live_update_and_reset(test, device):
     joint_qd = wp.empty_like(model.joint_qd)
 
     def velocity_for(friction):
-        model.joint_friction.assign([friction])
+        model.joint_friction.fill_(friction)
         state_in.body_qd.zero_()
         launch()
         newton.eval_ik(model, state_out, joint_q, joint_qd)
@@ -7946,6 +8052,7 @@ def _sample_joint_friction_update_kernel(
         joint_child[0],
         0,
         poses,
+        poses,
         body_com,
         joint_type,
         joint_enabled,
@@ -7967,6 +8074,8 @@ def _sample_joint_friction_update_kernel(
     hessian[2] = h_aa
     _update_joint_friction_duals(
         0,
+        joint_type[0],
+        poses,
         poses,
         body_com,
         joint_parent,
@@ -8304,9 +8413,28 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBDJointFriction,
+    "test_vbd_ball_joint_friction",
+    test_vbd_ball_joint_friction,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDJointFriction,
+    "test_vbd_ball_friction_gradients",
+    test_vbd_ball_friction_gradients,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDJointFriction,
     "test_vbd_joint_friction_ignores_rigid_corotation",
     test_vbd_joint_friction_ignores_rigid_corotation,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBDJointFriction,
+    "test_vbd_ball_friction_ignores_rigid_corotation",
+    test_vbd_joint_friction_ignores_rigid_corotation,
+    devices=devices,
+    joint_type=newton.JointType.BALL,
 )
 add_function_test(
     TestSolverVBDJointFriction,
@@ -8361,6 +8489,13 @@ add_function_test(
     "test_vbd_joint_friction_live_update_and_reset",
     test_vbd_joint_friction_live_update_and_reset,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBDJointFriction,
+    "test_vbd_ball_friction_live_update_and_reset",
+    test_vbd_joint_friction_live_update_and_reset,
+    devices=devices,
+    joint_type=newton.JointType.BALL,
 )
 add_function_test(
     TestSolverVBDJointFriction,

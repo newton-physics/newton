@@ -989,6 +989,8 @@ def build_joint_projectors(
     if jt == JointType.REVOLUTE:
         a = wp.normalize(joint_axis[qd_start])
         P_ang = P_ang - wp.outer(a, a)
+    elif jt == JointType.BALL:
+        P_ang = wp.mat33(0.0)
     elif jt == JointType.D6:
         if ang_count > 0:
             a0 = wp.normalize(joint_axis[qd_start + lin_count])
@@ -2796,7 +2798,9 @@ def _select_joint_friction_euler_branch(
 @wp.func
 def _prepare_joint_friction_frame(
     joint: int,
+    jt: int,
     body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -2839,7 +2843,17 @@ def _prepare_joint_friction_frame(
         angular_start = joint_qd_start[joint] + joint_dof_dim[joint, 0]
         angular_count = joint_dof_dim[joint, 1]
         axis_0 = joint_axis[angular_start]
-        if angular_count == 1:
+        if jt == JointType.BALL:
+            X_wp_prev = joint_X_p[joint]
+            if parent >= 0:
+                X_wp_prev = body_q_prev[parent] * X_wp_prev
+            X_wc_prev = body_q_prev[child] * joint_X_c[joint]
+            # BALL velocity is expressed in the parent-anchor frame, not Euler coordinates.
+            angular_coordinates, jacobian_world = compute_kappa_and_jacobian(
+                q_p, q_c, wp.transform_get_rotation(X_wp_prev), wp.transform_get_rotation(X_wc_prev)
+            )
+            angular_gradients = wp.transpose(jacobian_world)
+        elif angular_count == 1:
             rel_q = wp.quat_inverse(q_p) * q_c
             angular_coordinates[0] = wp.quat_twist_angle_signed(axis_0, rel_q)
             angular_gradients[0] = wp.quat_rotate(q_p, _twist_coordinate_gradient(axis_0, rel_q))
@@ -2919,6 +2933,7 @@ def _evaluate_joint_friction(
     body: int,
     joint: int,
     body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
@@ -2938,11 +2953,13 @@ def _evaluate_joint_friction(
 
     Using coordinate increments avoids fictitious sliding when both bodies
     rotate together. Coordinate gradients also include the moving parent
-    axis and use Euler-coordinate gradients for multi-axis D6 rotations.
+    axis, Euler coordinates for multi-axis D6, and rotation vectors for BALL.
     """
     force, torque, H_ll, H_al, H_aa = _zero_force_hessian()
     jt = joint_type[joint]
-    if not joint_enabled[joint] or (jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6):
+    if not joint_enabled[joint] or (
+        jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6 and jt != JointType.BALL
+    ):
         return force, torque, H_ll, H_al, H_aa
     linear_count = joint_dof_dim[joint, 0]
     qd_start = joint_qd_start[joint]
@@ -2956,7 +2973,9 @@ def _evaluate_joint_friction(
         return force, torque, H_ll, H_al, H_aa
     frame = _prepare_joint_friction_frame(
         joint,
+        jt,
         body_q,
+        body_q_prev,
         body_com,
         joint_parent,
         joint_child,
@@ -2999,7 +3018,9 @@ def _evaluate_joint_friction(
 @wp.func
 def _update_joint_friction_duals(
     joint: int,
+    jt: int,
     body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -3028,7 +3049,9 @@ def _update_joint_friction_duals(
         return
     frame = _prepare_joint_friction_frame(
         joint,
+        jt,
         body_q,
+        body_q_prev,
         body_com,
         joint_parent,
         joint_child,
@@ -4802,6 +4825,8 @@ def step_joint_C0_lambda_rho(
             linear_count = 1
         elif jt == JointType.REVOLUTE:
             angular_count = 1
+        elif jt == JointType.BALL:
+            angular_count = 3
         elif jt == JointType.D6:
             linear_count = joint_dof_dim[j, 0]
             angular_count = joint_dof_dim[j, 1]
@@ -4816,7 +4841,7 @@ def step_joint_C0_lambda_rho(
             dof = qd_start + axis
             joint_drive_limit_support[dof] = 0.0
             joint_friction_rho[dof] = 0.0
-            has_drive_limit_row = _drive_limit_needs_support(
+            has_drive_limit_row = jt != JointType.BALL and _drive_limit_needs_support(
                 dof,
                 joint_target_ke,
                 joint_target_kd,
@@ -4854,49 +4879,58 @@ def step_joint_C0_lambda_rho(
             q_wp = wp.transform_get_rotation(X_wp)
             q_wc = wp.transform_get_rotation(X_wc)
             angular_jacobian_world = wp.mat33(0.0)
-            if has_angular_drive_limit_row or (has_friction_row and joint_rho[c_start + 1] > 0.0):
+            if has_angular_drive_limit_row or (has_friction_row and c_dim > 1 and joint_rho[c_start + 1] > 0.0):
                 q_wp_rest = wp.transform_get_rotation(
                     (body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j]
                 )
                 q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
                 _kappa, angular_jacobian_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
             if has_friction_row:
-                friction_frame = _prepare_joint_friction_frame(
-                    j,
-                    body_q_prev,
-                    body_com,
-                    joint_parent,
-                    joint_child,
-                    joint_X_p,
-                    joint_X_c,
-                    joint_qd_start,
-                    joint_dof_dim,
-                    joint_axis,
-                    joint_q_prev,
-                    has_angular_friction,
-                    False,
-                )
+                friction_frame = _JointFrictionFrame()
+                if jt == JointType.BALL:
+                    # The step's rotation increment is zero; its gradients are the parent-frame axes.
+                    friction_frame.angular_gradients = wp.transpose(wp.quat_to_matrix(q_wp))
+                else:
+                    friction_frame = _prepare_joint_friction_frame(
+                        j,
+                        jt,
+                        body_q_prev,
+                        body_q_prev,
+                        body_com,
+                        joint_parent,
+                        joint_child,
+                        joint_X_p,
+                        joint_X_c,
+                        joint_qd_start,
+                        joint_dof_dim,
+                        joint_axis,
+                        joint_q_prev,
+                        has_angular_friction,
+                        False,
+                    )
                 if has_angular_friction:
                     angular_start = qd_start + linear_count
-                    if angular_count > 1:
+                    if jt == JointType.D6 and angular_count > 1:
                         _coordinates, use_alternate = _select_joint_friction_euler_branch(
                             friction_frame.angular_coordinates, angular_start, angular_count, joint_q_prev
                         )
                         if use_alternate:
                             # Re-express the retained reaction in this step's canonical chart.
                             joint_friction_lambda[angular_start + 1] = -joint_friction_lambda[angular_start + 1]
-                    # Even frictionless angular coordinates identify the joint's Euler branch.
+                    # Preserve the full Euler branch for D6; BALL stores a per-step rotation increment.
                     for axis in range(angular_count):
                         joint_q_prev[angular_start + axis] = friction_frame.angular_coordinates[axis]
                 P_lin, P_ang = build_joint_projectors(jt, joint_axis, qd_start, linear_count, angular_count, q_wp)
                 _s_l, k_lin, _a_l = _compliant_alm_coefficients(joint_material_k[c_start], joint_rho[c_start])
-                _s_a, k_ang, _a_a = _compliant_alm_coefficients(joint_material_k[c_start + 1], joint_rho[c_start + 1])
                 inv_dt = wp.sqrt(inv_dt_sq)
                 linear_factor = wp.mat33(0.0)
                 angular_factor = wp.mat33(0.0)
                 if joint_rho[c_start] > 0.0:
                     linear_factor = wp.sqrt((k_lin + joint_penalty_kd[c_start] * inv_dt) / inv_dt_sq) * P_lin
-                if joint_rho[c_start + 1] > 0.0:
+                if c_dim > 1 and joint_rho[c_start + 1] > 0.0:
+                    _s_a, k_ang, _a_a = _compliant_alm_coefficients(
+                        joint_material_k[c_start + 1], joint_rho[c_start + 1]
+                    )
                     angular_factor = wp.sqrt((k_ang + joint_penalty_kd[c_start + 1] * inv_dt) / inv_dt_sq) * (
                         P_ang * wp.transpose(angular_jacobian_world)
                     )
@@ -6425,6 +6459,7 @@ def solve_rigid_body(
                 body_index,
                 joint_idx,
                 body_q,
+                body_q_prev,
                 body_com,
                 joint_type,
                 joint_enabled,
@@ -6570,10 +6605,14 @@ def update_duals_joint(
     ):
         return
 
-    if joint_compliant_alm == 1 and (jt == JointType.REVOLUTE or jt == JointType.PRISMATIC or jt == JointType.D6):
+    if joint_compliant_alm == 1 and (
+        jt == JointType.REVOLUTE or jt == JointType.PRISMATIC or jt == JointType.D6 or jt == JointType.BALL
+    ):
         _update_joint_friction_duals(
             j,
+            jt,
             body_q,
+            body_q_prev,
             body_com,
             joint_parent,
             joint_child,

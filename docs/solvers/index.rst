@@ -344,10 +344,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
-| :sup:`8` VBD supports per-DOF dry friction for REVOLUTE, PRISMATIC, and D6
+| :sup:`8` VBD supports per-DOF dry friction for REVOLUTE, PRISMATIC, BALL, and D6
   joints with ``rigid_compliant_alm=True``. D6 axis groups must be orthonormal
-  and contain at most three axes. Positive joint friction on mimic-linked
-  joints is rejected. See :class:`~newton.solvers.SolverVBD` for details.
+  and contain at most three axes. Positive joint friction on supported mimic
+  pairs is rejected. See :class:`~newton.solvers.SolverVBD` for details.
 
 **Actuation and control**
 
