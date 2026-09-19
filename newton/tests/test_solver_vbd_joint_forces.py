@@ -79,6 +79,29 @@ def test_vbd_joint_force_losses(test, device, *, solve="local"):
                     np.testing.assert_array_equal(wrench.numpy(), first)
 
 
+def test_vbd_joint_force_friction_response(test, device, *, solve="local"):
+    """Report local ALM reactions or sparse regularized friction without changing history."""
+    model = _make_joint_model(device, newton.JointType.REVOLUTE, friction=1.0)
+    solver, state, next_state, previous, wrench = _setup(model, solve=solve)
+    # Leave a displacement so re-projecting instead of reading lambda is detectable.
+    solver.iterations = 1
+    control = model.control()
+    control.joint_f.fill_(0.5)
+    solver.step(state, next_state, control, None, _DT)
+    reaction = solver.joint_friction_lambda.numpy().copy()
+    if solve == "local":
+        test.assertGreater(float(reaction[0]), 0.0)
+        test.assertLess(float(reaction[0]), 0.5)
+        expected = 0.5 - float(reaction[0])
+    else:
+        np.testing.assert_array_equal(reaction, 0.0)
+        rate = float(next_state.joint_q.numpy()[0]) / _DT
+        expected = 0.5 - np.tanh(rate / 0.01)
+    solver.eval_joint_forces(next_state, wrench, body_q_prev=previous, dt=_DT, control=control)
+    test.assertAlmostEqual(float(wrench.numpy()[0, 5]), expected, delta=1.0e-5)
+    np.testing.assert_array_equal(solver.joint_friction_lambda.numpy(), reaction)
+
+
 def test_vbd_joint_force_fixed_frame(test, device, *, solve="local"):
     """Report fixed-joint loads in the child joint frame, shifted away from the COM."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
@@ -455,6 +478,7 @@ class TestSolverVBDJointForces(unittest.TestCase):
 
 for test_function in (
     test_vbd_joint_force_losses,
+    test_vbd_joint_force_friction_response,
     test_vbd_joint_force_fixed_frame,
     test_vbd_joint_force_drive_limit,
     test_vbd_joint_force_mimic,

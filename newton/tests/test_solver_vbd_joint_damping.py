@@ -133,7 +133,8 @@ def test_vbd_mimic_damping_and_friction(test, device):
                 np.testing.assert_allclose(velocity[1], ratio * velocity[0], atol=1.0e-5)
                 momentum = (1.0 + ratio * ratio) * float(velocity[0]) / _DT
                 net_force = 10.0 - (4.0 + ratio * ratio * 16.0) * float(velocity[0])
-                net_force -= 0.4 * np.tanh(velocity[0] / 0.01) + ratio * 0.8 * np.tanh(velocity[1] / 0.01)
+                test.assertGreater(float(velocity[0]), 0.0)
+                net_force -= 0.4 + abs(ratio) * 0.8
                 test.assertAlmostEqual(momentum, net_force, delta=0.02)
 
 
@@ -146,11 +147,12 @@ def test_vbd_serial_mimic_passive_damping(test, device):
     np.testing.assert_allclose(velocity[0], velocity[1], atol=1.0e-5)
     # Body speeds are (v, 2v, 2v + w); include the downstream body's inertia.
     momentum = np.array([[9.0, 2.0], [2.0, 1.0]]) @ velocity[[0, 2]] / _DT
-    net_force = [
-        4.0 - 12.0 * velocity[0] - 3.0 * np.tanh(velocity[0] / 0.01),
-        -16.0 * velocity[2] - 3.0 * np.tanh(velocity[2] / 0.01),
-    ]
-    np.testing.assert_allclose(momentum, net_force, atol=0.02)
+    test.assertGreater(float(velocity[0]), 0.0)
+    net_force = 4.0 - 12.0 * velocity[0] - 3.0
+    test.assertAlmostEqual(float(momentum[0]), float(net_force), delta=0.02)
+    # The downstream passive joint sticks while the mimic pair slides.
+    test.assertAlmostEqual(float(velocity[2]), 0.0, delta=1.0e-5)
+    test.assertLessEqual(abs(float(momentum[1] + 16.0 * velocity[2])), 3.0)
 
 
 def test_vbd_joint_damping_live_updates(test, device):

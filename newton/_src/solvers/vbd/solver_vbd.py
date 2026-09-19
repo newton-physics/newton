@@ -74,6 +74,7 @@ from .rigid_sparse_articulation_kernels import (
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
+    JointFrictionData,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
@@ -223,13 +224,15 @@ class SolverVBD(SolverBase, CouplingInterface):
           implicitly alongside Coulomb friction, including on mimic followers.
           Coefficients are read live; changing array values needs no notification
           or CUDA graph recapture. Other joint types do not use this property.
-        - :attr:`~newton.Model.joint_friction` is supported for REVOLUTE, PRISMATIC, and D6
-          joints as a per-DOF Coulomb dry-friction force or torque [N or N·m]. The friction
-          force is ``-joint_friction * tanh(qd / 0.01)`` (velocity in m/s or rad/s).
-          This smooth approximation allows slow creep, not exact static sticking.
-          Each joint's friction contributes to the coupled motion of a mimic pair;
-          it does not change the mimic ratio. Friction values are read live from
-          the model, including during CUDA graph replay.
+        - :attr:`~newton.Model.joint_friction` bounds dry-friction force or torque per DOF
+          [N or N·m]. With ``rigid_compliant_alm=True`` and ``rigid_articulation_solve="local"``,
+          REVOLUTE, PRISMATIC, D6, and BALL joints use projected reactions that support
+          static sticking at convergence, including on both endpoints of mimic relationships.
+          Sparse mode and legacy AVBD retain regularized Coulomb friction
+          (``-joint_friction * tanh(qd / 0.01)``). BALL friction
+          requires local compliant ALM. Friction values are read live, including during
+          CUDA graph replay. BALL bounds apply in the parent-anchor frame; D6 uses
+          independent coordinate bounds with orthonormal axes in each axis group.
         - Revolute :attr:`~newton.Model.joint_armature` is supported by the experimental
           block-sparse articulation solve.
         - Not supported: :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
@@ -1228,6 +1231,17 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
             self.body_particle_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
+            self._joint_friction = JointFrictionData()
+            self._joint_friction.bound = model.joint_friction
+            self.joint_friction_rho = wp.zeros_like(model.joint_qd)
+            self.joint_friction_lambda = wp.zeros_like(model.joint_qd)
+            self._joint_friction.rho = self.joint_friction_rho
+            self._joint_friction.multiplier = self.joint_friction_lambda
+            self._joint_friction.use_local_alm = int(
+                self.rigid_compliant_alm and self.rigid_articulation_solve == "local"
+            )
+            self._validate_joint_friction()
+
             # Joint constraint layout, legacy penalty state, and material data.
             self._init_joint_constraint_layout()
             (
@@ -1373,6 +1387,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
         if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+            self._validate_joint_friction()
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
@@ -1693,6 +1708,47 @@ class SolverVBD(SolverBase, CouplingInterface):
         for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
             _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
+
+    def _validate_joint_friction(self) -> None:
+        """Validate local compliant-ALM joint-friction inputs."""
+        if (
+            not self.rigid_compliant_alm
+            or self.rigid_articulation_solve != "local"
+            or not self._integrates_rigid_bodies
+            or self.model.joint_dof_count == 0
+        ):
+            return
+        values = self._to_numpy(self.model.joint_friction, dtype=float)
+        if np.any(~np.isfinite(values)):
+            raise ValueError("model.joint_friction must contain finite values")
+        if not np.any(values > 0.0):
+            return
+
+        joint_type = self._to_numpy(self.model.joint_type, dtype=int)
+        joint_qd_start = self._to_numpy(self.model.joint_qd_start, dtype=int)
+        joint_dof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
+        joint_axis = self._to_numpy(self.model.joint_axis, dtype=float)
+        for joint in np.flatnonzero(joint_type == JointType.D6):
+            dof_start = joint_qd_start[joint]
+            if not np.any(values[dof_start : joint_qd_start[joint + 1]] > 0.0):
+                continue
+            linear_count, angular_count = (int(value) for value in joint_dof_dim[joint])
+            if linear_count > 3 or angular_count > 3:
+                raise ValueError(
+                    f"SolverVBD joint friction supports at most three linear and three angular axes on D6 joint "
+                    f"{joint} ({self.model.joint_label[joint]!r}); got {linear_count} linear and "
+                    f"{angular_count} angular axes."
+                )
+            for axis_kind, start, count in (
+                ("linear", dof_start, linear_count),
+                ("angular", dof_start + linear_count, angular_count),
+            ):
+                axes = joint_axis[start : start + count]
+                if count > 0 and not np.allclose(axes @ axes.T, np.eye(count), rtol=0.0, atol=1.0e-6):
+                    raise ValueError(
+                        f"SolverVBD joint friction requires each D6 axis group to be orthonormal; joint "
+                        f"{joint} ({self.model.joint_label[joint]!r}) has invalid {axis_kind} axes."
+                    )
 
     def _validate_compliant_joint_dof_materials(self) -> None:
         """Validate drive/limit coefficients consumed live by compliant ALM.
@@ -2670,6 +2726,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_lambda_ang,
                 self.joint_drive_lambda,
                 self.joint_limit_lambda,
+                self._joint_friction,
                 self._rigid_pose_rebaseline_mask,
                 self._contact_history_reset_mask,
                 self._contact_history_reset_pending,
@@ -3288,6 +3345,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.body_com,
                         self.body_inv_mass_effective,
                         self.body_inv_inertia_effective,
+                        self._joint_coordinates.data,
+                        self._joint_friction,
+                        self.joint_penalty_kd,
                     ],
                     outputs=[
                         self.joint_penalty_k,
@@ -3743,7 +3803,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_compliant_alm,
                     model.joint_dof_dim,
                     self._joint_coordinates.data,
-                    model.joint_friction,
+                    self._joint_friction,
                     model.joint_damping,
                     self.body_forces,
                     self.body_torques,
@@ -3872,6 +3932,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_limit_ke,
                     model.joint_limit_kd,
                     self._joint_coordinates.data,
+                    self._joint_friction,
                     self.joint_drive_limit_support,
                     dt,
                     self.joint_penalty_k,
@@ -4288,6 +4349,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         data = JointForceData()
         data.coordinates = self._joint_coordinates.data
+        data.joint_friction = self._joint_friction
         data.body_q_rest = model.body_q
         if self.rigid_articulation_sparse_layout is not None:
             data.body_articulation_local = self.rigid_articulation_sparse_layout.body_articulation_local
@@ -4302,7 +4364,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             "joint_limit_upper",
             "joint_limit_ke",
             "joint_limit_kd",
-            "joint_friction",
             "joint_damping",
         ):
             setattr(data, name, getattr(model, name))

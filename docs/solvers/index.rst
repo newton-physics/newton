@@ -344,7 +344,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
-| :sup:`8` VBD applies regularized Coulomb friction to each free coordinate of REVOLUTE, PRISMATIC, and D6 joints. The force is ``-joint_friction * tanh(qd / 0.01)``; near rest this allows slow creep rather than exact sticking. Friction on either joint in a mimic pair resists the coupled motion.
+| :sup:`8` With ``rigid_compliant_alm=True`` and ``rigid_articulation_solve="local"``, VBD supports per-DOF dry friction for REVOLUTE, PRISMATIC, D6, and BALL joints, with static sticking at convergence, including mimic-linked joints. D6 requires orthonormal axes within each axis group; BALL bounds act in the parent-anchor frame. Sparse mode and legacy AVBD retain regularized Coulomb friction, which allows slow creep. BALL friction is supported only under local compliant ALM.
 
 VBD also supports passive viscous :attr:`~newton.Model.joint_damping` for
 REVOLUTE, PRISMATIC, and D6 joints. Set ``damping`` when adding a joint, or

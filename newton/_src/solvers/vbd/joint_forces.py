@@ -10,6 +10,7 @@ from ...sim.articulation import transform_2d_rotational_axes, transform_3d_rotat
 from .joint_coordinates import JointCoordinateData, evaluate_coordinate
 from .rigid_vbd_kernels import (
     _DRIVE_LIMIT_MODE_DRIVE,
+    JointFrictionData,
     _drive_row_applies_force,
     _evaluate_drive_axis,
     _evaluate_drive_limit_axis,
@@ -36,7 +37,7 @@ class JointForceData:
     joint_limit_upper: wp.array[float]
     joint_limit_ke: wp.array[float]
     joint_limit_kd: wp.array[float]
-    joint_friction: wp.array[float]
+    joint_friction: JointFrictionData
     joint_damping: wp.array[float]
     joint_rod_rest_kb_local: wp.array[wp.vec3]
     joint_rod_rest_twist: wp.array[float]
@@ -276,7 +277,7 @@ def evaluate_joint_forces(
         dt,
     )
     passive_f, passive_t, _P_ll, _P_al, _P_aa = _evaluate_joint_dissipation(
-        child, joint, body_q, body_q_prev, c, data.joint_enabled, data.joint_friction, data.joint_damping, dt
+        child, joint, body_q, body_q_prev, c, data.joint_enabled, data.joint_friction, data.joint_damping, dt, True
     )
     wrench = wp.spatial_vector(force + passive_f, torque + passive_t)
     wrench += actuation

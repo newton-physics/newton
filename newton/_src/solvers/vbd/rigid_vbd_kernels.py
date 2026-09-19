@@ -2681,6 +2681,75 @@ def _eval_joint_axis_friction(rate: float, friction: float, inv_dt: float):
     return force, hessian
 
 
+@wp.struct
+class JointFrictionData:
+    """Dry-friction inputs and persistent local-ALM state."""
+
+    bound: wp.array[float]
+    rho: wp.array[float]
+    multiplier: wp.array[float]
+    use_local_alm: int
+
+
+@wp.func
+def _project_friction_interval(displacement: float, lambda_old: float, rho: float, bound: float):
+    """Project one scalar ALM friction trial onto its Coulomb interval.
+
+    Returns the projected multiplier and a nonnegative solve metric. With
+    ``rho = 1 / W``, the metric is exact in stick and uses the origin-to-trial
+    secant in slip. Nonpositive rho or bound disables the channel.
+    """
+    lambda_projected = float(0.0)
+    solve_metric = float(0.0)
+    if bound > 0.0 and rho > 0.0:
+        lambda_trial = lambda_old + rho * displacement
+        lambda_projected = wp.clamp(lambda_trial, -bound, bound)
+        solve_metric = rho
+        if wp.abs(lambda_trial) > bound:
+            solve_metric = rho * (bound / wp.abs(lambda_trial))
+    return lambda_projected, solve_metric
+
+
+@wp.func
+def _joint_friction_displacement(
+    data: JointCoordinateData,
+    joint: int,
+    component: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+):
+    """Evaluate the step displacement and its parent/child coordinate gradients."""
+    if data.joint_type[joint] == JointType.BALL:
+        parent = data.parent[joint]
+        child = data.child[joint]
+        X_wp = data.X_p[joint]
+        X_wp_prev = X_wp
+        if parent >= 0:
+            X_wp = body_q[parent] * X_wp
+            X_wp_prev = body_q_prev[parent] * X_wp_prev
+        X_wc = body_q[child] * data.X_c[joint]
+        X_wc_prev = body_q_prev[child] * data.X_c[joint]
+        # BALL uses a rotation increment in the parent-anchor frame, not Euler angles.
+        angular_displacement, jacobian = compute_kappa_and_jacobian(
+            wp.transform_get_rotation(X_wp),
+            wp.transform_get_rotation(X_wc),
+            wp.transform_get_rotation(X_wp_prev),
+            wp.transform_get_rotation(X_wc_prev),
+        )
+        gradient = wp.transpose(jacobian)[component]
+        return (
+            angular_displacement[component],
+            wp.spatial_vector(wp.vec3(0.0), -gradient),
+            wp.spatial_vector(wp.vec3(0.0), gradient),
+        )
+    q, gradient_parent, gradient_child = evaluate_coordinate(data, joint, component, body_q)
+    q_prev, _gp_prev, _gc_prev = evaluate_coordinate(data, joint, component, body_q_prev)
+    displacement = q - q_prev
+    if component >= data.dof_dim[joint, 0] and wp.abs(displacement) >= wp.pi:
+        displacement = wp.atan2(wp.sin(displacement), wp.cos(displacement))
+    return displacement, gradient_parent, gradient_child
+
+
 @wp.func
 def _evaluate_joint_dissipation(
     body: int,
@@ -2689,9 +2758,10 @@ def _evaluate_joint_dissipation(
     body_q_prev: wp.array[wp.transform],
     data: JointCoordinateData,
     joint_enabled: wp.array[bool],
-    joint_friction: wp.array[float],
+    joint_friction: JointFrictionData,
     joint_damping: wp.array[float],
     dt: float,
+    use_stored_friction: bool,
 ):
     """Assemble Coulomb friction and passive damping in joint coordinates.
 
@@ -2703,24 +2773,40 @@ def _evaluate_joint_dissipation(
     """
     force, torque, H_ll, H_al, H_aa = _zero_force_hessian()
     jt = data.joint_type[joint]
-    if not joint_enabled[joint] or (jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6):
+    if not joint_enabled[joint] or (
+        jt != JointType.REVOLUTE
+        and jt != JointType.PRISMATIC
+        and jt != JointType.D6
+        and not (jt == JointType.BALL and joint_friction.use_local_alm == 1)
+    ):
         return force, torque, H_ll, H_al, H_aa
     linear_count = data.dof_dim[joint, 0]
+    inv_dt = 1.0 / dt
     for component in range(linear_count + data.dof_dim[joint, 1]):
         dof = data.qd_start[joint] + component
-        friction = joint_friction[dof]
+        bound = joint_friction.bound[dof]
         damping = wp.max(joint_damping[dof], 0.0)
-        if friction <= 0.0 and damping == 0.0:
+        if bound <= 0.0 and (damping == 0.0 or jt == JointType.BALL):
             continue
-        q, g_p, g_c = evaluate_coordinate(data, joint, component, body_q)
-        q_prev, _g_p_prev, _g_c_prev = evaluate_coordinate(data, joint, component, body_q_prev)
-        displacement = q - q_prev
-        if component >= linear_count:
-            displacement = wp.atan2(wp.sin(displacement), wp.cos(displacement))
-        rate = displacement / dt
-        f, h = _eval_joint_axis_friction(rate, friction, 1.0 / dt)
-        f += damping * rate
-        h += damping / dt
+        displacement, g_p, g_c = _joint_friction_displacement(data, joint, component, body_q, body_q_prev)
+        f = float(0.0)
+        h = float(0.0)
+        if joint_friction.use_local_alm == 1:
+            if use_stored_friction:
+                # The last dual update already projected this displacement.
+                f = joint_friction.multiplier[dof]
+            else:
+                f, h = _project_friction_interval(
+                    displacement,
+                    joint_friction.multiplier[dof],
+                    joint_friction.rho[dof],
+                    bound,
+                )
+        else:
+            f, h = _eval_joint_axis_friction(displacement * inv_dt, bound, inv_dt)
+        if jt != JointType.BALL:
+            f += damping * displacement * inv_dt
+            h += damping * inv_dt
         gradient = g_c
         if body == data.parent[joint]:
             gradient = g_p
@@ -3808,6 +3894,7 @@ def reset_rigid_state(
     joint_lambda_ang: wp.array[wp.vec3],
     joint_drive_lambda: wp.array[float],
     joint_limit_lambda: wp.array[float],
+    joint_friction: JointFrictionData,
     rigid_pose_rebaseline_mask: wp.array[wp.bool],
     contact_history_reset_mask: wp.array[wp.bool],
     contact_history_reset_pending: wp.array[wp.int32],
@@ -3860,6 +3947,8 @@ def reset_rigid_state(
                 dof = dof_start + offset
                 joint_drive_lambda[dof] = 0.0
                 joint_limit_lambda[dof] = 0.0
+                joint_friction.multiplier[dof] = 0.0
+                joint_friction.rho[dof] = 0.0
 
 
 @wp.kernel
@@ -4349,6 +4438,76 @@ def init_rod_rest_bend_twist(
     joint_rod_rest_twist[j] = rest_measure.twist
 
 
+@wp.func
+def _joint_coordinate_support(
+    parent: int,
+    child: int,
+    parent_pose: wp.transform,
+    child_pose: wp.transform,
+    gradient_parent: wp.spatial_vector,
+    gradient_child: wp.spatial_vector,
+    parent_anchor: wp.transform,
+    child_anchor: wp.transform,
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    linear_factor: wp.mat33,
+    angular_factor: wp.mat33,
+    inv_dt_sq: float,
+):
+    """Return inverse coordinate response for the local two-body joint model.
+
+    Includes inertia and this joint's structural stiffness and damping.
+    Excludes free-coordinate drives and limits, other joints, and contacts.
+    Returns zero when the coordinate has no mobility.
+    """
+    inv_m_p = float(0.0)
+    inv_m_c = float(0.0)
+    inv_I_p = wp.mat33(0.0)
+    inv_I_c = wp.mat33(0.0)
+    B_p = wp.mat33(0.0)
+    B_c = wp.mat33(0.0)
+    L = linear_factor
+    T = angular_factor
+    if parent >= 0 and body_inv_mass[parent] > 0.0:
+        inv_m_p = body_inv_mass[parent]
+        R = wp.quat_to_matrix(wp.transform_get_rotation(parent_pose))
+        inv_I_p = R * body_inv_inertia[parent] * wp.transpose(R)
+        r = wp.transform_vector(parent_pose, wp.transform_get_translation(parent_anchor) - body_com[parent])
+        B_p = -L * wp.skew(r)
+    if child >= 0 and body_inv_mass[child] > 0.0:
+        inv_m_c = body_inv_mass[child]
+        R = wp.quat_to_matrix(wp.transform_get_rotation(child_pose))
+        inv_I_c = R * body_inv_inertia[child] * wp.transpose(R)
+        r = wp.transform_vector(child_pose, wp.transform_get_translation(child_anchor) - body_com[child])
+        B_c = -L * wp.skew(r)
+
+    g_pl, g_pa = wp.spatial_top(gradient_parent), wp.spatial_bottom(gradient_parent)
+    g_cl, g_ca = wp.spatial_top(gradient_child), wp.spatial_bottom(gradient_child)
+    rhs_l = L * (inv_m_c * g_cl - inv_m_p * g_pl) + B_c * (inv_I_c * g_ca) - B_p * (inv_I_p * g_pa)
+    rhs_a = T * (inv_I_c * g_ca - inv_I_p * g_pa)
+    y_l = wp.vec3(0.0)
+    y_a = wp.vec3(0.0)
+    if wp.dot(rhs_l, rhs_l) + wp.dot(rhs_a, rhs_a) > 0.0:
+        D_ll = wp.identity(3, float) + (inv_m_p + inv_m_c) * L * wp.transpose(L)
+        D_ll += B_p * inv_I_p * wp.transpose(B_p) + B_c * inv_I_c * wp.transpose(B_c)
+        D_al = T * (inv_I_p * wp.transpose(B_p) + inv_I_c * wp.transpose(B_c))
+        D_aa = wp.identity(3, float) + T * (inv_I_p + inv_I_c) * wp.transpose(T)
+        y_l, y_a = ldlt6_solve(D_ll, D_aa, D_al, rhs_l, rhs_a)
+
+    r_pl = g_pl + wp.transpose(L) * y_l
+    r_pa = g_pa + wp.transpose(B_p) * y_l + wp.transpose(T) * y_a
+    r_cl = g_cl - wp.transpose(L) * y_l
+    r_ca = g_ca - wp.transpose(B_c) * y_l - wp.transpose(T) * y_a
+    # Use a positive sum to avoid cancellation between nearly equal mobilities.
+    mobility = inv_m_p * wp.dot(r_pl, r_pl) + wp.dot(r_pa, inv_I_p * r_pa)
+    mobility += inv_m_c * wp.dot(r_cl, r_cl) + wp.dot(r_ca, inv_I_c * r_ca)
+    mobility += wp.dot(y_l, y_l) + wp.dot(y_a, y_a)
+    if mobility > 0.0:
+        return inv_dt_sq / mobility
+    return 0.0
+
+
 @wp.kernel
 def step_joint_C0_lambda_rho(
     joint_type: wp.array[int],
@@ -4381,6 +4540,9 @@ def step_joint_C0_lambda_rho(
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    joint_coordinates: JointCoordinateData,
+    joint_friction: JointFrictionData,
+    joint_penalty_kd: wp.array[float],
     joint_penalty_k: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
@@ -4435,6 +4597,79 @@ def step_joint_C0_lambda_rho(
             if c_dim > 1 and joint_material_k[c_start + 1] > 0.0:
                 angular_support = _joint_angular_rho_seed(parent, child, body_inv_mass, body_inv_inertia, inv_dt_sq)
                 joint_rho[c_start + 1] = _structural_joint_auto_rho(angular_support, joint_material_k[c_start + 1])
+
+    friction_type = joint_type[j]
+    if joint_friction.use_local_alm == 1 and (
+        friction_type == JointType.REVOLUTE
+        or friction_type == JointType.PRISMATIC
+        or friction_type == JointType.D6
+        or friction_type == JointType.BALL
+    ):
+        # Dry-friction reactions persist between timesteps; rho is refreshed once per step.
+        has_friction = bool(False)
+        qd_start = joint_qd_start[j]
+        for axis in range(joint_dof_dim[j, 0] + joint_dof_dim[j, 1]):
+            dof = qd_start + axis
+            joint_friction.rho[dof] = 0.0
+            bound = joint_friction.bound[dof]
+            if joint_enabled[j] and child >= 0 and bound > 0.0:
+                joint_friction.multiplier[dof] = wp.clamp(joint_friction.multiplier[dof], -bound, bound)
+                has_friction = True
+            else:
+                joint_friction.multiplier[dof] = 0.0
+
+        if has_friction:
+            parent_pose = wp.transform_identity()
+            if parent >= 0:
+                parent_pose = body_q_prev[parent]
+            child_pose = body_q_prev[child]
+            q_wp = wp.transform_get_rotation(parent_pose * joint_X_p[j])
+            q_wc = wp.transform_get_rotation(child_pose * joint_X_c[j])
+            linear_count = joint_dof_dim[j, 0]
+            angular_count = joint_dof_dim[j, 1]
+            P_lin, P_ang = build_joint_projectors(
+                joint_type[j], joint_axis, qd_start, linear_count, angular_count, q_wp
+            )
+            linear_factor = wp.mat33(0.0)
+            angular_factor = wp.mat33(0.0)
+            inv_dt = wp.sqrt(inv_dt_sq)
+            if c_dim > 0 and joint_rho[c_start] > 0.0:
+                _s_l, k_lin, _a_l = _compliant_alm_coefficients(joint_material_k[c_start], joint_rho[c_start])
+                linear_factor = wp.sqrt((k_lin + joint_penalty_kd[c_start] * inv_dt) / inv_dt_sq) * P_lin
+            if c_dim > 1 and joint_rho[c_start + 1] > 0.0:
+                q_wp_rest = wp.transform_get_rotation(
+                    (body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j]
+                )
+                q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
+                _kappa, angular_jacobian = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+                _s_a, k_ang, _a_a = _compliant_alm_coefficients(joint_material_k[c_start + 1], joint_rho[c_start + 1])
+                angular_factor = wp.sqrt((k_ang + joint_penalty_kd[c_start + 1] * inv_dt) / inv_dt_sq) * (
+                    P_ang * wp.transpose(angular_jacobian)
+                )
+            for axis in range(linear_count + angular_count):
+                dof = qd_start + axis
+                if joint_friction.bound[dof] > 0.0:
+                    _delta, gradient_parent, gradient_child = _joint_friction_displacement(
+                        joint_coordinates, j, axis, body_q_prev, body_q_prev
+                    )
+                    joint_friction.rho[dof] = _joint_coordinate_support(
+                        parent,
+                        child,
+                        parent_pose,
+                        child_pose,
+                        gradient_parent,
+                        gradient_child,
+                        joint_X_p[j],
+                        joint_X_c[j],
+                        body_com,
+                        body_inv_mass,
+                        body_inv_inertia,
+                        linear_factor,
+                        angular_factor,
+                        inv_dt_sq,
+                    )
+                    if joint_friction.rho[dof] <= 0.0:
+                        joint_friction.multiplier[dof] = 0.0
 
     # 3. Free DOFs use their exact scalar support; structural vec3 slots use
     #    the isotropic seeds above.
@@ -5795,7 +6030,7 @@ def solve_rigid_body(
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
     joint_coordinates: JointCoordinateData,
-    joint_friction: wp.array[float],
+    joint_friction: JointFrictionData,
     joint_damping: wp.array[float],
     external_forces: wp.array[wp.vec3],
     external_torques: wp.array[wp.vec3],
@@ -5987,6 +6222,7 @@ def solve_rigid_body(
             joint_friction,
             joint_damping,
             dt,
+            False,
         )
         joint_force += passive_force
         joint_torque += passive_torque
@@ -6079,6 +6315,7 @@ def update_duals_joint(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_coordinates: JointCoordinateData,
+    joint_friction: JointFrictionData,
     joint_drive_limit_support: wp.array[float],
     dt: float,
     # Input/output
@@ -6116,6 +6353,16 @@ def update_duals_joint(
         and jt != JointType.D6
     ):
         return
+
+    if joint_friction.use_local_alm == 1:
+        for axis in range(joint_dof_dim[j, 0] + joint_dof_dim[j, 1]):
+            dof = joint_qd_start[j] + axis
+            if joint_friction.rho[dof] > 0.0:
+                displacement, _gp, _gc = _joint_friction_displacement(joint_coordinates, j, axis, body_q, body_q_prev)
+                multiplier, _metric = _project_friction_interval(
+                    displacement, joint_friction.multiplier[dof], joint_friction.rho[dof], joint_friction.bound[dof]
+                )
+                joint_friction.multiplier[dof] = multiplier
 
     # Read solver constraint start index
     c_start = joint_constraint_start[j]

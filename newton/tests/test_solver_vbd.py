@@ -26,6 +26,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     make_solve_elasticity_tile,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    JointFrictionData,
     RigidContactHistory,
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
@@ -1713,6 +1714,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_limit_kd = wp.array([0.0], dtype=float, device=device)
         joint_coordinates = JointCoordinateData()
         joint_penalty_k = wp.array([10.0, 10.0, 10.0], dtype=float, device=device)
+        friction = JointFrictionData()
+        friction.use_local_alm = 0
         lambda_lin = wp.zeros(1, dtype=wp.vec3, device=device)
         lambda_ang = wp.array([[5.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
         drive_limit_support = wp.zeros(1, dtype=float, device=device)
@@ -1757,6 +1760,7 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_limit_ke,
                 joint_limit_kd,
                 joint_coordinates,
+                friction,
                 drive_limit_support,
                 1.0 / 60.0,
             ],
@@ -1810,6 +1814,8 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
         joint_limit_kd = wp.array([0.0], dtype=float, device=device)
         joint_coordinates = JointCoordinateData()
         drive_limit_support = wp.zeros(1, dtype=float, device=device)
+        friction = JointFrictionData()
+        friction.use_local_alm = 0
         joint_penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
         lambda_lin = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
         lambda_ang = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
@@ -1854,6 +1860,7 @@ def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_limit_ke,
                 joint_limit_kd,
                 joint_coordinates,
+                friction,
                 drive_limit_support,
                 1.0 / 60.0,
             ],

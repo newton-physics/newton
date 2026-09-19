@@ -1,3 +1,9 @@
-Add regularized Coulomb friction for revolute, prismatic, and D6 joints in VBD, including joints in mimic relationships.
+Add per-DOF dry Coulomb friction to local compliant-ALM VBD for revolute, prismatic,
+D6, and ball joints. Interpret `Model.joint_friction` as an absolute force or
+torque bound [N or N·m], with static sticking at convergence and saturated
+sliding, including on both reference and follower joints in mimic relationships.
+Add the `vbd_joint_friction` and `vbd_joint_friction_pendulum` examples.
 
-Use a stable friction linearization near stopping and joint-coordinate gradients for rotating frames and multi-axis joints. VBD's mimic solve uses the assembled body Hessians and retains constraint reactions so follower friction contributes to force balance. Friction is smoothed near zero speed, allowing slow creep rather than exact static sticking.
+Retain regularized friction for sparse mode and legacy AVBD, allowing slow creep
+rather than exact static sticking. Ball friction requires
+`rigid_compliant_alm=True` and `rigid_articulation_solve="local"`.
