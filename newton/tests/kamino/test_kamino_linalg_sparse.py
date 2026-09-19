@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.linalg.blas import block_sparse_ATA_inv_diagonal_2d
 from newton._src.solvers.kamino._src.linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from newton._src.solvers.kamino._src.linalg.sparse_operator import BlockSparseLinearOperators
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -742,6 +743,63 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
             # Run multiplication operator checks.
             self._matvec_product_check(ops)
+
+
+class TestBlockSparseATAInverseDiagonal(unittest.TestCase):
+    def setUp(self):
+        # Configs
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            print("\n")  # Add newline before test output for better readability
+            msg.set_log_level(msg.LogLevel.INFO)
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        self.default_device = None
+        if self.verbose:
+            msg.reset_log_level()
+
+    def test_00_inverse_diagonal_of_diagonal_matrix(self):
+        """
+        Tests the inverse diagonal of A^T * A + offset * I used by the `jacobi_diagonal` preconditioner.
+
+        Regression test for newton-physics/newton#4246: the elementwise-inverse kernel factory only
+        used its `dtype` argument inside a type annotation, so the kernel could not be created at all.
+        """
+        # Diagonal matrix A = diag(2, 3) stored as two 1-vector blocks.
+        bsm = BlockSparseMatrices(
+            num_matrices=1, nzb_dtype=BlockDType(shape=(1,), dtype=wp.float32), device=self.default_device
+        )
+        bsm.finalize(max_dims=[(2, 2)], capacities=[2])
+        bsm.dims.assign([[2, 2]])
+        bsm.num_nzb.assign([2])
+        bsm.nzb_coords.assign([[0, 0], [1, 1]])
+        bsm.nzb_values.view(dtype=wp.float32).assign([2.0, 3.0])
+        mask = wp.array([True], dtype=wp.bool, device=self.default_device)
+
+        # diag(A^T A + I)^-1 = [1 / (2^2 + 1), 1 / (3^2 + 1)]
+        inv_diag = wp.empty((1, 2), dtype=wp.float32, device=self.default_device)
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask, diag_offset=1.0)
+        wp.synchronize()
+        np.testing.assert_allclose(inv_diag.numpy(), [[0.2, 0.1]], rtol=1e-6)
+
+        # Without an offset: diag(A^T A)^-1 = [1 / 4, 1 / 9]
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask)
+        wp.synchronize()
+        np.testing.assert_allclose(inv_diag.numpy(), [[0.25, 1.0 / 9.0]], rtol=1e-6)
+
+        # Masked-out matrices are skipped entirely (output is left untouched).
+        mask_off = wp.array([False], dtype=wp.bool, device=self.default_device)
+        inv_diag.fill_(7.0)
+        block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask_off, diag_offset=1.0)
+        wp.synchronize()
+        np.testing.assert_array_equal(inv_diag.numpy(), [[7.0, 7.0]])
 
 
 ###
