@@ -3162,6 +3162,13 @@ class ModelBuilder:
             Its previous state is restored before returning or propagating an exception.
 
         .. important::
+            Replication may replace the backing lists of attributes on this builder.
+            References to list-valued attributes obtained before calling this method
+            may become stale: they do not receive the replicated data, and mutations
+            through them are not reflected by the builder. Reacquire attribute
+            references from the builder after calling this method.
+
+        .. important::
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
