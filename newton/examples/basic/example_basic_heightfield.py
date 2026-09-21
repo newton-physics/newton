@@ -72,11 +72,15 @@ class Example:
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model)
             self.use_mujoco_contacts = True
-            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -97,10 +101,15 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
-        if self.use_mujoco_contacts:
-            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -112,7 +121,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, solver_observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

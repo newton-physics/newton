@@ -433,15 +433,24 @@ class Example:
             self.init_waypoint_control()
 
         self.sensor_contact = None
+        self.solver_observables = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
             self.sensor_contact = SensorContact(self.model, sensing_bodies=sensing_bodies, counterpart_bodies="*")
-            self.contacts = newton.Contacts(
-                self.solver.get_max_contact_count(),
-                0,
-                device=self.model.device,
-                requested_attributes=self.model.get_requested_contact_attributes(),
-            )
+            if hasattr(self.solver, "observables"):
+                self.collision_pipeline = newton.CollisionPipeline(
+                    self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+                )
+                self.contacts = self.collision_pipeline.contacts()
+                self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
+            else:
+                # ASV also runs this workload against revisions predating solver observables.
+                self.contacts = newton.Contacts(
+                    self.solver.get_max_contact_count(),
+                    0,
+                    device=self.model.device,
+                    requested_attributes=self.model.get_requested_contact_attributes(),
+                )
 
         self.graph = None
         if self.use_cuda_graph:
@@ -455,13 +464,27 @@ class Example:
                 self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # The contact sensor consumes only the final substep's forces.
+            if self.solver_observables is not None and substep == self.sim_substeps - 1:
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
+            else:
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
         if self.sensor_contact is not None:
-            self.solver.update_contacts(self.contacts, self.state_0)
-            self.sensor_contact.update(self.state_0, self.contacts)
+            if self.solver_observables is not None:
+                self.sensor_contact.update(self.state_0, self.contacts, solver_observables=self.solver_observables)
+            else:
+                self.solver.update_contacts(self.contacts, self.state_0)
+                self.sensor_contact.update(self.state_0, self.contacts)
 
     def init_waypoint_control(self):
         lo, hi = _target_bounds(self.model)

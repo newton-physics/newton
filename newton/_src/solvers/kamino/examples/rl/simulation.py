@@ -84,7 +84,7 @@ class SimulatorFromNewton:
             self._newton_state = newton_model.state()
             self._newton_collision_pipeline = newton.CollisionPipeline(newton_model)
             self._newton_contacts = self._newton_collision_pipeline.contacts()
-            per_world = max(1024, newton_model.rigid_contact_max // max(newton_model.world_count, 1))
+            per_world = max(1024, (newton_model.rigid_contact_max or 0) // max(newton_model.world_count, 1))
             if config.collision_detector.max_contacts_per_world is not None:
                 per_world = min(per_world, config.collision_detector.max_contacts_per_world)
             world_max = [per_world] * newton_model.world_count

@@ -24,7 +24,7 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverObservables
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
@@ -1905,6 +1905,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -1920,6 +1922,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
         """
+        self._validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
