@@ -91,6 +91,7 @@ class Example:
             enable_self_collisions=False,
             ignore_paths=[".*Dummy", ".*CollisionPlane"],
             hide_collision_shapes=True,
+            load_static_visual_shapes=False,
         )
 
         # set joint targets and joint drive gains (only on hand, not the floating-body cube)
