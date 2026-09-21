@@ -128,7 +128,7 @@ def _symmetric_part_op(b: wp.vec3, u: wp.vec3):
 
 @wp.func
 def _symmetric_part_transposed_op(b: wp.vec3, sig: vec6):
-    return fem.SymmetricTensorMapper.dof_to_value_3d(sig) @ (b * 0.5)
+    return fem.SymmetricTensorMapper.dof_to_value_3d(sig) @ b
 
 
 @wp.kernel
