@@ -1882,6 +1882,15 @@ class CollisionPipeline:
         The returned buffer uses this pipeline's ``requires_grad`` flag (resolved at
         construction from the argument or ``model.requires_grad``).
 
+        When soft self-contact is configured (:meth:`init_soft_self_contact`),
+        the buffer's self-contact storage is sized from the detector's budgets
+        at call time. Growing the budgets later
+        (``check_and_grow_collision_buffers``, or
+        ``SolverVBD.check_and_grow_self_contact_buffers``) invalidates the
+        storage of buffers allocated earlier: each is resized automatically at
+        its next :meth:`collide` use, with a ``UserWarning`` and its previous
+        self-contact results discarded.
+
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
 
