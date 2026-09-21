@@ -243,6 +243,10 @@ class ViewerRTX(ViewerUSD):
         self._pyglet = None
         self._pyglet_gl = None
         self._pyglet_app = None
+        self._tex_resource = None
+        self._gl_texture = None
+        self._gl_program = None
+        self._gl_vao = None
         self._vsync = vsync
         self._should_close = False
 
@@ -433,6 +437,34 @@ void main() {
             else:
                 self.gui.hide_loading_splash()
             self._pending_splash = None
+
+    def _discard_partial_window(self) -> None:
+        """Close and clear resources left by failed window initialization."""
+        ui = self.ui
+        if ui is not None:
+            try:
+                ui.shutdown()
+            except Exception:
+                pass
+        self.gui = None
+
+        # Unregister CUDA/GL interop before destroying the GL context.
+        self._tex_resource = None
+        window = self._window
+        self._window = None
+        if window is not None:
+            try:
+                window.close()
+            except Exception:
+                pass
+
+        self._gl_texture = None
+        self._gl_program = None
+        self._gl_vao = None
+        self._pyglet = None
+        self._pyglet_gl = None
+        self._pyglet_app = None
+        self._should_close = False
 
     @property
     def ui(self) -> Any | None:
@@ -793,6 +825,7 @@ void main() {
             except Exception as e:
                 # A failed GL/window setup must not leave runtime-scene
                 # resources attached while Python unwinds construction.
+                self._discard_partial_window()
                 self._release_runtime_scene()
                 self._destroy_ovrtx()
                 raise RuntimeError(f"Failed to create window: {e}") from e

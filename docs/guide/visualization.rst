@@ -341,13 +341,14 @@ interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 
 This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
 ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX is tested with the following renderer configurations:
+ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.3.0.312915``
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349``
+- ``ovrtx==0.3.0.312915`` (local compatibility testing)
+- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
 
 OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
-Newton's tested matrix.
+Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
+group and therefore does not exercise the OVRTX 0.3 integration.
 
 .. code-block:: python
 

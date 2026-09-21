@@ -56,6 +56,55 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             ViewerRTX(headless=True)
 
 
+@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+class TestViewerRTXWindowCleanup(unittest.TestCase):
+    def test_init_failure_closes_partial_window(self):
+        """Close and clear a partially initialized presentation window."""
+        import ovrtx
+
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer.stage = mock.Mock()
+        viewer._use_ovstage = False
+        viewer._headless = False
+        viewer._window = None
+        viewer.gui = None
+        viewer._instance_prim_paths = {}
+        viewer._all_instance_paths = []
+        viewer._rtx = None
+        viewer._tex_resource = None
+        viewer._gl_texture = None
+        viewer._gl_program = None
+        viewer._gl_vao = None
+        partial_window = mock.Mock()
+
+        def fail_after_window_creation():
+            viewer._window = partial_window
+            viewer._tex_resource = mock.Mock()
+            viewer._gl_texture = 1
+            viewer._gl_program = 2
+            viewer._gl_vao = 3
+            raise RuntimeError("window initialization failed")
+
+        with (
+            mock.patch.object(viewer, "_add_camera_lights_and_render_product"),
+            mock.patch.object(viewer, "_apply_ground_material"),
+            mock.patch.object(viewer, "_init_window", side_effect=fail_after_window_creation),
+            mock.patch.object(viewer, "_release_runtime_scene"),
+            mock.patch.object(viewer, "_destroy_ovrtx"),
+            mock.patch.object(ovrtx, "RendererConfig"),
+            mock.patch.object(ovrtx, "Renderer"),
+            self.assertRaisesRegex(RuntimeError, "Failed to create window"),
+        ):
+            viewer._init_ovrtx()
+
+        partial_window.close.assert_called_once_with()
+        self.assertIsNone(viewer._window)
+        self.assertIsNone(viewer._tex_resource)
+        self.assertIsNone(viewer._gl_texture)
+        self.assertIsNone(viewer._gl_program)
+        self.assertIsNone(viewer._gl_vao)
+
+
 @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
 class TestViewerRTXOvstage(unittest.TestCase):
     def setUp(self):
