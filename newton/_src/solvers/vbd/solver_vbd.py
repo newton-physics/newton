@@ -1047,7 +1047,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         contact kernels read, and the per-pair launch size). The solver never calls
         this on its own (each check synchronizes the device): call it between
         steps at whatever cadence suits the workload. The grown storage is
-        empty until the next step's detection fills it.
+        empty until the next step's detection fills it. Growth invalidates
+        the self-contact storage of any other ``Contacts`` buffer allocated
+        from the pipeline; each is resized automatically at its next use,
+        with a warning and its previous self-contact results discarded.
 
         This call must not be captured into a CUDA graph: it synchronizes,
         and growth reallocates arrays. While capture is active it returns

@@ -1011,9 +1011,13 @@ class TriMeshCollisionDetector:
         reference. The internal append log is resized to match. The grown rows
         are empty until the next detection fills them, so call this between
         detections, not between a detection and a consumer of its results.
-        Other result structs are not touched here; a struct that predates the
-        growth is upgraded automatically, with a warning, the next time it is
-        bound (see ``_bind_external_buffers``).
+        Growing invalidates the storage of every OTHER previously created
+        result struct (for the pipeline: every other ``Contacts`` buffer),
+        whose row arrays are still sized for the old budgets. They are not
+        touched here; each is resized automatically the next time it is
+        bound, with a ``UserWarning`` and its previous contents discarded
+        (see ``_bind_external_buffers``). During graph capture that
+        automatic resize is impossible, so binding a stale struct raises.
 
         This call must not be captured into a CUDA graph: it synchronizes,
         and growth reallocates arrays. While capture is active it returns
