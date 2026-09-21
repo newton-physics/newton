@@ -162,6 +162,7 @@ class TestKinematicLinks(unittest.TestCase):
         )
 
     def test_immovable_contact_pair_filtering(self):
+        """Filter static-static pairs while making other immovable pairs configurable."""
         for shape_a, shape_b in [
             ("kinematic", "kinematic"),
             ("static", "kinematic"),
@@ -170,7 +171,8 @@ class TestKinematicLinks(unittest.TestCase):
         ]:
             model = _build_contact_pair(shape_a, shape_b)
             with self.subTest(shape_a=shape_a, shape_b=shape_b, model_pair_superset=True):
-                self.assertEqual(model.shape_contact_pair_count, 1)
+                expected_pair_count = 0 if shape_a == "static" and shape_b == "static" else 1
+                self.assertEqual(model.shape_contact_pair_count, expected_pair_count)
             for broad_phase in ("explicit", "nxn", "sap"):
                 with self.subTest(
                     shape_a=shape_a,
@@ -196,7 +198,10 @@ class TestKinematicLinks(unittest.TestCase):
                         broad_phase=broad_phase,
                         include_static_kinematic_pairs=True,
                     )
-                    self.assertGreater(count, 0)
+                    if shape_a == "static" and shape_b == "static":
+                        self.assertEqual(count, 0)
+                    else:
+                        self.assertGreater(count, 0)
 
     def test_immovable_filter_does_not_remove_dynamic_pairs(self):
         for shape_a, shape_b in [
@@ -278,10 +283,6 @@ def _build_contact_pair(shape_a: str, shape_b: str) -> newton.Model:
 
     add_sphere(shape_a, -0.25)
     add_sphere(shape_b, 0.25)
-    # Static shapes share the world body and are filtered as a same-body pair
-    # by default. Clear that independent filter so this test isolates the
-    # broad phase's immovable-pair option.
-    builder.shape_collision_filter_pairs.clear()
     return builder.finalize(requires_grad=False)
 
 

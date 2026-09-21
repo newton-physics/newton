@@ -685,14 +685,19 @@ The :attr:`~ModelBuilder.shape_collision_filter_pairs` list stores explicit shap
 This is Newton's internal representation for pairwise filtering (including pairs imported from
 UsdPhysics ``physics:filteredPairs`` relationships).
 
+The built-in broad phases reject pairs of shapes attached to the same non-static
+body and static-static pairs. These inherent exclusions are therefore not stored
+in the explicit filter-pair list.
+
 .. testcode:: filter-pairs
 
     builder = newton.ModelBuilder()
     
     # Add shapes
-    body = builder.add_body()
-    shape_a = builder.add_shape_sphere(body, radius=0.5)
-    shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+    body_a = builder.add_body()
+    body_b = builder.add_body()
+    shape_a = builder.add_shape_sphere(body_a, radius=0.5)
+    shape_b = builder.add_shape_box(body_b, hx=0.5, hy=0.5, hz=0.5)
 
     # Exclude this specific pair from collision detection
     builder.add_shape_collision_filter_pair(shape_a, shape_b)
@@ -703,7 +708,6 @@ Filter pairs are automatically populated in several cases:
   ``collision_filter_parent=True``). For USD joints with two explicit bodies,
   ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
   create a body-pair filter. Also applies to max-coordinate jointed bodies.
-- **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)

@@ -269,7 +269,7 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
 
 class _ShapeCollisionFilterPairsAttribute:
-    """Set of canonical shape index pairs that should not collide.
+    """Set of explicit canonical shape index pairs that should not collide.
 
     Mutating or reassigning this finalized-model set is deprecated. Configure
     collision filters on :class:`ModelBuilder` before calling
