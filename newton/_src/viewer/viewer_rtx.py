@@ -796,16 +796,36 @@ void main() {
         self._flat_mat44_offset = flat_mat44_offset
 
     def _bind_ovrtx_transforms(self):
-        """Refresh the transform binding after adding or resizing an instance batch."""
+        """Bind transforms for the scene assembled before rendering starts."""
         from ovrtx import PrimMode, Semantic
 
         if self._transform_binding is not None:
             self._transform_binding.unbind()
             self._transform_binding = None
-        self._all_instance_paths = [path for paths in self._instance_prim_paths.values() for path in paths]
+        for binding in getattr(self, "_runtime_transform_bindings", {}).values():
+            binding.unbind()
+        self._runtime_transform_bindings = {}
+        self._bound_instance_prim_paths = {name: tuple(paths) for name, paths in self._instance_prim_paths.items()}
+        self._all_instance_paths = [path for paths in self._bound_instance_prim_paths.values() for path in paths]
         if self._all_instance_paths:
             self._transform_binding = self._rtx.bind_attribute(
                 prim_paths=self._all_instance_paths,
+                attribute_name="omni:xform",
+                semantic=Semantic.XFORM_MAT4x4,
+                prim_mode=PrimMode.MUST_EXIST,
+            )
+
+    def _bind_runtime_transforms(self, name: str) -> None:
+        """Bind only one runtime-created or replaced instance batch."""
+        from ovrtx import PrimMode, Semantic
+
+        binding = self._runtime_transform_bindings.pop(name, None)
+        if binding is not None:
+            binding.unbind()
+        paths = self._instance_prim_paths[name]
+        if paths:
+            self._runtime_transform_bindings[name] = self._rtx.bind_attribute(
+                prim_paths=paths,
                 attribute_name="omni:xform",
                 semantic=Semantic.XFORM_MAT4x4,
                 prim_mode=PrimMode.MUST_EXIST,
@@ -815,7 +835,10 @@ void main() {
         """Publish a self-contained USD subtree, including its bound materials."""
         from pxr import Sdf, Usd, UsdShade
 
-        flattened = self.stage.Flatten()
+        mask = Usd.StagePopulationMask([path])
+        masked_stage = Usd.Stage.OpenMasked(self.stage.GetRootLayer(), mask)
+        masked_stage.ExpandPopulationMask()
+        flattened = masked_stage.Flatten()
         stage = Usd.Stage.CreateInMemory()
         Sdf.CopySpec(flattened, path, stage.GetRootLayer(), "/Marker")
         stage.SetDefaultPrim(stage.GetPrimAtPath("/Marker"))
@@ -1481,17 +1504,22 @@ void main() {
                 opacities=opacities,
                 hidden=hidden,
             )
+            if name in self._emissive_instance_groups and appearance[0] is not None:
+                for i, color in enumerate(appearance[0]):
+                    material = self._get_preview_surface_material(
+                        mesh,
+                        color=color,
+                        roughness=1.0,
+                        metallic=0.0,
+                        emissive_color=color,
+                    )
+                    self._bind_material(self.stage.GetPrimAtPath(f"{self._get_path(name)}/instance_{i}"), material)
             self._instance_specs[name] = (mesh, count, appearance)
             self._instance_prim_paths[name] = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
             if self._phase == self._PHASE_RENDER:
-                if self._transform_binding is not None:
-                    self._transform_binding.unbind()
-                    self._transform_binding = None
                 runtime_path = self._replace_runtime_prim(self._get_path(name))
                 self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(count)]
-                self._bind_ovrtx_transforms()
-                if not self._use_layered_transform_updates:
-                    self._build_flat_shape_arrays()
+                self._bind_runtime_transforms(name)
 
         self._pending_instance_visibility[name] = not hidden and count > 0
         if xforms is not None:
@@ -1580,6 +1608,10 @@ void main() {
             colors_np = np.repeat(colors_np, count, axis=0)
         if len(colors_np) != count:
             raise ValueError("Number of segment colors must match the number of segments.")
+        if arrow:
+            self._emissive_instance_groups.discard(name)
+        else:
+            self._emissive_instance_groups.add(name)
         self.log_instances(
             name,
             mesh_name,
@@ -1667,43 +1699,53 @@ void main() {
 
     def _update_ovrtx_transforms(self):
         has_flat_shape_arrays = self._flat_total_shapes > 0
-        if not self._transform_binding or (not has_flat_shape_arrays and not self._pending_xforms):
+        runtime_updates = {
+            name: binding for name, binding in self._runtime_transform_bindings.items() if name in self._pending_xforms
+        }
+        has_scene_updates = self._transform_binding is not None and (
+            has_flat_shape_arrays
+            or any(
+                name in self._pending_xforms and name not in self._runtime_transform_bindings
+                for name in self._bound_instance_prim_paths
+            )
+        )
+        if not has_scene_updates and not runtime_updates:
             return
         with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
             from ovrtx import Device
 
             rtx_device = Device.CUDA if self.device.is_cuda else Device.CPU
-            with self._transform_binding.map(device=rtx_device) as mapping:
-                matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)  # (N, 4, 4) float64
+            if has_scene_updates:
+                with self._transform_binding.map(device=rtx_device) as mapping:
+                    matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)  # (N, 4, 4) float64
 
-                body_q = self._last_state.body_q if self._last_state is not None else None
-                world_offsets = self.world_offsets
+                    body_q = self._last_state.body_q if self._last_state is not None else None
+                    world_offsets = self.world_offsets
 
-                if has_flat_shape_arrays:
-                    # Single kernel launch for all shape batches.
-                    wp.launch(
-                        update_and_write_shape_transforms,
-                        dim=self._flat_total_shapes,
-                        inputs=[
-                            self._flat_shape_xforms,
-                            self._flat_shape_parents,
-                            body_q,
-                            self._flat_shape_worlds,
-                            world_offsets,
-                            self.layer.xform,
-                            self._flat_shape_scales,
-                            self._flat_mat44_offset,
-                            matrices,
-                        ],
-                        device=matrices.device,
-                    )
+                    if has_flat_shape_arrays:
+                        # Single kernel launch for all shape batches.
+                        wp.launch(
+                            update_and_write_shape_transforms,
+                            dim=self._flat_total_shapes,
+                            inputs=[
+                                self._flat_shape_xforms,
+                                self._flat_shape_parents,
+                                body_q,
+                                self._flat_shape_worlds,
+                                world_offsets,
+                                self.layer.xform,
+                                self._flat_shape_scales,
+                                self._flat_mat44_offset,
+                                matrices,
+                            ],
+                            device=matrices.device,
+                        )
 
-                # Handle any remaining pre-computed transforms (e.g. picking line).
-                if self._pending_xforms:
+                    # Handle any remaining build-phase pre-computed transforms.
                     offset = 0
-                    for name, paths in self._instance_prim_paths.items():
+                    for name, paths in self._bound_instance_prim_paths.items():
                         count = len(paths)
-                        if name in self._pending_xforms:
+                        if name in self._pending_xforms and name not in self._runtime_transform_bindings:
                             xf, sc = self._pending_xforms[name]
                             n = min(count, len(xf))
                             wp.launch(
@@ -1714,8 +1756,21 @@ void main() {
                             )
                         offset += count
 
-                if matrices.device.is_cuda:
-                    mapping.unmap(stream=matrices.device.stream.cuda_stream)
+                    if matrices.device.is_cuda:
+                        mapping.unmap(stream=matrices.device.stream.cuda_stream)
+
+            for name, binding in runtime_updates.items():
+                xf, sc = self._pending_xforms[name]
+                with binding.map(device=rtx_device) as mapping:
+                    matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)
+                    wp.launch(
+                        write_transforms,
+                        dim=min(len(self._instance_prim_paths[name]), len(xf)),
+                        inputs=[xf, sc, 0, matrices],
+                        device=matrices.device,
+                    )
+                    if matrices.device.is_cuda:
+                        mapping.unmap(stream=matrices.device.stream.cuda_stream)
 
     def _update_ovrtx_instance_visibility(self):
         if self._rtx is None or not self._pending_instance_visibility:
@@ -2095,6 +2150,8 @@ void main() {
         if self._transform_binding is not None:
             self._transform_binding.unbind()
             self._transform_binding = None
+        for binding in getattr(self, "_runtime_transform_bindings", {}).values():
+            binding.unbind()
 
         # Release OVRTX renderer
         if self._rtx is not None:
@@ -2111,7 +2168,10 @@ void main() {
         self._runtime_prim_serial = 0
         self._runtime_scene_changed = False
         self._segment_meshes = {}
+        self._emissive_instance_groups = set()
         self._all_instance_paths = []
+        self._bound_instance_prim_paths = {}
+        self._runtime_transform_bindings = {}
         self._mesh_prim_paths = {}
         self._point_batch_paths = {}
         self._point_batch_colors = {}
@@ -2266,6 +2326,9 @@ void main() {
         if self._transform_binding is not None:
             self._transform_binding.unbind()
             self._transform_binding = None
+        for binding in getattr(self, "_runtime_transform_bindings", {}).values():
+            binding.unbind()
+        self._runtime_transform_bindings = {}
 
         # release ovrtx renderer
         self._rtx = None

@@ -12,7 +12,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX
 
 if USD_AVAILABLE:
-    from pxr import Sdf, Usd, UsdGeom, UsdShade
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -60,6 +60,18 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self._log_spheres(2, color=(0.0, 1.0, 0.0))
         self.viewer._rtx.add_usd_reference_from_string.assert_called_once()
 
+    def test_runtime_batch_changes_do_not_rebuild_the_scene_binding(self):
+        """Limit runtime batch replacement to its USD subtree and transform binding."""
+        scene_binding = mock.MagicMock()
+        self.viewer._transform_binding = scene_binding
+        with mock.patch.object(self.viewer.stage, "Flatten", side_effect=AssertionError("flattened full stage")):
+            self._log_spheres(2)
+        scene_binding.unbind.assert_not_called()
+        runtime_binding = self.viewer._runtime_transform_bindings["/markers/spheres"]
+        self._log_spheres(3)
+        scene_binding.unbind.assert_not_called()
+        runtime_binding.unbind.assert_called_once()
+
     def test_runtime_materials_are_self_contained(self):
         """Keep material bindings valid when a runtime batch is referenced elsewhere."""
         self._log_spheres(2, color=(0.0, 1.0, 0.0))
@@ -74,6 +86,7 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.assertTrue(material)
         shader = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
         np.testing.assert_allclose(shader.GetInput("diffuseColor").Get(), [0.0, 1.0, 0.0])
+        self.assertFalse(shader.GetInput("emissiveColor"))
         self.assertEqual(material.GetSurfaceOutput().GetConnectedSource()[0].GetPrim(), shader.GetPrim())
 
     def test_hidden_build_markers_can_be_shown(self):
@@ -140,13 +153,29 @@ class TestViewerRTXMarkers(unittest.TestCase):
             np.testing.assert_allclose(np.asarray(tip_world), ends.numpy()[i], atol=1e-6)
 
     def test_lines_added_at_runtime_reuse_geometry(self):
-        """Keep runtime lines colored and update motion without recreating the scene."""
+        """Keep runtime lines emissive and update motion without recreating the scene."""
         starts = wp.array([[0, 0, 0]], dtype=wp.vec3, device="cpu")
         ends = wp.array([[0, 0, 1]], dtype=wp.vec3, device="cpu")
-        for _ in range(2):
-            self.viewer.log_lines("/lines", starts, ends, (0.0, 1.0, 0.0))
+        self.viewer.log_lines("/lines", starts, ends, (0.0, 1.0, 0.0))
+        first_xforms = self.viewer._pending_xforms["/lines"][0].numpy()
+        content = self.viewer._rtx.add_usd_reference_from_string.call_args.args[0]
+        layer = Sdf.Layer.CreateAnonymous()
+        self.assertTrue(layer.ImportFromString(content))
+        stage = Usd.Stage.Open(layer)
+        emissive_colors = [
+            UsdShade.Shader(prim).GetInput("emissiveColor").Get()
+            for prim in stage.Traverse()
+            if prim.IsA(UsdShade.Shader) and UsdShade.Shader(prim).GetInput("emissiveColor")
+        ]
+        self.assertEqual(emissive_colors, [Gf.Vec3f(0.0, 1.0, 0.0)])
+
+        moved_starts = wp.array([[1, 0, 0]], dtype=wp.vec3, device="cpu")
+        moved_ends = wp.array([[1, 0, 2]], dtype=wp.vec3, device="cpu")
+        self.viewer.log_lines("/lines", moved_starts, moved_ends, (0.0, 1.0, 0.0))
+        moved_xforms = self.viewer._pending_xforms["/lines"][0].numpy()
         self.assertEqual(len(self.viewer._instance_prim_paths["/lines"]), 1)
         self.assertEqual(self.viewer._rtx.add_usd_reference_from_string.call_count, 2)
+        self.assertFalse(np.array_equal(first_xforms, moved_xforms))
 
 
 if __name__ == "__main__":
