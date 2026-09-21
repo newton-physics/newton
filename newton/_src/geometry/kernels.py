@@ -1292,6 +1292,12 @@ VT_PAIR_OVERFLOW = wp.constant(1)
 EE_PAIR_CURSOR = wp.constant(2)
 EE_PAIR_OVERFLOW = wp.constant(3)
 
+# saturation bound for the demand cursors: reservation stops once a family's
+# demand reaches this value, so the int32 cursor can never wrap (it stays
+# bounded by the constant plus the threads in flight past the read) and the
+# demand readback is exact below it
+DEMAND_CURSOR_SATURATION = wp.constant(1 << 30)
+
 
 @wp.func
 def compute_tri_aabb(
@@ -1434,7 +1440,8 @@ def vertex_triangle_collision_detection_kernel(
     ``vt_pair_capacity`` are still counted by the cursor (total demand for the
     overflow report) but not stored or linked, and
     ``global_pair_counts[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
-    array.
+    array. The demand count saturates at ``DEMAND_CURSOR_SATURATION``, so the
+    cursor cannot wrap.
 
     Args:
         max_query_radius: the upper bound of collision distance.
@@ -1557,18 +1564,21 @@ def vertex_triangle_collision_detection_kernel(
                     # record the (vertex, triangle) pair to the shared array and
                     # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
-                    slot = wp.atomic_add(global_pair_counts, VT_PAIR_CURSOR, 1)
-                    # slot >= 0 guards int32 cursor wrap-around on pathological
-                    # demand (>2^31 pairs): drop instead of writing out of bounds
-                    if slot >= 0 and slot < vt_pair_capacity:
-                        vt_pairs[slot] = wp.vec2i(v_index, tri_index)
-                        vertex_list_next[slot] = list_head
-                        list_head = slot
-                        stored_count = stored_count + 1
-                        if triangle_list_heads:
-                            # triangle-keyed reverse list: many writers, lock-free push-front
-                            triangle_list_next[slot] = wp.atomic_exch(triangle_list_heads, tri_index, slot)
-                            wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
+                    # the plain read saturates the demand cursor so it can
+                    # never wrap int32 on pathological demand (>2^30 pairs)
+                    if global_pair_counts[VT_PAIR_CURSOR] < DEMAND_CURSOR_SATURATION:
+                        slot = wp.atomic_add(global_pair_counts, VT_PAIR_CURSOR, 1)
+                        if slot < vt_pair_capacity:
+                            vt_pairs[slot] = wp.vec2i(v_index, tri_index)
+                            vertex_list_next[slot] = list_head
+                            list_head = slot
+                            stored_count = stored_count + 1
+                            if triangle_list_heads:
+                                # triangle-keyed reverse list: many writers, lock-free push-front
+                                triangle_list_next[slot] = wp.atomic_exch(triangle_list_heads, tri_index, slot)
+                                wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
+                        else:
+                            global_pair_counts[VT_PAIR_OVERFLOW] = 1
                     else:
                         global_pair_counts[VT_PAIR_OVERFLOW] = 1
 
@@ -1613,7 +1623,8 @@ def edge_colliding_edges_detection_kernel(
     Pairs are recorded from both edges' threads, so each edge's row lists the
     collisions from its own perspective. Hits found beyond ``ee_pair_capacity`` are still
     counted by the cursor (total demand for the overflow report) but not stored
-    or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set.
+    or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set. The demand
+    count saturates at ``DEMAND_CURSOR_SATURATION``, so the cursor cannot wrap.
 
     Args:
         max_query_radius: the upper bound of collision distance.
@@ -1731,14 +1742,17 @@ def edge_colliding_edges_detection_kernel(
                     # record e-e collision from e0's side (e1 records its own
                     # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-                    slot = wp.atomic_add(global_pair_counts, EE_PAIR_CURSOR, 1)
-                    # slot >= 0 guards int32 cursor wrap-around on pathological
-                    # demand (>2^31 pairs): drop instead of writing out of bounds
-                    if slot >= 0 and slot < ee_pair_capacity:
-                        ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
-                        edge_list_next[slot] = list_head
-                        list_head = slot
-                        stored_count = stored_count + 1
+                    # the plain read saturates the demand cursor so it can
+                    # never wrap int32 on pathological demand (>2^30 pairs)
+                    if global_pair_counts[EE_PAIR_CURSOR] < DEMAND_CURSOR_SATURATION:
+                        slot = wp.atomic_add(global_pair_counts, EE_PAIR_CURSOR, 1)
+                        if slot < ee_pair_capacity:
+                            ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
+                            edge_list_next[slot] = list_head
+                            list_head = slot
+                            stored_count = stored_count + 1
+                        else:
+                            global_pair_counts[EE_PAIR_OVERFLOW] = 1
                     else:
                         global_pair_counts[EE_PAIR_OVERFLOW] = 1
 

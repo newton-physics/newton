@@ -944,8 +944,9 @@ class TriMeshCollisionDetector:
         """Read back pair demand and overflow flags (synchronizes the device).
 
         Returns ``(vt_demand, ee_demand, vt_overflowed, ee_overflowed)``. The
-        demands are the total pair counts detection tried to store; when an
-        overflow flag is set the corresponding pair array kept only its first
+        demands are the total pair counts detection tried to store (saturating
+        at ``2**30``, so the device cursors cannot wrap); when an overflow
+        flag is set the corresponding pair array kept only its first
         ``capacity`` records and the CSR rows cover only those.
         """
         self._require_collision_info()
