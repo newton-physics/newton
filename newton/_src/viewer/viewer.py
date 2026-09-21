@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import inspect
 import math
 import os
 import sys
@@ -46,14 +47,48 @@ _DEFAULT_LAYER_ID = "__default__"
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
 
-def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
-    """Return authored UVs with the mesh's affine texture transform applied."""
+def _mesh_texture_uvs(mesh: newton.Mesh, *, solidified: bool = False) -> np.ndarray | None:
+    """Return transformed UVs aligned with the backend mesh vertices."""
     uvs = mesh._uvs
+    if uvs is None:
+        return None
+
     texture_transform = mesh.texture_transform
-    if uvs is None or mesh.texture is None or texture_transform == ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
-        return uvs
-    transform = np.asarray(texture_transform, dtype=uvs.dtype)
-    return uvs @ transform[:, :2].T + transform[:, 2]
+    has_texture = mesh.texture is not None or mesh.roughness_texture is not None
+    if has_texture and texture_transform != ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        transform = np.asarray(texture_transform, dtype=uvs.dtype)
+        uvs = uvs @ transform[:, :2].T + transform[:, 2]
+
+    # solidify_mesh interleaves the positive and negative extrusion of each
+    # source vertex, so duplicate UV rows in the same order.
+    if solidified:
+        uvs = np.repeat(uvs, 2, axis=0)
+    return uvs
+
+
+def _roughness_texture_log_mesh_kwargs(log_mesh: Any, mesh: newton.Mesh) -> dict[str, Any]:
+    """Return roughness-texture arguments supported by a backend's ``log_mesh`` override."""
+    if mesh.roughness_texture is None:
+        return {}
+
+    try:
+        parameters = inspect.signature(log_mesh).parameters
+    except (TypeError, ValueError):
+        return {}
+
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    optional_names = ("roughness_texture", "roughness_texture_influence")
+    accepts_optional = accepts_kwargs or all(
+        name in parameters
+        and parameters[name].kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        for name in optional_names
+    )
+    if not accepts_optional:
+        return {}
+    return {
+        "roughness_texture": mesh.roughness_texture,
+        "roughness_texture_influence": mesh.roughness_texture_influence,
+    }
 
 
 class Layer:
@@ -1700,13 +1735,14 @@ class ViewerBase(ABC):
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
 
-            transformed_uvs = _mesh_texture_uvs(geo_src)
+            transformed_uvs = _mesh_texture_uvs(geo_src, solidified=not geo_is_solid)
             if transformed_uvs is not None:
                 uvs = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
             if hasattr(geo_src, "texture"):
                 texture = geo_src.texture
 
+            material_kwargs = _roughness_texture_log_mesh_kwargs(self.log_mesh, geo_src)
             self.log_mesh(
                 name,
                 points,
@@ -1715,6 +1751,7 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
+                **material_kwargs,
             )
             return
 
@@ -1813,6 +1850,9 @@ class ViewerBase(ABC):
         metallic: float | None = None,
         dynamic: bool = False,
         opacity: float | None = None,
+        *,
+        roughness_texture: newton.Mesh.Texture | np.ndarray | str | None = None,
+        roughness_texture_influence: float = 1.0,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1839,6 +1879,11 @@ class ViewerBase(ABC):
                 is metal.
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
+            roughness_texture: Optional linear roughness texture path, HTTP(S)
+                URL, image array, or :class:`newton.Mesh.Texture`.
+            roughness_texture_influence: Blend weight between ``roughness`` and
+                ``roughness_texture`` in [0, 1]. The effective roughness is
+                ``(1 - influence) * roughness + influence * roughness_texture``.
         """
         pass
 
@@ -2260,7 +2305,7 @@ class ViewerBase(ABC):
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
         geometry_hash = hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
-        if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
+        if isinstance(geo_src, newton.Mesh) and (geo_src.texture is not None or geo_src.roughness_texture is not None):
             geometry_hash = hash((geometry_hash, geo_src.texture_transform))
         return geometry_hash
 
@@ -2391,10 +2436,11 @@ class ViewerBase(ABC):
             normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
 
         uvs_wp = None
-        transformed_uvs = _mesh_texture_uvs(src)
+        transformed_uvs = _mesh_texture_uvs(src, solidified=not is_solid)
         if transformed_uvs is not None:
             uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
+        material_kwargs = _roughness_texture_log_mesh_kwargs(self.log_mesh, src)
         self.log_mesh(
             name,
             points_wp,
@@ -2403,6 +2449,7 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
+            **material_kwargs,
         )
 
     # creates meshes and instances for each shape in the Model
@@ -2559,7 +2606,10 @@ class ViewerBase(ABC):
                 if getattr(geo_src, "metallic", None) is not None:
                     material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
                 if geo_src is not None and geo_src._uvs is not None:
-                    has_texture = getattr(geo_src, "texture", None) is not None
+                    has_texture = (
+                        getattr(geo_src, "texture", None) is not None
+                        or getattr(geo_src, "roughness_texture", None) is not None
+                    )
                     if has_texture:
                         material = wp.vec4(material.x, material.y, material.z, 1.0)
 

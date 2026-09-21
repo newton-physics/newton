@@ -53,6 +53,60 @@ current viewer session, or a persistent artifact:
       - None
       - None
 
+.. _viewer-material-support:
+
+Mesh Material Support
+---------------------
+
+Mesh appearance is stored on :class:`~newton.Mesh` independently of the
+viewer. This lets every backend accept the same scene even when its renderer
+supports only part of the material. The current portable subset and fallback
+behavior are:
+
+.. list-table:: Mesh material support by viewer
+    :header-rows: 1
+
+    * - Viewer
+      - Base-color texture
+      - Scalar roughness / metallic
+      - Roughness texture
+    * - :class:`~newton.viewer.ViewerUSD`
+      - Yes
+      - Yes
+      - Yes
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Yes
+      - Yes
+      - Yes
+    * - :class:`~newton.viewer.ViewerGL`
+      - Yes
+      - Yes
+      - No; uses scalar roughness
+    * - :class:`~newton.viewer.ViewerRerun`
+      - Yes
+      - No
+      - No; ignored
+    * - :class:`~newton.viewer.ViewerViser`
+      - Yes
+      - No
+      - No; ignored
+    * - :class:`~newton.viewer.ViewerFile` / :class:`~newton.viewer.ViewerNull`
+      - Not rendered
+      - Not rendered
+      - Not rendered
+
+For USD and RTX, :attr:`newton.Mesh.roughness_texture` retains the selected
+channel, scale, bias, fallback value, wrap modes, and source color space from a
+standard ``UsdUVTexture`` connection. The scalar-to-texture influence computes
+``(1 - influence) * roughness + influence * sampled_roughness``. Base-color and
+roughness textures currently share :attr:`newton.Mesh.texture_transform`.
+
+Unsupported fields remain in the common mesh data; choosing another viewer
+does not delete them. The backend simply uses the fallback shown above. A
+bounded material subset for future backends, including additional PBR maps and
+independent texture transforms, is tracked in `issue #3646
+<https://github.com/newton-physics/newton/issues/3646>`_.
+
 .. _debugging-with-viewers:
 
 Debugging with Viewers
