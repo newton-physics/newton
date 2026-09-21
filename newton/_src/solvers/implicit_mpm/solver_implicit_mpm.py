@@ -3084,12 +3084,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
-        """Avoid global contact sorts when their candidate storage dominates launch overhead."""
+        """Use row compression when it does not enlarge candidate storage."""
+        # Row compression reserves every partition row; triplets use the restriction's
+        # node-count bound. Both multiply that count by the same Q1 stencil size.
         return (
             self.model.device.is_cuda
             and self.velocity_basis == "Q1"
             and self.collider_basis in ("S2", "S3")
-            and scratch.collider_node_count * 8 >= 1 << 20
+            and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()
         )
 
     def _build_collider_rigidity_operator(

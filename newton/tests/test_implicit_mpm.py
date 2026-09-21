@@ -41,8 +41,8 @@ def test_sparse_contact_preserves_first_interpolation(test, device):
         model = builder.finalize(device=device)
         config = _make_mpm_config(grid_type="sparse")
         config.separate_worlds = False
-        # Exercise automatic row construction above its candidate-storage threshold.
-        config.max_active_cell_count = 8192
+        # Exercise automatic row construction on a small reserved grid too.
+        config.max_active_cell_count = 128
         config.grid_padding = 0
         config.velocity_basis = "Q1"
         config.strain_basis = "P0"
