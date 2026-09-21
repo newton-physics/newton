@@ -182,6 +182,84 @@ def Xform "World"
         self.viewer._rtx.add_usd_reference_from_string.assert_not_called()
         self.viewer._rtx.remove_usd.assert_not_called()
 
+    def test_end_frame_waits_for_async_render_before_stage_writes(self):
+        """Finish the previous async stage read before publishing the next frame."""
+        events = []
+        self.viewer._phase = self.viewer._PHASE_RENDER
+        self.viewer._async = True
+        self.viewer._render_result = mock.Mock()
+        self.viewer._render_result.wait.side_effect = lambda: events.append("wait")
+
+        with (
+            mock.patch.object(
+                self.viewer,
+                "_apply_ovstage_population_changes",
+                side_effect=lambda: events.append("write"),
+            ),
+            mock.patch.object(self.viewer, "_update_ovrtx_camera"),
+            mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
+            mock.patch.object(self.viewer, "_update_ovrtx_instance_visibility"),
+            mock.patch.object(self.viewer, "_update_ovrtx_line_batches"),
+            mock.patch.object(self.viewer, "_update_ovrtx_point_batches"),
+            mock.patch.object(self.viewer, "_update_ovrtx_mesh_points"),
+            mock.patch.object(self.viewer, "_render_and_display"),
+        ):
+            self.viewer.end_frame()
+
+        self.assertEqual(events[:2], ["wait", "write"])
+
+
+class TestViewerRTXRenderOutput(unittest.TestCase):
+    def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):
+        """Find the color output returned by legacy and OVRTX 0.5 renderers."""
+        for name in ("LdrColor", "/Render/Vars/LdrColor"):
+            with self.subTest(name=name):
+                render_var = object()
+                frame = mock.Mock(render_vars={name: render_var})
+                self.assertIs(ViewerRTX._get_ldr_color_render_var(frame), render_var)
+
+    @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+    def test_display_uses_ovrtx_05_color_output(self):
+        """Blit the fully qualified OVRTX 0.5 color output to the window."""
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._rtx = mock.Mock()
+        viewer._should_close = False
+        viewer._async = False
+        viewer._use_ovstage = True
+        viewer._ovstage_ordinal = 1
+        viewer._render_product_path = "/Render/Product"
+        viewer.fps = 60
+        viewer._window = mock.Mock(context=object())
+
+        render_var = mock.MagicMock()
+        mapping = render_var.map.return_value.__enter__.return_value
+        pixels = mock.Mock()
+        pixels.device.stream.cuda_stream = 17
+        frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
+        viewer._rtx.step.return_value = {"product": mock.Mock(frames=[frame])}
+
+        with (
+            mock.patch.object(wp, "from_dlpack", return_value=pixels),
+            mock.patch.object(viewer, "_blit_to_window") as blit,
+        ):
+            viewer._render_and_display()
+
+        blit.assert_called_once_with(pixels)
+        mapping.unmap.assert_called_once_with(stream=17)
+
+    @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+    def test_screenshot_uses_ovrtx_05_color_output(self):
+        """Capture the fully qualified OVRTX 0.5 color output."""
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        expected = np.zeros((2, 3, 4), dtype=np.uint8)
+        render_var = mock.MagicMock()
+        render_var.map.return_value.__enter__.return_value = expected
+        frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
+        viewer._render_products = {"product": mock.Mock(frames=[frame])}
+        viewer._render_result = None
+
+        np.testing.assert_array_equal(viewer._capture_screenshot_pixels(), expected)
+
 
 @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE and wp.is_cuda_available(), "Requires OVRTX and CUDA")
 class TestViewerRTXRendering(unittest.TestCase):

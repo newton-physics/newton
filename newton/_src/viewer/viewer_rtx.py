@@ -1490,6 +1490,10 @@ void main() {
             self._init_ovrtx()
 
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
+            if self._use_ovstage and self._async and self._render_result is not None:
+                # OVRTX reads the shared stage asynchronously, so finish that
+                # read before publishing changes for the next frame.
+                self._render_result.wait()
             if self._use_ovstage:
                 self._ovstage_ordinal += 1
                 self._apply_ovstage_population_changes()
@@ -2218,6 +2222,14 @@ void main() {
 
     # ------------------------------------------------------- render + display
 
+    @staticmethod
+    def _get_ldr_color_render_var(frame):
+        """Return the color output across supported OVRTX versions."""
+        for name in ("LdrColor", "/Render/Vars/LdrColor"):
+            if name in frame.render_vars:
+                return frame.render_vars[name]
+        return None
+
     def _render_and_display(self):
         if self._rtx is None or self._should_close:
             return
@@ -2247,9 +2259,10 @@ void main() {
             if self._render_products is not None and self._window is not None and self._window.context is not None:
                 for _pname, product in self._render_products.items():
                     for frame in product.frames:
-                        if "LdrColor" in frame.render_vars:
+                        render_var = self._get_ldr_color_render_var(frame)
+                        if render_var is not None:
                             with wp.ScopedTimer("ViewerRTX::fb_map", active=PROFILE_ENABLED, use_nvtx=True):
-                                with frame.render_vars["LdrColor"].map(device=Device.CUDA) as mapping:
+                                with render_var.map(device=Device.CUDA) as mapping:
                                     pixels = wp.from_dlpack(mapping, dtype=wp.vec4ub)
                                     with wp.ScopedTimer(
                                         "ViewerRTX::blit_to_window", active=PROFILE_ENABLED, use_nvtx=True
@@ -2333,8 +2346,9 @@ void main() {
 
         for _pname, product in products.items():
             for frame in product.frames:
-                if "LdrColor" in frame.render_vars:
-                    with frame.render_vars["LdrColor"].map(device=Device.CPU) as mapping:
+                render_var = self._get_ldr_color_render_var(frame)
+                if render_var is not None:
+                    with render_var.map(device=Device.CPU) as mapping:
                         pixels = np.array(np.from_dlpack(mapping), copy=True)
                     return pixels
 
