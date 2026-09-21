@@ -1847,11 +1847,14 @@ def test_pipeline_growth_upgrades_stale_buffers(test, device):
     contacts_b = pipeline.contacts()
     rows_before = contacts_b.soft_self_contact_data.vertex_colliding_triangles.size
 
+    # configured but nothing detected yet: nothing to check
+    test.assertFalse(pipeline.check_and_grow_soft_self_contact_buffers())
+
     # overflow the undersized pool with the first buffer bound, then grow
+    # through the public pipeline wrapper
     pipeline.collide(state, contacts_a, soft_self_contact=True)
-    detector = pipeline._get_soft_self_contact_detector(contacts_a)
     with test.assertWarnsRegex(UserWarning, "overflowed"):
-        test.assertTrue(detector.check_and_grow_collision_buffers())
+        test.assertTrue(pipeline.check_and_grow_soft_self_contact_buffers())
 
     # binding the pre-growth buffer resizes it in place (with a warning) instead of raising
     with test.assertWarnsRegex(UserWarning, "automatic resizing"):
@@ -1873,6 +1876,10 @@ def test_pipeline_growth_upgrades_stale_buffers(test, device):
         warnings.simplefilter("always")
         pipeline.collide(state, contacts_a, soft_self_contact=True)
     test.assertFalse([w for w in caught if "automatic resizing" in str(w.message)])
+
+    # the wrapper requires init_soft_self_contact()
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, broad_phase="nxn").check_and_grow_soft_self_contact_buffers()
 
 
 @wp.kernel
