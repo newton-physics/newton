@@ -1140,6 +1140,47 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_drive_scale_and_per_import_joint_defaults(self):
+        """Use scene drive scaling and keep joint defaults scoped to each import."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.GetPrim().CreateAttribute("newton:joint_drive_gains_scaling", Sdf.ValueTypeNames.Float).Set(2.5)
+        root = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        for name in ("Parent", "Child"):
+            body = UsdGeom.Cube.Define(stage, f"/Articulation/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets(["/Articulation/Parent"])
+        joint.CreateBody1Rel().SetTargets(["/Articulation/Child"])
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive.CreateStiffnessAttr(4.0)
+        drive.CreateDampingAttr(0.5)
+
+        for default in (1.0, 3.0):
+            with self.subTest(default=default):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.armature = default
+                builder.default_joint_cfg.friction = default / 10.0
+                builder.default_joint_cfg.damping = default * 2.0
+                builder.default_joint_cfg.limit_ke = default * 100.0
+                builder.default_joint_cfg.limit_kd = default * 5.0
+                builder.add_usd(stage, joint_drive_gains_scaling=9.0)
+                dof = builder.joint_qd_start[builder.joint_label.index("/Articulation/Joint")]
+                self.assertAlmostEqual(builder.joint_target_ke[dof], 4.0 * math.degrees(2.5))
+                self.assertAlmostEqual(builder.joint_target_kd[dof], 0.5 * math.degrees(2.5))
+                self.assertAlmostEqual(builder.joint_armature[dof], default)
+                self.assertAlmostEqual(builder.joint_friction[dof], default / 10.0)
+                self.assertAlmostEqual(builder.joint_damping[dof], default * 2.0)
+                self.assertAlmostEqual(builder.joint_limit_ke[dof], default * 100.0)
+                self.assertAlmostEqual(builder.joint_limit_kd[dof], default * 5.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_distance_joint(self):
         """Import independently enabled distance-joint limits."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -1268,7 +1309,7 @@ class TestImportUsdJoints(unittest.TestCase):
         """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
         from pxr import Usd
 
-        from newton._src.utils.import_usd import _HARD_LIMIT_KE  # noqa: PLC0415
+        from newton._src.usd._usd_resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
 
         deg2rad = math.pi / 180.0
 
@@ -2725,6 +2766,40 @@ def Xform "Articulation" (
 
 
 class TestImportUsdPhysics(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_per_import_shape_defaults(self):
+        """Keep unbound material and shape defaults independent between imports."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        cube = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                defaults = builder.default_shape_cfg
+                defaults.mu = scale * 0.1
+                defaults.mu_torsional = scale * 0.2
+                defaults.mu_rolling = scale * 0.3
+                defaults.restitution = scale * 0.4
+                defaults.density = scale * 123.0
+                defaults.ke = scale * 1000.0
+                defaults.kd = scale * 10.0
+                defaults.margin = scale * 0.01
+                defaults.sdf_max_resolution = int(scale) * 32
+                result = builder.add_usd(stage)
+                shape = result["path_shape_map"]["/Body"]
+                for key in ("mu", "mu_torsional", "mu_rolling", "restitution", "ke", "kd"):
+                    self.assertAlmostEqual(getattr(builder, f"shape_material_{key}")[shape], getattr(defaults, key))
+                self.assertAlmostEqual(builder.shape_margin[shape], defaults.margin)
+                self.assertEqual(builder.shape_sdf_max_resolution[shape], defaults.sdf_max_resolution)
+                self.assertAlmostEqual(builder.body_mass[result["path_body_map"]["/Body"]], defaults.density * 8.0)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -7748,6 +7823,59 @@ def Xform "Articulation" (
         self.assertIsNotNone(blue_mesh.uvs)
         self.assertEqual(blue_mesh.texture, "blue.png")
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_mesh_generates_sharp_normals(self):
+        """Resolve non-smoothing USD visuals to ordinary per-vertex normals."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.bilinear)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        np.testing.assert_allclose(builder.shape_source[shape].normals, [(0, 0, 1)] * 3)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_polygon_mesh_preserves_authored_normals(self):
+        """Preserve authored normals on imported polygonal visual meshes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateNormalsAttr().Set([(0.0, 1.0, 0.0)] * 3)
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+
+        builder = newton.ModelBuilder()
+        with mock.patch.object(usd_utils, "get_mesh", wraps=usd_utils.get_mesh) as get_mesh:
+            result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        visual_mesh = builder.shape_source[shape]
+        self.assertEqual(get_mesh.call_count, 1)
+        np.testing.assert_allclose(visual_mesh.normals, np.array([(0.0, 1.0, 0.0)] * 3), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_mesh_material_subset_with_loaded_texture_array(self):
@@ -12891,6 +13019,10 @@ def Xform "Body" (
         physics_mesh = newton.Mesh(base_vertices, indices)
         render_mesh = newton.Mesh(base_vertices * 4.0, indices)
         render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
+        render_mesh.mass = physics_mesh.mass
+        render_mesh.com = physics_mesh.com
+        render_mesh.inertia = physics_mesh.inertia
+        render_mesh.has_inertia = physics_mesh.has_inertia
 
         def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False, load_visual_materials=True):
             del load_normals, load_visual_materials
@@ -12909,7 +13041,7 @@ def Xform "Body" (
             mock.patch(
                 "newton._src.utils.import_usd.usd.get_mesh",
                 side_effect=_mock_get_mesh,
-            ),
+            ) as get_mesh,
         ):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, hide_collision_shapes=True)
@@ -12918,8 +13050,8 @@ def Xform "Body" (
         collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
         expected_density = builder.default_shape_cfg.density
 
+        self.assertEqual(get_mesh.call_count, 1)
         self.assertAlmostEqual(builder.body_mass[body_idx], physics_mesh.mass * expected_density, places=6)
-        self.assertNotAlmostEqual(builder.body_mass[body_idx], render_mesh.mass * expected_density, places=3)
 
         mesh = builder.shape_source[collision_shape]
         self.assertIsNotNone(mesh)
@@ -14434,6 +14566,17 @@ def Mesh "cube"
 """
 
     @staticmethod
+    def _define_two_triangle_mesh():
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        return stage, mesh
+
+    @staticmethod
     def _create_stage_with_texture(texture_asset: str, source_color_space: str | None = None):
         from pxr import Sdf, Usd, UsdGeom, UsdShade
 
@@ -14506,6 +14649,58 @@ def Mesh "cube"
         self.assertIsNone(mesh_without.normals, "Normals should be None when load_normals=False")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_broadcasts_constant_normals(self):
+        """Broadcast constant normals to every mesh vertex."""
+        from pxr import UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        mesh_prim.CreateNormalsAttr().Set([(0.0, 0.0, 1.0)])
+        mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.constant)
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        np.testing.assert_allclose(mesh.normals, np.tile((0.0, 0.0, 1.0), (4, 1)), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_expands_uniform_normals(self):
+        """Split vertices where uniform face normals disagree."""
+        from pxr import UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        physics_mesh = usd.get_mesh(mesh_prim.GetPrim())
+        mesh_prim.CreateNormalsAttr().Set([(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)])
+        mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.uniform)
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        corner_normals = np.asarray(mesh.normals)[np.asarray(mesh.indices)]
+        expected = np.array([(0.0, 0.0, 1.0)] * 3 + [(0.0, 1.0, 0.0)] * 3)
+        np.testing.assert_allclose(corner_normals, expected, atol=1e-6, rtol=1e-6)
+        self.assertEqual(mesh.mass, physics_mesh.mass)
+        np.testing.assert_array_equal(np.asarray(mesh.com), np.asarray(physics_mesh.com))
+        np.testing.assert_array_equal(np.asarray(mesh.inertia), np.asarray(physics_mesh.inertia))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_expands_indexed_vertex_normals(self):
+        """Expand indexed vertex normals before constructing the mesh."""
+        from pxr import Sdf, UsdGeom
+
+        _stage, mesh_prim = self._define_two_triangle_mesh()
+        normals = UsdGeom.PrimvarsAPI(mesh_prim).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+        )
+        normals.Set([(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)])
+        normals.SetIndices([0, 0, 1, 1])
+
+        mesh = usd.get_mesh(mesh_prim.GetPrim(), load_normals=True, compute_inertia=False)
+
+        self.assertEqual(len(mesh.normals), len(mesh.vertices))
+        expected = np.array([(0.0, 0.0, 1.0)] * 2 + [(0.0, 1.0, 0.0)] * 2)
+        np.testing.assert_allclose(mesh.normals, expected, atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_facevarying_normals_produce_correct_directions(self):
         """faceVarying normals on a flat quad should all point in +Z."""
         from pxr import Usd
@@ -14534,6 +14729,7 @@ def Mesh "cube"
         stage.GetRootLayer().ImportFromString(self.CUBE_WITH_FACEVARYING_NORMALS)
         prim = stage.GetPrimAtPath("/cube")
 
+        physics_mesh = usd.get_mesh(prim)
         mesh = usd.get_mesh(prim, load_normals=True)
         # The default 25-degree threshold should split all cube edges (90 degrees).
         # Each of the 6 faces has 4 corners, triangulated to 6 indices.
@@ -14543,6 +14739,9 @@ def Mesh "cube"
         normals = np.asarray(mesh.normals)
         lengths = np.linalg.norm(normals, axis=1)
         np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
+        self.assertEqual(mesh.mass, physics_mesh.mass)
+        np.testing.assert_array_equal(np.asarray(mesh.com), np.asarray(physics_mesh.com))
+        np.testing.assert_array_equal(np.asarray(mesh.inertia), np.asarray(physics_mesh.inertia))
 
     @staticmethod
     def _define_facevarying_quad(uv_values):

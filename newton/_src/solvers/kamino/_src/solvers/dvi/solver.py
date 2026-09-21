@@ -380,7 +380,7 @@ class DVISolver:
 
     def coldstart(self):
         """Prepare a cold-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         self._data.solution.zero()
 
     def warmstart(
@@ -392,7 +392,7 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
     ):
         """Prepare a warm-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         if limits is None:
             limits = self._limits
         else:

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import io
 import subprocess
 import sys
@@ -69,6 +70,30 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         result = unittest.TestResult()
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
+
+    def test_allowlisted_deprecation_is_replayed_after_validation(self):
+        """Accept and replay an allowlisted in-process deprecation warning."""
+        unittest_utils.wp.init()
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+
+        class EmitsAllowedDeprecation(NewtonTestCase):
+            def test_warning(self):
+                """Emit an allowlisted deprecation warning."""
+                warnings.warn(allowed_message, DeprecationWarning, stacklevel=1)
+
+        stderr = io.StringIO()
+        with (
+            warnings.catch_warnings(),
+            mock.patch.object(unittest_utils, "strict_warnings", True),
+            mock.patch.object(unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+            contextlib.redirect_stderr(stderr),
+        ):
+            _enable_strict_warnings((allowed_prefix,))
+            result = self._run_test_case(EmitsAllowedDeprecation)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+        self.assertIn(f"DeprecationWarning: {allowed_message}", stderr.getvalue())
 
     def test_unexpected_stdout_fails(self):
         class EmitsOutput(NewtonTestCase):

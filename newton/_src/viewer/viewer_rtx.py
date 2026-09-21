@@ -30,6 +30,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
+from ..utils.mesh import compute_vertex_normals
 
 try:
     from pxr import Gf, UsdGeom
@@ -1475,7 +1476,8 @@ void main() {
             name: Unique name for the mesh.
             points: Vertex positions [m].
             indices: Triangle indices.
-            normals: Vertex normals.
+            normals: Vertex normals. If omitted, generate normals from the current
+                triangle geometry, matching the USD and OpenGL viewers.
             uvs: Vertex UVs.
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
@@ -1515,20 +1517,21 @@ void main() {
                 else np.asarray(points, dtype=np.float32)
             )
             self._pending_mesh_points[name] = pts
+            if dynamic or normals is None:
+                indices_np = (
+                    indices.numpy().astype(np.int32)
+                    if isinstance(indices, wp.array)
+                    else np.asarray(indices, dtype=np.int32)
+                )
             if normals is not None:
                 self._pending_mesh_normals[name] = (
                     normals.numpy().astype(np.float32)
                     if isinstance(normals, wp.array)
                     else np.asarray(normals, dtype=np.float32)
                 )
-            elif dynamic:
-                self._pending_mesh_normals[name] = None
+            else:
+                self._pending_mesh_normals[name] = compute_vertex_normals(pts, indices_np)
             if dynamic:
-                indices_np = (
-                    indices.numpy().astype(np.int32)
-                    if isinstance(indices, wp.array)
-                    else np.asarray(indices, dtype=np.int32)
-                )
                 face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
                 self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
             self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
@@ -1814,8 +1817,7 @@ void main() {
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                normals_values = np.empty((0, 3), dtype=np.float32) if normals_np is None else normals_np
-                dl = self._make_point3f_dltensor(normals_values)
+                dl = self._make_point3f_dltensor(normals_np)
                 self._rtx.write_array_attribute(
                     prim_paths=[prim_path],
                     attribute_name="normals",

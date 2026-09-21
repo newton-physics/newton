@@ -138,7 +138,11 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --junit-report-xml rspec.xml
+        run: >
+          uv run --extra dev --extra torch-cu13 -m newton.tests
+          --strict-warnings
+          --deprecation-allowlist scripts/ci/deprecation_allowlists/warp_nightly.txt
+          --junit-report-xml rspec.xml
 
       - name: Check disk space (post-test)
         if: always()

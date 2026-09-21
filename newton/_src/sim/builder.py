@@ -3162,6 +3162,13 @@ class ModelBuilder:
             Its previous state is restored before returning or propagating an exception.
 
         .. important::
+            Replication may replace the backing lists of attributes on this builder.
+            References to list-valued attributes obtained before calling this method
+            may become stale: they do not receive the replicated data, and mutations
+            through them are not reflected by the builder. Reacquire attribute
+            references from the builder after calling this method.
+
+        .. important::
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
@@ -4238,6 +4245,13 @@ class ModelBuilder:
             support width of twice that radius. Non-uniform scale or shear is
             rejected because one scalar width cannot preserve a spherical particle
             under that transform.
+
+            Visual meshes load or generate normals through :func:`newton.usd.get_mesh`.
+            Sharp shading can duplicate vertices in :attr:`Model.shape_source`,
+            including for untextured meshes. Collision-only loads do not request
+            normals, and visual expansion preserves source mass properties. Use
+            :func:`newton.usd.get_mesh` with ``load_normals=False`` when source
+            vertex sharing is required for geometry processing.
 
             The returned mapping has the following entries:
 
