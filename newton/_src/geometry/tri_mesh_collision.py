@@ -678,7 +678,34 @@ class TriMeshCollisionDetector:
         Plain reference assignment: the detection launches and the forwarding
         properties below always go through ``self.collision_info``, so one
         detector (one BVH set) can serve any number of result buffers.
+
+        A struct whose capacity-sized row arrays predate a budget growth is
+        upgraded in place: the undersized rows are replaced with zeroed
+        arrays at the current capacity and a ``UserWarning`` reports the
+        resize. Its previous results are discarded, the same contract as
+        ``check_and_grow_collision_buffers`` applies to the struct grown
+        there. During graph capture no reallocation is possible, so a stale
+        struct fails validation instead.
         """
+        if not self.device.is_capturing:
+            vertex_rows = collision_info.vertex_colliding_triangles
+            edge_rows = collision_info.edge_colliding_edges
+            stale_vt = vertex_rows is not None and vertex_rows.size < max(
+                2 * self.vertex_collision_buffer_pre_alloc * self.model.particle_count, 1
+            )
+            stale_ee = edge_rows is not None and edge_rows.size < max(
+                2 * self.edge_collision_buffer_pre_alloc * self.model.edge_count, 1
+            )
+            if stale_vt or stale_ee:
+                warnings.warn(
+                    "binding a self-contact result struct allocated before the "
+                    "budgets grew: automatic resizing replaced its row arrays "
+                    "with zeroed arrays at the current capacity (previous "
+                    "contents discarded). Re-create any captured graph that "
+                    "references this struct.",
+                    stacklevel=2,
+                )
+                self._replace_row_arrays(collision_info, stale_vt, stale_ee)
         self._validate_collision_info(collision_info)
         self.collision_info = collision_info
         # budgets may have grown since construction; the log must cover them
@@ -942,6 +969,37 @@ class TriMeshCollisionDetector:
             )
         return vt_demand, ee_demand, vt_overflow, ee_overflow
 
+    def _replace_row_arrays(self, info: TriMeshCollisionInfo, replace_vt: bool, replace_ee: bool) -> None:
+        """Swap the selected capacity-sized row arrays for zeroed arrays at the
+        current budgets and reset the rows.
+
+        Per-element arrays keep their size. The rows are left in the state a
+        fresh allocation would have: empty rows described by empty
+        offsets/counts, cleared demand cursors (min_dist keeps its last
+        values; detection rewrites it anyway).
+        """
+        if replace_vt:
+            vt_capacity = self.vertex_collision_buffer_pre_alloc * self.model.particle_count
+            info.vertex_colliding_triangles = wp.zeros(
+                shape=(max(2 * vt_capacity, 1),), dtype=wp.int32, device=self.device
+            )
+            if self.record_triangle_contacting_vertices:
+                info.triangle_colliding_vertices = wp.zeros(
+                    shape=(max(vt_capacity, 1),), dtype=wp.int32, device=self.device
+                )
+        if replace_ee:
+            ee_capacity = self.edge_collision_buffer_pre_alloc * self.model.edge_count
+            info.edge_colliding_edges = wp.zeros(shape=(max(2 * ee_capacity, 1),), dtype=wp.int32, device=self.device)
+
+        info.global_pair_counts.zero_()
+        info.vertex_colliding_triangles_count.zero_()
+        info.vertex_colliding_triangles_offsets.zero_()
+        info.edge_colliding_edges_count.zero_()
+        info.edge_colliding_edges_offsets.zero_()
+        if self.record_triangle_contacting_vertices:
+            info.triangle_colliding_vertices_count.zero_()
+            info.triangle_colliding_vertices_offsets.zero_()
+
     def check_and_grow_collision_buffers(self, warn: bool = True) -> bool:
         """Check the last detection's overflow flags and grow the result storage.
 
@@ -953,6 +1011,9 @@ class TriMeshCollisionDetector:
         reference. The internal append log is resized to match. The grown rows
         are empty until the next detection fills them, so call this between
         detections, not between a detection and a consumer of its results.
+        Other result structs are not touched here; a struct that predates the
+        growth is upgraded automatically, with a warning, the next time it is
+        bound (see ``_bind_external_buffers``).
 
         This call must not be captured into a CUDA graph: it synchronizes,
         and growth reallocates arrays. While capture is active it returns
@@ -982,38 +1043,15 @@ class TriMeshCollisionDetector:
 
         particle_count = max(self.model.particle_count, 1)
         edge_count = max(self.model.edge_count, 1)
-        info = self.collision_info
         if vt_overflow:
             self.vertex_collision_buffer_pre_alloc = max(
                 self.vertex_collision_buffer_pre_alloc + 1, -(-3 * vt_demand // (2 * particle_count))
             )
-            vt_capacity = self.vertex_collision_buffer_pre_alloc * self.model.particle_count
-            info.vertex_colliding_triangles = wp.zeros(
-                shape=(max(2 * vt_capacity, 1),), dtype=wp.int32, device=self.device
-            )
-            if self.record_triangle_contacting_vertices:
-                info.triangle_colliding_vertices = wp.zeros(
-                    shape=(max(vt_capacity, 1),), dtype=wp.int32, device=self.device
-                )
         if ee_overflow:
             self.edge_collision_buffer_pre_alloc = max(
                 self.edge_collision_buffer_pre_alloc + 1, -(-3 * ee_demand // (2 * edge_count))
             )
-            ee_capacity = self.edge_collision_buffer_pre_alloc * self.model.edge_count
-            info.edge_colliding_edges = wp.zeros(shape=(max(2 * ee_capacity, 1),), dtype=wp.int32, device=self.device)
-
-        # leave the rows in the same state a fresh allocation would have:
-        # empty rows described by empty offsets/counts, cleared demand cursors
-        # (min_dist keeps its last values; detection rewrites it anyway)
-        info.global_pair_counts.zero_()
-        info.vertex_colliding_triangles_count.zero_()
-        info.vertex_colliding_triangles_offsets.zero_()
-        info.edge_colliding_edges_count.zero_()
-        info.edge_colliding_edges_offsets.zero_()
-        if self.record_triangle_contacting_vertices:
-            info.triangle_colliding_vertices_count.zero_()
-            info.triangle_colliding_vertices_offsets.zero_()
-
+        self._replace_row_arrays(self.collision_info, vt_overflow, ee_overflow)
         self._ensure_scratch()
         return True
 

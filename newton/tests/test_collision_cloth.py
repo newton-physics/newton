@@ -3,6 +3,7 @@
 
 import os
 import unittest
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -1718,7 +1719,7 @@ def test_soft_self_contact_buffer_validation(test, device):
             pipeline._get_soft_self_contact_detector(wrong_device)
 
 
-def _build_two_layer_cloth(device, budgets=None):
+def _build_two_layer_cloth_model(device):
     """Two parallel cloth layers 0.02 m apart: hundreds of self-contact pairs at
     a 0.03 query radius without any dynamics."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1745,6 +1746,11 @@ def _build_two_layer_cloth(device, budgets=None):
     model.soft_contact_ke = 1.0e2
     model.soft_contact_kd = 1.0e-3
     model.soft_contact_mu = 0.2
+    return model
+
+
+def _build_two_layer_cloth(device, budgets=None):
+    model = _build_two_layer_cloth_model(device)
 
     kwargs = {}
     if budgets is not None:
@@ -1829,6 +1835,44 @@ def test_self_contact_overflow_and_growth(test, device):
         info.edge_colliding_edges_count.numpy(),
         np.diff(info.edge_colliding_edges_offsets.numpy()),
     )
+
+
+def test_pipeline_growth_upgrades_stale_buffers(test, device):
+    """Auto-resize pre-growth pipeline buffers on bind instead of rejecting them."""
+    model = _build_two_layer_cloth_model(device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    pipeline.init_soft_self_contact(margin=0.02, gap=0.01, vertex_buffer_pre_alloc=1, edge_buffer_pre_alloc=1)
+    contacts_a = pipeline.contacts()
+    contacts_b = pipeline.contacts()
+    rows_before = contacts_b.soft_self_contact_data.vertex_colliding_triangles.size
+
+    # overflow the undersized pool with the first buffer bound, then grow
+    pipeline.collide(state, contacts_a, soft_self_contact=True)
+    detector = pipeline._get_soft_self_contact_detector(contacts_a)
+    with test.assertWarnsRegex(UserWarning, "overflowed"):
+        test.assertTrue(detector.check_and_grow_collision_buffers())
+
+    # binding the pre-growth buffer resizes it in place (with a warning) instead of raising
+    with test.assertWarnsRegex(UserWarning, "automatic resizing"):
+        pipeline.collide(state, contacts_b, soft_self_contact=True)
+    data = contacts_b.soft_self_contact_data
+    test.assertIs(pipeline._soft_self_contact_detector.collision_info, data)
+    test.assertGreater(data.vertex_colliding_triangles.size, rows_before)
+
+    # the upgraded buffer holds a full, uncropped detection
+    global_pair_counts = data.global_pair_counts.numpy()
+    test.assertEqual(int(global_pair_counts[1]), 0)
+    test.assertEqual(int(global_pair_counts[3]), 0)
+    test.assertGreater(int(global_pair_counts[0]), 100)
+    test.assertGreater(int(global_pair_counts[2]), 100)
+    _assert_rows_partition_pairs(test, data)
+
+    # the buffer that was bound during growth is already current: no second resize
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pipeline.collide(state, contacts_a, soft_self_contact=True)
+    test.assertFalse([w for w in caught if "automatic resizing" in str(w.message)])
 
 
 @wp.kernel
@@ -2118,6 +2162,12 @@ add_function_test(
     TestCollision,
     "test_self_contact_overflow_and_growth",
     test_self_contact_overflow_and_growth,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_pipeline_growth_upgrades_stale_buffers",
+    test_pipeline_growth_upgrades_stale_buffers,
     devices=devices,
 )
 add_function_test(

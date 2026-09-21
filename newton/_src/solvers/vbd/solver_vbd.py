@@ -1066,9 +1066,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         else:
             detector = self.trimesh_collision_detector
         # overflow handling and resizing are the detector's job; growth is in
-        # place (same struct object), so owners like the pipeline's Contacts
-        # stay valid on their own -- only the solver's DEVICE-SIDE copy of the
-        # struct and the launch size need a refresh
+        # place (same struct object), so the bound struct's owner stays valid
+        # (other Contacts buffers are auto-resized at their next bind) -- only
+        # the solver's DEVICE-SIDE copy of the struct and the launch size need
+        # a refresh
         if not detector.check_and_grow_collision_buffers():
             return False
         collision_info = detector.collision_info
