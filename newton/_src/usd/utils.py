@@ -1018,7 +1018,7 @@ def _open_usd_stage(source: str | os.PathLike[str]):
     if source_path.startswith("http://"):
         raise ValueError("HTTP USD URLs are not supported; use HTTPS or download the asset explicitly.")
     if _is_usd_url(source_path):
-        from ..utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+        from ._asset_download import resolve_usd_from_url  # noqa: PLC0415
 
         source_path = resolve_usd_from_url(source_path)
 

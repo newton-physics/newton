@@ -71,7 +71,12 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         viewer._window = None
         viewer.gui = None
         viewer._instance_prim_paths = {}
+        viewer._mesh_prim_paths = {}
+        viewer._point_batch_paths = {}
         viewer._all_instance_paths = []
+        viewer._bound_instance_prim_paths = {}
+        viewer._runtime_transform_bindings = {}
+        viewer._transform_binding = None
         viewer._rtx = None
         viewer._tex_resource = None
         viewer._gl_texture = None
@@ -123,7 +128,7 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.viewer._ovstage_queries = {}
         self.viewer._ovstage_ordinal = 1
         self.viewer._ovstage_population_dirty = False
-        self.viewer._line_batch_handles = {}
+        self.viewer._runtime_scene_changed = False
         self.ovstage.population.open_usd_from_string(
             self.viewer._ovstage,
             """#usda 1.0
@@ -208,25 +213,31 @@ def Xform "World"
 
         np.testing.assert_allclose(values, points)
 
-    def test_runtime_line_batch_population_uses_ovstage(self):
-        """Add and remove runtime line USD through OVStage without legacy calls."""
+    def test_runtime_prim_population_uses_ovstage(self):
+        """Add and replace runtime USD through OVStage without legacy calls."""
+        from pxr import Usd, UsdGeom
+
         self.viewer._rtx = mock.Mock()
         self.viewer._rtx.add_usd_reference_from_string.side_effect = DeprecationWarning
         self.viewer._rtx.remove_usd.side_effect = DeprecationWarning
-        self.viewer._get_path = mock.Mock(return_value="/World/RuntimeLines")
-        starts = np.asarray([[0.0, 0.0, 0.0]], dtype=np.float32)
-        ends = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
-        colors = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+        self.viewer.stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(self.viewer.stage, "/World/RuntimeMarker")
+        self.viewer._frame_index = 0
+        self.viewer._runtime_prim_handles = {}
+        self.viewer._runtime_prim_paths = {}
+        self.viewer._runtime_prim_serial = 0
 
-        self.assertTrue(self.viewer._rebuild_runtime_line_batch_layer("runtime", starts, ends, colors, 0.1, False))
+        runtime_path = self.viewer._replace_runtime_prim("/World/RuntimeMarker")
         self.assertTrue(self.viewer._ovstage_population_dirty)
-        self.assertIsInstance(self.viewer._line_batch_handles["runtime"], int)
+        self.assertEqual(runtime_path, "/World/RuntimeMarker_rtx_1")
+        self.assertIsInstance(self.viewer._runtime_prim_handles["/World/RuntimeMarker"], int)
         self.viewer._ovstage_ordinal = 2
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
 
-        self.viewer._remove_runtime_line_batch_layer("runtime")
+        replacement_path = self.viewer._replace_runtime_prim("/World/RuntimeMarker")
         self.assertTrue(self.viewer._ovstage_population_dirty)
+        self.assertEqual(replacement_path, "/World/RuntimeMarker_rtx_2")
         self.viewer._ovstage_ordinal = 3
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
@@ -250,7 +261,6 @@ def Xform "World"
             mock.patch.object(self.viewer, "_update_ovrtx_camera"),
             mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
             mock.patch.object(self.viewer, "_update_ovrtx_instance_visibility"),
-            mock.patch.object(self.viewer, "_update_ovrtx_line_batches"),
             mock.patch.object(self.viewer, "_update_ovrtx_point_batches"),
             mock.patch.object(self.viewer, "_update_ovrtx_mesh_points"),
             mock.patch.object(self.viewer, "_render_and_display"),

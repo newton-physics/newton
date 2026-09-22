@@ -25,13 +25,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
-from unittest.mock import call, create_autospec
+from unittest.mock import call, create_autospec, patch
 
+import numpy as np
 import warp as wp
 
 import newton.tests.unittest_utils
+from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     NewtonTestCase,
@@ -40,6 +43,7 @@ from newton.tests.unittest_utils import (
     get_test_devices,
     sanitize_identifier,
 )
+from newton.viewer import ViewerNull
 
 _HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.util.find_spec("warp_nn") is not None
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
@@ -94,6 +98,10 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"^.*\n"
     r")+"
     r"^\d+ warnings? generated\.\n?"
+)
+_KAMINO_NON_FLOATING_ROOT_WARNING_RE = (
+    r"(?m)^.*Model has articulations whose root is not a free joint attached to the world, "
+    r"disabling floating base resets for those worlds\..*\n?"
 )
 _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
@@ -463,6 +471,14 @@ def add_basic_example_test(**kwargs):
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+add_basic_example_test(
+    name="basic.example_basic_pendulum",
+    devices=cuda_test_devices,
+    test_options={"solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+)
 
 add_basic_example_test(
     name="basic.example_recording",
@@ -505,6 +521,21 @@ add_basic_example_test(
     test_options={"solver": "vbd"},
     test_suffix="vbd",
 )
+add_basic_example_test(
+    name="basic.example_basic_urdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200, "solver": "kamino", "world-count": 4},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_basic_example_test(
+    name="basic.example_basic_joints",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+)
 
 for mimic_solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd"):
     add_basic_example_test(
@@ -522,6 +553,22 @@ add_basic_example_test(
     test_options={"num-frames": 150, "solver": "xpbd"},
     test_suffix="xpbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+
+add_basic_example_test(
+    name="basic.example_basic_heightfield",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino"},
+    test_suffix="kamino",
 )
 add_basic_example_test(
     name="basic.example_basic_shapes",
@@ -590,6 +637,7 @@ add_basic_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 50},
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
 )
 
 
@@ -755,6 +803,48 @@ add_example_test(
 
 class TestRobotExamples(unittest.TestCase):
     pass
+
+
+def _test_robot_cartpole_capture_matches_eager(test, device):
+    if not USD_AVAILABLE:
+        test.skipTest("Requires USD")
+
+    args = SimpleNamespace(world_count=1, solver="kamino")
+    with wp.ScopedDevice(device):
+        with patch.object(RobotCartpoleExample, "capture", lambda example: setattr(example, "graph", None)):
+            eager = RobotCartpoleExample(ViewerNull(num_frames=2), args)
+        eager_frames = []
+        for _ in range(2):
+            eager.step()
+            eager_frames.append((eager.state_0.body_q.numpy(), eager.state_0.body_qd.numpy()))
+
+        captured = RobotCartpoleExample(ViewerNull(num_frames=2), args)
+        for frame, (eager_q, eager_qd) in enumerate(eager_frames):
+            captured.step()
+            wp.synchronize_device(device)
+            np.testing.assert_allclose(
+                captured.state_0.body_q.numpy(),
+                eager_q,
+                rtol=1.0e-5,
+                atol=1.0e-6,
+                err_msg=f"body positions differ after frame {frame}",
+            )
+            np.testing.assert_allclose(
+                captured.state_0.body_qd.numpy(),
+                eager_qd,
+                rtol=1.0e-5,
+                atol=1.0e-6,
+                err_msg=f"body velocities differ after frame {frame}",
+            )
+
+
+add_function_test(
+    TestRobotExamples,
+    "test_robot_cartpole_capture_matches_eager",
+    _test_robot_cartpole_capture_matches_eager,
+    devices=cuda_test_devices,
+    check_output=False,
+)
 
 
 add_example_test(
@@ -980,6 +1070,14 @@ add_example_test(
     use_viewer=True,
 )
 add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_cartpole",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=cuda_test_devices,
@@ -1080,6 +1178,14 @@ add_example_test(
     test_options={"num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
 )
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 160, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
 
 add_example_test(
     TestSensorExamples,
@@ -1095,6 +1201,14 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
     use_viewer=True,
+)
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_imu",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 
 
