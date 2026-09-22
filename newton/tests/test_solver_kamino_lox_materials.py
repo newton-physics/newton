@@ -18,12 +18,20 @@ from newton._src.solvers.kamino.config import LOXSolverConfig
 
 class TestLOXContactMaterials(unittest.TestCase):
     def test_config_defaults_and_validation(self):
-        """Keep spatial contact friction opt-in and reject invalid values."""
+        """Keep contact extensions opt-in and reject inconsistent parameters."""
         config = LOXSolverConfig()
+        self.assertEqual(config.contact_compliance, 0.0)
+        self.assertEqual(config.contact_compliance_fraction, 1.0)
         self.assertFalse(config.contact_spatial_friction)
-        for value in (1, "true"):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                LOXSolverConfig(contact_spatial_friction=value)
+        for field, values in (
+            ("contact_compliance", (-1.0, float("inf"), float("nan"))),
+            ("contact_compliance_fraction", (0.0, -1.0, 1.1, float("nan"))),
+            ("contact_spatial_friction", (1, "true")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    LOXSolverConfig(**{field: value})
+        LOXSolverConfig(contact_compliance=1.0e-5, contact_compliance_fraction=0.5)
 
     def test_collision_paths_and_material_updates(self):
         """Transport angular friction through both collision paths and shape edits."""

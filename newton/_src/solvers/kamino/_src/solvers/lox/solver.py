@@ -308,8 +308,8 @@ class LOXSolver:
         self.model = model
         self._constraints = constraints
         self.problem = problem
-        if config.contact_spatial_friction:
-            problem.contact_law = ContactLaw(problem, config)
+        if config.contact_compliance > 0.0 or config.contact_spatial_friction:
+            problem.contact_law = ContactLaw(problem, config, constraints)
         self.device = model.device
         self.num_worlds = model.info.num_worlds
         self.max_iterations = config.max_iterations
@@ -428,8 +428,8 @@ class LOXSolver:
         if problem is None:
             return
         problem.rebuild_dynamic_body_topology()
-        if self._config.contact_spatial_friction:
-            problem.contact_law = ContactLaw(problem, self._config)
+        if self._config.contact_compliance > 0.0 or self._config.contact_spatial_friction:
+            problem.contact_law = ContactLaw(problem, self._config, self._constraints)
         self._colored_gauss_seidel = None
         self._bind_rigid_topology()
         self.has_bounded_effort = problem.has_bounded_effort

@@ -1123,7 +1123,9 @@ class LOXProblem:
             )
 
         if self.contact_law is not None:
-            self.contact_law.initialize(time_step, import_reactions)
+            self.contact_law.initialize(
+                time_step, contact_stabilization_fraction, contact_recoverable_response, import_reactions
+            )
 
     def _evaluate_structural_candidate_pose_residual(
         self,

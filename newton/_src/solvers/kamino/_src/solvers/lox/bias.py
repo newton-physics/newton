@@ -8,11 +8,44 @@ from __future__ import annotations
 import warp as wp
 
 __all__ = [
+    "compute_contact_normal_regularization",
+    "compute_contact_penetration_bias",
     "compute_contact_velocity_target",
     "compute_limit_velocity_target",
 ]
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def compute_contact_normal_regularization(compliance: wp.float32, time_step: wp.float32) -> wp.float32:
+    """Convert scalar normal compliance [m/N] to a velocity-impulse coefficient [1/kg].
+
+    Add this coefficient to the mechanical normal Delassus diagonal before
+    solving the local law. It contributes to the law residual, but not to
+    the velocity impulse scattered to bodies. Zero recovers hard contact.
+    """
+    return compliance / (time_step * time_step)
+
+
+@wp.func
+def compute_contact_penetration_bias(
+    distance: wp.float32,
+    time_step: wp.float32,
+    stabilization_fraction: wp.float32,
+) -> wp.float32:
+    """Compute the affine normal bias for compliant penetration recovery.
+
+    Args:
+        distance: Beginning-of-step margin-shifted signed distance [m].
+        time_step: Time step [s].
+        stabilization_fraction: Penetration recovery fraction; one gives backward Euler.
+
+    Returns:
+        Normal right-hand-side bias [m/s]. Add once to the reaction-free
+        mechanical velocity; subtract any restitution target separately.
+    """
+    return stabilization_fraction * wp.min(distance, 0.0) / time_step
 
 
 @wp.func

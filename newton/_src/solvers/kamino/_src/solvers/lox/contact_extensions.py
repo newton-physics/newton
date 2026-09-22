@@ -1,13 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental spatial contact integration."""
+"""Experimental spatial and compliant contact integration."""
 
 from __future__ import annotations
 
 import warp as wp
 
 from ...core.types import mat36f, mat66f, vec6f
+from .bias import (
+    compute_contact_normal_regularization,
+    compute_contact_penetration_bias,
+    compute_contact_velocity_target,
+)
 from .contact_cache import AngularContactCache
 from .spatial_contact import (
     SpatialContactPrepared,
@@ -25,9 +30,13 @@ class ContactLawData:
     """Device views for one prepared projection schedule."""
 
     enabled: wp.bool
+    dead_zone: wp.float32
+    impact_threshold: wp.float32
     jacobian_first: wp.array[mat66f]
     jacobian_second: wp.array[mat66f]
+    parameters: wp.array[wp.vec4f]
     bias: wp.array[wp.float32]
+    regularization: wp.array[wp.float32]
     friction: wp.array[wp.vec3f]
     angular_reaction: wp.array[wp.vec3f]
     angular_trial: wp.array[wp.vec3f]
@@ -65,12 +74,17 @@ def gather_contact_velocity(
 
 
 @wp.func
+def contact_rhs_bias(contact: int, free_normal_velocity: float, data: ContactLawData) -> float:
+    return data.bias[contact]
+
+
+@wp.func
 def project_extended_contact(
     contact: int, first: int, second: int, linear: wp.vec3f, twist: wp.array[vec6f], data: ContactLawData
 ) -> SpatialContactResult:
     old = pack_contact_reaction(linear, data.angular_reaction[contact])
     free = gather_contact_velocity(contact, first, second, twist, data) - data.mechanical[contact] @ old
-    free[0] += data.bias[contact]
+    free[0] += contact_rhs_bias(contact, free[0], data)
     result = solve_spatial_contact(data.prepared[contact], free)
     data.status[contact] = result.status
     return result
@@ -99,6 +113,7 @@ def _initialize_contacts(
     source_count: wp.array[wp.int32],
     source_map: wp.array[wp.int32],
     source_frame: wp.array[wp.quatf],
+    source_gap: wp.array[wp.vec4f],
     source_material: wp.array[wp.vec2f],
     source_angular_friction: wp.array[wp.vec2f],
     world: wp.array[wp.int32],
@@ -107,7 +122,14 @@ def _initialize_contacts(
     linear_jacobian_first: wp.array[mat36f],
     linear_jacobian_second: wp.array[mat36f],
     legacy_bias: wp.array[wp.vec3f],
+    begin_velocity: wp.array[vec6f],
+    time_step: wp.array[wp.float32],
+    compliance: float,
+    compliance_fraction: float,
+    stabilization_fraction: float,
+    recoverable_response: bool,
     spatial_friction: bool,
+    begin_step: bool,
     data: ContactLawData,
 ):
     source = wp.tid()
@@ -136,7 +158,26 @@ def _initialize_contacts(
     if spatial_friction:
         angular = source_angular_friction[source]
     data.friction[contact] = wp.vec3f(material[0], angular[0], angular[1])
-    data.bias[contact] = legacy_bias[contact][2]
+    dt = time_step[world[contact]]
+    if begin_step:
+        velocity = gather_contact_velocity(contact, first[contact], second[contact], begin_velocity, data)
+        data.parameters[contact] = wp.vec4f(source_gap[source][3], velocity[0], material[1], dt)
+    parameters = data.parameters[contact]
+    data.regularization[contact] = compute_contact_normal_regularization(compliance, dt)
+    bias = legacy_bias[contact][2]
+    if compliance > 0.0:
+        bias = compute_contact_penetration_bias(parameters[0], dt, compliance_fraction)
+        bias -= compute_contact_velocity_target(
+            wp.max(parameters[0], 0.0),
+            parameters[1],
+            parameters[2],
+            dt,
+            stabilization_fraction,
+            data.dead_zone,
+            data.impact_threshold,
+            recoverable_response,
+        )
+    data.bias[contact] = bias
     data.status[contact] = 0
 
 
@@ -175,6 +216,7 @@ def _prepare_contacts(
                 m = wp.max(1, occupancy[body, colors[contact]])
             d += float(m) * (jacobian @ inverse_weight[body] @ wp.transpose(jacobian))
     data.mechanical[contact] = d
+    d[0, 0] += data.regularization[contact]
     prepared = prepare_spatial_contact(d, data.friction[contact])
     data.prepared[contact] = prepared
     data.status[contact] = prepared.status
@@ -243,7 +285,8 @@ def _compute_residuals(
     reaction = pack_contact_reaction(linear_reaction[contact], data.angular_reaction[contact])
     c = gather_contact_velocity(contact, first[contact], second[contact], twist, data)
     velocity[contact] = linear_contact_reaction(c)
-    c[0] += data.bias[contact]
+    free = c - data.mechanical[contact] @ reaction
+    c[0] += contact_rhs_bias(contact, free[0], data) + data.regularization[contact] * reaction[0]
     value = wp.max(wp.abs(compute_spatial_contact_residual(physical[contact], reaction, c)))
     if not wp.isfinite(value):
         status[wid] = 0
@@ -330,16 +373,20 @@ def _reset_contacts(world: wp.array[wp.int32], mask: wp.array[wp.bool], data: Co
 class ContactLaw:
     """Own optional contact state without increasing default solver storage."""
 
-    def __init__(self, problem, config):
+    def __init__(self, problem, config, constraints):
         self.problem = problem
         self.config = config
         self.data = ContactLawData()
         data = self.data
         data.enabled = True
+        data.dead_zone = constraints.delta
+        data.impact_threshold = config.impact_velocity_threshold
         for name, dtype in (
             ("jacobian_first", mat66f),
             ("jacobian_second", mat66f),
+            ("parameters", wp.vec4f),
             ("bias", wp.float32),
+            ("regularization", wp.float32),
             ("friction", wp.vec3f),
             ("angular_reaction", wp.vec3f),
             ("angular_trial", wp.vec3f),
@@ -367,7 +414,7 @@ class ContactLaw:
         data.mechanical = wp.zeros(self.problem.contact_capacity, dtype=mat66f, device=self.problem.device)
         return data
 
-    def initialize(self, time_step, begin_step):
+    def initialize(self, time_step, stabilization_fraction, recoverable_response, begin_step):
         p = self.problem
         if begin_step:
             self.data.angular_reaction.zero_()
@@ -383,6 +430,7 @@ class ContactLaw:
                 p.contacts.model_active_contacts,
                 p.contact_source_to_internal,
                 p.contacts.frame,
+                p.contacts.gapfunc,
                 p.contacts.material,
                 p.contacts.angular_friction,
                 p.contact_world,
@@ -391,7 +439,14 @@ class ContactLaw:
                 p.contact_jacobian_first,
                 p.contact_jacobian_second,
                 p.contact_bias,
+                p.body_velocity_begin,
+                time_step,
+                self.config.contact_compliance,
+                self.config.contact_compliance_fraction,
+                stabilization_fraction,
+                recoverable_response,
                 self.config.contact_spatial_friction,
+                begin_step,
                 self.data,
             ],
             device=p.device,

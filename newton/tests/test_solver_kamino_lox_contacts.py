@@ -82,6 +82,18 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
         return state_out
 
+    def test_compliance_static_deflection_all_schedules(self):
+        """Maintain the analytic spring deflection under gravity for every schedule."""
+        compliance = 0.002
+        for method in ("jacobi", "gauss_seidel", "apgd"):
+            for dt in (0.01, 0.02):
+                with self.subTest(method=method, dt=dt):
+                    model = self._sphere(gap=-10.0 * compliance)
+                    solver = self._solver(model, method=method, contact_compliance=compliance)
+                    state = self._step(model, solver, dt=dt)
+                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), 0.0, delta=2.0e-4)
+                    self.assertAlmostEqual(float(state.body_q.numpy()[0, 2]), 0.08, delta=1.0e-5)
+
     def test_spatial_friction_reduces_spin_and_roll(self):
         """Dissipate spinning and rolling motion within the shared friction budget."""
         for method in ("jacobi", "gauss_seidel", "apgd"):
@@ -117,7 +129,9 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         for enabled in (False, True):
             with self.subTest(compute_solution_metrics=enabled):
                 model = self._sphere(gap=-0.01, velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.01)
-                solver = self._solver(model, compute_solution_metrics=enabled, contact_spatial_friction=True)
+                solver = self._solver(
+                    model, compute_solution_metrics=enabled, contact_compliance=0.001, contact_spatial_friction=True
+                )
                 self._step(model, solver)
                 status = solver.status.numpy()
                 self.assertTrue(np.isfinite(status["r_contact"]).all())
@@ -169,6 +183,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 solver = self._solver(
                     model,
                     method=method,
+                    contact_compliance=0.001,
                     contact_spatial_friction=True,
                 )
                 state_in, state_out = model.state(), model.state()

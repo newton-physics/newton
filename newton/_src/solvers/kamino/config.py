@@ -1092,6 +1092,20 @@ class LOXSolverConfig:
     contact_recoverable_response: bool = False
     """Whether speculative contacts permit overlap recoverable as the unreduced restitution response."""
 
+    contact_compliance: float = 0.0
+    """Experimental normal contact compliance [m/N]; zero selects hard contact.
+
+    Adds ``contact_compliance / dt**2`` to the normal contact operator.
+    This parameter may change without following the normal deprecation policy.
+    """
+
+    contact_compliance_fraction: float = 1.0
+    """Experimental penetration recovery fraction for compliant contacts, in (0, 1].
+
+    One gives backward Euler recovery. This parameter may change without
+    following the normal deprecation policy.
+    """
+
     contact_spatial_friction: bool = False
     """Enable experimental coupled sliding, torsional, and rolling friction.
 
@@ -1236,8 +1250,15 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid contact_recoverable_response: {self.contact_recoverable_response}. Must be a boolean."
             )
-        if not isinstance(self.contact_spatial_friction, bool):
-            raise ValueError(f"Invalid contact_spatial_friction: {self.contact_spatial_friction}. Must be a boolean.")
+        if not np.isfinite(self.contact_compliance) or self.contact_compliance < 0.0:
+            raise ValueError(f"Invalid contact_compliance: {self.contact_compliance}. Must be finite and non-negative.")
+        if not np.isfinite(self.contact_compliance_fraction) or not 0.0 < self.contact_compliance_fraction <= 1.0:
+            raise ValueError(
+                f"Invalid contact_compliance_fraction: {self.contact_compliance_fraction}. Must be in range (0, 1]."
+            )
+        for name in ("contact_spatial_friction",):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
         implemented_contact_warmstart_methods = {
             "key_and_position",
