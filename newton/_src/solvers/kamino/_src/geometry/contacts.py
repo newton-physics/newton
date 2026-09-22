@@ -298,6 +298,12 @@ class ContactsKaminoData:
     Shape of ``(model_max_contacts_host,)``.
     """
 
+    angular_friction: wp.array[wp.vec2f] | None = None
+    """Torsional and rolling friction coefficients [m], averaged per shape pair.
+
+    Shape of ``(model_max_contacts_host,)``; used by spatial LOX contacts.
+    """
+
     margins: wp.array[wp.vec2f] | None = None
     """
     The shape-pair margins of each active contact.
@@ -733,6 +739,12 @@ class ContactsKamino:
         return self._data.material
 
     @property
+    def angular_friction(self) -> wp.array[wp.vec2f]:
+        """Return per-contact torsional and rolling friction coefficients [m]."""
+        self._assert_has_data()
+        return self._data.angular_friction
+
+    @property
     def margins(self) -> wp.array[wp.vec2f]:
         """
         Returns the effective shape-pair margins of each active contact.
@@ -901,6 +913,7 @@ class ContactsKamino:
                 gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec4f),
                 frame=wp.zeros(shape=(model_max_contacts,), dtype=wp.quatf),
                 material=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
+                angular_friction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 margins=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 key=wp.zeros(shape=(model_max_contacts,), dtype=wp.uint64),
                 reaction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
@@ -984,6 +997,8 @@ def make_convert_contacts_newton_to_kamino(
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
         shape_restitution: wp.array[wp.float32],
+        shape_mu_torsional: wp.array[wp.float32],
+        shape_mu_rolling: wp.array[wp.float32],
         body_q: wp.array[wp.transformf],
         body_inv_mass: wp.array[wp.float32],
         body_inv_inertia: wp.array[wp.mat33f],
@@ -1000,6 +1015,7 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc: wp.array[wp.vec4f],
         kamino_frame: wp.array[wp.quatf],
         kamino_material: wp.array[wp.vec2f],
+        kamino_angular_friction: wp.array[wp.vec2f],
         kamino_margins: wp.array[wp.vec2f],
         kamino_key: wp.array[wp.uint64],
         kamino_reaction: wp.array[wp.vec3f],
@@ -1167,6 +1183,10 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        kamino_angular_friction[mcid] = wp.vec2f(
+            0.5 * (shape_mu_torsional[sid_0] + shape_mu_torsional[sid_1]),
+            0.5 * (shape_mu_rolling[sid_0] + shape_mu_rolling[sid_1]),
+        )
         kamino_margins[mcid] = wp.vec2f(margin_A, margin_B)
         kamino_key[mcid] = build_pair_key2(wp.uint32(gid_A), wp.uint32(gid_B))
 
@@ -1534,6 +1554,8 @@ def convert_contacts_newton_to_kamino(
             model.shape_world,
             model.shape_material_mu,
             model.shape_material_restitution,
+            model.shape_material_mu_torsional,
+            model.shape_material_mu_rolling,
             state.body_q,
             model.body_inv_mass,
             model.body_inv_inertia,
@@ -1551,6 +1573,7 @@ def convert_contacts_newton_to_kamino(
             contacts_out.gapfunc,
             contacts_out.frame,
             contacts_out.material,
+            contacts_out.angular_friction,
             contacts_out.margins,
             contacts_out.key,
             contacts_out.reaction,

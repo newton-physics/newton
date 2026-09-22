@@ -9,6 +9,14 @@ import warp as wp
 
 from ...core.types import mat36f, mat66f, vec6f
 from .contact import project_contact_coulomb_cone
+from .contact_extensions import (
+    ContactLawData,
+    angular_contact_reaction,
+    clamp_contact_reaction,
+    linear_contact_reaction,
+    pack_contact_reaction,
+    warmstart_extended_contacts,
+)
 from .projection import (
     PROJECTION_STATUS_VALID,
     _atomic_add_twist,
@@ -280,6 +288,7 @@ def _initialize_accelerated_reactions(
     limit_reaction: wp.array[wp.float32],
     limit_trial: wp.array[wp.float32],
     limit_previous: wp.array[wp.float32],
+    extensions: ContactLawData,
 ):
     constraint = wp.tid()
     if constraint < friction_capacity:
@@ -301,7 +310,18 @@ def _initialize_accelerated_reactions(
             return
         contact_value = wp.vec3f(0.0)
         if contact_body_first[constraint] >= 0 or contact_body_second[constraint] >= 0:
-            contact_value = project_contact_coulomb_cone(contact_reaction[constraint], contact_friction[constraint])
+            if extensions.enabled:
+                value = clamp_contact_reaction(
+                    pack_contact_reaction(contact_reaction[constraint], extensions.angular_reaction[constraint]),
+                    extensions.friction[constraint],
+                )
+                contact_value = linear_contact_reaction(value)
+                angular = angular_contact_reaction(value)
+                extensions.angular_reaction[constraint] = angular
+                extensions.angular_trial[constraint] = angular
+                extensions.angular_previous[constraint] = angular
+            else:
+                contact_value = project_contact_coulomb_cone(contact_reaction[constraint], contact_friction[constraint])
         contact_reaction[constraint] = contact_value
         contact_trial[constraint] = contact_value
         contact_previous[constraint] = contact_value
@@ -342,6 +362,7 @@ def _accumulate_rigid_restart(
     limit_trial: wp.array[wp.float32],
     limit_previous: wp.array[wp.float32],
     restart_dot: wp.array[wp.float32],
+    extensions: ContactLawData,
 ):
     constraint = wp.tid()
     if constraint < friction_capacity:
@@ -367,14 +388,20 @@ def _accumulate_rigid_restart(
             and world_status[world] == PROJECTION_STATUS_VALID
         ):
             contact_current = contact_reaction[constraint]
-            wp.atomic_add(
-                restart_dot,
-                world,
-                wp.dot(
-                    contact_current - contact_trial[constraint],
-                    contact_current - contact_previous[constraint],
-                ),
-            )
+            dot = wp.dot(contact_current - contact_trial[constraint], contact_current - contact_previous[constraint])
+            if extensions.enabled:
+                current = pack_contact_reaction(contact_current, extensions.angular_reaction[constraint])
+                trial = pack_contact_reaction(contact_trial[constraint], extensions.angular_trial[constraint])
+                previous = pack_contact_reaction(contact_previous[constraint], extensions.angular_previous[constraint])
+                friction = extensions.friction[constraint]
+                scale = vec6f(1.0, friction[0], friction[0], friction[1], friction[2], friction[2])
+                dot = 0.0
+                for axis in range(6):
+                    if scale[axis] > 0.0:
+                        dot += ((current[axis] - trial[axis]) / scale[axis]) * (
+                            (current[axis] - previous[axis]) / scale[axis]
+                        )
+            wp.atomic_add(restart_dot, world, dot)
         return
     constraint -= contact_capacity
     world = limit_world[constraint]
@@ -458,6 +485,7 @@ def _extrapolate_rigid_reactions(
     limit_trial: wp.array[wp.float32],
     limit_previous: wp.array[wp.float32],
     twist_delta: wp.array[vec6f],
+    extensions: ContactLawData,
 ):
     constraint = wp.tid()
     if constraint < friction_capacity:
@@ -489,6 +517,23 @@ def _extrapolate_rigid_reactions(
             or world_status[world] != PROJECTION_STATUS_VALID
         ):
             return
+        if extensions.enabled:
+            angular = extensions.angular_reaction[constraint]
+            extrapolated = angular + beta[world] * (angular - extensions.angular_previous[constraint])
+            angular_delta = pack_contact_reaction(wp.vec3f(0.0), extrapolated - angular)
+            extensions.angular_previous[constraint] = angular
+            extensions.angular_trial[constraint] = extrapolated
+            extensions.angular_reaction[constraint] = extrapolated
+            first = contact_body_first[constraint]
+            second = contact_body_second[constraint]
+            if first >= 0:
+                _atomic_add_twist(
+                    twist_delta, first, wp.transpose(extensions.jacobian_first[constraint]) @ angular_delta
+                )
+            if second >= 0:
+                _atomic_add_twist(
+                    twist_delta, second, wp.transpose(extensions.jacobian_second[constraint]) @ angular_delta
+                )
         contact_current = contact_reaction[constraint]
         contact_extrapolated = contact_current + beta[world] * (contact_current - contact_previous[constraint])
         contact_delta = contact_extrapolated - contact_current
@@ -596,6 +641,7 @@ def project_constraints_jacobi(
     contact_previous: wp.array[wp.vec3f] | None = None,
     limit_trial: wp.array[wp.float32] | None = None,
     limit_previous: wp.array[wp.float32] | None = None,
+    contact_extensions: ContactLawData | None = None,
 ) -> None:
     """Run mass-split Jacobi sweeps over all body-space unilaterals.
 
@@ -631,22 +677,27 @@ def project_constraints_jacobi(
     if accelerated and (not warm_start or any(value is None for value in acceleration_arrays)):
         raise ValueError("Accelerated Jacobi requires warm start and all acceleration arrays.")
 
+    extensions = contact_extensions if contact_extensions is not None else ContactLawData()
     contact_projection_max_blocks = 0
     if projected_twist.device.is_cuda:
         contact_projection_max_blocks = projected_twist.device.sm_count * _JACOBI_CONTACT_PROJECTION_BLOCKS_PER_SM
 
-    use_world_projection = not accelerated and _can_fuse_rigid_projection_by_world(
-        projected_twist.device,
-        world_count,
-        required_world_arrays=(
-            world_body_offset,
-            world_body_count,
-            world_friction_offset,
-            world_contact_offset,
-            world_limit_offset,
-        ),
-        parallel_constraint_capacity=friction_world.shape[0] + contact_world.shape[0] + limit_world.shape[0],
-        world_block_dim=_JACOBI_WORLD_BLOCK_DIM,
+    use_world_projection = (
+        not accelerated
+        and not extensions.enabled
+        and _can_fuse_rigid_projection_by_world(
+            projected_twist.device,
+            world_count,
+            required_world_arrays=(
+                world_body_offset,
+                world_body_count,
+                world_friction_offset,
+                world_contact_offset,
+                world_limit_offset,
+            ),
+            parallel_constraint_capacity=friction_world.shape[0] + contact_world.shape[0] + limit_world.shape[0],
+            world_block_dim=_JACOBI_WORLD_BLOCK_DIM,
+        )
     )
 
     rigid_capacity = friction_world.shape[0] + contact_world.shape[0] + limit_world.shape[0]
@@ -690,6 +741,7 @@ def project_constraints_jacobi(
                     limit_reaction,
                     limit_trial,
                     limit_previous,
+                    extensions,
                 ],
                 device=projected_twist.device,
             )
@@ -704,26 +756,47 @@ def project_constraints_jacobi(
     if not use_world_projection:
         twist_delta.zero_()
     if warm_start and not use_world_projection and contact_world.shape[0] > 0:
-        wp.launch(
-            _warmstart_contacts_jacobi,
-            dim=contact_world.shape[0],
-            inputs=[
-                contact_world,
-                contact_local,
-                world_active,
-                prepared_status,
-                world_contact_count,
-                contact_body_first,
-                contact_body_second,
-                contact_jacobian_first,
-                contact_jacobian_second,
-                inverse_weight,
-                False,
-                contact_reaction,
-            ],
-            outputs=[twist_delta],
-            device=projected_twist.device,
-        )
+        if extensions.enabled:
+            wp.launch(
+                warmstart_extended_contacts,
+                dim=contact_world.shape[0],
+                inputs=[
+                    contact_world,
+                    contact_local,
+                    world_contact_count,
+                    world_active,
+                    prepared_status,
+                    contact_body_first,
+                    contact_body_second,
+                    inverse_weight,
+                    False,
+                    contact_reaction,
+                    extensions,
+                    twist_delta,
+                ],
+                device=projected_twist.device,
+            )
+        else:
+            wp.launch(
+                _warmstart_contacts_jacobi,
+                dim=contact_world.shape[0],
+                inputs=[
+                    contact_world,
+                    contact_local,
+                    world_active,
+                    prepared_status,
+                    world_contact_count,
+                    contact_body_first,
+                    contact_body_second,
+                    contact_jacobian_first,
+                    contact_jacobian_second,
+                    inverse_weight,
+                    False,
+                    contact_reaction,
+                ],
+                outputs=[twist_delta],
+                device=projected_twist.device,
+            )
     if warm_start and not use_world_projection and friction_world.shape[0] > 0:
         wp.launch(
             _warmstart_frictions_jacobi,
@@ -792,6 +865,7 @@ def project_constraints_jacobi(
     contact_data.bias = contact_bias
     contact_data.friction = contact_friction
     contact_data.reaction = contact_reaction
+    contact_data.extensions = extensions
 
     if use_world_projection:
         wp.launch(
@@ -929,7 +1003,7 @@ def project_constraints_jacobi(
                         limit_trial,
                         limit_previous,
                     ],
-                    outputs=[restart_dot],
+                    outputs=[restart_dot, extensions],
                     device=projected_twist.device,
                 )
             wp.launch(
@@ -980,7 +1054,7 @@ def project_constraints_jacobi(
                         limit_trial,
                         limit_previous,
                     ],
-                    outputs=[twist_delta],
+                    outputs=[twist_delta, extensions],
                     device=projected_twist.device,
                 )
             _apply_jacobi_delta(

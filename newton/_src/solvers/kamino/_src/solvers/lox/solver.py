@@ -17,6 +17,7 @@ from ...core.state import StateKamino
 from ...core.types import vec6f
 from .adapter import _write_integrator_body_inputs
 from .colored_gauss_seidel import ColoredGaussSeidelProjection
+from .contact_extensions import ContactLaw
 from .jacobi import project_constraints_jacobi
 from .joint_delassus import BatchedStructuralDelassus
 from .problem import LOXProblem
@@ -73,11 +74,13 @@ class LOXStatus:
     iterations: wp.int32
     """Number of splitting iterations performed for the world."""
     r_p: wp.float32
-    """NCP primal feasibility residual, or NaN when solution metrics are disabled."""
+    """Hard-contact NCP primal residual, or NaN when unavailable."""
     r_d: wp.float32
-    """NCP dual feasibility residual, or NaN when solution metrics are disabled."""
+    """Hard-contact NCP dual residual, or NaN when unavailable."""
     r_c: wp.float32
-    """NCP complementarity residual, or NaN when solution metrics are disabled."""
+    """Hard-contact NCP complementarity residual, or NaN when unavailable."""
+    r_contact: wp.float32
+    """Maximum metric-scaled contact natural-map residual [sqrt(J)], or NaN before solving or on failure."""
     accepted: wp.int32
     """Whether LOX accepted the world's final projected iterate."""
     failed: wp.int32
@@ -121,6 +124,7 @@ def _finalize_world_status(
     status.r_p = wp.nan
     status.r_d = wp.nan
     status.r_c = wp.nan
+    status.r_contact = wp.nan
     status.accepted = wp.int32(accepted)
     status.failed = wp.int32(world_failed[world])
     status.iteration_limit = wp.int32(world_iteration_limit[world])
@@ -136,6 +140,7 @@ def _reset_solver_status(solver_status: wp.array[LOXStatus]):
     status.r_p = wp.nan
     status.r_d = wp.nan
     status.r_c = wp.nan
+    status.r_contact = wp.nan
     status.accepted = wp.int32(0)
     status.failed = wp.int32(0)
     status.iteration_limit = wp.int32(0)
@@ -154,6 +159,19 @@ def _update_solver_status_metrics(
     status.r_p = r_p[world]
     status.r_d = r_d[world]
     status.r_c = r_c[world]
+    solver_status[world] = status
+
+
+@wp.kernel
+def _update_solver_status_contact_residual(
+    residual: wp.array[wp.float32],
+    solver_status: wp.array[LOXStatus],
+):
+    world = wp.tid()
+    status = solver_status[world]
+    status.r_contact = wp.nan
+    if status.failed == 0:
+        status.r_contact = residual[world]
     solver_status[world] = status
 
 
@@ -187,6 +205,7 @@ def _reset_solver_worlds_masked(
         status.r_p = wp.nan
         status.r_d = wp.nan
         status.r_c = wp.nan
+        status.r_contact = wp.nan
         status.accepted = wp.int32(0)
         status.failed = wp.int32(0)
         status.iteration_limit = wp.int32(0)
@@ -289,6 +308,8 @@ class LOXSolver:
         self.model = model
         self._constraints = constraints
         self.problem = problem
+        if config.contact_spatial_friction:
+            problem.contact_law = ContactLaw(problem, config)
         self.device = model.device
         self.num_worlds = model.info.num_worlds
         self.max_iterations = config.max_iterations
@@ -407,6 +428,8 @@ class LOXSolver:
         if problem is None:
             return
         problem.rebuild_dynamic_body_topology()
+        if self._config.contact_spatial_friction:
+            problem.contact_law = ContactLaw(problem, self._config)
         self._colored_gauss_seidel = None
         self._bind_rigid_topology()
         self.has_bounded_effort = problem.has_bounded_effort
@@ -616,6 +639,8 @@ class LOXSolver:
             self.problem.limit_residual.zero_()
             self.problem.friction_residual.zero_()
             self.problem.reset_friction_reactions(world_mask=world_mask)
+            if self.problem.contact_law is not None:
+                self.problem.contact_law.reset(world_mask)
         elif world_mask is None:
             self.world_active.fill_(True)
             self.world_converged.zero_()
@@ -653,7 +678,9 @@ class LOXSolver:
         self._time_step_prepared = False
 
     def update_status_metrics(self, metrics: SolutionMetricsData) -> None:
-        """Populate terminal NCP residuals from the optional metrics evaluation."""
+        """Populate optional hard-contact NCP residuals; extended contact laws leave them unavailable."""
+        if self.problem is not None and self.problem.contact_law is not None:
+            return
         wp.launch(
             _update_solver_status_metrics,
             dim=self.num_worlds,
@@ -799,6 +826,14 @@ class LOXSolver:
             )
         elif self.projection_method == "gauss_seidel" and self.gauss_seidel_max_colors > 1:
             self._prepare_colored_gauss_seidel_projection()
+        if problem.contact_law is not None:
+            problem.contact_law.prepare(self.system.inverse_weight, problem.world_jacobi_projection_status)
+            if self._colored_gauss_seidel is not None:
+                problem.contact_law.prepare(
+                    self.system.inverse_weight,
+                    problem.world_jacobi_projection_status,
+                    colored=self._colored_gauss_seidel,
+                )
 
     def _project_body_space_constraints(self) -> None:
         if not self._has_dynamic_rigid_bodies:
@@ -863,6 +898,7 @@ class LOXSolver:
                 contact_previous=problem.contact_acceleration_previous,
                 limit_trial=problem.limit_acceleration_trial,
                 limit_previous=problem.limit_acceleration_previous,
+                contact_extensions=problem.contact_law.jacobi if problem.contact_law is not None else None,
             )
         elif self.projection_method == "gauss_seidel" and self.gauss_seidel_max_colors > 1:
             self._colored_gauss_seidel.project(
@@ -942,6 +978,14 @@ class LOXSolver:
                 splitting.projected_twist_previous,
                 splitting.world_active,
             )
+            if problem.contact_law is not None:
+                problem.contact_law.finish_iteration(
+                    splitting.world_active,
+                    splitting.global_twist,
+                    splitting.projected_twist_previous,
+                    splitting.projected_twist,
+                    self.velocity_tolerance,
+                )
             splitting.finish_iteration(
                 problem.projection_status,
                 time_step,
@@ -1107,5 +1151,14 @@ class LOXSolver:
                 problem.world_limit_residual_max,
                 problem.world_friction_residual_max,
             )
+            if problem.contact_law is not None:
+                problem.contact_law.residuals(self.world_accepted, splitting.projected_twist)
             if write_output:
                 problem.write_outputs(time_step, inverse_time_step, body_velocity=splitting.projected_twist)
+        wp.launch(
+            _update_solver_status_contact_residual,
+            dim=self.num_worlds,
+            inputs=[self.contact_residual_max],
+            outputs=[self.status],
+            device=self.device,
+        )

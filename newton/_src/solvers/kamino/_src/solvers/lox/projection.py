@@ -17,6 +17,13 @@ import warp as wp
 
 from ...core.types import mat36f, mat66f, vec6f
 from .contact import compute_contact_scaled_alart_curnier_residual, solve_contact_coulomb_newton
+from .contact_extensions import (
+    ContactLawData,
+    angular_contact_reaction,
+    linear_contact_reaction,
+    pack_contact_reaction,
+    project_extended_contact,
+)
 
 __all__ = [
     "PROJECTION_STATUS_INVALID",
@@ -327,6 +334,7 @@ class _RigidContactProjectionData:
     bias: wp.array[wp.vec3f]
     friction: wp.array[wp.float32]
     reaction: wp.array[wp.vec3f]
+    extensions: ContactLawData
 
 
 def _make_direct_projection_index(
@@ -595,6 +603,25 @@ def _make_project_rigid_contact(colored: bool):
         second = data.body_second[contact]
         if first < 0 and second < 0:
             data.reaction[contact] = wp.vec3f(0.0)
+            return
+        if data.extensions.enabled:
+            old = pack_contact_reaction(data.reaction[contact], data.extensions.angular_reaction[contact])
+            result = project_extended_contact(
+                contact, first, second, data.reaction[contact], state.projected_twist, data.extensions
+            )
+            if result.status != 0:
+                state.world_status[world] = PROJECTION_STATUS_INVALID
+                return
+            delta = result.reaction - old
+            data.reaction[contact] = linear_contact_reaction(result.reaction)
+            data.extensions.angular_reaction[contact] = angular_contact_reaction(result.reaction)
+            correction_first = vec6f(0.0)
+            correction_second = vec6f(0.0)
+            if first >= 0:
+                correction_first = wp.transpose(data.extensions.jacobian_first[contact]) @ delta
+            if second >= 0:
+                correction_second = wp.transpose(data.extensions.jacobian_second[contact]) @ delta
+            accumulate(first, second, target_color, correction_first, correction_second, state)
             return
         velocity = _compute_contact_velocity(
             contact,

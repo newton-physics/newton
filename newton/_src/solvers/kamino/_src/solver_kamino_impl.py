@@ -1260,7 +1260,10 @@ class SolverKaminoImpl(SolverBase):
         """
         if self._config.compute_solution_metrics:
             self.metrics.reset()
-            if self._problem_metrics is not None:
+            extended_contact_law = (
+                self._config.dynamics_solver == "lox" and self._solver_fd.problem.contact_law is not None
+            )
+            if self._problem_metrics is not None and not extended_contact_law:
                 self._metrics.evaluate_from_constraint_forces(
                     model=self._model,
                     data=self._data,
@@ -1270,7 +1273,7 @@ class SolverKaminoImpl(SolverBase):
                     limits=self._limits,
                     contacts=contacts,
                 )
-            elif self._problem_fd is None:
+            elif self._problem_fd is None or extended_contact_law:
                 self._metrics.evaluate_primal(
                     model=self._model,
                     data=self._data,
@@ -1292,6 +1295,14 @@ class SolverKaminoImpl(SolverBase):
                     limits=self._limits,
                     contacts=contacts,
                 )
+            if extended_contact_law:
+                # The analysis dual problem contains only hard 3D contact rows.
+                # Its dual residuals and objectives do not measure the extended law.
+                for name in ("r_v_plus", "r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                    getattr(self._metrics.data, name).fill_(float("nan"))
+                    getattr(self._metrics.data, f"{name}_argmax").fill_(-1)
+                self._metrics.data.f_ncp.fill_(float("nan"))
+                self._metrics.data.f_ccp.fill_(float("nan"))
             if self._config.dynamics_solver == "lox":
                 self._solver_fd.update_status_metrics(self._metrics.data)
 

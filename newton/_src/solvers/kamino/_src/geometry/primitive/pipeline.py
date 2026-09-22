@@ -30,6 +30,24 @@ from .broadphase import (
 )
 from .narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS, primitive_narrowphase
 
+
+@wp.kernel
+def _assign_angular_friction(
+    count: wp.array[wp.int32],
+    geom_pairs: wp.array[wp.vec2i],
+    torsional_friction: wp.array[wp.float32],
+    rolling_friction: wp.array[wp.float32],
+    angular_friction: wp.array[wp.vec2f],
+):
+    cid = wp.tid()
+    if cid < count[0]:
+        pair = geom_pairs[cid]
+        angular_friction[cid] = wp.vec2f(
+            0.5 * (torsional_friction[pair[0]] + torsional_friction[pair[1]]),
+            0.5 * (rolling_friction[pair[0]] + rolling_friction[pair[1]]),
+        )
+
+
 ###
 # Interfaces
 ###
@@ -131,6 +149,10 @@ class CollisionPipelinePrimitive:
 
         # Allocate the collision model data
         with wp.ScopedDevice(self._device):
+            if self._model.geoms.torsional_friction is None:
+                self._model.geoms.torsional_friction = wp.zeros(num_geoms, dtype=wp.float32)
+            if self._model.geoms.rolling_friction is None:
+                self._model.geoms.rolling_friction = wp.zeros(num_geoms, dtype=wp.float32)
             # Allocate the bounding volumes data
             self._bvdata = BoundingVolumesData()
             match self._bvtype:
@@ -199,6 +221,19 @@ class CollisionPipelinePrimitive:
             self._contact_overflow_warning_emitted,
             default_gap=self._default_gap,
         )
+        if contacts.model_max_contacts_host > 0:
+            wp.launch(
+                _assign_angular_friction,
+                dim=contacts.model_max_contacts_host,
+                inputs=[
+                    contacts.model_active_contacts,
+                    contacts.gid_AB,
+                    self._model.geoms.torsional_friction,
+                    self._model.geoms.rolling_friction,
+                ],
+                outputs=[contacts.angular_friction],
+                device=self._device,
+            )
 
     ###
     # Internals

@@ -919,8 +919,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         When :attr:`Config.compute_solution_metrics` is enabled, ``r_p``,
         ``r_d``, and ``r_c`` contain the NCP primal, dual, and complementarity
         residuals evaluated from the final constraint reactions and velocity.
-        These fields are NaN when solution metrics are disabled. LOX also
-        provides ``accepted``, ``failed``, and ``iteration_limit`` fields.
+        These fields are NaN when solution metrics are disabled or experimental
+        extended contact laws are enabled. ``r_contact`` reports the maximum
+        metric-scaled contact natural-map residual [sqrt(J)] independently of
+        solution metrics; it is NaN before solving and for failed worlds.
+        LOX also provides ``accepted``, ``failed``, and ``iteration_limit`` fields.
 
         The returned array aliases the solver's device-resident storage; reading
         it does not synchronize or copy data to the host. Terminal status is

@@ -1092,6 +1092,15 @@ class LOXSolverConfig:
     contact_recoverable_response: bool = False
     """Whether speculative contacts permit overlap recoverable as the unreduced restitution response."""
 
+    contact_spatial_friction: bool = False
+    """Enable experimental coupled sliding, torsional, and rolling friction.
+
+    Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], averaged
+    arithmetically between the two shapes. All friction components share one
+    elliptic friction budget. Zero angular coefficients retain the 3D path.
+    This mode may change without following the normal deprecation policy.
+    """
+
     contact_warmstart_method: Literal[
         "key_and_position",
         "geom_pair_net_force",
@@ -1227,6 +1236,8 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid contact_recoverable_response: {self.contact_recoverable_response}. Must be a boolean."
             )
+        if not isinstance(self.contact_spatial_friction, bool):
+            raise ValueError(f"Invalid contact_spatial_friction: {self.contact_spatial_friction}. Must be a boolean.")
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
         implemented_contact_warmstart_methods = {
             "key_and_position",

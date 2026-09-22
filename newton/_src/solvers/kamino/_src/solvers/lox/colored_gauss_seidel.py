@@ -8,6 +8,7 @@ from __future__ import annotations
 import warp as wp
 
 from ...core.types import mat36f, mat66f, vec6f
+from .contact_extensions import warmstart_extended_contacts
 from .jacobi import project_constraints_jacobi
 from .projection import (
     PROJECTION_STATUS_INVALID,
@@ -1152,7 +1153,8 @@ class ColoredGaussSeidelProjection:
             world_friction_offset = getattr(problem, "world_friction_offset", None)
             world_contact_offset = getattr(problem, "world_contact_offset", None)
             world_limit_offset = getattr(problem, "world_limit_offset", None)
-        use_world_projection = _can_fuse_rigid_projection_by_world(
+        contact_law = getattr(problem, "contact_law", None)
+        use_world_projection = contact_law is None and _can_fuse_rigid_projection_by_world(
             self.device,
             world_count,
             required_world_arrays=(
@@ -1260,26 +1262,47 @@ class ColoredGaussSeidelProjection:
                     device=self.device,
                 )
             if self.contact.capacity > 0:
-                wp.launch(
-                    _warmstart_contacts_jacobi,
-                    dim=self.contact.capacity,
-                    inputs=[
-                        problem.contact_world,
-                        problem.contact_local,
-                        world_active,
-                        prepared_status,
-                        problem.world_contact_count,
-                        problem.contact_body_first,
-                        problem.contact_body_second,
-                        problem.contact_jacobian_first,
-                        problem.contact_jacobian_second,
-                        inverse_weight,
-                        True,
-                        problem.contact_reaction,
-                    ],
-                    outputs=[twist_delta],
-                    device=self.device,
-                )
+                if contact_law is not None:
+                    wp.launch(
+                        warmstart_extended_contacts,
+                        dim=self.contact.capacity,
+                        inputs=[
+                            problem.contact_world,
+                            problem.contact_local,
+                            problem.world_contact_count,
+                            world_active,
+                            prepared_status,
+                            problem.contact_body_first,
+                            problem.contact_body_second,
+                            inverse_weight,
+                            True,
+                            problem.contact_reaction,
+                            contact_law.colored,
+                            twist_delta,
+                        ],
+                        device=self.device,
+                    )
+                else:
+                    wp.launch(
+                        _warmstart_contacts_jacobi,
+                        dim=self.contact.capacity,
+                        inputs=[
+                            problem.contact_world,
+                            problem.contact_local,
+                            world_active,
+                            prepared_status,
+                            problem.world_contact_count,
+                            problem.contact_body_first,
+                            problem.contact_body_second,
+                            problem.contact_jacobian_first,
+                            problem.contact_jacobian_second,
+                            inverse_weight,
+                            True,
+                            problem.contact_reaction,
+                        ],
+                        outputs=[twist_delta],
+                        device=self.device,
+                    )
             if self.limit.capacity > 0:
                 wp.launch(
                     _warmstart_limits_jacobi,
@@ -1328,6 +1351,8 @@ class ColoredGaussSeidelProjection:
             rigid_contact_data.bias = problem.contact_bias
             rigid_contact_data.friction = problem.contact_friction
             rigid_contact_data.reaction = problem.contact_reaction
+            if contact_law is not None:
+                rigid_contact_data.extensions = contact_law.colored
             friction_index = _make_colored_projection_index(
                 problem.friction_world, self.friction.counts, self.friction.offsets, self.friction.order
             )
@@ -1485,4 +1510,5 @@ class ColoredGaussSeidelProjection:
                 prepared_status,
                 projection_status,
                 warm_start=False,
+                contact_extensions=contact_law.jacobi if contact_law is not None else None,
             )

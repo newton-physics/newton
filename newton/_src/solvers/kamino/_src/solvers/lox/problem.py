@@ -278,6 +278,7 @@ class LOXProblem:
         self._allocate_effort_rows()
         self._allocate_joint_frictions()
         self._allocate_unilaterals()
+        self.contact_law = None
         self.world_lagged_velocity_residual = wp.zeros(self.num_worlds, dtype=wp.float32, device=self.device)
         self.world_lagged_velocity_required = wp.zeros(self.num_worlds, dtype=wp.int32, device=self.device)
 
@@ -1121,6 +1122,9 @@ class LOXProblem:
                 device=self.device,
             )
 
+        if self.contact_law is not None:
+            self.contact_law.initialize(time_step, import_reactions)
+
     def _evaluate_structural_candidate_pose_residual(
         self,
         time_step: wp.array[wp.float32],
@@ -1659,6 +1663,9 @@ class LOXProblem:
                 outputs=[joint_wrench],
                 device=self.device,
             )
+
+        if self.contact_law is not None:
+            self.contact_law.write_outputs(inverse_time_step, contact_wrench)
 
     def validate_model_changed(self) -> None:
         """Validate LOX constraint topology derived from aliased model values."""

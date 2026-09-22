@@ -64,6 +64,8 @@ class ContactWriterDataKamino:
     geom_mid: wp.array[wp.int32]  # Material ID for each geometry
     geom_gap: wp.array[wp.float32]  # Detection gap for each geometry [m]
     geom_margin: wp.array[wp.float32]  # Shape margin for each geometry [m]
+    geom_torsional_friction: wp.array[wp.float32]
+    geom_rolling_friction: wp.array[wp.float32]
 
     # Body immovability flags for two-immovable-endpoint culling
     body_is_immovable: wp.array[wp.int32]
@@ -94,6 +96,7 @@ class ContactWriterDataKamino:
     contact_gapfunc: wp.array[wp.vec4f]
     contact_frame: wp.array[wp.quatf]
     contact_material: wp.array[wp.vec2f]
+    contact_angular_friction: wp.array[wp.vec2f]
     contact_margins: wp.array[wp.vec2f]
     contact_key: wp.array[wp.uint64]
 
@@ -232,6 +235,10 @@ def _write_contact_unified_kamino(
     writer_data.contact_gapfunc[mcid] = gapfunc
     writer_data.contact_frame[mcid] = q_frame
     writer_data.contact_material[mcid] = material
+    writer_data.contact_angular_friction[mcid] = wp.vec2f(
+        0.5 * (writer_data.geom_torsional_friction[gid_a] + writer_data.geom_torsional_friction[gid_b]),
+        0.5 * (writer_data.geom_rolling_friction[gid_a] + writer_data.geom_rolling_friction[gid_b]),
+    )
     writer_data.contact_margins[mcid] = margins
     writer_data.contact_key[mcid] = key
 
@@ -501,6 +508,10 @@ class CollisionPipelineUnifiedKamino:
         # Allocate internal data needed by the pipeline that
         # the Kamino model and data do not yet provide
         with wp.ScopedDevice(self._device):
+            if self._model.geoms.torsional_friction is None:
+                self._model.geoms.torsional_friction = wp.zeros(self._num_geoms, dtype=wp.float32)
+            if self._model.geoms.rolling_friction is None:
+                self._model.geoms.rolling_friction = wp.zeros(self._num_geoms, dtype=wp.float32)
             self.geom_data = wp.zeros(self._num_geoms, dtype=wp.vec4f)
             self.geom_collision_group = self._model.geoms.group
             self.collision_radius = wp.zeros(self._num_geoms, dtype=wp.float32)
@@ -744,6 +755,8 @@ class CollisionPipelineUnifiedKamino:
         writer_data.geom_mid = self._model.geoms.material
         writer_data.geom_gap = self._model.geoms.gap
         writer_data.geom_margin = self._model.geoms.margin
+        writer_data.geom_torsional_friction = self._model.geoms.torsional_friction
+        writer_data.geom_rolling_friction = self._model.geoms.rolling_friction
         writer_data.body_is_immovable = self._model.bodies.is_immovable
         writer_data.material_restitution = self._model.materials.restitution
         writer_data.material_static_friction = self._model.materials.static_friction
@@ -766,6 +779,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.contact_gapfunc = contacts.gapfunc
         writer_data.contact_frame = contacts.frame
         writer_data.contact_material = contacts.material
+        writer_data.contact_angular_friction = contacts.angular_friction
         writer_data.contact_margins = contacts.margins
         writer_data.contact_key = contacts.key
 
