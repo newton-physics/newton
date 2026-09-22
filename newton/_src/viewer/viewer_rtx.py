@@ -1521,7 +1521,7 @@ void main() {
                 self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(count)]
                 self._bind_runtime_transforms(name)
 
-        self._pending_instance_visibility[name] = not hidden and count > 0
+        self._pending_instance_visibility[name] = not hidden and (xforms is None or count > 0)
         if xforms is not None:
             if scales is None:
                 scales = wp.ones(count, dtype=wp.vec3, device=xforms.device)

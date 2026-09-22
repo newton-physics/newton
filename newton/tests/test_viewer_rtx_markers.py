@@ -60,6 +60,15 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self._log_spheres(2, color=(0.0, 1.0, 0.0))
         self.viewer._rtx.add_usd_reference_from_string.assert_called_once()
 
+    def test_omitted_instance_transforms_preserve_visibility(self):
+        """Keep an existing runtime batch visible when transforms are omitted."""
+        self._log_spheres(1)
+        mesh = self.viewer._instance_specs["/markers/spheres"][0]
+
+        self.viewer.log_instances("/markers/spheres", mesh, None, None, None, None)
+
+        self.assertTrue(self.viewer._pending_instance_visibility["/markers/spheres"])
+
     def test_runtime_batch_changes_do_not_rebuild_the_scene_binding(self):
         """Limit runtime batch replacement to its USD subtree and transform binding."""
         scene_binding = mock.MagicMock()
