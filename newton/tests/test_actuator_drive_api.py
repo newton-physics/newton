@@ -91,19 +91,28 @@ class TestActuatorDriveAPI(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "only one"):
             actuators.Actuator.State(drive_state=drive_state, controller_state=drive_state)
 
-    def test_actuator_binds_drive_declared_state_and_control_inputs(self):
-        """Bind declared inputs without imposing generic type or shape checks."""
+    def test_actuator_passes_declared_state_and_control_inputs(self):
+        """Pass declared state and control arrays to the drive by name."""
+
+        class _RecordingDrive(actuators.DrivePD):
+            custom_inputs = (
+                ("sim_state", "custom_state_input"),
+                ("sim_control", "custom_control_input"),
+            )
+
+            def compute(self, *args, custom_inputs=None, **kwargs):
+                self.seen_custom_inputs = custom_inputs
+                return super().compute(*args, custom_inputs=custom_inputs, **kwargs)
+
         indices = wp.array([0], dtype=wp.uint32)
-        drive = actuators.DrivePD(
+        drive = _RecordingDrive(
             kp=wp.array([0.0], dtype=wp.float32),
             kd=wp.array([0.0], dtype=wp.float32),
         )
-        drive.custom_state_attributes = ("custom_state_input",)
-        drive.custom_control_attributes = ("custom_control_input",)
         actuator = actuators.Actuator(indices=indices, drive=drive)
 
-        state_input = object()
-        control_input = object()
+        state_input = wp.zeros(1, dtype=wp.float32)
+        control_input = wp.zeros(1, dtype=wp.float32)
         state = types.SimpleNamespace(
             joint_q=wp.zeros(1, dtype=wp.float32),
             joint_qd=wp.zeros(1, dtype=wp.float32),
@@ -119,8 +128,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
 
         actuator.step(state, control, dt=0.01)
 
-        self.assertIs(drive.custom_state_input, state_input)
-        self.assertIs(drive.custom_control_input, control_input)
+        self.assertIs(drive.seen_custom_inputs["custom_state_input"], state_input)
+        self.assertIs(drive.seen_custom_inputs["custom_control_input"], control_input)
 
     def test_builder_deprecated_controller_class_keyword(self):
         """Keep the former builder keyword functional with a warning."""

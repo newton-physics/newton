@@ -1353,7 +1353,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         device = self.device
         model = _build_pendulum(device)
         state, control = model.state(), model.control()
-        oracle = ResponseOracle(model)
+        oracle = JointSpaceResponse(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
             drive=_RecordingDrive(
