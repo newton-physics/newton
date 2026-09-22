@@ -676,10 +676,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def _metadata(self, input_columns: Sequence[str] | None = None) -> dict[str, Any]:
+        input_columns = self.FEATURES if input_columns is None else input_columns
         return {
             "model_type": "gru",
-            "input_columns": list(self.FEATURES if input_columns is None else input_columns),
-            "custom_inputs": [self.CUSTOM_INPUT],
+            "input_columns": list(input_columns),
+            "custom_inputs": [self.CUSTOM_INPUT] if self.CUSTOM_INPUT in input_columns else [],
             "sample_dt_s": self.SAMPLE_DT,
             "normalization": {
                 "inputs": {
@@ -1399,6 +1400,12 @@ class TestDriveNeuralGRU(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported input_columns: mystery"):
             DriveNeuralGRU(path)
 
+        unselected = self._metadata(("position",))
+        unselected["custom_inputs"] = ["bias_force"]
+        path = self._save_gru("unselected_custom.onnx", unselected, input_size=1)
+        with self.assertRaisesRegex(ValueError, "custom_inputs must name columns in input_columns: bias_force"):
+            DriveNeuralGRU(path)
+
         clashing = self._metadata(("position", "velocity"))
         clashing["custom_inputs"] = ["velocity"]
         path = self._save_gru("clashing.onnx", clashing, input_size=2)
@@ -1411,11 +1418,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most one custom input"):
             DriveNeuralGRU(path)
 
-        for index, declared in enumerate(("bias_force", [1], [""], ["bias force"])):
+        for index, declared in enumerate(("bias_force", [1], [""], ["bias force"], ["class"])):
             malformed = self._metadata(("position",))
             malformed["custom_inputs"] = declared
             path = self._save_gru(f"malformed_{index}.onnx", malformed, input_size=1)
-            with self.subTest(custom_inputs=declared), self.assertRaisesRegex(ValueError, "must be a list of names"):
+            with self.subTest(custom_inputs=declared), self.assertRaisesRegex(ValueError, "must be a list of valid"):
                 DriveNeuralGRU(path)
 
     def test_step_replays_under_cuda_graph_capture(self):

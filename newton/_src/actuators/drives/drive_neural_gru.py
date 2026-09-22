@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import keyword
 import math
 import os
 from dataclasses import dataclass
@@ -123,6 +124,12 @@ def _parse_input_feature_keys(metadata: dict[str, Any], model_path: str) -> tupl
     if len(set(input_columns)) != len(input_columns):
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' input_columns must not contain duplicates")
     custom = _parse_custom_input_names(metadata, model_path)
+    unselected_custom = sorted(set(custom).difference(input_columns))
+    if unselected_custom:
+        raise ValueError(
+            f"DriveNeuralGRU checkpoint '{model_path}' custom_inputs must name columns in input_columns: "
+            f"{', '.join(unselected_custom)}"
+        )
     unsupported = sorted(set(input_columns).difference(_INPUT_FEATURE_CODES).difference(custom))
     if unsupported:
         raise ValueError(
@@ -140,9 +147,12 @@ def _sim_state_inputs(selected: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
 def _parse_custom_input_names(metadata: dict[str, Any], model_path: str) -> tuple[str, ...]:
     """Return the input columns the caller supplies, from ``custom_inputs`` metadata."""
     names = metadata.get("custom_inputs", [])
-    if not isinstance(names, list) or not all(isinstance(name, str) and name.isidentifier() for name in names):
+    if not isinstance(names, list) or not all(
+        isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name) for name in names
+    ):
         raise ValueError(
-            f"DriveNeuralGRU checkpoint '{model_path}' custom_inputs must be a list of names; got {names!r}"
+            f"DriveNeuralGRU checkpoint '{model_path}' custom_inputs must be a list of valid, non-keyword "
+            f"identifiers; got {names!r}"
         )
     if len(names) > 1:
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' supports at most one custom input; got {names!r}")
