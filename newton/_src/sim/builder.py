@@ -14032,6 +14032,7 @@ class ModelBuilder:
                     requires_grad=requires_grad,
                 )
 
+                actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)

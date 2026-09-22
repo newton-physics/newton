@@ -7,7 +7,7 @@ import functools
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -17,6 +17,9 @@ from .delay import Delay
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
+
+if TYPE_CHECKING:
+    from ..sim.builder import ModelBuilder
 
 _DEPRECATED_UNSET = object()
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
@@ -155,22 +158,11 @@ def _require_array(source: Any, name: str) -> Any:
 
 
 def _collect_custom_inputs(
-    owner: str,
-    sim_state: Any,
     sim_control: Any,
-    declared: tuple[tuple[str, str], ...],
+    declared: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Read declared values without validating them, keyed by attribute."""
-    if not declared:
-        return {}
-
-    objects = {"sim_state": sim_state, "sim_control": sim_control}
-    selected: dict[str, Any] = {}
-    for source, attribute in declared:
-        if source not in objects:
-            raise ValueError(f"{owner} declared the input source '{source}'; expected 'sim_state' or 'sim_control'.")
-        selected[attribute] = _get_attribute(objects[source], attribute, None)
-    return selected
+    """Read declared Control values without validating them, keyed by attribute."""
+    return {attribute: _get_attribute(sim_control, attribute, None) for attribute in declared}
 
 
 @functools.cache
@@ -442,6 +434,35 @@ class Actuator:
         fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
 
+    def register_custom_attributes(self, builder: ModelBuilder) -> None:
+        """Register component inputs as custom Newton Control attributes.
+
+        :class:`~newton.ModelBuilder` calls this method automatically while
+        finalizing its actuators. Every declared input is registered as a
+        ``wp.float32`` joint-DOF array on :class:`~newton.Control`. Registration
+        allocates the arrays but does not populate or clear them; the caller
+        must update their values before each actuator evaluation.
+
+        This method is a Newton convenience. Other simulation engines should
+        provide arrays with the same names through their ``sim_control``
+        adapter instead.
+
+        Args:
+            builder: Newton model builder on which to register the attributes.
+        """
+        from ..sim.model import Model  # noqa: PLC0415
+
+        for name in self._custom_inputs:
+            builder.add_custom_attribute(
+                builder.CustomAttribute(
+                    name=name,
+                    dtype=wp.float32,
+                    frequency=Model.AttributeFrequency.JOINT_DOF,
+                    assignment=Model.AttributeAssignment.CONTROL,
+                    default=0.0,
+                )
+            )
+
     @property
     def controller(self) -> DriveBase:
         """Deprecated alias for :attr:`drive`.
@@ -525,10 +546,22 @@ class Actuator:
         )
 
     @property
+    def _custom_inputs(self) -> tuple[str, ...]:
+        """Return the deduplicated custom inputs declared by all components."""
+        components = (self.drive, self.delay, *self.clamping)
+        names = (
+            name
+            for component in components
+            if component is not None
+            for name in getattr(component, "custom_inputs", ())
+        )
+        return tuple(dict.fromkeys(names))
+
+    @property
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
         """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
 
-        Covers the standard arrays and the drive's custom inputs.
+        Covers the standard arrays and the components' custom inputs.
         """
         state_attrs = [self.state_pos_attr, self.state_vel_attr]
         control_attrs = [
@@ -540,10 +573,8 @@ class Actuator:
         ]
         required = {
             "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None],
+            "sim_control": [a for a in control_attrs if a is not None] + list(self._custom_inputs),
         }
-        for source, attribute in self.drive.custom_inputs:
-            required.setdefault(source, []).append(attribute)
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
     def step(
@@ -572,12 +603,11 @@ class Actuator:
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
-                :attr:`state_pos_attr` and :attr:`state_vel_attr`, plus the
-                actuator's custom inputs declared for this source. Build one
+                :attr:`state_pos_attr` and :attr:`state_vel_attr`. Build one
                 with :meth:`sim_state`.
             sim_control: Object or mapping carrying the target and output
-                arrays, plus the actuator's custom inputs declared for this
-                source. Build one with :meth:`sim_control`.
+                arrays, plus the actuator components' custom inputs. Build one
+                with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
@@ -626,9 +656,7 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        custom_inputs = _collect_custom_inputs(
-            type(self.drive).__name__, sim_state, sim_control, self.drive.custom_inputs
-        )
+        custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
             sim_state,
             positions,

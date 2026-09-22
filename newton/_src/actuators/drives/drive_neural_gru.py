@@ -139,9 +139,9 @@ def _parse_input_feature_keys(metadata: dict[str, Any], model_path: str) -> tupl
     return tuple(input_columns)
 
 
-def _sim_state_inputs(selected: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    """Declare the selected columns that are not built-in features as sim_state inputs."""
-    return tuple(("sim_state", name) for name in selected if name not in _INPUT_FEATURE_CODES)
+def _custom_inputs(selected: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the selected columns that are not built-in features."""
+    return tuple(name for name in selected if name not in _INPUT_FEATURE_CODES)
 
 
 def _parse_custom_input_names(metadata: dict[str, Any], model_path: str) -> tuple[str, ...]:
@@ -524,7 +524,7 @@ class DriveNeuralGRU(DriveBase):
     * ``velocity_error`` — ``target_velocity - velocity``
 
     The application supplies the custom column. It is declared through
-    :attr:`DriveBase.custom_inputs` and read from ``sim_state``; see
+    :attr:`DriveBase.custom_inputs` and read from ``sim_control``; see
     :ref:`custom-drive-inputs`.
 
     Normalization is applied per column as ``(value - mean) / std``. The
@@ -608,7 +608,7 @@ class DriveNeuralGRU(DriveBase):
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
-        self.custom_inputs = _sim_state_inputs(self._input_feature_keys)
+        self.custom_inputs = _custom_inputs(self._input_feature_keys)
         if self._description.layers[0].input_size != len(self._input_feature_keys):
             raise ValueError(
                 f"DriveNeuralGRU checkpoint '{self.model_path}' GRU input size "
@@ -776,21 +776,21 @@ class DriveNeuralGRU(DriveBase):
         self._next_hidden = None
         custom_input = None
         if self.custom_inputs:
-            name = self.custom_inputs[0][1]
+            name = self.custom_inputs[0]
             custom_input = (custom_inputs or {}).get(name)
             if custom_input is None:
                 raise RuntimeError(
                     f"DriveNeuralGRU input_columns includes '{name}', but no array was supplied. Pass a "
-                    f"sim_state carrying '{name}' with shape (model.joint_dof_count,)."
+                    f"sim_control carrying '{name}' with shape (model.joint_dof_count,)."
                 )
             if not isinstance(custom_input, (wp.array, wp.indexedarray, wp.fabricarray)):
                 raise ValueError(
-                    f"DriveNeuralGRU custom input 'sim_state.{name}' must be a Warp array; "
+                    f"DriveNeuralGRU custom input 'sim_control.{name}' must be a Warp array; "
                     f"got {type(custom_input).__name__}."
                 )
             if len(custom_input) != len(velocities):
                 raise ValueError(
-                    f"DriveNeuralGRU custom input 'sim_state.{name}' has length {len(custom_input)}; "
+                    f"DriveNeuralGRU custom input 'sim_control.{name}' has length {len(custom_input)}; "
                     f"expected {len(velocities)}."
                 )
         if state is None or state.hidden is None:

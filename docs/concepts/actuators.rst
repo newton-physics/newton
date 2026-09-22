@@ -259,22 +259,31 @@ Custom Drive Inputs
 -------------------
 
 A drive may need an array beyond the positions, velocities and targets the
-actuator already reads from ``sim_state`` and ``sim_control``. It lists those
-arrays in :attr:`DriveBase.custom_inputs`, as ``(source, attribute)`` pairs.
-*source* is ``"sim_state"`` or ``"sim_control"``, naming which
-:meth:`Actuator.step` argument carries the array; *attribute* is the name it is
-read under.
+actuator already reads. It lists the array names in
+:attr:`DriveBase.custom_inputs`. These values are caller-owned inputs for the
+current evaluation, so they are always read from the ``sim_control`` argument
+of :meth:`Actuator.step`, even when a value describes physical state such as an
+estimated load or measured temperature.
 
 :class:`Actuator` reads each declared value and passes it unchanged to
 :meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed by attribute
 name. A missing attribute is passed as ``None``. The drive owns requiredness,
 fallback behavior, and all type, length, dtype, device, shape, and semantic
-validation.
+validation. A drive called directly receives the same mapping explicitly; it
+does not look for custom values on a simulation state or control object.
+
+For actuators created by :class:`~newton.ModelBuilder`,
+:meth:`Actuator.register_custom_attributes` automatically registers every
+declared name as a ``wp.float32`` joint-DOF array on :class:`~newton.Control`.
+Registration allocates the array but does not populate or clear it. Write every
+declared value before each actuator evaluation to avoid reusing stale data.
+Users of another simulation engine provide the same-named arrays through their
+``sim_control`` adapter instead.
 
 :meth:`Actuator.sim_state` returns an empty container with exactly the fields
 the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its
-counterpart. Passing your own object or a mapping to :meth:`Actuator.step` is
-also supported.
+counterpart and includes all declared custom inputs. Passing your own object or
+a mapping to :meth:`Actuator.step` is also supported.
 
 .. warning::
 
@@ -294,10 +303,10 @@ In the loop below the drive declares one array named ``extra_input``:
 
        sim_state.joint_q = state_0.joint_q
        sim_state.joint_qd = state_0.joint_qd
-       sim_state.extra_input = extra_input
 
        control.clear(model)
        control.joint_target_q.assign(target_positions)
+       control.extra_input.assign(extra_input)
        actuator.step(sim_state, control, actuator_state_a, actuator_state_b, dt=dt)
        actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
 
@@ -544,7 +553,8 @@ types or nested storage implement ``assign()`` to define that copy.
 
 A drive that needs additional per-step arrays declares them through
 :attr:`DriveBase.custom_inputs`. They arrive in the ``custom_inputs`` argument
-to :meth:`~DriveBase.compute`; see :ref:`custom-drive-inputs`.
+to :meth:`~DriveBase.compute` after being read from ``sim_control``; see
+:ref:`custom-drive-inputs`.
 
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve

@@ -51,16 +51,14 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
-    custom_inputs: tuple[tuple[str, str], ...] = ()
-    """``(source, attribute)`` pairs for the extra arrays this drive reads.
+    custom_inputs: tuple[str, ...] = ()
+    """Names of extra caller-provided Control arrays this drive reads.
 
-    *source* is ``"sim_state"`` or ``"sim_control"``, naming which
-    :meth:`Actuator.step` argument carries the array; *attribute* is the name
-    it is read under. Set in ``__init__``; the caller supplies the arrays
-    and :class:`~newton.actuators.Actuator` passes them to :meth:`compute` as
-    ``custom_inputs``, keyed by attribute name. The actuator routes values
-    without validating them; the drive owns requiredness, fallback behavior,
-    and validation.
+    Set in ``__init__`` when the declaration depends on drive configuration.
+    :class:`~newton.actuators.Actuator` reads the same-named values from
+    ``sim_control`` and passes them to :meth:`compute` as ``custom_inputs``.
+    The actuator routes values without validating them; the drive owns
+    requiredness, fallback behavior, and validation.
     """
 
     @classmethod

@@ -771,18 +771,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
             target_pos_indices=wp.array(target_indices, dtype=wp.uint32, device=self.device),
             drive=DriveNeuralGRU(model_path),
         )
-        # The caller builds sim_state: the usual state arrays plus whatever the
-        # drive named in DriveBase.custom_inputs.
         state = types.SimpleNamespace(
             joint_q=wp.array(position, dtype=wp.float32, device=self.device),
             joint_qd=wp.array(velocity, dtype=wp.float32, device=self.device),
-            bias_force=wp.array(bias_force, dtype=wp.float32, device=self.device),
         )
         control = types.SimpleNamespace(
             joint_target_q=wp.array(target, dtype=wp.float32, device=self.device),
             joint_target_qd=wp.array(target_velocity, dtype=wp.float32, device=self.device),
             joint_act=wp.full(6, 456.0, dtype=wp.float32, device=self.device),
             joint_f=wp.zeros(6, dtype=wp.float32, device=self.device),
+            bias_force=wp.array(bias_force, dtype=wp.float32, device=self.device),
         )
         return types.SimpleNamespace(
             actuator=actuator,
@@ -975,12 +973,10 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         case.state_a, case.state_b = case.state_b, case.state_a
         case.position = np.array([0.2, -0.8, 1.7, 2.1, -1.4, 0.6], dtype=np.float32)
-        # Rebuilding sim_state means re-attaching the drive's named arrays too.
-        bias = case.state.bias_force
+        bias = case.control.bias_force
         case.state = types.SimpleNamespace(
             joint_q=wp.array(case.position, dtype=wp.float32, device=self.device),
             joint_qd=wp.array(case.velocity, dtype=wp.float32, device=self.device),
-            bias_force=bias,
         )
         case.bias_force = np.array([-0.7, 1.6, 2.2, -3.5, 0.4, 4.1], dtype=np.float32)
         bias.assign(case.bias_force)
@@ -1019,7 +1015,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         case.bias_force = np.array([-4.0, 5.5, 1.2, -2.7, 3.1, 6.4], dtype=np.float32)
         case.control.joint_target_q.assign(case.target)
         case.control.joint_target_qd.assign(case.target_velocity)
-        case.state.bias_force.assign(case.bias_force)
+        case.control.bias_force.assign(case.bias_force)
 
         expected_case = types.SimpleNamespace(**vars(case))
         expected_case.target = delayed_target
@@ -1049,7 +1045,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, r"'joint_q' has length 3"):
             case.actuator.step(
-                {"joint_q": short, "joint_qd": case.state.joint_qd, "bias_force": case.state.bias_force},
+                {"joint_q": short, "joint_qd": case.state.joint_qd},
                 case.control,
                 case.state_a,
                 case.state_b,
@@ -1084,19 +1080,18 @@ class TestDriveNeuralGRU(unittest.TestCase):
                     case.actuator.step(case.state, case.control, case.state_a, case.state_b, dt=dt)
 
         case = self._make_case(path, 1)
-        bare = types.SimpleNamespace(joint_q=case.state.joint_q, joint_qd=case.state.joint_qd)
+        bare = types.SimpleNamespace(**vars(case.control))
+        del bare.bias_force
         with self.assertRaisesRegex(RuntimeError, "no array was supplied"):
-            case.actuator.step(bare, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
-        wrong = types.SimpleNamespace(joint_q=case.state.joint_q, joint_qd=case.state.joint_qd, bias_force=[0.0] * 6)
+            case.actuator.step(case.state, bare, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        wrong = types.SimpleNamespace(**vars(case.control))
+        wrong.bias_force = [0.0] * 6
         with self.assertRaisesRegex(ValueError, "must be a Warp array"):
-            case.actuator.step(wrong, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
-        short = types.SimpleNamespace(
-            joint_q=case.state.joint_q,
-            joint_qd=case.state.joint_qd,
-            bias_force=wp.zeros(2, dtype=wp.float32, device=self.device),
-        )
+            case.actuator.step(case.state, wrong, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        short = types.SimpleNamespace(**vars(case.control))
+        short.bias_force = wp.zeros(2, dtype=wp.float32, device=self.device)
         with self.assertRaisesRegex(ValueError, "has length 2; expected 6"):
-            case.actuator.step(short, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+            case.actuator.step(case.state, short, case.state_a, case.state_b, dt=self.SAMPLE_DT)
         with self.assertRaisesRegex(RuntimeError, "no array was supplied"):
             self._compute_direct(case, case.state_a.drive_state)
         with self.assertRaisesRegex(RuntimeError, "compute must run"):
@@ -1327,7 +1322,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "device"):
             case.actuator.drive.state(1, object())
 
-        self._compute_direct(case, case.state_a.drive_state, feedforward=case.state.bias_force)
+        self._compute_direct(case, case.state_a.drive_state, feedforward=case.control.bias_force)
         with self.assertRaisesRegex(ValueError, "next drive state"):
             case.actuator.drive.update_state(case.state_a.drive_state, DriveNeuralGRU.State())
 
@@ -1343,7 +1338,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         """Hand a drive's declared inputs to prepare_implicit, as the explicit path does."""
 
         class _RecordingDrive(DrivePD):
-            custom_inputs = (("sim_state", "bias_force"),)
+            custom_inputs = ("bias_force",)
             seen = None
 
             def prepare_implicit(self, *args, custom_inputs=None, **kwargs):
@@ -1364,15 +1359,16 @@ class TestDriveNeuralGRU(unittest.TestCase):
         actuator.set_effort_mode_implicit(response=oracle)
 
         bias = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
-        sim_state = types.SimpleNamespace(joint_q=state.joint_q, joint_qd=state.joint_qd, bias_force=bias)
+        control.bias_force = bias
         oracle.refresh(state)
         control.joint_f.zero_()
-        actuator.step(sim_state, control, dt=0.01)
+        actuator.step(state, control, dt=0.01)
 
         self.assertIsNotNone(_RecordingDrive.seen)
         self.assertIs(_RecordingDrive.seen["bias_force"], bias)
 
         # The actuator leaves missing-input behavior to the drive.
+        del control.bias_force
         actuator.step(state, control, dt=0.01)
         self.assertIsNone(_RecordingDrive.seen["bias_force"])
 
@@ -1383,11 +1379,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
         metadata["normalization"]["inputs"]["mean"]["qfrc_bias"] = -2.0
         metadata["normalization"]["inputs"]["std"]["qfrc_bias"] = 5.0
         case = self._make_case(self._save_gru("named_custom.onnx", metadata, input_size=2), 2)
-        self.assertEqual(case.actuator.drive.custom_inputs, (("sim_state", "qfrc_bias"),))
+        self.assertEqual(case.actuator.drive.custom_inputs, ("qfrc_bias",))
 
         # The array is read under the name the checkpoint chose, not "bias_force".
-        case.state.qfrc_bias = case.state.bias_force
-        del case.state.bias_force
+        case.control.qfrc_bias = case.control.bias_force
+        del case.control.bias_force
 
         effort, _ = self._step(case)
 
@@ -1447,35 +1443,43 @@ class TestDriveNeuralGRU(unittest.TestCase):
         wp.capture_launch(capture.graph)
         np.testing.assert_allclose(case.control.joint_f.numpy()[case.indices], 2.0 * eager, rtol=1e-5, atol=1e-6)
 
-    def test_sim_state_container_exposes_required_fields(self):
-        """Hand back an empty, slotted container with exactly the fields the actuator reads."""
+    def test_input_containers_expose_required_fields(self):
+        """Hand back empty containers with exactly the fields the actuator reads."""
         case = self._make_case(self._save_gru("container.onnx"), 2)
 
         sim_state = case.actuator.sim_state()
-        self.assertEqual(sorted(type(sim_state).__slots__), ["bias_force", "joint_q", "joint_qd"])
+        sim_control = case.actuator.sim_control()
+        self.assertEqual(sorted(type(sim_state).__slots__), ["joint_q", "joint_qd"])
+        self.assertEqual(
+            sorted(type(sim_control).__slots__),
+            ["bias_force", "joint_act", "joint_f", "joint_target_q", "joint_target_qd"],
+        )
 
         # A checkpoint that selects no custom column contributes no field.
         metadata = self._metadata(("position", "target_velocity"))
         without = self._make_case(self._save_gru("container_none.onnx", metadata, input_size=2), 2)
-        self.assertFalse(hasattr(without.actuator.sim_state(), "bias_force"))
+        self.assertFalse(hasattr(without.actuator.sim_control(), "bias_force"))
         self.assertIsNone(sim_state.joint_q)
-        self.assertIsNone(sim_state.bias_force)
+        self.assertIsNone(sim_control.bias_force)
 
         with self.assertRaises(AttributeError):
             sim_state.joint_qq = case.state.joint_q
 
         # An unassigned field raises instead of reaching a kernel with None.
         sim_state.joint_qd = case.state.joint_qd
-        sim_state.bias_force = case.state.bias_force
         with self.assertRaisesRegex(ValueError, "'joint_q' is None"):
             case.actuator.step(sim_state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
 
         sim_state.joint_q = case.state.joint_q
         sim_state.joint_qd = case.state.joint_qd
-        sim_state.bias_force = case.state.bias_force
+        sim_control.joint_target_q = case.control.joint_target_q
+        sim_control.joint_target_qd = case.control.joint_target_qd
+        sim_control.joint_act = case.control.joint_act
+        sim_control.joint_f = case.control.joint_f
+        sim_control.bias_force = case.control.bias_force
 
         case.control.joint_f.zero_()
-        case.actuator.step(sim_state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+        case.actuator.step(sim_state, sim_control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
         np.testing.assert_allclose(
             case.control.joint_f.numpy()[case.indices],
             self._expected(self._metadata(), case)[0],
@@ -1483,40 +1487,36 @@ class TestDriveNeuralGRU(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_sim_state_may_be_an_object_or_a_mapping(self):
-        """Read state and the drive's extra arrays from a namespace or from a dict."""
+    def test_sim_control_may_be_an_object_or_a_mapping(self):
+        """Read control and the drive's extra arrays from a namespace or from a dict."""
         case = self._make_case(self._save_gru("sources.onnx"), 2)
         expected = self._expected(self._metadata(), case)[0]
 
-        as_dict = {
-            "joint_q": case.state.joint_q,
-            "joint_qd": case.state.joint_qd,
-            "bias_force": case.state.bias_force,
-        }
-        for label, sim_state in (("namespace", case.state), ("dict", as_dict)):
-            with self.subTest(sim_state=label):
+        as_dict = vars(case.control)
+        for label, sim_control in (("namespace", case.control), ("dict", as_dict)):
+            with self.subTest(sim_control=label):
                 case.control.joint_f.zero_()
                 case.state_a.reset()
-                case.actuator.step(sim_state, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
+                case.actuator.step(case.state, sim_control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
                 np.testing.assert_allclose(case.control.joint_f.numpy()[case.indices], expected, rtol=1e-5, atol=1e-6)
 
-    def test_step_follows_the_array_the_sim_state_points_at(self):
-        """Use the array the sim_state references now, not one seen on an earlier step."""
+    def test_step_follows_the_array_the_sim_control_points_at(self):
+        """Use the array the sim_control references now, not one seen on an earlier step."""
         case = self._make_case(self._save_gru("per_step.onnx"), 2)
         _, hidden_first = self._step(case)
         case.state_a, case.state_b = case.state_b, case.state_a
 
         # A different array object, substituted after a step has already run.
         case.bias_force = case.bias_force * -3.0
-        case.state.bias_force = wp.array(case.bias_force, dtype=wp.float32, device=self.device)
+        case.control.bias_force = wp.array(case.bias_force, dtype=wp.float32, device=self.device)
 
         observed, _ = self._step(case)
 
         expected = self._expected(self._metadata(), case, hidden=hidden_first)[0]
         np.testing.assert_allclose(observed, expected, rtol=1e-5, atol=1e-6)
 
-    def test_builder_leaves_declared_arrays_to_the_caller(self):
-        """Name the array at build time without allocating on State or Control."""
+    def test_builder_registers_declared_arrays_on_control(self):
+        """Register the declared array on Control and leave its values to the caller."""
 
         def build_model(model_path):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1532,21 +1532,21 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         model = build_model(self._save_gru("declared_only.onnx"))
         actuator = model.actuators[0]
-        self.assertEqual(actuator.drive.custom_inputs, (("sim_state", "bias_force"),))
+        self.assertEqual(actuator.drive.custom_inputs, ("bias_force",))
         self.assertEqual(actuator.control_feedforward_attr, "joint_act")
 
-        # Newton allocates nothing and touches neither State nor Control.
-        self.assertFalse(hasattr(model.control(), "bias_force"))
+        control = model.control()
+        self.assertTrue(hasattr(control, "bias_force"))
+        self.assertEqual(control.bias_force.dtype, wp.float32)
+        self.assertEqual(len(control.bias_force), model.joint_dof_count)
         self.assertFalse(hasattr(model.state(), "bias_force"))
 
-        # The caller wraps the real State and adds the array the drive named.
-        bias = wp.full(model.joint_dof_count, 2.5, dtype=wp.float32, device=self.device)
-        state, control = model.state(), model.control()
-        sim_state = types.SimpleNamespace(joint_q=state.joint_q, joint_qd=state.joint_qd, bias_force=bias)
+        state = model.state()
         control.clear(model)
+        control.bias_force.fill_(2.5)
         control.joint_f.zero_()
         a, b = actuator.state(), actuator.state()
-        actuator.step(sim_state, control, a, b, dt=self.SAMPLE_DT)
+        actuator.step(state, control, a, b, dt=self.SAMPLE_DT)
         self.assertTrue(np.isfinite(control.joint_f.numpy()).all())
 
         metadata = self._metadata(("position", "target_velocity"))
@@ -1569,8 +1569,9 @@ class TestDriveNeuralGRU(unittest.TestCase):
         model = builder.finalize(device=self.device)
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
         self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
-        self.assertEqual(model.actuators[0].drive.custom_inputs, (("sim_state", "bias_force"),))
-        self.assertFalse(hasattr(model.control(), "bias_force"))
+        self.assertEqual(model.actuators[0].drive.custom_inputs, ("bias_force",))
+        self.assertTrue(hasattr(model.control(), "bias_force"))
+        self.assertFalse(hasattr(model.state(), "bias_force"))
 
     def test_builder_groups_equal_model_paths(self):
         """Accumulate actuators sharing one checkpoint into a single vectorized group."""
