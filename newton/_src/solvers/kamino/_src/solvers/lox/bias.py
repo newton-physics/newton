@@ -10,6 +10,7 @@ import warp as wp
 __all__ = [
     "compute_contact_normal_regularization",
     "compute_contact_penetration_bias",
+    "compute_contact_restitution_target",
     "compute_contact_velocity_target",
     "compute_limit_velocity_target",
 ]
@@ -46,6 +47,44 @@ def compute_contact_penetration_bias(
         mechanical velocity; subtract any restitution target separately.
     """
     return stabilization_fraction * wp.min(distance, 0.0) / time_step
+
+
+@wp.func
+def compute_contact_restitution_target(
+    distance: wp.float32,
+    previous_normal_velocity: wp.float32,
+    free_normal_velocity: wp.float32,
+    restitution: wp.float32,
+    time_step: wp.float32,
+    dead_zone: wp.float32,
+    impact_velocity_threshold: wp.float32,
+) -> wp.float32:
+    """Select the experimental trial-dependent speculative restitution target.
+
+    Evaluate this at each local update from the mechanical, reaction-free
+    right-hand side before adding penetration bias. The beginning-of-step
+    distance and velocity remain frozen; activation has no persistent latch.
+    Penetrated contacts use the closed-contact branch, with their recovery
+    supplied separately by :func:`compute_contact_penetration_bias`.
+
+    Args:
+        distance: Beginning-of-step margin-shifted signed distance [m].
+        previous_normal_velocity: Beginning-of-step normal velocity [m/s].
+        free_normal_velocity: Current reaction-free local normal velocity [m/s].
+        restitution: Newton restitution coefficient.
+        time_step: Time step [s].
+        dead_zone: Distance below which a contact is treated as closed [m].
+        impact_velocity_threshold: Minimum approaching impact speed for bounce [m/s].
+
+    Returns:
+        Normal target [m/s], to subtract from the local right-hand side.
+    """
+    if distance > dead_zone and free_normal_velocity + distance / time_step >= 0.0:
+        return -distance / time_step
+    target = wp.float32(0.0)
+    if previous_normal_velocity < -impact_velocity_threshold:
+        target = -restitution * previous_normal_velocity
+    return target
 
 
 @wp.func

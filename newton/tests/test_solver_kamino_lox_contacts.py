@@ -94,6 +94,18 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), 0.0, delta=2.0e-4)
                     self.assertAlmostEqual(float(state.body_q.numpy()[0, 2]), 0.08, delta=1.0e-5)
 
+    def test_restitution_speculative_trial_and_closed_contact(self):
+        """Bounce closing trials immediately while leaving open speculative trials free."""
+        for method in ("jacobi", "gauss_seidel", "apgd"):
+            for gap, velocity, expected in ((0.0, -2.0, 1.0), (0.01, -2.0, 1.0), (0.01, -0.2, -0.2)):
+                with self.subTest(method=method, gap=gap, velocity=velocity):
+                    model = self._sphere(
+                        gap=gap, gravity=0.0, velocity=(0.0, 0.0, velocity, 0.0, 0.0, 0.0), restitution=0.5
+                    )
+                    solver = self._solver(model, method=method, contact_restitution=True)
+                    state = self._step(model, solver)
+                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
+
     def test_spatial_friction_reduces_spin_and_roll(self):
         """Dissipate spinning and rolling motion within the shared friction budget."""
         for method in ("jacobi", "gauss_seidel", "apgd"):
@@ -184,6 +196,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     model,
                     method=method,
                     contact_compliance=0.001,
+                    contact_restitution=True,
                     contact_spatial_friction=True,
                 )
                 state_in, state_out = model.state(), model.state()

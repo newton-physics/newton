@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental spatial and compliant contact integration."""
+"""Experimental spatial, compliant, and restitutive contact integration."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from ...core.types import mat36f, mat66f, vec6f
 from .bias import (
     compute_contact_normal_regularization,
     compute_contact_penetration_bias,
+    compute_contact_restitution_target,
     compute_contact_velocity_target,
 )
 from .contact_cache import AngularContactCache
@@ -30,6 +31,7 @@ class ContactLawData:
     """Device views for one prepared projection schedule."""
 
     enabled: wp.bool
+    restitution_enabled: wp.bool
     dead_zone: wp.float32
     impact_threshold: wp.float32
     jacobian_first: wp.array[mat66f]
@@ -75,7 +77,19 @@ def gather_contact_velocity(
 
 @wp.func
 def contact_rhs_bias(contact: int, free_normal_velocity: float, data: ContactLawData) -> float:
-    return data.bias[contact]
+    bias = data.bias[contact]
+    if data.restitution_enabled:
+        parameters = data.parameters[contact]
+        bias -= compute_contact_restitution_target(
+            parameters[0],
+            parameters[1],
+            free_normal_velocity,
+            parameters[2],
+            parameters[3],
+            data.dead_zone,
+            data.impact_threshold,
+        )
+    return bias
 
 
 @wp.func
@@ -165,7 +179,12 @@ def _initialize_contacts(
     parameters = data.parameters[contact]
     data.regularization[contact] = compute_contact_normal_regularization(compliance, dt)
     bias = legacy_bias[contact][2]
-    if compliance > 0.0:
+    if data.restitution_enabled:
+        fraction = stabilization_fraction
+        if compliance > 0.0:
+            fraction = compliance_fraction
+        bias = compute_contact_penetration_bias(parameters[0], dt, fraction)
+    elif compliance > 0.0:
         bias = compute_contact_penetration_bias(parameters[0], dt, compliance_fraction)
         bias -= compute_contact_velocity_target(
             wp.max(parameters[0], 0.0),
@@ -379,6 +398,7 @@ class ContactLaw:
         self.data = ContactLawData()
         data = self.data
         data.enabled = True
+        data.restitution_enabled = config.contact_restitution
         data.dead_zone = constraints.delta
         data.impact_threshold = config.impact_velocity_threshold
         for name, dtype in (

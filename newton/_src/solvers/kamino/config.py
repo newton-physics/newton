@@ -1106,6 +1106,15 @@ class LOXSolverConfig:
     following the normal deprecation policy.
     """
 
+    contact_restitution: bool = False
+    """Enable experimental restitution switching within each local contact solve.
+
+    The switch uses the current reaction-free normal velocity and the frozen
+    beginning-of-step gap and impact velocity. Incompatible with
+    :attr:`contact_recoverable_response`. This mode may change without
+    following the normal deprecation policy.
+    """
+
     contact_spatial_friction: bool = False
     """Enable experimental coupled sliding, torsional, and rolling friction.
 
@@ -1256,9 +1265,11 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid contact_compliance_fraction: {self.contact_compliance_fraction}. Must be in range (0, 1]."
             )
-        for name in ("contact_spatial_friction",):
+        for name in ("contact_restitution", "contact_spatial_friction"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
+        if self.contact_restitution and self.contact_recoverable_response:
+            raise ValueError("contact_restitution and contact_recoverable_response cannot both be enabled.")
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
         implemented_contact_warmstart_methods = {
             "key_and_position",
