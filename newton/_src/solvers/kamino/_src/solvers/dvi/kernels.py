@@ -506,6 +506,48 @@ def _assemble_bilateral_contact_response(
 def _subgroup_sum_16(value: float32) -> float32: ...
 
 
+@wp.func_native(
+    """
+#if defined(__CUDA_ARCH__)
+    int r = value;
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        r = min(r, __shfl_xor_sync(0xffffffffu, r, offset));
+    return r;
+#else
+    return value;
+#endif
+    """
+)
+def _warp_min_32(value: int32) -> int32: ...
+
+
+@wp.func
+def _compact_schur_fits(njc: int32, nu: int32, stride: int32) -> bool:
+    # Avoid squaring nu: the allocated response size is already int32-safe.
+    return nu <= (njc * stride) / wp.max(nu, int32(1))
+
+
+@wp.kernel
+def _find_bilateral_factor_row_start(
+    njc: wp.array[int32],
+    mio: wp.array[int32],
+    vio: wp.array[int32],
+    factor: wp.array[float32],
+    row_start: wp.array[int32],
+):
+    """Skip exact leading zeros while preserving the response reduction order."""
+    wid, row = wp.tid()
+    n = njc[wid]
+    if row >= n:
+        return
+    first = int32(0)
+    offset = mio[wid] + row * n
+    while first < row and factor[offset + first] == float32(0.0):
+        first += int32(1)
+    row_start[vio[wid] + row] = first / int32(16) * int32(16)
+
+
 @wp.kernel
 def _solve_bilateral_unilateral_response_cooperative(
     problem_dim: wp.array[int32],
@@ -523,10 +565,12 @@ def _solve_bilateral_unilateral_response_cooperative(
     response: wp.array[float32],
     first_unilateral: int32,
     tasks_per_world: int32,
+    use_forward_schur: bool,
+    factor_row_start: wp.array[int32],
 ):
-    """Solve response columns cooperatively with persistent warp workers."""
-    # response_factor is unilateral-major here; response always uses
-    # original_row * unilateral_stride + unilateral.
+    """Solve response columns, or whiten them for compact Schur construction."""
+    # The whitening workspace and compact-path response are unilateral-major;
+    # the fallback response uses original_row * unilateral_stride + unilateral.
     tid = wp.tid()
     lane = tid % int32(32)
     task = tid / int32(32)
@@ -544,10 +588,24 @@ def _solve_bilateral_unilateral_response_cooperative(
     for unilateral_pair in range(first_pair + task_in_world, pair_count, tasks_per_world):
         unilateral = int32(2) * unilateral_pair + lane / int32(16)
         active = unilateral < nu
-        for row in range(njc):
+        first_row = njc
+        if active:
+            for row in range(local_lane, njc, int32(16)):
+                original_row = row
+                if use_permutation:
+                    original_row = bilateral_permutation[bvio + row]
+                if coupling[offset + original_row * unilateral_stride + unilateral] != float32(0.0):
+                    first_row = wp.min(first_row, row)
+        # Both response columns share warp barriers, so use their common prefix.
+        first_row = _warp_min_32(first_row)
+        if active:
+            for row in range(local_lane, first_row, int32(16)):
+                response_factor[offset + unilateral * njc + row] = float32(0.0)
+        _sync_warp()
+        for row in range(first_row, njc):
             partial = float32(0.0)
             if active:
-                for k in range(local_lane, row, int32(16)):
+                for k in range(factor_row_start[bvio + row] + local_lane, row, int32(16)):
                     partial += bilateral_L[factor + njc * row + k] * response_factor[offset + unilateral * njc + k]
             total = _subgroup_sum_16(partial)
             if local_lane == int32(0) and active:
@@ -561,7 +619,11 @@ def _solve_bilateral_unilateral_response_cooperative(
                     factor + njc * row + row
                 ]
             _sync_warp()
-        for reverse_row in range(njc):
+        backward_rows = njc
+        if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
+            # C.T A^-1 C = Y.T Y with Y = L^-1 P C; backward solves are unnecessary.
+            backward_rows = int32(0)
+        for reverse_row in range(backward_rows):
             row = njc - int32(1) - reverse_row
             partial = float32(0.0)
             if active:
@@ -579,9 +641,12 @@ def _solve_bilateral_unilateral_response_cooperative(
                 original_row = row
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
-                response[offset + original_row * unilateral_stride + unilateral] = (
-                    bilateral_P[bvio + original_row] * response_factor[offset + unilateral * njc + row]
-                )
+                if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
+                    response[offset + unilateral * njc + row] = response_factor[offset + unilateral * njc + row]
+                else:
+                    response[offset + original_row * unilateral_stride + unilateral] = (
+                        bilateral_P[bvio + original_row] * response_factor[offset + unilateral * njc + row]
+                    )
 
 
 @wp.kernel

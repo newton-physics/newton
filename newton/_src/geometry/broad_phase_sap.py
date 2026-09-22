@@ -23,6 +23,7 @@ from .broad_phase_common import (
     check_aabb_overlap_moving,
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
+    is_shape_pair_same_body_filtered,
     precompute_world_map,
     test_group_pair,
     test_world_and_group_pair,
@@ -289,6 +290,9 @@ def _process_single_sap_pair(
 ):
     shape1 = pair[0]
     shape2 = pair[1]
+
+    if is_shape_pair_same_body_filtered(shape1, shape2, shape_body):
+        return
 
     if is_shape_pair_immovable_filtered(shape1, shape2, shape_body, body_flags, include_static_kinematic_pairs):
         return
@@ -716,11 +720,11 @@ class BroadPhaseSAP:
                 the counter was zeroed by a preceding fused kernel).  Defaults to False so
                 the launch remains self-contained.
             shape_body: Optional array mapping each shape to its body index. Negative body indices are static shapes.
-                Omitting this array disables immovable-pair filtering for expert callers.
+                Omitting this array disables same-body and immovable-pair filtering for expert callers.
             body_flags: Optional body flag array used to identify kinematic bodies. An empty array is valid for
                 an all-static model when ``shape_body`` is provided.
-            include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
-                ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            include_static_kinematic_pairs: Whether to include static-kinematic and kinematic-kinematic pairs.
+                Set to ``False`` to filter those pairs. Static-static pairs are always filtered.
             shape_displacement: Optional world-space displacement of each shape over the collision-update interval
                 ``dt``,
                 used for speculative-contact swept-AABB tests [m]. See

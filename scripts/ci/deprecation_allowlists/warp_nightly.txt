@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+# The deprecated alias remains functional and has no scheduled removal.
+# Newton can use wp.geometry.IsoSurfaceMarchingCubes directly once all
+# supported Warp versions provide it.
+# https://github.com/NVIDIA/warp/blob/main/design/deprecations.md
+# remove-when-minimum: warp-lang>=1.18
+wp.MarchingCubes is deprecated and will be removed in a future version of Warp. Use wp.geometry.IsoSurfaceMarchingCubes instead.

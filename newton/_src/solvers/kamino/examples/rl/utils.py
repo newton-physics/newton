@@ -9,13 +9,17 @@ and periodic phase encoding — no external RL-framework dependency.
 
 from __future__ import annotations
 
-# Python
-import math
-
 # Thirdparty
 import numpy as np
 import torch  # noqa: TID253
 import warp as wp
+
+from newton._src.solvers.kamino.examples.rl import input_utils as _input_utils
+
+RateLimitedValue = _input_utils.RateLimitedValue
+_deadband = _input_utils._deadband
+_LowPassFilter = _input_utils._LowPassFilter
+_scale_asym = _input_utils._scale_asym
 
 ###
 # Module configs
@@ -294,64 +298,3 @@ def _load_policy_checkpoint(path: str, device: str) -> callable:
             return actor(obs)
 
     return policy
-
-
-# ---------------------------------------------------------------------------
-# Joystick controller
-# ---------------------------------------------------------------------------
-
-
-def _deadband(value: float, threshold: float) -> float:
-    """Remove dead zone and rescale to full range."""
-    if abs(value) < threshold:
-        return 0.0
-    sign = 1.0 if value > 0.0 else -1.0
-    return sign * (abs(value) - threshold) / (1.0 - threshold)
-
-
-class _LowPassFilter:
-    """Scalar backward-Euler low-pass filter."""
-
-    def __init__(self, cutoff_hz: float, dt: float) -> None:
-        omega = cutoff_hz * 2.0 * math.pi
-        self.alpha = omega * dt / (omega * dt + 1.0)
-        self.value: float | None = None
-
-    def update(self, x: float) -> float:
-        if self.value is None:
-            self.value = x
-        else:
-            self.value = (1.0 - self.alpha) * self.value + self.alpha * x
-        return self.value
-
-    def reset(self) -> None:
-        self.value = None
-
-
-class RateLimitedValue:
-    """Scalar rate limiter — clamps the rate of change to ±rate_limit/s."""
-
-    def __init__(self, rate_limit: float, dt: float) -> None:
-        self.rate_limit = rate_limit
-        self.dt = dt
-        self.value: float = 0.0
-        self._initialized = False
-
-    def update(self, target: float) -> float:
-        if not self._initialized:
-            self._initialized = True
-            self.value = target
-        else:
-            max_delta = self.rate_limit * self.dt
-            delta = max(-max_delta, min(target - self.value, max_delta))
-            self.value += delta
-        return self.value
-
-    def reset(self) -> None:
-        self.value = 0.0
-        self._initialized = False
-
-
-def _scale_asym(value: float, neg_scale: float, pos_scale: float) -> float:
-    """Asymmetric scaling around zero."""
-    return value * neg_scale if value < 0.0 else value * pos_scale

@@ -422,8 +422,9 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "must be divisible by 8"):
+            with self.assertWarnsRegex(UserWarning, "must be divisible by 8") as warning:
                 result = builder.add_usd(str(usd_path))
+            self.assertEqual(warning.filename, newton.ModelBuilder.add_usd.__code__.co_filename)
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # Invalid resolution should be dropped — builder default (None) wins.
             self.assertIsNone(builder.shape_sdf_max_resolution[s1])

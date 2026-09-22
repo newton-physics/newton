@@ -19,6 +19,7 @@ from ...linalg import LLTBlockedRCMSolver
 from .kernels import (
     _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
+    _find_bilateral_factor_row_start,
     _initialize_dvi_status,
     _scatter_bilateral_solution,
     _set_dvi_direct_status_iterations,
@@ -26,7 +27,7 @@ from .kernels import (
     _solve_bilateral_unilateral_response_cooperative,
 )
 from .sparse_kernels import (
-    _assemble_compact_unilateral_schur,
+    _assemble_compact_unilateral_schur_tiled,
     _assemble_sparse_bilateral_unilateral_coupling,
     _build_sparse_bilateral_block,
     _build_sparse_bilateral_rhs,
@@ -212,7 +213,7 @@ def _can_use_cooperative_articulation(path: SparseDVIPath) -> bool:
         path.use_schur_complement
         and path.device.is_cuda
         and path.bilateral_solver is not None
-        and path.size.max_of_num_bilateral_joint_cts >= 64
+        and path.size.max_of_num_bilateral_joint_cts >= 32
     )
 
 
@@ -1018,6 +1019,8 @@ def _solve_sparse_with_bilateral_alternation(path: SparseDVIPath, problem: DualP
             path.data.solution.lambdas,
             state.v_aug,
             state.inequality_projected_diagonal,
+            state.bilateral_response_factor,
+            False,
         ],
         device=path.device,
     )
@@ -1074,7 +1077,7 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
     state.bilateral_delta.zero_()
     wp.launch(
         kernel=_assemble_sparse_bilateral_unilateral_coupling,
-        dim=(path.size.num_worlds, max_joint_rows, max_unilateral_rows),
+        dim=(path.size.num_worlds, 1024),
         inputs=[
             bsm.num_nzb,
             bsm.nzb_start,
@@ -1113,7 +1116,7 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
     )
     enable_compact_schur = (
         path.device.is_cuda
-        and path.size.max_of_num_bilateral_joint_cts >= 64
+        and path.size.max_of_num_bilateral_joint_cts >= 32
         and path.max_alternating_iterations >= 4
         and not has_intermediate_bilateral_solve
     )
@@ -1123,9 +1126,22 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
     response_dim = path.size.num_worlds
     if path.device.is_cuda:
         response_kernel = _solve_bilateral_unilateral_response_cooperative
-        response_block_dim = 32
+        # Pack independent warp workers to avoid limiting occupancy to one warp per block.
+        response_block_dim = 256 if path.size.num_worlds >= 128 else 128
         response_tasks_per_world = (max_unilateral_rows + 1) // 2
-        response_dim = path.size.num_worlds * response_tasks_per_world * response_block_dim
+        response_dim = path.size.num_worlds * response_tasks_per_world * 32
+        wp.launch(
+            kernel=_find_bilateral_factor_row_start,
+            dim=(path.size.num_worlds, max_joint_rows),
+            inputs=[
+                problem.data.njc,
+                path.data.bilateral_operator.info.mio,
+                path.data.bilateral_operator.info.vio,
+                path.bilateral_solver.L,
+                state.bilateral_factor_row_start,
+            ],
+            device=path.device,
+        )
     wp.launch(
         kernel=response_kernel,
         dim=response_dim,
@@ -1143,28 +1159,31 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
             state.bilateral_coupling,
             state.bilateral_response_factor,
             state.bilateral_response,
-            *([0, response_tasks_per_world] if path.device.is_cuda else []),
+            *(
+                [0, response_tasks_per_world, enable_compact_schur, state.bilateral_factor_row_start]
+                if path.device.is_cuda
+                else []
+            ),
         ],
         device=path.device,
         block_dim=response_block_dim,
     )
     if enable_compact_schur:
         wp.launch(
-            kernel=_assemble_compact_unilateral_schur,
-            dim=path.size.num_worlds * 256,
+            kernel=_assemble_compact_unilateral_schur_tiled,
+            dim=(path.size.num_worlds, 16, 128),
             inputs=[
                 problem.data.dim,
                 problem.data.njc,
                 problem.data.vio,
                 state.bilateral_response_mio,
                 state.bilateral_response_stride,
-                state.bilateral_coupling,
                 state.bilateral_response,
                 state.bilateral_response_factor,
                 state.s,
             ],
             device=path.device,
-            block_dim=256,
+            block_dim=128,
         )
     wp.launch(
         kernel=_cache_sparse_projected_diagonal,
@@ -1183,6 +1202,8 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
             path.data.solution.lambdas,
             state.v_aug,
             state.inequality_projected_diagonal,
+            state.bilateral_response_factor,
+            enable_compact_schur,
         ],
         device=path.device,
     )
@@ -1208,7 +1229,9 @@ def _solve_sparse_with_bilateral_schur_complement(path: SparseDVIPath, problem: 
             )
 
     cooperative_fused_pgs = _can_use_cooperative_articulation(path)
-    if has_intermediate_bilateral_solve or not cooperative_fused_pgs:
+    if has_intermediate_bilateral_solve or not cooperative_fused_pgs or enable_compact_schur:
+        # Compact Schur stores whitened columns instead of full responses;
+        # one fresh bilateral solve recovers the final joint impulses.
         path.set_bilateral_active_dim(problem, -1)
         _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
     else:

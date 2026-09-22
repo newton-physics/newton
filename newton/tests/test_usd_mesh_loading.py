@@ -8,9 +8,11 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import warp as wp
 
 import newton
 import newton.usd
+from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
@@ -55,6 +57,19 @@ def _define_triangle_mesh(stage, path="/Triangle"):
     )
     mesh.CreateFaceVertexCountsAttr([3])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    return mesh
+
+
+def _define_folded_mesh(stage, path="/Fold", scheme=None):
+    """Define two perpendicular triangles sharing an edge."""
+    from pxr import UsdGeom
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)])
+    mesh.CreateFaceVertexCountsAttr([3, 3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 3, 1])
+    if scheme is not None:
+        mesh.CreateSubdivisionSchemeAttr(scheme)
     return mesh
 
 
@@ -134,6 +149,127 @@ class TestUsdMeshHelpers(unittest.TestCase):
 
         self.assertIsInstance(mesh, newton.Mesh)
         assert_np_equal(mesh.indices, np.array([0, 1, 2], dtype=np.int32))
+
+    def test_get_mesh_canonicalizes_shading(self):
+        """Represent sharp and smooth USD shading with ordinary vertex normals."""
+        from pxr import Usd, UsdGeom
+
+        for scheme in (None, "none", "bilinear", "catmullClark", "loop"):
+            with self.subTest(scheme=scheme):
+                stage = Usd.Stage.CreateInMemory()
+                source = _define_folded_mesh(stage, scheme=scheme)
+                mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
+                self.assertIsNotNone(mesh.normals)
+                corners = mesh.normals[mesh.indices].reshape(2, 3, 3)
+                if scheme in (UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear):
+                    np.testing.assert_allclose(corners, np.repeat([[(0, 0, 1)], [(0, 1, 0)]], 3, axis=1))
+                else:
+                    np.testing.assert_allclose(corners[:, 0], np.tile([0, 2**-0.5, 2**-0.5], (2, 1)), atol=1e-6)
+                np.testing.assert_array_equal(mesh.copy().normals, mesh.normals)
+
+                geometry = newton.usd.get_mesh(source.GetPrim(), load_normals=False, compute_inertia=False)
+                self.assertEqual(len(geometry.vertices), 4)
+                self.assertIsNone(geometry.normals)
+
+    def test_get_mesh_preserves_mixed_shading_when_merged(self):
+        """Keep sharp and smooth components intact when merging USD meshes."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        sources = [
+            _define_folded_mesh(stage, f"/mesh_{scheme}", scheme) for scheme in ("none", "bilinear", "catmullClark")
+        ]
+        sources[0].CreateNormalsAttr([(1, 0, 0)] * 4)
+        sources[0].SetNormalsInterpolation("vertex")
+        meshes = [newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False) for source in sources]
+        merged = newton.usd.get_mesh(stage, load_normals=True, compute_inertia=False)
+        self.assertIsNotNone(merged.normals)
+        np.testing.assert_allclose(
+            merged.normals[merged.indices], np.concatenate([mesh.normals[mesh.indices] for mesh in meshes])
+        )
+        np.testing.assert_allclose(
+            merged.vertices[merged.indices], np.concatenate([mesh.vertices[mesh.indices] for mesh in meshes])
+        )
+
+    def test_uniform_normals_honor_conversion_policy(self):
+        """Honor both averaging policies and the requested splitting threshold."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        source = _define_folded_mesh(stage, scheme="none")
+        source.CreateNormalsAttr([(0, 0, 1), (0, 1, 0)])
+        source.SetNormalsInterpolation("uniform")
+        for policy, threshold, vertices in (
+            ("vertex_averaging", 0, 4),
+            ("angle_weighted", 0, 4),
+            ("vertex_splitting", 0, 6),
+            ("vertex_splitting", 100, 4),
+        ):
+            with self.subTest(policy=policy, threshold=threshold):
+                mesh = newton.usd.get_mesh(
+                    source.GetPrim(),
+                    load_normals=True,
+                    compute_inertia=False,
+                    face_varying_normal_conversion=policy,
+                    vertex_splitting_angle_threshold_deg=threshold,
+                )
+                self.assertEqual(len(mesh.vertices), vertices)
+
+    def test_sensor_renders_resolved_shading(self):
+        """Render sharp and smooth imported normals through the camera sensor."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        source = _define_folded_mesh(stage)
+        for scheme in ("none", "catmullClark"):
+            with self.subTest(scheme=scheme), wp.ScopedDevice("cpu"):
+                source.CreateSubdivisionSchemeAttr(scheme)
+                mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
+                builder = newton.ModelBuilder()
+                builder.add_shape_mesh(-1, mesh=mesh)
+                model = builder.finalize(device="cpu")
+                sensor = SensorTiledCamera(model=model)
+                transforms = wp.array(
+                    [[wp.transform(wp.vec3(0.25, 0.25, 2.0), wp.quat_identity())]], dtype=wp.transform
+                )
+                rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=0.5)
+                image = sensor.utils.create_normal_image_output(1, 1)
+                sensor.update(model.state(), transforms, rays, normal_image=image)
+                normal = image.numpy()[0, 0, 0, 0]
+                if scheme == "none":
+                    np.testing.assert_allclose(normal, [0, 0, 1], atol=1e-6)
+                else:
+                    expected = 0.75 * np.array([0, 2**-0.5, 2**-0.5]) + 0.25 * np.array([0, 0, 1])
+                    expected /= np.linalg.norm(expected)
+                    np.testing.assert_allclose(normal, expected, atol=1e-6)
+
+    def test_generated_normals_preserve_uv_seams(self):
+        """Generate shading before UV expansion and keep corner UVs aligned."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        source = _define_folded_mesh(stage)
+        corner_uvs = np.array([(0, 0), (1, 0), (0, 1), (0.2, 0), (0.2, 1), (1, 0)], dtype=np.float32)
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying").Set(
+            corner_uvs
+        )
+        for scheme in ("none", "catmullClark"):
+            source.CreateSubdivisionSchemeAttr(scheme)
+            for preserve in (False, True):
+                with self.subTest(scheme=scheme, preserve=preserve):
+                    mesh, uv_indices = newton.usd.get_mesh(
+                        source.GetPrim(),
+                        load_normals=True,
+                        load_uvs=True,
+                        preserve_facevarying_uvs=preserve,
+                        return_uv_indices=True,
+                        compute_inertia=False,
+                    )
+                    np.testing.assert_allclose(mesh.uvs[uv_indices], corner_uvs)
+                    if scheme == "catmullClark":
+                        np.testing.assert_allclose(
+                            mesh.normals[mesh.indices[[0, 3]]], np.tile([0, 2**-0.5, 2**-0.5], (2, 1)), atol=1e-6
+                        )
 
     def test_mesh_create_from_usd_accepts_legacy_prim_keyword(self):
         """Keep ``Mesh.create_from_usd(prim=...)`` working."""

@@ -6122,6 +6122,38 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_cone_is_converted_to_mesh(self):
+        """Convert Newton cones to meshes because MuJoCo has no cone primitive."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_cone(body, radius=0.25, half_height=0.5)
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+
+        solver = SolverMuJoCo(builder.finalize(device="cpu"))
+
+        self.assertEqual(solver.mj_model.nmesh, 1)
+        self.assertEqual(solver.mj_model.geom_type[0], mujoco.mjtGeom.mjGEOM_MESH)
+        self.assertEqual(solver.mjw_model.geom_type.numpy()[0], mujoco.mjtGeom.mjGEOM_MESH)
+
+    def test_cone_runtime_resize_is_rejected(self):
+        """Reject cone resizing because its MuJoCo mesh is compiled during construction."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_shape_cone(body, radius=0.25, half_height=0.5)
+                joint = builder.add_joint_free(body)
+                builder.add_articulation([joint])
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+
+                model.shape_scale.assign([[0.5, 1.0, 0.0]])
+
+                with self.assertRaisesRegex(ValueError, "Recreate the solver after resizing"):
+                    solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+
     def test_setup_preserves_shape_scale(self):
         """Preserve model shape scales while converting MuJoCo geometry sizes."""
         builder = newton.ModelBuilder()

@@ -1,0 +1,1 @@
+Raise a `ValueError` at `SolverVBD.step` when `particle_enable_self_contact=True` is combined with `CollisionFrequencyType.NONE` for the `SOFT_SELF_CONTACT` slot (and when `rigid_soft_enable_dat=True` is combined with `NONE` for the `RIGID` slot). Previously the self-contact case silently ran without detection; configure an active schedule for the slot instead.

@@ -103,6 +103,37 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
+    def test_mesh_visual_attributes_have_distinct_prototypes(self):
+        """Cache normals and UVs separately without changing physical mesh identity."""
+        mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False)
+        variants = [mesh] + [
+            newton.Mesh(mesh.vertices, mesh.indices, compute_inertia=False, **attributes)
+            for attributes in (
+                {"normals": [[0, 0, 1]] * 3},
+                {"normals": [[0, 1, 0]] * 3},
+                {"uvs": [[0, 0], [1, 0], [0, 1]]},
+            )
+        ]
+        viewer = _ViewerGeometryBatchingProbe()
+        paths = []
+        for variant in variants:
+            self.assertEqual(hash(variant), hash(mesh))
+            paths.append(viewer._populate_geometry(newton.GeoType.MESH, (1, 1, 1), 0.0, True, variant))
+        self.assertEqual(len(set(paths)), len(variants))
+        self.assertEqual(
+            viewer._populate_geometry(newton.GeoType.MESH, (1, 1, 1), 0.0, True, variants[1].copy()), paths[1]
+        )
+
+    def test_model_batches_keep_distinct_normals(self):
+        """Keep visually distinct copies separate in ordinary model rendering."""
+        builder = newton.ModelBuilder()
+        mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], normals=[[0, 0, 1]] * 3, compute_inertia=False)
+        for source in (mesh, newton.Mesh(mesh.vertices, mesh.indices, normals=[[0, 1, 0]] * 3, compute_inertia=False)):
+            builder.add_shape_mesh(-1, mesh=source)
+        viewer = _ViewerGeometryBatchingProbe()
+        viewer.set_model(builder.finalize())
+        self.assertEqual(len(viewer._geometry_cache), 2)
+
     def test_mesh_rejects_invalid_texture_transform(self):
         """Reject malformed texture transforms at their Mesh owner."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)

@@ -4,20 +4,13 @@
 ###########################################################################
 # Example: DR Legs walk policy play-back
 #
-# Runs a trained walk RL policy on the DR Legs robot using the Kamino
-# solver with implicit PD joint control.  Velocity commands come from an
+# Runs a trained ONNX walk policy on the DR Legs robot using the Kamino
+# solver with implicit PD joint control. Velocity commands come from an
 # Xbox gamepad or keyboard via the 3-D viewer.
 #
-# The policy expects 94D observations with path-frame integration:
-#   ori_root_to_path (9D) + path_deviation (2D) + path_dev_heading (2D)
-#   + path_cmd (3D) + cmd_linvel_in_root (3D) + cmd_angvel_in_root (3D)
-#   + phase_encoding (4D) + root_linvel_in_root (3D) + root_angvel_in_root (3D)
-#   + cmd_height (1D) + height_error (1D)
-#   + joint_positions (36D) + action_history (24D)
-#
 # Usage:
-#   python example_rl_drlegs.py --policy path/to/model.pt
-#   python example_rl_drlegs.py --policy path/to/model.pt --mode async
+#   python example_rl_drlegs.py --policy path/to/model.onnx
+#   python example_rl_drlegs.py --policy path/to/model.onnx --mode async
 #   python example_rl_drlegs.py --headless --num-steps 200
 ###########################################################################
 
@@ -25,8 +18,6 @@ import argparse
 from pathlib import Path
 from typing import ClassVar
 
-import numpy as np
-import torch  # noqa: TID253
 import warp as wp
 import yaml
 
@@ -35,29 +26,11 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.viewer import MeshColors, ViewerConfig
 from newton._src.solvers.kamino.examples import run_headless
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
-from newton._src.solvers.kamino.examples.rl.observations import DrlegsBaseObservation
+from newton._src.solvers.kamino.examples.rl.onnx_policy import WarpOnnxPolicy
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.simulation_runner import SimulationRunner
-from newton._src.solvers.kamino.examples.rl.utils import (
-    _load_policy_checkpoint,
-    periodic_encoding,
-    quat_inv_mul,
-    quat_rotate_inv,
-    quat_to_projected_yaw,
-    quat_to_rotation9d,
-    yaw_apply_2d,
-    yaw_to_quat,
-)
-
-###
-# Module configs
-###
 
 wp.set_module_options({"enable_backward": False})
-
-# ---------------------------------------------------------------------------
-# Walk task config
-# ---------------------------------------------------------------------------
 
 _DEFAULTS = {
     "action_scale": 0.4,
@@ -78,151 +51,194 @@ _DEFAULTS = {
     "control_decimation": 5,
     "body_pose_offset_z": 0.265,
     "usd_model": "dr_legs/usd/dr_legs_with_meshes_and_boxes.usda",
-    "policy_file": "drlegs_walk.pt",
+    "policy_file": "drlegs_walk.onnx",
 }
+
+_DRLEGS_ASSET_REF = "a0547548eaa966c2f5478bee496c3cfba1fa98fc"
+_DRLEGS_ACTION_WIDTH = 12
+_DRLEGS_OBSERVATION_WIDTH = 94
+
+
+@wp.kernel
+def _set_pd_gains_kernel(
+    actuated_dof_indices: wp.array[wp.int32],
+    kp: wp.float32,
+    kd: wp.float32,
+    armature: wp.float32,
+    joint_kp: wp.array[wp.float32],
+    joint_kd: wp.array[wp.float32],
+    joint_armature: wp.array[wp.float32],
+):
+    action_index = wp.tid()
+    dof_index = actuated_dof_indices[action_index]
+    joint_kp[dof_index] = kp
+    joint_kd[dof_index] = kd
+    joint_armature[dof_index] = armature
+
+
+@wp.kernel
+def _build_observation_kernel(
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    joint_q: wp.array[wp.float32],
+    actions: wp.array2d[wp.float32],
+    command: wp.array[wp.vec4f],
+    phase: wp.array[wp.float32],
+    path_heading: wp.array[wp.float32],
+    path_position: wp.array[wp.vec2f],
+    action_history: wp.array2d[wp.float32],
+    action_history_prev: wp.array2d[wp.float32],
+    root_body_index: wp.int32,
+    root_coords_offset: wp.int32,
+    root_coords_count: wp.int32,
+    joint_coord_count: wp.int32,
+    env_dt: wp.float32,
+    phase_rate: wp.float32,
+    action_scale: wp.float32,
+    path_deviation_scale: wp.float32,
+    path_error_limit: wp.float32,
+    height_error_scale: wp.float32,
+    observation: wp.array2d[wp.float32],
+):
+    cmd = command[0]
+    current_phase = wp.mod(phase[0] + env_dt * phase_rate, 1.0)
+    phase[0] = current_phase
+
+    heading = path_heading[0]
+    mid_heading = heading + 0.5 * env_dt * cmd[2]
+    path_delta = wp.quat_rotate(
+        wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), mid_heading),
+        wp.vec3f(cmd[0], cmd[1], 0.0),
+    )
+    path = path_position[0] + wp.vec2f(path_delta[0], path_delta[1]) * env_dt
+    heading += env_dt * cmd[2]
+    path_heading[0] = heading
+
+    root_transform = body_q[root_body_index]
+    root_position = wp.transform_get_translation(root_transform)
+    root_rotation = wp.transform_get_rotation(root_transform)
+    path_error = path - wp.vec2f(root_position[0], root_position[1])
+    path_error_length = wp.length(path_error)
+    if path_error_length > path_error_limit:
+        path = wp.vec2f(root_position[0], root_position[1]) + path_error * path_error_limit / path_error_length
+    path_position[0] = path
+
+    path_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), heading)
+    root_in_path = wp.quat_inverse(path_rotation) * root_rotation
+    root_rotation_matrix = wp.quat_to_matrix(root_in_path)
+    for row in range(3):
+        for column in range(3):
+            observation[0, row * 3 + column] = root_rotation_matrix[row, column]
+
+    deviation_world = wp.vec3f(root_position[0] - path[0], root_position[1] - path[1], 0.0)
+    deviation_path = wp.quat_rotate_inv(path_rotation, deviation_world)
+    inverse_deviation_scale = 1.0 / path_deviation_scale
+    observation[0, 9] = deviation_path[0] * inverse_deviation_scale
+    observation[0, 10] = deviation_path[1] * inverse_deviation_scale
+
+    root_heading = wp.atan2(
+        2.0 * (root_in_path[2] * root_in_path[3] + root_in_path[0] * root_in_path[1]),
+        root_in_path[3] * root_in_path[3]
+        + root_in_path[0] * root_in_path[0]
+        - root_in_path[1] * root_in_path[1]
+        - root_in_path[2] * root_in_path[2],
+    )
+    heading_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), root_heading)
+    deviation_heading = wp.quat_rotate_inv(heading_rotation, -deviation_path)
+    observation[0, 11] = deviation_heading[0] * inverse_deviation_scale
+    observation[0, 12] = deviation_heading[1] * inverse_deviation_scale
+
+    observation[0, 13] = cmd[0]
+    observation[0, 14] = cmd[1]
+    observation[0, 15] = cmd[2]
+
+    command_linear_root = wp.quat_rotate_inv(root_in_path, wp.vec3f(cmd[0], cmd[1], 0.0))
+    command_angular_root = wp.quat_rotate_inv(root_in_path, wp.vec3f(0.0, 0.0, cmd[2]))
+    for axis in range(3):
+        observation[0, 16 + axis] = command_linear_root[axis]
+        observation[0, 19 + axis] = command_angular_root[axis]
+
+    observation[0, 22] = wp.cos(2.0 * wp.pi * current_phase)
+    observation[0, 23] = wp.sin(2.0 * wp.pi * current_phase)
+    observation[0, 24] = wp.cos(4.0 * wp.pi * current_phase)
+    observation[0, 25] = wp.sin(4.0 * wp.pi * current_phase)
+
+    root_velocity = body_u[root_body_index]
+    root_linear_velocity = wp.quat_rotate_inv(root_rotation, wp.spatial_top(root_velocity))
+    root_angular_velocity = wp.quat_rotate_inv(root_rotation, wp.spatial_bottom(root_velocity))
+    for axis in range(3):
+        observation[0, 26 + axis] = root_linear_velocity[axis]
+        observation[0, 29 + axis] = root_angular_velocity[axis]
+
+    observation[0, 32] = cmd[3]
+    observation[0, 33] = (root_position[2] - cmd[3]) / height_error_scale
+
+    output_index = wp.int32(34)
+    root_coords_end = root_coords_offset + root_coords_count
+    for coord_index in range(joint_coord_count):
+        if coord_index < root_coords_offset or coord_index >= root_coords_end:
+            observation[0, output_index] = joint_q[coord_index]
+            output_index += 1
+
+    for action_index in range(_DRLEGS_ACTION_WIDTH):
+        previous_action = action_history[0, action_index]
+        scaled_action = action_scale * actions[0, action_index]
+        action_history_prev[0, action_index] = previous_action
+        action_history[0, action_index] = scaled_action
+        observation[0, output_index + action_index] = scaled_action
+        observation[0, output_index + _DRLEGS_ACTION_WIDTH + action_index] = previous_action
+
+
+@wp.kernel
+def _apply_actions_kernel(
+    actions: wp.array2d[wp.float32],
+    actuated_coord_indices: wp.array[wp.int32],
+    actuated_dof_indices: wp.array[wp.int32],
+    action_scale: wp.float32,
+    joint_position_target: wp.array[wp.float32],
+    joint_velocity_target: wp.array[wp.float32],
+):
+    action_index = wp.tid()
+    joint_position_target[actuated_coord_indices[action_index]] = action_scale * actions[0, action_index]
+    joint_velocity_target[actuated_dof_indices[action_index]] = 0.0
+
+
+@wp.kernel
+def _random_actions_kernel(step: wp.int32, actions: wp.array2d[wp.float32]):
+    action_index = wp.tid()
+    random_state = wp.rand_init(42, step * _DRLEGS_ACTION_WIDTH + action_index)
+    actions[0, action_index] = wp.randf(random_state, -1.0, 1.0)
+
+
+@wp.kernel
+def _reset_path_kernel(
+    body_q: wp.array[wp.transformf],
+    root_body_index: wp.int32,
+    path_position: wp.array[wp.vec2f],
+):
+    root_position = wp.transform_get_translation(body_q[root_body_index])
+    path_position[0] = wp.vec2f(root_position[0], root_position[1])
 
 
 def _load_drlegs_config(asset_path: Path) -> dict:
-    """Load walk config YAML from assets, falling back to built-in defaults."""
-    cfg = dict(_DEFAULTS)
+    """Load walk configuration from the asset, falling back to built-in defaults."""
+    config = dict(_DEFAULTS)
     yaml_path = asset_path / "dr_legs" / "rl_policies" / "drlegs_walk.yaml"
     if yaml_path.exists():
-        with open(yaml_path, encoding="utf-8") as f:
-            overrides = yaml.safe_load(f) or {}
-        cfg.update(overrides)
+        with open(yaml_path, encoding="utf-8") as file:
+            config.update(yaml.safe_load(file) or {})
         msg.info(f"Loaded config from {yaml_path}")
     else:
         msg.info("No YAML config found, using built-in defaults")
-    # Derived constant
-    cfg["phase_rate"] = 1.0 / (2.0 * cfg["contact_duration"])
-    return cfg
-
-
-###
-# Example class
-###
+    config["phase_rate"] = 1.0 / (2.0 * config["contact_duration"])
+    if config["phase_embedding_k"] != 2:
+        raise ValueError("The DR Legs ONNX policy requires phase_embedding_k=2")
+    return config
 
 
 class Example:
-    def __init__(
-        self,
-        config: dict,
-        device: wp.DeviceLike = None,
-        policy=None,
-        headless: bool = False,
-        max_steps: int = 10000,
-    ):
-        self.cfg = config
+    """Run the DR Legs ONNX walk policy without a PyTorch dependency."""
 
-        # Timing
-        self.sim_dt = config["sim_dt"]
-        self.control_decimation = config["control_decimation"]
-        self.env_dt = self.sim_dt * self.control_decimation
-        self.max_steps = max_steps
-        num_worlds = 1
-
-        # USD model path
-        asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
-        usd_model_path = str(asset_path / config["usd_model"])
-
-        # Create generic articulated body simulator
-        self.sim_wrapper = RigidBodySim(
-            usd_model_path=usd_model_path,
-            num_worlds=num_worlds,
-            sim_dt=self.sim_dt,
-            device=device,
-            headless=headless,
-            body_pose_offset=(0.0, 0.0, config["body_pose_offset_z"], 0.0, 0.0, 0.0, 1.0),
-            use_cuda_graph=True,
-            render_config=ViewerConfig(
-                diffuse_scale=1.0,
-                specular_scale=0.3,
-                shadow_radius=10.0,
-            ),
-        )
-
-        # Apply per-body-group colors for visual distinction
-        if not headless and self.sim_wrapper.viewer is not None:
-            self._apply_body_group_colors()
-
-        # Override implicit PD gains to match training config exactly
-        k_p = wp.to_torch(self.sim_wrapper.sim.model.joints.k_p_j)
-        k_d = wp.to_torch(self.sim_wrapper.sim.model.joints.k_d_j)
-        a_j = wp.to_torch(self.sim_wrapper.sim.model.joints.a_j)
-        b_j = wp.to_torch(self.sim_wrapper.sim.model.joints.b_j)
-        actuated_mask = torch.zeros_like(k_p, dtype=torch.bool)
-        actuated_mask[self.sim_wrapper.actuated_dof_indices_tensor] = True
-        k_p[actuated_mask] = config["pd_kp"]
-        k_d[actuated_mask] = config["pd_kd"]
-        a_j[actuated_mask] = config["pd_armature"]
-        k_p[~actuated_mask] = 0.0
-        k_d[~actuated_mask] = 0.0
-        b_j.fill_(0.0)
-
-        # Observation builder (63D base: root_pos(3) + joints(36) + action_hist(24))
-        self.obs_builder = DrlegsBaseObservation(
-            body_sim=self.sim_wrapper,
-            action_scale=config["action_scale"],
-        )
-
-        # Phase clock for gait timing
-        phase_k = config["phase_embedding_k"]
-        self._phase = torch.zeros(num_worlds, device=self.torch_device, dtype=torch.float32)
-        freq_2pi, offset = periodic_encoding(k=phase_k)
-        self._freq_2pi = torch.from_numpy(freq_2pi).float().to(self.torch_device)
-        self._offset = torch.from_numpy(offset).float().to(self.torch_device)
-        self._phase_enc = torch.zeros(num_worlds, phase_k * 2, device=self.torch_device, dtype=torch.float32)
-
-        # Path frame state
-        self._path_heading = torch.zeros(num_worlds, device=self.torch_device, dtype=torch.float32)
-        self._path_position = torch.zeros(num_worlds, 2, device=self.torch_device, dtype=torch.float32)
-
-        # Command velocity buffer (filled by joystick each step)
-        self._cmd_vel = torch.zeros(num_worlds, 2, device=self.torch_device, dtype=torch.float32)
-        # Command yaw rate buffer (filled by joystick each step)
-        self._cmd_yaw_rate = torch.zeros(num_worlds, 1, device=self.torch_device, dtype=torch.float32)
-
-        # Height command buffer (default = standing height, adjustable via keyboard Y/N)
-        self._cmd_height = torch.full(
-            (num_worlds, 1), config["standing_height"], device=self.torch_device, dtype=torch.float32
-        )
-
-        # Zero column for 2D->3D padding
-        self._zeros = torch.zeros(num_worlds, 1, device=self.torch_device, dtype=torch.float32)
-
-        # Full observation buffer (94D)
-        # 9 + 2 + 2 + 3 + 3 + 3 + 4 + 3 + 3 + 1 + 1 + 36 + 24 = 94
-        obs_dim = 94
-        self._obs_buffer = torch.zeros(num_worlds, obs_dim, device=self.torch_device, dtype=torch.float32)
-        msg.info(f"Observation dim: {obs_dim}")
-
-        # Action buffer (12 actuated joints)
-        self.actions = torch.zeros(
-            (num_worlds, self.sim_wrapper.num_actuated),
-            device=self.torch_device,
-            dtype=torch.float32,
-        )
-
-        # Joystick for velocity commands
-        self.joystick = JoystickController(
-            dt=self.env_dt,
-            viewer=self.sim_wrapper.viewer,
-            num_worlds=num_worlds,
-            device=self.torch_device,
-            config=JoystickConfig(
-                forward_velocity_base=config["vel_cmd_max"],
-                forward_velocity_turbo=0.0,
-                lateral_velocity_base=config["vel_cmd_max"],
-                lateral_velocity_turbo=0.0,
-                angular_velocity_base=config["yaw_cmd_max"],
-                angular_velocity_turbo=0.0,
-            ),
-        )
-
-        # Policy (None = random actions)
-        self.policy = policy
-
-    # Body name prefix to color mapping
     BODY_GROUP_COLORS: ClassVar[dict] = {
         "pelvis": MeshColors.BONE,
         "hip_servos": MeshColors.DARK,
@@ -234,312 +250,299 @@ class Example:
         "upperleg_rod": MeshColors.DARK,
     }
 
-    def _apply_body_group_colors(self):
-        """Color robot shapes by body group for visual distinction."""
-        model = self.sim_wrapper._newton_model
-        shape_body = model.shape_body.numpy()
-        body_labels = model.body_label
+    def __init__(
+        self,
+        config: dict,
+        device: wp.DeviceLike = None,
+        policy=None,
+        headless: bool = False,
+        max_steps: int = 10000,
+    ):
+        self.cfg = config
+        self.sim_dt = config["sim_dt"]
+        self.control_decimation = config["control_decimation"]
+        self.env_dt = self.sim_dt * self.control_decimation
+        self.max_steps = max_steps
+        self.policy = policy
+        self._step_count = 0
+        self.device = wp.get_device(device)
 
-        color_overrides = {}
-        for s_idx in range(model.shape_count):
-            bid = int(shape_body[s_idx])
-            if bid < 0:
-                continue
-            name = body_labels[bid].rsplit("/", 1)[-1]
-            for prefix, color in self.BODY_GROUP_COLORS.items():
-                if name.startswith(prefix):
-                    color_overrides[s_idx] = color
-                    break
+        asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
+        usd_model_path = str(asset_path / config["usd_model"])
+        self.sim_wrapper = RigidBodySim(
+            usd_model_path=usd_model_path,
+            num_worlds=1,
+            sim_dt=self.sim_dt,
+            device=self.device,
+            headless=headless,
+            body_pose_offset=(0.0, 0.0, config["body_pose_offset_z"], 0.0, 0.0, 0.0, 1.0),
+            use_cuda_graph=True,
+            render_config=ViewerConfig(diffuse_scale=1.0, specular_scale=0.3, shadow_radius=10.0),
+            use_torch=False,
+        )
+        self._apply_body_group_colors()
 
-        if color_overrides:
-            for s_idx, color in color_overrides.items():
-                model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(color))
+        model = self.sim_wrapper.sim.model
+        self._root_body_index = int(model.info.base_body_index.numpy()[0])
+        root_joint_index = int(model.info.base_joint_index.numpy()[0])
+        if self._root_body_index < 0 or root_joint_index < 0:
+            raise ValueError("The DR Legs policy requires a floating-base articulation")
+        self._root_coords_offset = int(model.joints.coords_offset.numpy()[root_joint_index])
+        self._root_coords_count = int(model.joints.num_coords.numpy()[root_joint_index])
+        self._joint_coord_count = model.size.max_of_num_joint_coords
+        policy_joint_coord_count = self._joint_coord_count - self._root_coords_count
+        if policy_joint_coord_count != 36:
+            raise ValueError(
+                f"The DR Legs policy requires 36 non-root joint coordinates, got {policy_joint_coord_count}"
+            )
+        if self.sim_wrapper.num_actuated != _DRLEGS_ACTION_WIDTH:
+            raise ValueError(
+                f"The DR Legs policy requires {_DRLEGS_ACTION_WIDTH} actuated joints, "
+                f"got {self.sim_wrapper.num_actuated}"
+            )
 
-    # Convenience accessors
-    @property
-    def torch_device(self) -> str:
-        return self.sim_wrapper.torch_device
+        self._configure_pd_gains()
+        self._observation = wp.zeros((1, _DRLEGS_OBSERVATION_WIDTH), dtype=wp.float32, device=self.device)
+        self.actions = wp.zeros((1, _DRLEGS_ACTION_WIDTH), dtype=wp.float32, device=self.device)
+        self._action_history = wp.zeros_like(self.actions)
+        self._action_history_prev = wp.zeros_like(self.actions)
+        self._phase = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self._path_heading = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self._path_position = wp.zeros(1, dtype=wp.vec2f, device=self.device)
+        self._command_height = config["standing_height"]
+        self._command = wp.array([wp.vec4f(0.0, 0.0, 0.0, self._command_height)], dtype=wp.vec4f, device=self.device)
+
+        self.joystick = JoystickController(
+            dt=self.env_dt,
+            viewer=self.sim_wrapper.viewer,
+            num_worlds=1,
+            config=JoystickConfig(
+                forward_velocity_base=config["vel_cmd_max"],
+                forward_velocity_turbo=0.0,
+                lateral_velocity_base=config["vel_cmd_max"],
+                lateral_velocity_turbo=0.0,
+                angular_velocity_base=config["yaw_cmd_max"],
+                angular_velocity_turbo=0.0,
+            ),
+            track_path=False,
+        )
+        self.reset()
 
     @property
     def viewer(self):
         return self.sim_wrapper.viewer
 
-    # Simulation helpers
-
-    def _apply_actions(self):
-        """Convert policy actions to implicit PD joint position references."""
-        self.sim_wrapper.q_j_ref.zero_()
-        self.sim_wrapper.q_j_ref[:, self.sim_wrapper.actuated_coord_indices_tensor] = (
-            self.cfg["action_scale"] * self.actions
+    def _configure_pd_gains(self) -> None:
+        joints = self.sim_wrapper.sim.model.joints
+        joints.k_p_j.zero_()
+        joints.k_d_j.zero_()
+        joints.b_j.zero_()
+        wp.launch(
+            _set_pd_gains_kernel,
+            dim=_DRLEGS_ACTION_WIDTH,
+            inputs=[
+                self.sim_wrapper.actuated_dof_indices_tensor,
+                self.cfg["pd_kp"],
+                self.cfg["pd_kd"],
+                self.cfg["pd_armature"],
+                joints.k_p_j,
+                joints.k_d_j,
+                joints.a_j,
+            ],
+            device=self.device,
         )
-        self.sim_wrapper.dq_j_ref.zero_()
 
-    def _advance_path(self):
-        """Integrate path heading and position from velocity commands.
-        Uses mid-point heading integration.
-        """
-        cmd_yaw = self._cmd_yaw_rate.squeeze(-1)  # (N,)
+    def _apply_body_group_colors(self) -> None:
+        if self.viewer is None:
+            return
+        model = self.sim_wrapper._newton_model
+        shape_body = model.shape_body.numpy()
+        for shape_index in range(model.shape_count):
+            body_index = int(shape_body[shape_index])
+            if body_index < 0:
+                continue
+            body_name = model.body_label[body_index].rsplit("/", 1)[-1]
+            for prefix, color in self.BODY_GROUP_COLORS.items():
+                if body_name.startswith(prefix):
+                    model.shape_color[shape_index : shape_index + 1].fill_(wp.vec3(color))
+                    break
 
-        # Mid-point heading for numerical accuracy
-        mid_heading = self._path_heading + 0.5 * self.env_dt * cmd_yaw
-        self._path_position += yaw_apply_2d(mid_heading, self._cmd_vel) * self.env_dt
-
-        # Heading integration
-        self._path_heading += cmd_yaw * self.env_dt
-
-        # Clip path position to stay near robot (prevent drift)
-        root_pos_2d = self.sim_wrapper.q_i[:, 0, :2]
-        diff = self._path_position - root_pos_2d
-        clipped = diff.renorm(p=2, dim=0, maxnorm=self.cfg["linear_path_error_limit"])
-        self._path_position[:] = root_pos_2d + clipped
-
-    def reset(self):
-        """Reset the simulation and internal state."""
-        self.sim_wrapper.reset()
-        self.actions.zero_()
-        self.obs_builder.reset()
-        self._phase.zero_()
-        self._cmd_vel.zero_()
-        self._cmd_yaw_rate.zero_()
-        self._cmd_height.fill_(self.cfg["standing_height"])
-        self._path_heading.zero_()
-        self._path_position[:] = self.sim_wrapper.q_i[:, 0, :2]
-        self.sim_wrapper.q_j_ref.zero_()
-        self.sim_wrapper.dq_j_ref.zero_()
-        self.joystick.reset()
-
-    def step_once(self):
-        """Single physics step (used by run_headless warm-up)."""
-        self.sim_wrapper.step()
-
-    def update_input(self):
-        """Transfer joystick velocity commands and height command to buffers."""
-        self._cmd_vel[0, 0] = self.joystick.forward_velocity
-        self._cmd_vel[0, 1] = self.joystick.lateral_velocity
-        self._cmd_yaw_rate[0, 0] = self.joystick.angular_velocity
-
-        # Height command: right stick Y (joystick) or Y/N keys (keyboard)
-        if self.joystick._mode == "joystick":
-            pitch = self.joystick.head_pitch  # right stick Y, positive = up
-            if pitch >= 0:
-                t = min(1.0, pitch / self.joystick._cfg.head_pitch_up)
-                self._cmd_height[0, 0] = self.cfg["standing_height"] + t * (
+    def poll_input(self) -> None:
+        """Update scalar input commands without constructing tensor objects."""
+        self.joystick.update()
+        if self.joystick.input_mode == "joystick":
+            pitch = self.joystick.head_pitch
+            if pitch >= 0.0:
+                ratio = min(1.0, pitch / self.joystick.head_pitch_up_limit)
+                self._command_height = self.cfg["standing_height"] + ratio * (
                     self.cfg["height_cmd_max"] - self.cfg["standing_height"]
                 )
             else:
-                t = min(1.0, -pitch / self.joystick._cfg.head_pitch_down)
-                self._cmd_height[0, 0] = self.cfg["standing_height"] - t * (
+                ratio = min(1.0, -pitch / self.joystick.head_pitch_down_limit)
+                self._command_height = self.cfg["standing_height"] - ratio * (
                     self.cfg["standing_height"] - self.cfg["height_cmd_min"]
                 )
         elif self.viewer is not None and hasattr(self.viewer, "is_key_down"):
             if self.viewer.is_key_down("y"):
-                self._cmd_height[0, 0] = min(self._cmd_height[0, 0].item() + 0.001, self.cfg["height_cmd_max"])
+                self._command_height = min(self._command_height + 0.001, self.cfg["height_cmd_max"])
             if self.viewer.is_key_down("n"):
-                self._cmd_height[0, 0] = max(self._cmd_height[0, 0].item() - 0.001, self.cfg["height_cmd_min"])
+                self._command_height = max(self._command_height - 0.001, self.cfg["height_cmd_min"])
 
-    def sim_step(self):
-        """Observations -> policy inference -> actions -> physics step.
+        self._command.assign(
+            [
+                wp.vec4f(
+                    self.joystick.forward_velocity,
+                    self.joystick.lateral_velocity,
+                    self.joystick.angular_velocity,
+                    self._command_height,
+                )
+            ]
+        )
 
-        Builds 94D path-frame observations matching DrlegsWalkObserver:
-            ori_root_to_path(9) + path_dev(2) + path_dev_heading(2)
-            + path_cmd(3) + cmd_linvel_root(3) + cmd_angvel_root(3)
-            + phase_enc(4) + root_linvel_root(3) + root_angvel_root(3)
-            + cmd_height(1) + height_error(1)
-            + joints(36) + action_hist(24)
-        """
-        # Advance phase clock
-        self._phase.add_(self.env_dt * self.cfg["phase_rate"]).remainder_(1.0)
+    def _build_observation(self) -> None:
+        wp.launch(
+            _build_observation_kernel,
+            dim=1,
+            inputs=[
+                self.sim_wrapper.sim.state.q_i,
+                self.sim_wrapper.sim.state.u_i,
+                self.sim_wrapper.sim.state.q_j,
+                self.actions,
+                self._command,
+                self._phase,
+                self._path_heading,
+                self._path_position,
+                self._action_history,
+                self._action_history_prev,
+                self._root_body_index,
+                self._root_coords_offset,
+                self._root_coords_count,
+                self._joint_coord_count,
+                self.env_dt,
+                self.cfg["phase_rate"],
+                self.cfg["action_scale"],
+                self.cfg["path_deviation_scale"],
+                self.cfg["linear_path_error_limit"],
+                self.cfg["height_error_scale"],
+                self._observation,
+            ],
+            device=self.device,
+        )
 
-        # Advance path frame
-        self._advance_path()
+    def _apply_actions(self) -> None:
+        control = self.sim_wrapper.sim.control
+        control.q_j_ref.zero_()
+        control.dq_j_ref.zero_()
+        wp.launch(
+            _apply_actions_kernel,
+            dim=_DRLEGS_ACTION_WIDTH,
+            inputs=[
+                self.actions,
+                self.sim_wrapper.actuated_coord_indices_tensor,
+                self.sim_wrapper.actuated_dof_indices_tensor,
+                self.cfg["action_scale"],
+                control.q_j_ref,
+                control.dq_j_ref,
+            ],
+            device=self.device,
+        )
 
-        # Base observation (63D: root_pos(3) + joints(36) + action_hist(24))
-        base_obs = self.obs_builder.compute(actions=self.actions)
-        base_no_root = base_obs[:, 3:]  # 60D (joints + action_history)
+    def reset(self) -> None:
+        """Reset the simulation and Warp-native policy state."""
+        self.sim_wrapper.reset()
+        self.actions.zero_()
+        self._action_history.zero_()
+        self._action_history_prev.zero_()
+        self._phase.zero_()
+        self._path_heading.zero_()
+        self._step_count = 0
+        self._command_height = self.cfg["standing_height"]
+        self._command.fill_(wp.vec4f(0.0, 0.0, 0.0, self._command_height))
+        self.sim_wrapper.sim.control.q_j_ref.zero_()
+        self.sim_wrapper.sim.control.dq_j_ref.zero_()
+        wp.launch(
+            _reset_path_kernel,
+            dim=1,
+            inputs=[self.sim_wrapper.sim.state.q_i, self._root_body_index, self._path_position],
+            device=self.device,
+        )
+        self.joystick.reset()
 
-        # --- Path quaternion from heading ---
-        path_quat = yaw_to_quat(self._path_heading)  # (N, 4)
-
-        # --- Root orientation relative to path frame (9D) ---
-        root_quat = self.sim_wrapper.q_i[:, 0, 3:]  # (N, 4)
-        root_in_path = quat_inv_mul(path_quat, root_quat)  # (N, 4)
-        ori_9d = quat_to_rotation9d(root_in_path)  # (N, 9)
-
-        # --- Path deviation in path frame (2D, scaled) ---
-        diff_xy = self.sim_wrapper.q_i[:, 0, :2] - self._path_position  # (N, 2)
-        diff_3d = torch.cat([diff_xy, self._zeros], dim=-1)  # (N, 3)
-        dev_in_path = quat_rotate_inv(path_quat, diff_3d)[:, :2]  # (N, 2)
-        inv_scale = 1.0 / self.cfg["path_deviation_scale"]
-        path_dev = dev_in_path * inv_scale
-
-        # --- Path deviation in heading frame (2D, scaled) ---
-        root_heading = quat_to_projected_yaw(root_in_path)  # (N, 1)
-        heading_quat = yaw_to_quat(root_heading)  # (N, 4)
-        neg_dev = torch.cat([-dev_in_path, self._zeros], dim=-1)  # (N, 3)
-        dev_in_heading = quat_rotate_inv(heading_quat, neg_dev)[:, :2]  # (N, 2)
-        path_dev_h = dev_in_heading * inv_scale
-
-        # --- Path command (3D, local frame) ---
-        path_cmd = torch.cat([self._cmd_vel, self._cmd_yaw_rate], dim=-1)  # (N, 3)
-
-        # --- Command velocities in root frame (3D + 3D) ---
-        cmd_vel_3d = torch.cat([self._cmd_vel, self._zeros], dim=-1)  # (N, 3)
-        cmd_linvel_root = quat_rotate_inv(root_in_path, cmd_vel_3d)  # (N, 3)
-        cmd_angvel_3d = torch.cat([self._zeros, self._zeros, self._cmd_yaw_rate], dim=-1)  # (N, 3)
-        cmd_angvel_root = quat_rotate_inv(root_in_path, cmd_angvel_3d)  # (N, 3)
-
-        # --- Phase encoding (4D) ---
-        torch.sin(torch.outer(self._phase, self._freq_2pi).add_(self._offset), out=self._phase_enc)
-
-        # --- Actual velocities in root frame (3D + 3D) ---
-        world_linvel = self.sim_wrapper.u_i[:, 0, :3]
-        world_angvel = self.sim_wrapper.u_i[:, 0, 3:]
-        root_linvel = quat_rotate_inv(root_quat, world_linvel)  # (N, 3)
-        root_angvel = quat_rotate_inv(root_quat, world_angvel)  # (N, 3)
-
-        # --- Pelvis height command and error (2D) ---
-        actual_height = self.sim_wrapper.q_i[:, 0, 2:3]  # (N, 1)
-        height_error = (actual_height - self._cmd_height) / self.cfg["height_error_scale"]  # (N, 1)
-
-        # --- Build full 94D observation ---
-        i = 0
-        self._obs_buffer[:, i : i + 9] = ori_9d
-        i += 9
-        self._obs_buffer[:, i : i + 2] = path_dev
-        i += 2
-        self._obs_buffer[:, i : i + 2] = path_dev_h
-        i += 2
-        self._obs_buffer[:, i : i + 3] = path_cmd
-        i += 3
-        self._obs_buffer[:, i : i + 3] = cmd_linvel_root
-        i += 3
-        self._obs_buffer[:, i : i + 3] = cmd_angvel_root
-        i += 3
-        self._obs_buffer[:, i : i + 4] = self._phase_enc
-        i += 4
-        self._obs_buffer[:, i : i + 3] = root_linvel
-        i += 3
-        self._obs_buffer[:, i : i + 3] = root_angvel
-        i += 3
-        self._obs_buffer[:, i : i + 1] = self._cmd_height
-        i += 1
-        self._obs_buffer[:, i : i + 1] = height_error
-        i += 1
-        self._obs_buffer[:, i : i + 60] = base_no_root
-        # i += 60 → total = 94
-
-        # Policy inference
-        with torch.no_grad():
-            if self.policy is not None:
-                self.actions[:] = self.policy(self._obs_buffer)
-            else:
-                self.actions[:] = 2.0 * torch.rand_like(self.actions) - 1.0
-
-        # Write action targets to implicit PD controller
+    def sim_step(self) -> None:
+        """Build observations, evaluate the policy, apply actions, and step physics."""
+        self._build_observation()
+        if self.policy is not None:
+            wp.copy(self.actions, self.policy(self._observation))
+        else:
+            wp.launch(
+                _random_actions_kernel,
+                dim=_DRLEGS_ACTION_WIDTH,
+                inputs=[self._step_count, self.actions],
+                device=self.device,
+            )
         self._apply_actions()
-
-        # Step physics for control_decimation substeps
         for _ in range(self.control_decimation):
             self.sim_wrapper.step()
+        self._step_count += 1
 
-    def step(self):
-        """One RL step: check reset -> joystick -> observe -> infer -> apply -> simulate."""
-        if self.joystick.check_reset():
-            self.reset()
-        self.joystick.update()
-        self.update_input()
+    def step_once(self) -> None:
+        """Advance one policy step for headless execution."""
         self.sim_step()
 
-    def render(self):
-        """Render the current frame."""
+    def step(self) -> None:
+        """Process input and advance one policy step."""
+        if self.joystick.check_reset():
+            self.reset()
+        self.poll_input()
+        self.sim_step()
+
+    def render(self) -> None:
+        """Render the current simulation state."""
         self.sim_wrapper.render()
 
-
-###
-# Main function
-###
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DR Legs walk policy play example")
     parser.add_argument("--device", type=str, help="The compute device to use")
+    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help="Run headlessly")
+    parser.add_argument("--num-steps", type=int, default=10000, help="Policy steps for headless mode")
     parser.add_argument(
-        "--headless",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run in headless mode",
+        "--control-decimation", type=int, default=None, help="Physics substeps per policy step (overrides YAML)"
     )
-    parser.add_argument("--num-steps", type=int, default=10000, help="Steps for headless mode")
-    parser.add_argument(
-        "--control-decimation",
-        type=int,
-        default=None,
-        help="Number of physics substeps per RL step (overrides YAML)",
-    )
-    parser.add_argument(
-        "--sim-dt", type=float, default=None, help="Physics substep duration in seconds (overrides YAML)"
-    )
-    parser.add_argument(
-        "--policy", type=str, default=None, help="Path to an rsl_rl checkpoint .pt file (overrides asset default)"
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["sync", "async"],
-        default="sync",
-        help="Sim loop mode: sync (default) or async",
-    )
-    parser.add_argument(
-        "--render-fps",
-        type=float,
-        default=30.0,
-        help="Target render FPS for async mode (default: 30)",
-    )
+    parser.add_argument("--sim-dt", type=float, default=None, help="Physics timestep in seconds (overrides YAML)")
+    parser.add_argument("--policy", type=str, default=None, help="ONNX policy path (overrides the asset default)")
+    parser.add_argument("--mode", choices=["sync", "async"], default="sync", help="Simulation loop mode")
+    parser.add_argument("--render-fps", type=float, default=30.0, help="Target render rate in async mode")
     args = parser.parse_args()
 
-    np.set_printoptions(linewidth=20000, precision=6, threshold=10000, suppress=True)
     msg.set_log_level(msg.LogLevel.INFO)
-
-    if args.device:
-        device = wp.get_device(args.device)
-        wp.set_device(device)
-    else:
-        device = wp.get_preferred_device()
-
+    device = wp.get_device(args.device) if args.device else wp.get_preferred_device()
+    wp.set_device(device)
     msg.info(f"device: {device}")
 
-    # Convert warp device to torch device string
-    torch_device = "cuda" if device.is_cuda else "cpu"
-
-    # Load config from YAML (with hardcoded fallback defaults)
-    asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
+    asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
     config = _load_drlegs_config(asset_path)
-
-    # CLI overrides
     if args.sim_dt is not None:
         config["sim_dt"] = args.sim_dt
     if args.control_decimation is not None:
         config["control_decimation"] = args.control_decimation
 
-    # Load policy: explicit --policy flag > asset default > random actions
     policy = None
     if args.policy:
-        policy = _load_policy_checkpoint(args.policy, device=torch_device)
-        msg.info(f"Loaded policy from: {args.policy}")
+        policy_path = Path(args.policy)
+        if policy_path.suffix.lower() != ".onnx" or not policy_path.is_file():
+            raise FileNotFoundError(f"Expected an existing ONNX policy, got '{policy_path}'")
+        policy = WarpOnnxPolicy(policy_path, device=device, batch_size=1, action_width=_DRLEGS_ACTION_WIDTH)
+        msg.info(f"Loaded policy from: {policy_path}")
     else:
-        default_policy = asset_path / "dr_legs" / "rl_policies" / config["policy_file"]
-        if default_policy.exists():
-            policy = _load_policy_checkpoint(str(default_policy), device=torch_device)
-            msg.info(f"Loaded default policy from: {default_policy}")
+        policy_path = asset_path / "dr_legs" / "rl_policies" / config["policy_file"]
+        if policy_path.exists():
+            policy = WarpOnnxPolicy(policy_path, device=device, batch_size=1, action_width=_DRLEGS_ACTION_WIDTH)
+            msg.info(f"Loaded default policy from: {policy_path}")
         else:
-            msg.info(f"No policy at {default_policy} -- using random actions")
+            msg.info(f"No policy at {policy_path} -- using random actions")
 
-    example = Example(
-        config=config,
-        device=device,
-        policy=policy,
-        headless=args.headless,
-        max_steps=args.num_steps,
-    )
-
+    example = Example(config=config, device=device, policy=policy, headless=args.headless, max_steps=args.num_steps)
     try:
         if args.headless:
             msg.notif("Running in headless mode...")

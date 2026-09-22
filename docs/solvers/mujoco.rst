@@ -150,7 +150,14 @@ Geometry types
        meshes are convex-hulled by MuJoCo's compiler (not by Newton),
        which changes the collision boundary. The mesh source's
        ``maxhullvert`` is forwarded.
-   * - :attr:`~newton.GeoType.CONE`, :attr:`~newton.GeoType.GAUSSIAN`
+   * - :attr:`~newton.GeoType.CONE`
+     - ``mjGEOM_MESH``
+     - MuJoCo has no cone primitive, so Newton tessellates the cone into a
+       32-segment mesh at conversion time. Collision uses that convex
+       polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
+       after construction raises ``ValueError``; recreate the solver to resize
+       the cone.
+   * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
 

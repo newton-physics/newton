@@ -88,7 +88,7 @@ class TestCollisionMaskCompiler(unittest.TestCase):
         builder = newton.ModelBuilder()
         for group in result.groups:
             cfg = newton.ModelBuilder.ShapeConfig(collision_group=int(group), density=0.0)
-            builder.add_shape_sphere(-1, radius=0.1, cfg=cfg)
+            builder.add_shape_sphere(builder.add_body(), radius=0.1, cfg=cfg)
         builder.shape_collision_filter_pairs = result.excluded_pairs.tolist()
         model = builder.finalize(device="cpu")
 

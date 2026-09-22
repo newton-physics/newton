@@ -40,7 +40,10 @@ jobs:
         with:
           version: "0.11.26"
       - name: Test CI tooling
-        run: uv run --no-project -m unittest discover -s scripts/ci/tests
+        run: uv run --no-project --with packaging==26.2 -m unittest discover -s scripts/ci/tests
+      - name: Check deprecation allowlists
+        run: uv run --no-project --with packaging==26.2 scripts/ci/check_deprecation_allowlists.py
+
       - name: Python compatibility (Python 3.10)
         run: uv run --python 3.10 python -m unittest newton.tests.test_python_compatibility
       - name: Python compatibility (Python 3.11)

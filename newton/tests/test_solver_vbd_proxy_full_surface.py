@@ -77,6 +77,7 @@ def _run_proxy_harvest(device, corners, bary):
             wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
             model.body_com,
             1.0,  # friction_epsilon
+            False,  # rigid_body_particle_contact_use_log_barrier
             wp.full(smax, _KE, dtype=float, device=device),
             wp.zeros(smax, dtype=float, device=device),  # material_kd
             wp.zeros(smax, dtype=float, device=device),  # material_mu
