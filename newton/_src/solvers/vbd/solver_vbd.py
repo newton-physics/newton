@@ -31,6 +31,7 @@ from ...sim import (
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
+from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
@@ -59,8 +60,10 @@ from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
+    _count_body_particle_attachments_per_body,
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
+    _fill_body_particle_attachments_per_body,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_attachments_per_body,
     accumulate_body_particle_contacts_per_body,
@@ -2267,23 +2270,19 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     def _compute_body_particle_attachment_adjacency(self, model: Model) -> tuple[wp.array, wp.array]:
         """Build CSR adjacency from rigid bodies to body-particle attachments."""
-        offsets = np.zeros(model.body_count + 1, dtype=np.int32)
         if model.attachment_body_particle_count == 0:
             return (
-                wp.array(offsets, dtype=wp.int32, device=self.device),
+                wp.zeros(model.body_count + 1, dtype=wp.int32, device=self.device),
                 wp.empty(0, dtype=wp.int32, device=self.device),
             )
 
-        attachment_bodies = model.attachment_body_particle_body.numpy()
-        np.add.at(offsets, attachment_bodies + 1, 1)
-        np.cumsum(offsets, out=offsets)
-
-        indices = np.empty(model.attachment_body_particle_count, dtype=np.int32)
-        cursors = offsets[:-1].copy()
-        for attachment, body in enumerate(attachment_bodies):
-            indices[cursors[body]] = attachment
-            cursors[body] += 1
-
+        indices, offsets = build_vertex_adjacency_with_warp(
+            model.attachment_body_particle_body.to("cpu"),
+            model.body_count,
+            count_kernel=_count_body_particle_attachments_per_body,
+            fill_kernel=_fill_body_particle_attachments_per_body,
+            values_per_entry=1,
+        )
         return (
             wp.array(offsets, dtype=wp.int32, device=self.device),
             wp.array(indices, dtype=wp.int32, device=self.device),

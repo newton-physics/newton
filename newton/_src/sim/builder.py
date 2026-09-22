@@ -9950,17 +9950,21 @@ class ModelBuilder:
 
         Raises:
             IndexError: If ``body`` or ``particle`` is out of range.
-            ValueError: If the endpoints belong to different worlds or a
-                coefficient is negative.
+            ValueError: If the endpoints belong to different worlds, a
+                coefficient is negative, or a coefficient or ``body_point``
+                is not finite.
         """
         if body < 0 or body >= self.body_count:
             raise IndexError(f"Body index {body} is out of range for {self.body_count} bodies")
         if particle < 0 or particle >= self.particle_count:
             raise IndexError(f"Particle index {particle} is out of range for {self.particle_count} particles")
-        if stiffness < 0.0:
-            raise ValueError("Attachment stiffness must be nonnegative")
-        if damping < 0.0:
-            raise ValueError("Attachment damping must be nonnegative")
+        if not math.isfinite(stiffness) or stiffness < 0.0:
+            raise ValueError("Attachment stiffness must be finite and nonnegative")
+        if not math.isfinite(damping) or damping < 0.0:
+            raise ValueError("Attachment damping must be finite and nonnegative")
+        resolved_body_point = wp.vec3() if body_point is None else axis_to_vec3(body_point)
+        if not all(math.isfinite(c) for c in resolved_body_point):
+            raise ValueError(f"Attachment body_point must be finite, got {tuple(resolved_body_point)}")
 
         body_world = self.body_world[body]
         particle_world = self.particle_world[particle]
@@ -9974,7 +9978,7 @@ class ModelBuilder:
         attachment = self.attachment_body_particle_count
         self.attachment_body_particle_body.append(int(body))
         self.attachment_body_particle_particle.append(int(particle))
-        self.attachment_body_particle_body_point.append(wp.vec3() if body_point is None else axis_to_vec3(body_point))
+        self.attachment_body_particle_body_point.append(resolved_body_point)
         self.attachment_body_particle_stiffness.append(float(stiffness))
         self.attachment_body_particle_damping.append(float(damping))
         self.attachment_body_particle_enabled.append(bool(enabled))

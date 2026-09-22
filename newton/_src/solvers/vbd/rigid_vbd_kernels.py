@@ -5525,6 +5525,32 @@ def compute_rigid_contact_forces(
 
 
 @wp.kernel
+def _count_body_particle_attachments_per_body(
+    attachment_body: wp.array[wp.int32], body_attachment_counts: wp.array[wp.int32]
+):
+    num_attachments = attachment_body.shape[0]
+    for attachment_id in range(num_attachments):
+        body_id = attachment_body[attachment_id]
+        body_attachment_counts[body_id] = body_attachment_counts[body_id] + 1
+
+
+@wp.kernel
+def _fill_body_particle_attachments_per_body(
+    attachment_body: wp.array[wp.int32],
+    body_attachment_offsets: wp.array[wp.int32],
+    body_attachment_fill_count: wp.array[wp.int32],
+    body_attachment_indices: wp.array[wp.int32],
+):
+    num_attachments = attachment_body.shape[0]
+    for attachment_id in range(num_attachments):
+        body_id = attachment_body[attachment_id]
+        fill_count = body_attachment_fill_count[body_id]
+        offset = body_attachment_offsets[body_id]
+        body_attachment_indices[offset + fill_count] = attachment_id
+        body_attachment_fill_count[body_id] = fill_count + 1
+
+
+@wp.kernel
 def accumulate_body_particle_attachments_per_body(
     dt: float,
     color_group: wp.array[int],
