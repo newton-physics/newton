@@ -86,6 +86,47 @@ The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
 
+Experimental LOX contact extensions
+-----------------------------------
+
+.. experimental::
+
+   The LOX configuration parameters ``contact_compliance``,
+   ``contact_compliance_fraction``, ``contact_restitution``, and
+   ``contact_spatial_friction`` are prototype features. Their behavior and
+   interfaces may change without following the normal deprecation policy.
+
+Enable these features through ``config.lox`` after selecting
+``dynamics_solver="lox"``. They are disabled by default.
+
+* ``contact_compliance`` specifies scalar normal compliance in m/N. It adds
+  ``contact_compliance / dt**2`` to the normal contact operator. A zero value
+  retains hard contact. ``contact_compliance_fraction`` controls recovery of
+  existing penetration: one gives backward Euler recovery, and values in
+  ``(0, 1)`` request partial recovery.
+* ``contact_restitution=True`` reevaluates the speculative impact branch in
+  each local contact update using its current reaction-free normal velocity.
+  The gap and pre-impact velocity remain frozen during the timestep. This
+  mode cannot be combined with ``contact_recoverable_response``.
+* ``contact_spatial_friction=True`` uses the shape ``mu_torsional`` and
+  ``mu_rolling`` coefficients, both in metres. Each contact uses the arithmetic
+  mean of the two shape coefficients. Sliding, torsion, and rolling share one
+  elliptic friction budget. Zero angular coefficients retain the existing 3D
+  contact solve.
+
+The spatial prototype warm-starts angular reactions by matching geometry pairs
+and nearby contact points in body coordinates. It stores world torques and
+converts them to impulses using the new timestep and contact frame, then
+projects all friction components into the shared budget. Missing contacts and
+reset worlds discard their cached angular reactions. Translational contact
+warm starts retain their existing behavior.
+
+For these extended contact modes, ``status.r_contact`` reports the canonical
+contact-law residual. Optional solution metrics retain the equations-of-motion
+and configuration residuals. The hard-contact dual metrics ``r_v_plus``,
+``r_ncp_primal``, ``r_ncp_dual``, ``r_ncp_compl``, ``r_vi_natmap``, ``f_ncp``,
+and ``f_ccp`` are unavailable and return NaN, with argmax indices set to -1.
+
 Inspecting terminal status
 --------------------------
 
@@ -115,8 +156,11 @@ residual definitions are backend-specific:
   termination state. With ``compute_solution_metrics=True``, ``r_p``, ``r_d``,
   and ``r_c`` are the NCP primal, dual, and complementarity residuals evaluated
   from the final constraint reactions and velocity. Without solution metrics,
-  these three fields are NaN. LOX additionally reports ``accepted``, ``failed``,
-  and ``iteration_limit``.
+  these three fields are NaN; they are also NaN for the experimental extended
+  contact modes. ``r_contact`` is the maximum metric-scaled contact natural-map
+  residual [sqrt(J)], available without enabling solution metrics; it is NaN
+  before a solve and for failed worlds. LOX additionally reports ``accepted``,
+  ``failed``, and ``iteration_limit``.
 
 These are absolute maxima: no backend divides them by a reference norm,
 constraint count, or tolerance. Additional fields are not portable between
