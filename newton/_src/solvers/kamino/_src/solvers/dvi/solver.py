@@ -361,9 +361,12 @@ class DVISolver:
         or the subset selected by `world_mask`.
 
         This does not touch the scratch solver state (`self._data.state`) or the diagnostics
-        (`self._data.info`). `state` is unconditionally reinitialized by `coldstart()`/`warmstart()`
-        before every `solve()` call, and `info.status` is unconditionally overwritten wholesale at
-        the end of every `solve()` call, so resetting either here would be redundant.
+        (`self._data.info`):
+        * `coldstart()`/`warmstart()` reinitialize `state` before every `solve()` call, except
+          for the large response matrices, which they deliberately skip because solves overwrite
+          their active entries before reading them.
+        * `info.status` is overwritten wholesale at the end of every `solve()` call if info
+          collection is enabled.
         """
         if world_mask is None:
             self._data.solution.zero()

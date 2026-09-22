@@ -1865,8 +1865,8 @@ class TestDVISolver(unittest.TestCase):
                 first_status = solver.data.status.numpy().copy()
 
                 test.build()
-                solver.reset()
                 response_arrays = ()
+                before_reset = ()
                 if schur:
                     state = solver.data.state
                     response_arrays = (
@@ -1874,9 +1874,14 @@ class TestDVISolver(unittest.TestCase):
                         state.bilateral_response_factor,
                         state.bilateral_response,
                     )
-                    for array in response_arrays:
-                        np.testing.assert_array_equal(array.numpy(), 0.0)
-                        array.fill_(float("nan"))
+                    before_reset = tuple(array.numpy().copy() for array in response_arrays)
+                solver.reset()
+                # `reset()` only clears the persistent solution cache, and some workspace
+                # arrays will not be reset by `coldstart()`. Poison these arrays to prove
+                # that nothing downstream reads it before overwriting it.
+                for array, before in zip(response_arrays, before_reset, strict=True):
+                    np.testing.assert_array_equal(array.numpy(), before)
+                    array.fill_(float("nan"))
                 solver.coldstart()
                 for array in response_arrays:
                     self.assertTrue(np.isnan(array.numpy()).all())
