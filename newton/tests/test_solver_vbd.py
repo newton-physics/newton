@@ -39,12 +39,13 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _evaluate_rigid_soft_contact_force_norm,
     _joint_angular_rho_seed,
+    _point_force_to_body_torque_and_hessian,
     accumulate_body_particle_attachments_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
-    evaluate_body_particle_attachment_force_hessian,
+    evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
     evaluate_rigid_contact_from_collision,
@@ -85,17 +86,21 @@ def _evaluate_body_particle_attachment_kernel(
     body_torque: wp.array[wp.vec3],
 ):
     """Expose attachment force evaluation for action-reaction testing."""
-    f_particle, f_body, torque, _h_ll, _h_al, _h_aa = evaluate_body_particle_attachment_force_hessian(
+    f_particle, hessian = evaluate_body_particle_attachment_particle_force_hessian(
         particle_pos,
         particle_pos,
         body_pose,
         body_pose,
-        body_com,
         body_point,
         stiffness,
         0.0,
         1.0,
     )
+    f_body = -f_particle
+    anchor = wp.transform_point(body_pose, body_point)
+    com_world = wp.transform_point(body_pose, body_com)
+    r = anchor - com_world
+    torque, _h_al, _h_aa = _point_force_to_body_torque_and_hessian(r, f_body, hessian)
     particle_force[0] = f_particle
     body_force[0] = f_body
     body_torque[0] = torque
@@ -4853,17 +4858,15 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
 
-    points = newton.utils.cable_straight_points(
+    rod = newton.Rod.create_straight(
         start=wp.vec3(0.0, 0.0, 0.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=0.4,
-        num_segments=4,
-    )
-    quaternions = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
-    bodies, _joints = builder.add_rod(
-        positions=points,
-        quaternions=quaternions,
+        segment_count=4,
         radius=0.01,
+    )
+    bodies, _joints = builder.add_rod(
+        rod=rod,
         cfg=cfg,
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-4,

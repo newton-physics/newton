@@ -1560,6 +1560,22 @@ def evaluate_rod_bend_twist_force_hessian_z(
 
 
 @wp.func
+def _point_force_to_body_torque_and_hessian(r: wp.vec3, force: wp.vec3, H_linear: wp.mat33):
+    """Convert a linear force/Hessian applied at body-relative offset ``r`` into body torque and angular Hessian blocks.
+
+    Shared by joint linear constraints, body-particle attachments, and body-particle contacts:
+    any force applied at a point offset by ``r`` from the body's center of mass produces a torque
+    ``r x force`` and rotates the linear Hessian block into angular-linear/angular-angular blocks
+    via the skew matrix of ``r``.
+    """
+    rx = wp.skew(r)
+    torque = wp.cross(r, force)
+    H_al = rx * H_linear
+    H_aa = wp.transpose(rx) * H_linear * rx
+    return torque, H_al, H_aa
+
+
+@wp.func
 def evaluate_linear_constraint_force_hessian(
     X_wp: wp.transform,
     X_wc: wp.transform,
@@ -1633,13 +1649,9 @@ def evaluate_linear_constraint_force_hessian(
         f_attachment = f_attachment + damping * dC_dt_perp
         K_eff = K_eff + (damping * inv_dt) * P
 
-    rx = wp.skew(r)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
-
     force = f_attachment if is_parent else -f_attachment
-    torque = wp.cross(r, force)
+    torque, H_al, H_aa = _point_force_to_body_torque_and_hessian(r, force, K_eff)
 
     return force, torque, H_ll, H_al, H_aa
 
@@ -1669,41 +1681,6 @@ def evaluate_body_particle_attachment_particle_force_hessian(
         hessian = hessian + (damping * inv_dt) * wp.identity(3, float)
 
     return -force_body, hessian
-
-
-@wp.func
-def evaluate_body_particle_attachment_force_hessian(
-    particle_pos: wp.vec3,
-    particle_pos_prev: wp.vec3,
-    body_pose: wp.transform,
-    body_pose_prev: wp.transform,
-    body_com: wp.vec3,
-    body_point: wp.vec3,
-    stiffness: float,
-    damping: float,
-    dt: float,
-):
-    """Evaluate both sides of a compliant translational attachment."""
-    force_particle, hessian = evaluate_body_particle_attachment_particle_force_hessian(
-        particle_pos,
-        particle_pos_prev,
-        body_pose,
-        body_pose_prev,
-        body_point,
-        stiffness,
-        damping,
-        dt,
-    )
-    force_body = -force_particle
-    anchor = wp.transform_point(body_pose, body_point)
-    com_world = wp.transform_point(body_pose, body_com)
-    r = anchor - com_world
-    torque_body = wp.cross(r, force_body)
-    rx = wp.skew(r)
-    hessian_al = rx * hessian
-    hessian_aa = wp.transpose(rx) * hessian * rx
-
-    return force_particle, force_body, torque_body, hessian, hessian_al, hessian_aa
 
 
 @wp.func
@@ -5590,28 +5567,36 @@ def accumulate_body_particle_attachments_per_body(
             continue
 
         particle = attachment_particle[attachment]
-        _, force_body, torque_body, h_ll, h_al, h_aa = evaluate_body_particle_attachment_force_hessian(
+        body_point = attachment_body_point[attachment]
+        force_particle, h_ll = evaluate_body_particle_attachment_particle_force_hessian(
             particle_q[particle],
             particle_q_prev[particle],
             body_q[body_id],
             body_q_prev[body_id],
-            body_com[body_id],
-            attachment_body_point[attachment],
+            body_point,
             attachment_stiffness[attachment],
             attachment_damping[attachment],
             dt,
         )
+        force_body = -force_particle
+        anchor = wp.transform_point(body_q[body_id], body_point)
+        com_world = wp.transform_point(body_q[body_id], body_com[body_id])
+        r = anchor - com_world
+        torque_body, h_al, h_aa = _point_force_to_body_torque_and_hessian(r, force_body, h_ll)
+
         force_acc += force_body
         torque_acc += torque_body
         h_ll_acc += h_ll
         h_al_acc += h_al
         h_aa_acc += h_aa
 
-    wp.atomic_add(body_forces, body_id, force_acc)
-    wp.atomic_add(body_torques, body_id, torque_acc)
-    wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
-    wp.atomic_add(body_hessian_al, body_id, h_al_acc)
-    wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+    # One thread per body_id in this launch (unlike the contact kernels below, which run
+    # several threads per body), so a plain read-add-write cannot race within this kernel.
+    body_forces[body_id] = body_forces[body_id] + force_acc
+    body_torques[body_id] = body_torques[body_id] + torque_acc
+    body_hessian_ll[body_id] = body_hessian_ll[body_id] + h_ll_acc
+    body_hessian_al[body_id] = body_hessian_al[body_id] + h_al_acc
+    body_hessian_aa[body_id] = body_hessian_aa[body_id] + h_aa_acc
 
 
 @wp.kernel
@@ -5780,15 +5765,13 @@ def accumulate_body_particle_contacts_per_body(
         # Equal-and-opposite reaction on the body at the rigid contact point (shared by both kinds).
         f_body = -f_soft
         r = cp_world - com_world
-        tau_body = wp.cross(r, f_body)
-        r_skew = wp.skew(r)
-        r_skew_T_K = wp.transpose(r_skew) * h_soft
+        tau_body, h_al, h_aa = _point_force_to_body_torque_and_hessian(r, f_body, h_soft)
 
         force_acc += f_body
         torque_acc += tau_body
         h_ll_acc += h_soft
-        h_al_acc += -r_skew_T_K
-        h_aa_acc += r_skew_T_K * r_skew
+        h_al_acc += h_al
+        h_aa_acc += h_aa
 
     wp.atomic_add(body_forces, body_id, force_acc)
     wp.atomic_add(body_torques, body_id, torque_acc)

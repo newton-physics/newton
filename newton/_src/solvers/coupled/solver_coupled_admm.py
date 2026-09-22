@@ -985,6 +985,9 @@ class SolverCoupledADMM(SolverCoupled):
             self._refresh_admm_body_effective_mass_buffers()
             self._cache_admm_joint_proxy_effective_masses()
             self._apply_cached_admm_joint_proxy_effective_masses()
+        if int(flags) & int(ModelFlags.CONSTRAINT_PROPERTIES):
+            self._admm_rp_groups.clear()
+            self._build_admm_body_particle_attachment_groups()
 
     def _sum_active_count(self, attr: str) -> int:
         """Sum a per-group active-count array across all dynamic contact groups.
