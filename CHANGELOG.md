@@ -9,17 +9,16 @@
 ### Changed
 
 - Speed up `SolverVBD` rigid-soft contact and deformable elasticity on CUDA, most in scenes with many contacts or worlds. Exact values can shift within floating-point tolerance relative to earlier releases. ([#4141](https://github.com/newton-physics/newton/issues/4141))
-- Sort soft-contact candidate pairs by shape on every device. Results can shift within floating-point tolerance, and when contact capacity overflows the retained subset can differ. Faster on scenes with many shapes or worlds; a little slower on small dense-contact scenes. ([#4141](https://github.com/newton-physics/newton/issues/4141))
-- Accelerate `ModelBuilder.replicate()` and `ModelBuilder.finalize()` for many-world scenes by holding replicated builder fields as NumPy arrays and materializing them as lists only when they are read. Replication, finalization, and on-demand list materialization also pause Python's cyclic garbage collector for their duration, restoring its previous state before returning or propagating an exception. `ModelBuilder.replicate()` may replace the backing lists of builder attributes, so references obtained before replication may become stale and must be reacquired from the builder afterward.
+- Sort soft-contact candidate pairs by shape on every device. Results can shift within floating-point tolerance, and when contact capacity overflows the retained subset can differ. Faster on scenes with many shapes or worlds; slightly slower on small dense-contact scenes. ([#4141](https://github.com/newton-physics/newton/issues/4141))
+- Speed up `ModelBuilder.replicate()` and `ModelBuilder.finalize()` for many-world scenes. Public list-valued builder attributes retain their normal list interface. `ModelBuilder.replicate()` may replace an attribute's backing list, so reacquire any retained list reference from the builder after replication before reading or mutating it. Replication, finalization, and list materialization temporarily pause Python's cyclic garbage collector and always restore its previous state, including on errors.
 - Allow `usd-core` 26.08, and allow `usd-exchange` 3.x on aarch64 while keeping 2.3.0 installable, which extends USD support to Python 3.13 on aarch64.
-- Stop forcing `PXR_WORK_THREAD_LIMIT=1` when running the test suite against OpenUSD 26.08 or newer, where the collider-parsing race it worked around is fixed.
 
 ### Fixed
 
-- Support debug markers and custom mesh instances created after the first frame in `ViewerRTX`, including changing instance counts, colors, and visibility. Render `log_arrows()` with cylinder shafts and cone heads, and update runtime lines without rebuilding their geometry on every frame. ([#4048](https://github.com/newton-physics/newton/issues/4048))
+- Fix `ViewerRTX` debug markers and custom mesh instances created after the first frame, including changing instance counts, colors, and visibility. Render `log_arrows()` with cylinder shafts and cone heads, and update runtime lines without rebuilding their geometry on every frame. ([#4048](https://github.com/newton-physics/newton/issues/4048))
 - Raise a `ValueError` from `SolverMuJoCo.step()` on the MuJoCo Warp backend when `disable_sensors=True` and the output state requests `body_qdd` or `body_parent_f`, instead of publishing stale values. ([#4109](https://github.com/newton-physics/newton/issues/4109))
-- Avoid materializing same-body and static-static collision pairs when replicating models. ([#4217](https://github.com/newton-physics/newton/issues/4217))
-- Speed up collision pipeline initialization with the explicit broad phase by classifying candidate shape pairs through a NumPy shape-type lookup instead of a per-pair Python loop. ([#4220](https://github.com/newton-physics/newton/issues/4220))
+- Avoid materializing same-body and static-static collision pairs during model replication, preventing unnecessary memory growth with large shape counts and many worlds. ([#4217](https://github.com/newton-physics/newton/issues/4217))
+- Speed up collision pipeline initialization with the explicit broad phase, especially for large explicit pair sets. ([#4220](https://github.com/newton-physics/newton/issues/4220))
 - Fix overly dark textured meshes in `ViewerViser` by using an untinted, nonmetallic material. ([#4221](https://github.com/newton-physics/newton/issues/4221))
 
 
