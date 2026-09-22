@@ -358,6 +358,13 @@ OVRTX 0.4 and newer select the same OVStage interface, but only the exact config
 Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
 group and therefore does not exercise the OVRTX 0.3 integration.
 
+.. warning::
+    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
+    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
+    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
+    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
+    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
+
 .. code-block:: python
 
     viewer = newton.viewer.ViewerRTX(environment="studio")
