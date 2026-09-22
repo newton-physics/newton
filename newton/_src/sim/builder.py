@@ -4246,6 +4246,13 @@ class ModelBuilder:
             rejected because one scalar width cannot preserve a spherical particle
             under that transform.
 
+            Visual meshes load or generate normals through :func:`newton.usd.get_mesh`.
+            Sharp shading can duplicate vertices in :attr:`Model.shape_source`,
+            including for untextured meshes. Collision-only loads do not request
+            normals, and visual expansion preserves source mass properties. Use
+            :func:`newton.usd.get_mesh` with ``load_normals=False`` when source
+            vertex sharing is required for geometry processing.
+
             The returned mapping has the following entries:
 
             .. list-table::
