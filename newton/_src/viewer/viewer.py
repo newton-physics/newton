@@ -1953,6 +1953,7 @@ class ViewerBase(ABC):
 
         The GL viewer renders these with a dedicated arrow shader that draws
         a screen-space quad line body plus a triangular arrowhead per segment.
+        The RTX viewer renders cylinder shafts with cone heads in world space.
         Other backends fall back to :meth:`log_lines`.
 
         Args:
@@ -1960,9 +1961,9 @@ class ViewerBase(ABC):
             starts: Optional arrow start points as a Warp vec3 array.
             ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
             colors: Per-arrow colors as a Warp array, or a single RGB triplet.
-            width: Reserved for future use (world-space line width).
-                Currently ignored; arrow size is set in screen-space pixels
-                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            width: Shaft radius [m] in the RTX viewer. Ignored by the GL viewer,
+                where arrow size is set in screen-space pixels via
+                ``RendererGL.arrow_scale``.
             hidden: Whether the arrow batch should be hidden.
         """
         self.log_lines(self._qualify(name), starts, ends, colors, width=width, hidden=hidden)

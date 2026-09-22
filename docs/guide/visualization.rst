@@ -286,6 +286,14 @@ RTX Viewer
 It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
 presenting the result in a pyglet/OpenGL window.
 
+Debug geometry can be added before or after the first rendered frame using
+:meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
+:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
+and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
+changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
+and cone heads; their ``width`` specifies the shaft radius in meters.
+
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
 
