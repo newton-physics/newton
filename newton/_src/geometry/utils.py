@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import contextlib
 import os
 import warnings
@@ -1006,27 +1008,178 @@ def get_total_kernel(
     total[0] = prefix_sums[final_idx] + counts[final_idx]
 
 
+# Device-count-aware scan geometry. Each block handles chunks of
+# ``block_dim * SCAN_ITEMS_PER_THREAD`` consecutive counts; ``wp.launch_tiled``
+# clamps ``block_dim`` to one on CPU, so the chunk size is derived from
+# ``wp.block_dim()`` inside the kernels.
+SCAN_BLOCK_DIM = 256
+SCAN_ITEMS_PER_THREAD = 8
+
+
+def _scan_chunk_size(device) -> int:
+    """Return the number of counts each scan chunk covers on ``device``."""
+    block_dim = 1 if wp.get_device(device).is_cpu else SCAN_BLOCK_DIM
+    return block_dim * SCAN_ITEMS_PER_THREAD
+
+
+def _scan_scratch_size(capacity: int, device) -> int:
+    """Return the scratch length :func:`scan_with_total` needs for ``capacity`` counts on ``device``."""
+    chunk_size = _scan_chunk_size(device)
+    return (capacity + chunk_size - 1) // chunk_size + 1
+
+
+@wp.func
+def _scan_active_count(num_elements: wp.array[int], max_elements: int) -> int:
+    return wp.max(wp.min(num_elements[0], max_elements), 0)
+
+
+@wp.kernel(enable_backward=False)
+def _scan_chunk_sums_kernel(
+    counts: wp.array[int],
+    num_elements: wp.array[int],
+    max_elements: int,
+    num_blocks: int,
+    chunk_sums: wp.array[int],
+):
+    """Sum each chunk of active counts."""
+    block_id, t = wp.tid()
+    n = _scan_active_count(num_elements, max_elements)
+    chunk_size = wp.block_dim() * SCAN_ITEMS_PER_THREAD
+    num_chunks = (n + chunk_size - 1) // chunk_size
+    for chunk in range(block_id, num_chunks, num_blocks):
+        base = chunk * chunk_size + t * SCAN_ITEMS_PER_THREAD
+        thread_sum = int(0)
+        for i in range(SCAN_ITEMS_PER_THREAD):
+            idx = base + i
+            if idx < n:
+                thread_sum += counts[idx]
+        chunk_total = wp.tile_sum(wp.tile(thread_sum))
+        if t == 0:
+            chunk_sums[chunk] = wp.tile_extract(chunk_total, 0)
+
+
+@wp.kernel(enable_backward=False)
+def _scan_chunk_offsets_kernel(
+    chunk_sums: wp.array[int],
+    num_elements: wp.array[int],
+    max_elements: int,
+    chunk_offsets: wp.array[int],
+    total: wp.array[int],
+):
+    """Exclusively scan the chunk sums with a single block and emit the grand total."""
+    _block_id, t = wp.tid()
+    n = _scan_active_count(num_elements, max_elements)
+    block_dim = wp.block_dim()
+    chunk_size = block_dim * SCAN_ITEMS_PER_THREAD
+    num_chunks = (n + chunk_size - 1) // chunk_size
+    carry = int(0)
+    for start in range(0, num_chunks, block_dim):
+        idx = start + t
+        value = int(0)
+        if idx < num_chunks:
+            value = chunk_sums[idx]
+        inclusive = wp.tile_scan_inclusive(wp.tile(value))
+        if idx < num_chunks:
+            chunk_offsets[idx] = carry + wp.untile(inclusive) - value
+        carry += wp.tile_extract(inclusive, block_dim - 1)
+    if t == 0:
+        total[0] = carry
+
+
+@wp.kernel(enable_backward=False)
+def _scan_apply_kernel(
+    counts: wp.array[int],
+    num_elements: wp.array[int],
+    max_elements: int,
+    num_blocks: int,
+    chunk_offsets: wp.array[int],
+    prefix_sums: wp.array[int],
+):
+    """Write the exclusive prefix of every active count from its chunk offset."""
+    block_id, t = wp.tid()
+    n = _scan_active_count(num_elements, max_elements)
+    chunk_size = wp.block_dim() * SCAN_ITEMS_PER_THREAD
+    num_chunks = (n + chunk_size - 1) // chunk_size
+    for chunk in range(block_id, num_chunks, num_blocks):
+        base = chunk * chunk_size + t * SCAN_ITEMS_PER_THREAD
+        thread_sum = int(0)
+        for i in range(SCAN_ITEMS_PER_THREAD):
+            idx = base + i
+            if idx < n:
+                thread_sum += counts[idx]
+        running = chunk_offsets[chunk] + wp.untile(wp.tile_scan_exclusive(wp.tile(thread_sum)))
+        for i in range(SCAN_ITEMS_PER_THREAD):
+            idx = base + i
+            if idx < n:
+                prefix_sums[idx] = running
+                running += counts[idx]
+
+
 def scan_with_total(
     counts: wp.array[int],
     prefix_sums: wp.array[int],
     num_elements: wp.array[int],
     total: wp.array[int],
+    scratch: wp.array[int] | None = None,
 ):
     """
     Computes an exclusive prefix sum and total of a counts array.
+
+    Only the first ``num_elements[0]`` entries are read and written, so the cost
+    scales with the active element count rather than the buffer capacity. Pass
+    ``scratch`` (at least ``_scan_scratch_size(counts.shape[0], device)``
+    entries, allocated once by the caller so the scan stays CUDA-graph safe) to
+    enable that path; without it the whole buffer is scanned.
 
     Args:
         counts: Input array of per-element counts.
         prefix_sums: Output array for exclusive prefix sums (same size as counts).
         num_elements: Single-element array containing the number of valid elements in counts.
         total: Single-element output array that will contain the sum of all counts.
+        scratch: Optional integer scratch buffer for the count-aware scan.
     """
-    wp.utils.array_scan(counts, prefix_sums, inclusive=False)
-    wp.launch(
-        get_total_kernel,
-        dim=[1],
-        inputs=[counts, prefix_sums, num_elements, counts.shape[0], total],
-        device=counts.device,
+    device = counts.device
+    capacity = counts.shape[0]
+    if scratch is None:
+        wp.utils.array_scan(counts, prefix_sums, inclusive=False)
+        wp.launch(
+            get_total_kernel,
+            dim=[1],
+            inputs=[counts, prefix_sums, num_elements, capacity, total],
+            device=device,
+            record_tape=False,
+        )
+        return
+
+    scratch_size = _scan_scratch_size(capacity, device)
+    if scratch.shape[0] < scratch_size:
+        raise ValueError(f"scan_with_total scratch needs at least {scratch_size} entries, got {scratch.shape[0]}")
+    num_blocks = wp.get_device(device).sm_count * 8 if device.is_cuda else 64
+    wp.launch_tiled(
+        _scan_chunk_sums_kernel,
+        dim=(num_blocks,),
+        inputs=[counts, num_elements, capacity, num_blocks],
+        outputs=[scratch],
+        block_dim=SCAN_BLOCK_DIM,
+        device=device,
+        record_tape=False,
+    )
+    wp.launch_tiled(
+        _scan_chunk_offsets_kernel,
+        dim=(1,),
+        inputs=[scratch, num_elements, capacity],
+        outputs=[scratch, total],
+        block_dim=SCAN_BLOCK_DIM,
+        device=device,
+        record_tape=False,
+    )
+    wp.launch_tiled(
+        _scan_apply_kernel,
+        dim=(num_blocks,),
+        inputs=[counts, num_elements, capacity, num_blocks, scratch],
+        outputs=[prefix_sums],
+        block_dim=SCAN_BLOCK_DIM,
+        device=device,
         record_tape=False,
     )
 

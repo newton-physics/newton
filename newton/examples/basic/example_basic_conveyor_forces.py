@@ -757,7 +757,6 @@ class Example:
     """Conveyor circuit whose static belts carry rigid boxes with contact forces."""
 
     def __init__(self, viewer, args=None):
-        newton.use_coord_layout_targets = True
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
 
         self.fps = 60

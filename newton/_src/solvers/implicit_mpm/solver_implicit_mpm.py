@@ -23,7 +23,6 @@ import newton
 from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
@@ -1389,7 +1388,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
         )
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: newton.Model,

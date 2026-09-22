@@ -185,7 +185,6 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         if args.robot not in ROBOT_CONFIGS:
             raise ValueError(f"Unknown robot: {args.robot}. Available: {list(ROBOT_CONFIGS.keys())}")
         robot_config = ROBOT_CONFIGS[args.robot]

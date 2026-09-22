@@ -832,11 +832,24 @@ class DVISolverConfig:
     on CUDA. Must be greater than zero. Defaults to `2`.
     """
 
+    use_schur_complement: bool = False
+    """
+    Whether to eliminate bilateral rows from the unilateral solve through a Schur complement.
+
+    .. experimental::
+
+        The ``True`` mode may change without prior notice. It requires the same
+        setting in every world and adds response-matrix setup and storage.
+
+    Defaults to ``False``.
+    """
+
     bilateral_solve_interval: int = 1
     """
     Number of alternating DVI iterations between repeated direct bilateral solves.
-    A value of `1` re-solves after every projected inequality block, preserving
-    the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    This controls coupling when :attr:`use_schur_complement` is ``False``.
+    Larger values trade coupling accuracy for fewer direct solves. Must be greater
+    than zero. Defaults to `1`.
     """
 
     tangential_warmstart_scale: float = 0.97
@@ -871,6 +884,7 @@ class DVISolverConfig:
         "geom_pair_net_force",
         "key_and_position_with_net_force_backup",
         "key_and_position_with_tangential_net_force",
+        "key_and_position_with_net_force_backup_and_tangential_net_force",
     ] = "key_and_position_with_tangential_net_force"
     """
     The contact warmstart method used when `warmstart_mode` is `containers`.
@@ -946,6 +960,7 @@ class DVISolverConfig:
             "geom_pair_net_force",
             "key_and_position_with_net_force_backup",
             "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
         }
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(

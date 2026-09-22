@@ -120,6 +120,7 @@ class _KpiBenchmark(_SimulationMetricTracks):
 
 
 class FastDRLegs(_FastBenchmark):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     num_frames = 25
     robot = "dr_legs"
     repeat = 2
@@ -127,6 +128,7 @@ class FastDRLegs(_FastBenchmark):
 
 
 class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     num_frames = 25
     robot = "dr_legs"
     samples = 2
@@ -143,6 +145,7 @@ class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
 
 
 class KpiDRLegs(_KpiBenchmark):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     params: ClassVar[list[list[int]]] = [[4096]]
     num_frames = 25
     robot = "dr_legs"

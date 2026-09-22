@@ -234,6 +234,158 @@ def invert_3d_rotational_dofs(
 
 
 @wp.func
+def eval_joint_motion(
+    type: int,
+    q_start: int,
+    qd_start: int,
+    lin_axis_count: int,
+    ang_axis_count: int,
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_axis: wp.array[wp.vec3],
+):
+    X_j = wp.transform_identity()
+    v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
+
+    if type == JointType.PRISMATIC:
+        axis = joint_axis[qd_start]
+        X_j = wp.transform(axis * joint_q[q_start], wp.quat_identity())
+        v_j = wp.spatial_vector(axis * joint_qd[qd_start], wp.vec3())
+
+    if type == JointType.REVOLUTE:
+        axis = joint_axis[qd_start]
+        X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, joint_q[q_start]))
+        v_j = wp.spatial_vector(wp.vec3(), axis * joint_qd[qd_start])
+
+    if type == JointType.BALL:
+        X_j = wp.transform(
+            wp.vec3(),
+            wp.quat(joint_q[q_start], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3]),
+        )
+        v_j = wp.spatial_vector(
+            wp.vec3(),
+            wp.vec3(joint_qd[qd_start], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
+        )
+
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        X_j = wp.transform(
+            wp.vec3(joint_q[q_start], joint_q[q_start + 1], joint_q[q_start + 2]),
+            wp.quat(
+                joint_q[q_start + 3],
+                joint_q[q_start + 4],
+                joint_q[q_start + 5],
+                joint_q[q_start + 6],
+            ),
+        )
+        v_j = wp.spatial_vector(
+            wp.vec3(joint_qd[qd_start], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
+            wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
+        )
+
+    if type == JointType.D6:
+        pos = wp.vec3(0.0)
+        rot = wp.quat_identity()
+        vel_v = wp.vec3(0.0)
+        vel_w = wp.vec3(0.0)
+
+        # Keep these updates unrolled so joint actions remain differentiable.
+        if lin_axis_count > 0:
+            axis = joint_axis[qd_start]
+            pos += axis * joint_q[q_start]
+            vel_v += axis * joint_qd[qd_start]
+        if lin_axis_count > 1:
+            axis = joint_axis[qd_start + 1]
+            pos += axis * joint_q[q_start + 1]
+            vel_v += axis * joint_qd[qd_start + 1]
+        if lin_axis_count > 2:
+            axis = joint_axis[qd_start + 2]
+            pos += axis * joint_q[q_start + 2]
+            vel_v += axis * joint_qd[qd_start + 2]
+
+        iq = q_start + lin_axis_count
+        iqd = qd_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[iqd]
+            rot = wp.quat_from_axis_angle(axis, joint_q[iq])
+            vel_w = joint_qd[iqd] * axis
+        if ang_axis_count == 2:
+            rot, vel_w = compute_2d_rotational_dofs(
+                joint_axis[iqd],
+                joint_axis[iqd + 1],
+                joint_q[iq],
+                joint_q[iq + 1],
+                joint_qd[iqd],
+                joint_qd[iqd + 1],
+            )
+        if ang_axis_count == 3:
+            rot, vel_w = compute_3d_rotational_dofs(
+                joint_axis[iqd],
+                joint_axis[iqd + 1],
+                joint_axis[iqd + 2],
+                joint_q[iq],
+                joint_q[iq + 1],
+                joint_q[iq + 2],
+                joint_qd[iqd],
+                joint_qd[iqd + 1],
+                joint_qd[iqd + 2],
+            )
+
+        X_j = wp.transform(pos, rot)
+        v_j = wp.spatial_vector(vel_v, vel_w)
+
+    return X_j, v_j
+
+
+@wp.func
+def eval_joint_child_state(
+    type: int,
+    parent: int,
+    child: int,
+    X_wp: wp.transform,
+    X_pj: wp.transform,
+    X_cj: wp.transform,
+    X_j: wp.transform,
+    v_j: wp.spatial_vector,
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+):
+    X_wpj = X_pj
+    if parent >= 0:
+        X_wpj = X_wp * X_pj
+
+    X_wcj = X_wpj * X_j
+    X_wc = X_wcj * wp.transform_inverse(X_cj)
+    x_child_origin = wp.transform_get_translation(X_wc)
+
+    v_parent_origin = wp.vec3()
+    w_parent = wp.vec3()
+    if parent >= 0:
+        v_wp = body_qd[parent]
+        w_parent = wp.spatial_bottom(v_wp)
+        v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
+
+    linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+    angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        # These joint velocities are COM-referenced, while the tree recurrence is origin-referenced.
+        v_joint_origin = com_twist_to_origin_twist(
+            wp.spatial_vector(linear_joint_world, angular_joint_world),
+            X_wc,
+            body_com[child],
+        )
+        linear_joint_origin = wp.spatial_top(v_joint_origin)
+    else:
+        child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
+        linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
+
+    v_wc_origin = wp.spatial_vector(
+        v_parent_origin + linear_joint_origin,
+        w_parent + angular_joint_world,
+    )
+    return X_wc, origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
+
+
+@wp.func
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
@@ -278,149 +430,36 @@ def eval_single_articulation_fk(
         lin_axis_count = joint_dof_dim[i, 0]
         ang_axis_count = joint_dof_dim[i, 1]
 
-        X_j = wp.transform_identity()
-        v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
+        X_j, v_j = eval_joint_motion(
+            type,
+            q_start,
+            qd_start,
+            lin_axis_count,
+            ang_axis_count,
+            joint_q,
+            joint_qd,
+            joint_axis,
+        )
 
-        if type == JointType.PRISMATIC:
-            axis = joint_axis[qd_start]
-
-            q = joint_q[q_start]
-            qd = joint_qd[qd_start]
-
-            X_j = wp.transform(axis * q, wp.quat_identity())
-            v_j = wp.spatial_vector(axis * qd, wp.vec3())
-
-        if type == JointType.REVOLUTE:
-            axis = joint_axis[qd_start]
-
-            q = joint_q[q_start]
-            qd = joint_qd[qd_start]
-
-            X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
-            v_j = wp.spatial_vector(wp.vec3(), axis * qd)
-
-        if type == JointType.BALL:
-            r = wp.quat(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3])
-
-            w = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
-
-            X_j = wp.transform(wp.vec3(), r)
-            v_j = wp.spatial_vector(wp.vec3(), w)
-
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            t = wp.transform(
-                wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
-                wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
-            )
-
-            v = wp.spatial_vector(
-                wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
-                wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
-            )
-
-            X_j = t
-            v_j = v
-
-        if type == JointType.D6:
-            pos = wp.vec3(0.0)
-            rot = wp.quat_identity()
-            vel_v = wp.vec3(0.0)
-            vel_w = wp.vec3(0.0)
-
-            # unroll for loop to ensure joint actions remain differentiable
-            # (since differentiating through a for loop that updates a local variable is not supported)
-
-            if lin_axis_count > 0:
-                axis = joint_axis[qd_start + 0]
-                pos += axis * joint_q[q_start + 0]
-                vel_v += axis * joint_qd[qd_start + 0]
-            if lin_axis_count > 1:
-                axis = joint_axis[qd_start + 1]
-                pos += axis * joint_q[q_start + 1]
-                vel_v += axis * joint_qd[qd_start + 1]
-            if lin_axis_count > 2:
-                axis = joint_axis[qd_start + 2]
-                pos += axis * joint_q[q_start + 2]
-                vel_v += axis * joint_qd[qd_start + 2]
-
-            iq = q_start + lin_axis_count
-            iqd = qd_start + lin_axis_count
-            if ang_axis_count == 1:
-                axis = joint_axis[iqd]
-                rot = wp.quat_from_axis_angle(axis, joint_q[iq])
-                vel_w = joint_qd[iqd] * axis
-            if ang_axis_count == 2:
-                rot, vel_w = compute_2d_rotational_dofs(
-                    joint_axis[iqd + 0],
-                    joint_axis[iqd + 1],
-                    joint_q[iq + 0],
-                    joint_q[iq + 1],
-                    joint_qd[iqd + 0],
-                    joint_qd[iqd + 1],
-                )
-            if ang_axis_count == 3:
-                rot, vel_w = compute_3d_rotational_dofs(
-                    joint_axis[iqd + 0],
-                    joint_axis[iqd + 1],
-                    joint_axis[iqd + 2],
-                    joint_q[iq + 0],
-                    joint_q[iq + 1],
-                    joint_q[iq + 2],
-                    joint_qd[iqd + 0],
-                    joint_qd[iqd + 1],
-                    joint_qd[iqd + 2],
-                )
-
-            X_j = wp.transform(pos, rot)
-            v_j = wp.spatial_vector(vel_v, vel_w)
-
-        # transform from world to parent joint anchor frame
-        X_wpj = X_pj
+        X_wp = wp.transform_identity()
         if parent >= 0:
             X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-
-        # transform from world to joint anchor frame at child body
-        X_wcj = X_wpj * X_j
-        # transform from world to child body frame
-        X_wc = X_wcj * wp.transform_inverse(X_cj)
-
-        # Velocity must be evaluated at the actual child-body origin. For translated
-        # joints, sampling parent motion only at the fixed
-        # parent anchor misses the transport term from the current joint displacement.
-        x_child_origin = wp.transform_get_translation(X_wc)
-        v_parent_origin = wp.vec3()
-        w_parent = wp.vec3()
-        if parent >= 0:
-            v_wp = body_qd[parent]
-            w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
-
-        # Transform joint motion into world space.
-        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            # FREE / DISTANCE joint linear DOFs follow Newton's COM-velocity
-            # convention, so convert the relative child COM twist to an
-            # origin-referenced twist before the tree recurrence.
-            v_joint_origin = com_twist_to_origin_twist(
-                wp.spatial_vector(linear_joint_world, angular_joint_world),
-                X_wc,
-                body_com[child],
-            )
-            linear_joint_origin = wp.spatial_top(v_joint_origin)
-        else:
-            # The linear part of v_j is defined at the child joint anchor; if the
-            # child body origin is offset from that anchor, transport the joint
-            # angular motion to the body origin.
-            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
-            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
-
-        v_wc_origin = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+        X_wc, v_wc = eval_joint_child_state(
+            type,
+            parent,
+            child,
+            X_wp,
+            X_pj,
+            X_cj,
+            X_j,
+            v_j,
+            body_qd,
+            body_com,
+        )
 
         if (body_flags[child] & body_flag_filter) != 0:
             body_q[child] = X_wc
-            body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
+            body_qd[child] = v_wc
 
 
 @wp.kernel
@@ -539,6 +578,62 @@ def eval_fk(
         num_articulations = len(indices)
     else:
         num_articulations = model.articulation_count
+
+    if num_articulations == 0:
+        return
+
+    if model.device.is_cuda and model._fk_articulation_level_start is not None:
+        requires_grad = (
+            model.requires_grad
+            or joint_q.requires_grad
+            or joint_qd.requires_grad
+            or model.joint_X_p.requires_grad
+            or model.joint_X_c.requires_grad
+            or model.joint_axis.requires_grad
+            or model.body_com.requires_grad
+            or state.body_q.requires_grad
+            or state.body_qd.requires_grad
+        )
+        if not requires_grad:
+            from .articulation_cuda import TILE_BLOCK_DIM, create_eval_articulation_fk_tile  # noqa: PLC0415
+
+            kernel = create_eval_articulation_fk_tile(
+                model._fk_level_capacity,
+                body_flag_filter == BodyFlags.ALL,
+                model._has_rod_joints,
+            )
+            inputs = [
+                model._fk_articulation_level_start,
+                model._fk_level_joint_start,
+                model._fk_level_joints,
+                model._fk_level_parent_pos,
+                model.articulation_count,
+                mask,
+                indices,
+                joint_q,
+                joint_qd,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+                model.body_flags,
+                body_flag_filter,
+            ]
+            wp.launch_tiled(
+                kernel=kernel,
+                dim=[num_articulations],
+                block_dim=TILE_BLOCK_DIM,
+                inputs=inputs,
+                outputs=[state.body_q, state.body_qd],
+                device=model.device,
+            )
+            return
 
     wp.launch(
         kernel=eval_articulation_fk,
@@ -934,17 +1029,15 @@ def eval_ik(
 @wp.func
 def write_free_distance_motion_subspace(
     X_pa_world: wp.transform,
-    x_child_com_world: wp.vec3,
+    pivot_world: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
     """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
 
-    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
-    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
-    column layout. Linear DOFs act at the child body's COM; angular DOFs are
-    world-aligned axes expressed through ``X_pa_world``.
+    Linear DOFs follow the parent-anchor axes. Angular columns describe
+    rotations about ``pivot_world`` as world-origin spatial twists.
 
     Args:
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
@@ -952,7 +1045,7 @@ def write_free_distance_motion_subspace(
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
             child); Newton's FREE/DISTANCE joint coordinates live in the
             parent-anchor basis.
-        x_child_com_world: World-space position of the child body's COM.
+        pivot_world: World-space point about which angular columns rotate.
         qd_start: Starting velocity-DOF index for this joint.
         joint_S_s: Output spatial-vector subspace array; six slots starting at
             ``qd_start`` are overwritten.
@@ -964,9 +1057,9 @@ def write_free_distance_motion_subspace(
     joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
     joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
     joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
-    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
-    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, pivot_world), axis_world_x)
+    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, pivot_world), axis_world_y)
+    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, pivot_world), axis_world_z)
 
 
 @wp.func

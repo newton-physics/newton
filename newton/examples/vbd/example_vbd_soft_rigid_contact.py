@@ -28,7 +28,7 @@ PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.012,
     "shape_margin": 0.005,
-    "soft_contact_creation_margin": 0.01,
+    "soft_contact_gap": 0.01,
     "bag_width": 0.06,
     "bag_depth": 0.06,
     "bag_height": 0.10,
@@ -59,8 +59,8 @@ PARAMS = {
     "initial_paused": False,
     "body_drop_offset": 0.04,
     "rigid_body_particle_contact_buffer_size": 1024,
-    "particle_self_contact_radius_scale": 1.0,
-    "particle_self_contact_margin_scale": 2.0,
+    "particle_self_contact_margin_scale": 1.0,
+    "particle_self_contact_gap_scale": 1.0,
     "particle_topological_contact_filter_threshold": 3,
 }
 
@@ -288,14 +288,12 @@ def setup_sim(builder, info, params):
         rigid_compliant_alm=True,
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         particle_enable_self_contact=False,
-        particle_self_contact_radius=pr * params["particle_self_contact_radius_scale"],
         particle_self_contact_margin=pr * params["particle_self_contact_margin_scale"],
+        particle_self_contact_gap=pr * params["particle_self_contact_gap_scale"],
         particle_topological_contact_filter_threshold=params["particle_topological_contact_filter_threshold"],
     )
 
-    pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=params["soft_contact_creation_margin"]
-    )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=params["soft_contact_gap"])
 
     return model, solver, pipeline, pinned_indices, pinned_original
 

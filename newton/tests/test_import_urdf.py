@@ -419,6 +419,49 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert builder.shape_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
+    def test_visual_material_rgba_preserves_opacity(self):
+        """Preserve the alpha channel from URDF visual materials."""
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry>
+                        <sphere radius="0.5"/>
+                    </geometry>
+                    <material name="transparent_blue">
+                        <color rgba="0.1 0.2 0.8 0.35"/>
+                    </material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        np.testing.assert_allclose(builder.shape_color[0], [0.1, 0.2, 0.8], atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(builder.shape_opacity[0], 0.35, places=6)
+
+    def test_visual_material_rgba_clamps_invalid_opacity(self):
+        """Clamp invalid URDF visual alpha values with a warning."""
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry><sphere radius="0.5"/></geometry>
+                    <material name="invalid_alpha"><color rgba="0.1 0.2 0.8 1.5"/></material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+
+        with self.assertWarnsRegex(UserWarning, "Clamping opacity"):
+            parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
+
     def test_mesh_urdf(self):
         # load a urdf containing a cube mesh with 8 verts and 12 faces
         for mesh_src in ("file", "http"):
@@ -2031,30 +2074,18 @@ class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
     def test_mimic_constraint_basic(self):
-        """Test that mimic constraints are created from URDF mimic tags."""
+        """Verify URDF mimic tags create joint-owned mimic metadata."""
         builder = newton.ModelBuilder()
         builder.add_urdf(MIMIC_URDF)
         model = builder.finalize()
-
-        # Should have 1 mimic constraint
-        self.assertEqual(model.constraint_mimic_count, 1)
-
-        # Check the constraint values
-        joint0 = model.constraint_mimic_joint0.numpy()[0]
-        joint1 = model.constraint_mimic_joint1.numpy()[0]
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
-        enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
         leader_idx = model.joint_label.index("mimic_test/leader_joint")
         follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
-        self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
-        self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
-        self.assertAlmostEqual(coef0, 0.5, places=5)
-        self.assertAlmostEqual(coef1, 2.0, places=5)
-        self.assertTrue(enabled)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[follower_idx], (0.5, 2.0))
 
     def test_mimic_constraint_default_values(self):
         """Test mimic constraints with default coef1 and coef0."""
@@ -2078,13 +2109,14 @@ class TestMimicConstraints(unittest.TestCase):
         builder.add_urdf(urdf)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        leader_idx = model.joint_label.index("mimic_defaults/j1")
+        follower_idx = model.joint_label.index("mimic_defaults/j2")
+        coeffs = model.joint_mimic_coeffs.numpy()[follower_idx]
 
         # Default values from URDF spec
-        self.assertAlmostEqual(coef0, 0.0, places=5)
-        self.assertAlmostEqual(coef1, 1.0, places=5)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        self.assertAlmostEqual(coeffs[0], 0.0, places=5)
+        self.assertAlmostEqual(coeffs[1], 1.0, places=5)
 
     def test_mimic_joint_skipped_child_does_not_mismatch(self):
         """Regression test: skipped joints must not be included in name->index mapping."""
@@ -2122,8 +2154,9 @@ class TestMimicConstraints(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
             builder.add_urdf(urdf, joint_ordering=None)
 
-        # No mimic constraint should be created because the follower joint was skipped.
+        # No mimic relationship should be created because the follower joint was skipped.
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+        self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
 class TestOverrideRootXformURDF(unittest.TestCase):

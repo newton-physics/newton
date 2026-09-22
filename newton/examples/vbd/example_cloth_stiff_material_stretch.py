@@ -25,6 +25,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -89,6 +90,10 @@ class Example:
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
+        checker_indices = np.indices((self.DIM, self.DIM)).sum(axis=0) % 2
+        checker_palette = np.array(((0.08, 0.24, 0.65), (0.9, 0.9, 0.9)), dtype=np.float32)
+        cloth_colors = np.repeat(checker_palette[checker_indices.reshape(-1)], 2, axis=0)
+
         sheet_starts: list[int] = []
         sheet_right_indices: list[list[int]] = []
         for sheet_idx, nu in enumerate(self.POISSON_RATIOS):
@@ -110,6 +115,7 @@ class Example:
                 tri_kd=self.TRI_KD,
                 edge_ke=self.EDGE_KE,
                 edge_kd=0.0,
+                color=cloth_colors,
             )
             stride = self.DIM + 1
             right = [start + y * stride + self.DIM for y in range(stride)]

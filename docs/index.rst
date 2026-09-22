@@ -21,6 +21,7 @@ Newton Physics
    guide/tutorials
    Development <guide/development>
    Source Code Guidelines <guide/source_code_guidelines>
+   Review Guidelines <guide/review_guidelines>
 
 .. toctree::
    :maxdepth: 1

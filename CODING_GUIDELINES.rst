@@ -16,9 +16,9 @@ contribution and pull-request workflows are documented in
 `CONTRIBUTING.md <https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md>`__;
 environment setup and operational procedures are in the
 `development guide <https://newton-physics.github.io/newton/latest/guide/development.html>`__.
-General review concerns such as specification fidelity, project fit,
-reviewability, and maintenance burden are tracked separately in
-`issue #3509 <https://github.com/newton-physics/newton/issues/3509>`__.
+General review concerns such as requirements fidelity, project fit,
+reviewability, and maintenance burden are covered by the
+:ref:`review-guidelines`.
 Release readiness is assessed by the
 `release-audit workflow <https://github.com/newton-physics/newton/tree/main/.claude/skills/release-audit>`__.
 

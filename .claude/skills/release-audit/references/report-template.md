@@ -553,7 +553,7 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      |---|---|---|
      | `newton._src.utils._helper` | Validated | Re-exported as `newton.utils.helper` in [1.1.1](commit-link). |
 
-     ### 📐 Missing-migration-guidance
+     ### ⬆️ Missing-migration-guidance
 
      | Flag subject | Outcome | Evidence |
      |---|---|---|
@@ -633,7 +633,7 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      Flag glyphs: 🔗 (suspected wrong GH ref), 🗣️ (internal language),
                   📝 (too terse or missing context),
                   🕵️ (private-only symbol not re-exported through a public module),
-                  📐 (Deprecated / Removed / rename entry missing migration guidance),
+                  ⬆️ (Deprecated / Removed / rename entry missing migration guidance),
                   🏷️ (new public symbol violates Newton's prefix-first naming),
                   🧾 (runtime deprecation shipped but the released CHANGELOG omitted it),
                   🚨 (removed without prior CHANGELOG or runtime deprecation evidence;

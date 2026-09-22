@@ -19,6 +19,7 @@ newton.geometry
    HydroelasticSDF
    NarrowPhase
    ParticleSurface
+   TriMeshCollisionInfo
 
 .. rubric:: Functions
 

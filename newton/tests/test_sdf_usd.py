@@ -70,6 +70,10 @@ def _add_rigid_body(stage, path):
 
     prim = stage.DefinePrim(path, "Xform")
     UsdPhysics.RigidBodyAPI.Apply(prim)
+    # SDF tests do not exercise inertia, so keep their shared body fixture valid.
+    mass_api = UsdPhysics.MassAPI.Apply(prim)
+    mass_api.CreateMassAttr().Set(1.0)
+    mass_api.CreateDiagonalInertiaAttr().Set((1.0, 1.0, 1.0))
     return prim
 
 
@@ -418,8 +422,9 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "must be divisible by 8"):
+            with self.assertWarnsRegex(UserWarning, "must be divisible by 8") as warning:
                 result = builder.add_usd(str(usd_path))
+            self.assertEqual(warning.filename, newton.ModelBuilder.add_usd.__code__.co_filename)
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # Invalid resolution should be dropped — builder default (None) wins.
             self.assertIsNone(builder.shape_sdf_max_resolution[s1])

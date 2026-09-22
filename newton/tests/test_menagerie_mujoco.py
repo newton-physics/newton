@@ -370,6 +370,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "mocap_",
     "nmocap",
     "body_mocapid",
+    "body_weldid",
+    # Keyframes: Newton does not import keyframes
+    "nkey",
+    "key_",
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
@@ -454,8 +458,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshnormal",
     "nmeshpoly",
     "nmeshface",
-    "nmaxmeshdeg",
-    "nmaxpolygon",
+    "nmeshdegmax",
+    "npolygonmax",
     "mesh_",
 }
 
@@ -1705,8 +1709,23 @@ class TestMenagerieBase(unittest.TestCase):
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
+
+        # work around buffer under-sizing until the fix is released (mjwarp #1630)
+        from mujoco_warp._src.io import _default_nconmax, _default_njmax, _default_njmax_nnz
+
+        resolved_nconmax = self.nconmax if self.nconmax is not None else _default_nconmax(mj_model, mj_data)
+        resolved_njmax = self.njmax if self.njmax is not None else _default_njmax(mj_model, mj_data)
+        njmax_nnz = max(
+            int(self._newton_solver.mjw_data.njmax_nnz),
+            _default_njmax_nnz(mj_model, resolved_nconmax, resolved_njmax),
+        )
         mjw_data = _mujoco_warp.put_data(
-            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+            mj_model,
+            mj_data,
+            nworld=self.num_worlds,
+            njmax=self.njmax,
+            nconmax=self.nconmax,
+            njmax_nnz=njmax_nnz,
         )
 
         return mj_model, mj_data, mjw_model, mjw_data

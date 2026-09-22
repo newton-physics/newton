@@ -1097,13 +1097,16 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
 
     def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
         # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
-        # armature) without assembling any Jacobian copy. Uses the raw Jacobian's row_start.
+        # armature inv_m_j and effort inv_m_a) without assembling any Jacobian copy. Uses the raw
+        # Jacobian's row_start.
         if op._combined_regularization is None:
             return op._eta
 
         from ..dynamics.delassus import (  # noqa: PLC0415
             _add_armature_regularization_preconditioned_sparse,
             _add_armature_regularization_sparse,
+            _add_effort_regularization_preconditioned_sparse,
+            _add_effort_regularization_sparse,
         )
 
         model = op._model
@@ -1116,32 +1119,65 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
             op._combined_regularization.zero_()
 
         if op._preconditioner is None:
-            wp.launch(
-                _add_armature_regularization_sparse,
-                dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                inputs=[
-                    model.info.num_joint_dynamic_cts,
-                    model.info.joint_dynamic_cts_offset,
-                    row_start,
-                    data.joints.inv_m_j,
-                ],
-                outputs=[op._combined_regularization],
-                device=device,
-            )
+            if model.size.sum_of_num_dynamic_joint_cts > 0:
+                wp.launch(
+                    _add_armature_regularization_sparse,
+                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
+                    inputs=[
+                        model.info.num_joint_dynamic_cts,
+                        model.info.joint_dynamic_cts_offset,
+                        row_start,
+                        data.joints.inv_m_j,
+                        op._combined_regularization,
+                    ],
+                    device=device,
+                )
+            if model.size.sum_of_num_effort_joint_cts > 0:
+                wp.launch(
+                    _add_effort_regularization_sparse,
+                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
+                    inputs=[
+                        model.info.num_joint_effort_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.joint_bounded_cts_group_offset,
+                        model.info.num_joint_friction_cts,
+                        row_start,
+                        data.joints.inv_m_a,
+                        op._combined_regularization,
+                    ],
+                    device=device,
+                )
         else:
-            wp.launch(
-                _add_armature_regularization_preconditioned_sparse,
-                dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
-                inputs=[
-                    model.info.num_joint_dynamic_cts,
-                    model.info.joint_dynamic_cts_offset,
-                    data.joints.inv_m_j,
-                    row_start,
-                    op._preconditioner,
-                ],
-                outputs=[op._combined_regularization],
-                device=device,
-            )
+            if model.size.sum_of_num_dynamic_joint_cts > 0:
+                wp.launch(
+                    _add_armature_regularization_preconditioned_sparse,
+                    dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
+                    inputs=[
+                        model.info.num_joint_dynamic_cts,
+                        model.info.joint_dynamic_cts_offset,
+                        data.joints.inv_m_j,
+                        row_start,
+                        op._preconditioner,
+                        op._combined_regularization,
+                    ],
+                    device=device,
+                )
+            if model.size.sum_of_num_effort_joint_cts > 0:
+                wp.launch(
+                    _add_effort_regularization_preconditioned_sparse,
+                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
+                    inputs=[
+                        model.info.num_joint_effort_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.joint_bounded_cts_group_offset,
+                        model.info.num_joint_friction_cts,
+                        data.joints.inv_m_a,
+                        row_start,
+                        op._preconditioner,
+                        op._combined_regularization,
+                    ],
+                    device=device,
+                )
         return op._combined_regularization
 
     def prepare_solve(self) -> None:

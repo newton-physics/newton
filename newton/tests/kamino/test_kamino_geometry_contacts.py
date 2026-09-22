@@ -9,6 +9,7 @@ Tests all components of the ContactsKamino data types and operations.
 
 import unittest
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -23,6 +24,11 @@ from newton._src.solvers.kamino._src.geometry.contacts import (
     convert_contacts_newton_to_kamino,
     make_contact_frame_xnorm,
     make_contact_frame_znorm,
+)
+from newton._src.solvers.kamino._src.geometry.keying import KeySorter
+from newton._src.solvers.kamino._src.solvers.warmstart import (
+    _count_current_contacts_by_cached_pair,
+    warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
@@ -505,6 +511,106 @@ class TestGeometryContacts(unittest.TestCase):
         self.default_device = None
         if self.verbose:
             msg.reset_log_level()
+
+    def test_current_pair_counts_match_legacy_warmstart_scan(self):
+        """Match legacy fallback pair counts at cached sorted range starts."""
+        old_keys = np.array([9, 4, 9, 7, 4, 12], dtype=np.uint64)
+        current_keys = np.array([9, 4, 9, 9, 12, 5, 4], dtype=np.uint64)
+        old_count = len(old_keys)
+        sorter = KeySorter(max_num_keys=old_count, device=self.default_device)
+        active_old = wp.array([old_count], dtype=wp.int32, device=self.default_device)
+        sorter.sort(active_old, wp.array(old_keys, device=self.default_device))
+        counts = wp.zeros(old_count, dtype=wp.int32, device=self.default_device)
+        wp.launch(
+            kernel=_count_current_contacts_by_cached_pair,
+            dim=len(current_keys),
+            inputs=[
+                sorter.sorted_keys,
+                active_old,
+                wp.array(current_keys, device=self.default_device),
+                wp.array([len(current_keys)], dtype=wp.int32, device=self.default_device),
+                counts,
+            ],
+            device=self.default_device,
+        )
+        sorted_old = np.sort(old_keys)
+        expected = np.zeros(old_count, dtype=np.int32)
+        starts = np.flatnonzero(np.r_[True, sorted_old[1:] != sorted_old[:-1]])
+        for start in starts:
+            expected[start] = np.count_nonzero(current_keys == sorted_old[start])
+        np.testing.assert_array_equal(counts.numpy(), expected)
+
+    def test_combined_warmstart_preserves_tangent_force_across_manifold_sizes(self):
+        """Preserve cached net tangent force when manifold contact counts change."""
+
+        def run_case(old_count: int, current_count: int):
+            capacity = max(old_count, current_count)
+            key = wp.uint64(7)
+            frame = wp.quat_identity()
+            cached_tangent = 4.0 / old_count
+
+            cache = SimpleNamespace(
+                model_max_contacts_host=capacity,
+                model_active_contacts=wp.array([old_count], dtype=wp.int32, device=self.default_device),
+                key=wp.array([key] * capacity, dtype=wp.uint64, device=self.default_device),
+                position_B=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+                frame=wp.array([frame] * capacity, dtype=wp.quatf, device=self.default_device),
+                reaction=wp.array(
+                    [wp.vec3f(cached_tangent, 0.0, 10.0)] * capacity,
+                    dtype=wp.vec3f,
+                    device=self.default_device,
+                ),
+                velocity=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+            )
+            contacts = SimpleNamespace(
+                model_max_contacts_host=capacity,
+                model_active_contacts=wp.array([current_count], dtype=wp.int32, device=self.default_device),
+                key=wp.array([key] * capacity, dtype=wp.uint64, device=self.default_device),
+                wid=wp.zeros(capacity, dtype=wp.int32, device=self.default_device),
+                bid_AB=wp.array([wp.vec2i(-1, 0)] * capacity, dtype=wp.vec2i, device=self.default_device),
+                position_A=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+                position_B=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+                frame=wp.array([frame] * capacity, dtype=wp.quatf, device=self.default_device),
+                material=wp.array([wp.vec2f(10.0, 0.0)] * capacity, dtype=wp.vec2f, device=self.default_device),
+                reaction=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+                velocity=wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device),
+            )
+            model = SimpleNamespace(
+                device=self.default_device,
+                time=SimpleNamespace(dt=wp.ones(1, dtype=wp.float32, device=self.default_device)),
+            )
+            data = SimpleNamespace(
+                bodies=SimpleNamespace(
+                    q_i=wp.array([wp.transform_identity()], dtype=wp.transformf, device=self.default_device),
+                    u_i=wp.zeros(1, dtype=wp.spatial_vectorf, device=self.default_device),
+                )
+            )
+            sorter = KeySorter(max_num_keys=capacity, device=self.default_device)
+            tangent_force_sums = wp.zeros(capacity, dtype=wp.vec3f, device=self.default_device)
+            cached_pair_counts = wp.zeros(capacity, dtype=wp.int32, device=self.default_device)
+            current_pair_counts = wp.zeros(capacity, dtype=wp.int32, device=self.default_device)
+
+            warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup(
+                model=model,
+                data=data,
+                sorter=sorter,
+                cache=cache,
+                contacts=contacts,
+                balance_tangential=True,
+                tangent_force_sums=tangent_force_sums,
+                pair_contact_counts=cached_pair_counts,
+                current_pair_contact_counts=current_pair_counts,
+            )
+
+            reactions = contacts.reaction.numpy()[:current_count]
+            np.testing.assert_allclose(reactions[:, 0], 4.0 / current_count, rtol=1.0e-6)
+            np.testing.assert_allclose(reactions[:, 2], 10.0, rtol=1.0e-6)
+            self.assertAlmostEqual(float(reactions[:, 0].sum()), 4.0, places=6)
+            self.assertEqual(int(cached_pair_counts.numpy()[0]), old_count)
+            self.assertEqual(int(current_pair_counts.numpy()[0]), current_count)
+
+        run_case(old_count=4, current_count=2)
+        run_case(old_count=2, current_count=4)
 
     def test_single_default_allocation(self):
         contacts = ContactsKamino(capacity=0, device=self.default_device, remappable=True)

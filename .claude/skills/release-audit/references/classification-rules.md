@@ -9,11 +9,11 @@ Used to decide whether a symbol is "genuinely new" vs. "pre-existed and got exte
 Newton exposes its public surface through per-topic re-export modules discovered dynamically by `docs/generate_api.py`:
 
 - `api_modules()` imports `newton`, starts with the top-level module, and adds every module-valued name exported through `newton.__all__`.
-- Each discovered module's own `__all__` defines its public symbols; when `__all__` is absent, `public_symbols()` falls back to non-private, non-module attributes.
+- Each discovered module's own `__all__` list or tuple defines its public symbols. `public_symbols()` rejects missing declarations, invalid containers, and non-string entries.
 - `solver_submodule_pages()` adds public solver submodules and recursively exposed module trees under `newton.solvers`.
 - There is no fixed `MODULES` constant. Inspect `docs/generate_api.py`, `newton/__init__.py`, and `newton/solvers.py` at both refs so additions such as a new top-level public module or nested experimental solver namespace are included.
 
-Representative modules include `newton.geometry`, `newton.solvers`, and `newton.viewer`. Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (AGENTS.md: "Examples and docs must not import from `newton._src`").
+Representative modules include `newton.geometry`, `newton.solvers`, and `newton.viewer`. Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (`CODING_GUIDELINES.rst`: examples and docs must not import from `newton._src`).
 
 **To determine if `newton.X` existed at base**:
 - Inspect module-valued exports in `newton.__all__` at base and target using the `api_modules()` rules above.
@@ -22,7 +22,7 @@ Representative modules include `newton.geometry`, `newton.solvers`, and `newton.
 - For nested solver modules: apply `solver_submodule_pages()` reachability rules to `newton.solvers` at the relevant ref.
 - For method additions on an existing class (e.g., `SolverXPBD.update_contacts`): resolve the class's real source file (e.g., `newton/_src/solvers/xpbd.py`) and `ast`-walk it at base.
 
-**Public-API exposure check (Phase 4a addition)**: for every symbol that is genuinely new, verify at HEAD that it is reachable via at least one public module. If the symbol lives only in `newton._src.<path>` and is not re-exported, raise a 🕵️ Private-only flag. Reason: AGENTS.md forbids examples/docs from importing `newton._src`, so a user-facing symbol that is not re-exported is unusable by Newton's own examples and will churn.
+**Public-API declaration and exposure check (Phase 4a addition)**: inspect every discovered public module at HEAD. Its `__all__` must be a list or tuple containing only strings. For every genuinely new symbol, collect all public-module `__all__` declarations that contain it. Zero memberships raise a 🕵️ Private-only flag; one establishes the canonical public import path; more than one raises a duplicate-public-export policy finding listing all paths. Reason: `CODING_GUIDELINES.rst` requires each public symbol to appear in exactly one public module's `__all__` and forbids examples/docs from importing `newton._src`.
 
 ## No kernel-scope builtin registry
 
@@ -75,11 +75,11 @@ Newton's CHANGELOG does NOT use the `**Breaking:**` literal marker. Instead, mig
 - "Reorder `X()` parameters so `a` precedes `b`."
 - "Migrate all Y logic to Z, all Y functions now return ..."
 
-When Phase 4d / 5a encounter these patterns, treat them as migration-required changes (Kind `rename` or `parameter reorder` in the Changes-to-Existing-API table). Check that the entry includes migration guidance (`Use ...`, `in favor of ...`, `prefer ...`). If guidance is missing, raise a 📐 flag in the language review.
+When Phase 4d / 5a encounter these patterns, treat them as migration-required changes (Kind `rename` or `parameter reorder` in the Changes-to-Existing-API table). Check that the entry includes migration guidance (`Use ...`, `in favor of ...`, `prefer ...`). If guidance is missing, raise a ⬆️ flag in the language review.
 
 ## Deprecation policy (Phase 4d)
 
-AGENTS.md: "Breaking changes require a deprecation first." A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
+`CODING_GUIDELINES.rst`: breaking changes require a deprecation first. A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
 
 When Phase 4d cannot find the prior Deprecated entry:
 - Resolve the symbol or legacy behavior in code at the base ref.

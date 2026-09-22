@@ -71,6 +71,7 @@ class ViewerNull(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """
         No-op implementation for logging a mesh.
@@ -91,6 +92,7 @@ class ViewerNull(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -104,6 +106,7 @@ class ViewerNull(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         No-op implementation for logging mesh instances.
@@ -116,6 +119,7 @@ class ViewerNull(ViewerBase):
             colors: Instance colors.
             materials: Instance materials.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
         pass
 

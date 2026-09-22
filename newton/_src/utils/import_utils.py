@@ -3,13 +3,30 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any, Literal
 
+import numpy as np
 import warp as wp
 
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointType
+
+
+def clamp_imported_opacity(value: float, source: str) -> float | None:
+    """Clamp display-only importer data without failing the model import."""
+    opacity = float(value)
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite opacity {opacity!r} from {source}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping opacity {opacity!r} from {source} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
 
 
 def string_to_warp(value: str, warp_dtype: Any, default: Any = None) -> Any:

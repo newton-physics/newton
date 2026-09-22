@@ -99,7 +99,6 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.args = args
         self.viewer = viewer
         self.sim_time = 0.0
@@ -143,8 +142,8 @@ class Example:
             "rigid_compliant_alm": True,
             "friction_epsilon": 0.01,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
             "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.0,
         }
 
         if self.use_coupled:

@@ -936,8 +936,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     x = solver_state_x[thread_offset]
                     z_p = solver_state_z_hat_in[thread_offset]
                     y = x - inv_rho * z_p
-                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
-                        bio = problem_bcio[wid] + local_id - bcgo
+                    is_bounded = nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc
+                    bio = problem_bcio[wid] + local_id - bcgo
+                    if is_bounded:
                         y = wp.clamp(
                             y,
                             problem_bound_lower[bio],
@@ -967,8 +968,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     r_dy_local += r_dy * r_dy
                     r_dz_local += r_dz * r_dz
 
-                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
-                        bio = problem_bcio[wid] + local_id - bcgo
+                    if is_bounded:
                         r_box = compute_box_complementarity_residual(
                             x,
                             z,

@@ -79,8 +79,11 @@ to locate a joint's slice in the per-DOF arrays.
 
 For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
-:attr:`newton.Control.joint_target_q`, and :attr:`newton.Control.joint_target_qd` use
+and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
+:attr:`newton.Control.joint_target_q` keeps that ordering but follows :attr:`newton.State.joint_q`:
+a free joint occupies 7 coordinates ``(position, quaternion)``, not 6 DOFs. It is DOF-shaped like
+the others only under the deprecated layout; see :ref:`joint-target-layout`.
 For public ``FREE`` and ``DISTANCE`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
@@ -152,14 +155,11 @@ position semantically is: the two layouts diverge whenever an articulation conta
 distance joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs), and under the DOF layout
 every actuated DOF downstream of such a joint is indexed with the wrong stride.
 
-New code should opt into the coordinate layout, which will become the only layout in a future
-release:
+The coordinate layout is the default and will become the only layout in a future release:
 
 .. code-block:: python
 
    import newton
-
-   newton.use_coord_layout_targets = True  # set once, before building any model
 
    builder = newton.ModelBuilder()
    # ... build articulation ...
@@ -181,11 +181,11 @@ translation for free joints), matching ``joint_q``. Migration notes coming from 
 - When constructing an :class:`Actuator` with a custom ``pos_indices``, drop the
   ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
 
-The default is still the legacy DOF-shaped layout for backward compatibility with existing Newton
-code, but it is deprecated: building a model whose joint coordinate and DOF counts differ
-(free/ball/distance joints) under ``use_coord_layout_targets = False`` emits a
-:class:`DeprecationWarning` from ``finalize()``. For models without such joints the two layouts
-are identical, so no warning is emitted and the switch is invisible.
+Code that is not migrated yet can restore the legacy DOF-shaped layout with
+``newton.use_coord_layout_targets = False``, set once before building any model. That layout is
+deprecated: building a model whose joint coordinate and DOF counts differ (free/ball/distance
+joints) under it emits a :class:`DeprecationWarning` from ``finalize()``. For models without such
+joints the two layouts are identical, so no warning is emitted and the switch is invisible.
 
 
 ``ModelBuilder``

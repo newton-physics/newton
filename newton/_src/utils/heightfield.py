@@ -368,6 +368,7 @@ def heightfield_vs_convex_midphase(
     hfield_shape: int,
     other_shape: int,
     hfd: HeightfieldData,
+    elevation_data: wp.array[wp.float32],
     shape_transform: wp.array[wp.transform],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -394,6 +395,7 @@ def heightfield_vs_convex_midphase(
         hfield_shape: Index of the heightfield shape.
         other_shape: Index of the convex shape.
         hfd: Heightfield data struct.
+        elevation_data: Concatenated normalized heightfield samples.
         shape_transform: World-space transforms for all shapes.
         shape_collision_aabb_lower: Local-space AABB lower bounds for each
             shape (scale already baked in).
@@ -453,10 +455,23 @@ def heightfield_vs_convex_midphase(
     row_max = wp.min(wp.int32(wp.floor(row_max_f)), hfd.nrow - 2)
 
     cols = hfd.ncol - 1
+    base = hfd.data_offset
+    z_range = hfd.max_z - hfd.min_z
     for r in range(row_min, row_max + 1):
         for c in range(col_min, col_max + 1):
-            for tri_sub in range(2):
-                tri_idx = (r * cols + c) * 2 + tri_sub
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)
+            # A piecewise-linear cell cannot reach above its highest vertex.
+            # The convex AABB already includes margins and contact gaps.
+            h00 = elevation_data[base + r * hfd.ncol + c]
+            h10 = elevation_data[base + r * hfd.ncol + c + 1]
+            h01 = elevation_data[base + (r + 1) * hfd.ncol + c]
+            h11 = elevation_data[base + (r + 1) * hfd.ncol + c + 1]
+            corner_sample = wp.max(wp.max(h00, h10), wp.max(h01, h11))
+            if z_range < 0.0:
+                corner_sample = wp.min(wp.min(h00, h10), wp.min(h01, h11))
+            cell_max_z = hfd.min_z + corner_sample * z_range
+            if aabb_lower[2] <= cell_max_z:
+                for tri_sub in range(2):
+                    tri_idx = (r * cols + c) * 2 + tri_sub
+                    out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                    if out_idx < triangle_pairs.shape[0]:
+                        triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)

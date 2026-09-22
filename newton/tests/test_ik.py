@@ -163,6 +163,25 @@ def _build_descendant_free_distance(device, joint_type) -> tuple[newton.Model, i
     return builder.finalize(device=device, requires_grad=True), child
 
 
+def _build_root_free_distance(device, joint_type) -> tuple[newton.Model, int]:
+    builder = newton.ModelBuilder()
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    builder.body_com[body] = wp.vec3(0.2, -0.1, 0.3)
+    joint = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform(
+            wp.vec3(0.3, -0.4, 0.6),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint])
+    return builder.finalize(device=device, requires_grad=True), body
+
+
 # ----------------------------------------------------------------------------
 # helpers - D6
 # ----------------------------------------------------------------------------
@@ -711,6 +730,54 @@ def test_d6_jacobian_compare(test, device):
     _jacobian_compare(test, device, _d6_objective_builder)
 
 
+def test_free_distance_translated_jacobian_compare(test, device, joint_type, optimizer):
+    """Match analytic and autodiff Jacobians for a translated floating body."""
+    with wp.ScopedDevice(device):
+        translations = (0.0, 1.0, 5.0, 20.0)
+        model, body = _build_root_free_distance(device, joint_type)
+        joint_q = np.zeros((len(translations), model.joint_coord_count), dtype=np.float32)
+        joint_q[:, 0] = translations
+        joint_q[:, 6] = 1.0
+        target_positions = wp.zeros(len(translations), dtype=wp.vec3, device=device)
+
+        solver_auto = ik.IKSolver(
+            model,
+            len(translations),
+            [ik.IKObjectivePosition(body, wp.vec3(), target_positions)],
+            optimizer=optimizer,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
+        )
+        solver_ana = ik.IKSolver(
+            model,
+            len(translations),
+            [ik.IKObjectivePosition(body, wp.vec3(), target_positions)],
+            optimizer=optimizer,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+        q_auto = wp.array(joint_q, device=device, requires_grad=True)
+        q_ana = wp.array(joint_q, device=device)
+
+        solver_auto._impl._compute_residuals(q_auto)
+        solver_ana._impl._compute_residuals(q_ana)
+        if optimizer == ik.IKOptimizer.LM:
+            jacobian_auto = solver_auto._impl._jacobian_at(solver_auto._impl._ctx_solver(q_auto)).numpy()
+            jacobian_ana = solver_ana._impl._jacobian_at(solver_ana._impl._ctx_solver(q_ana)).numpy()
+            for problem_idx, translation in enumerate(translations):
+                with test.subTest(translation=translation):
+                    assert_np_equal(jacobian_auto[problem_idx], jacobian_ana[problem_idx], tol=1e-4)
+        else:
+            gradient_auto = wp.zeros((len(translations), model.joint_dof_count), dtype=wp.float32, device=device)
+            gradient_ana = wp.zeros_like(gradient_auto)
+            solver_auto._impl._gradient_at(solver_auto._impl._ctx_solver(q_auto), gradient_auto)
+            solver_ana._impl._gradient_at(solver_ana._impl._ctx_solver(q_ana), gradient_ana)
+            assert_np_equal(gradient_auto.numpy(), gradient_ana.numpy(), tol=1e-4)
+
+        motion_subspace = solver_ana._impl.joint_S_s.numpy()
+        for problem_idx, translation in enumerate(translations[1:], start=1):
+            with test.subTest(motion_subspace_translation=translation):
+                assert_np_equal(motion_subspace[0], motion_subspace[problem_idx], tol=1e-6)
+
+
 # ----------------------------------------------------------------------------
 # 3.  Test-class registration per device
 # ----------------------------------------------------------------------------
@@ -761,6 +828,16 @@ add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_j
 add_function_test(TestIKModes, "test_rotation_jacobian_compare", test_rotation_jacobian_compare, cuda_devices)
 add_function_test(TestIKModes, "test_joint_limit_jacobian_compare", test_joint_limit_jacobian_compare, devices)
 add_function_test(TestIKModes, "test_d6_jacobian_compare", test_d6_jacobian_compare, cuda_devices)
+for optimizer, optimizer_name in ((ik.IKOptimizer.LM, "lm"), (ik.IKOptimizer.LBFGS, "lbfgs")):
+    for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+        add_function_test(
+            TestIKModes,
+            f"test_translated_{_joint_type_name(joint_type)}_{optimizer_name}_jacobian_compare",
+            test_free_distance_translated_jacobian_compare,
+            devices,
+            joint_type=joint_type,
+            optimizer=optimizer,
+        )
 
 
 if __name__ == "__main__":

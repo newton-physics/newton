@@ -356,6 +356,62 @@ class TestHeightfield(unittest.TestCase):
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts detected between sphere and heightfield")
 
+    def test_heightfield_midphase_culls_cells_below_shape(self):
+        """Do not send locally unreachable heightfield cells to the narrow phase."""
+        elevation = np.zeros((5, 5), dtype=np.float32)
+        elevation[2, 2] = 1.0
+
+        builder = newton.ModelBuilder()
+        heightfield = Heightfield(
+            data=elevation,
+            nrow=5,
+            ncol=5,
+            hx=2.0,
+            hy=2.0,
+            min_z=0.0,
+            max_z=1.0,
+        )
+        builder.add_shape_heightfield(heightfield=heightfield)
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.45), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=1.1)
+
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, max_triangle_pairs=32)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        triangle_count = int(pipeline.narrow_phase.triangle_pairs_count.numpy()[0])
+        self.assertEqual(triangle_count, 8)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    def test_heightfield_midphase_culls_cells_with_decreasing_height_range(self):
+        """Cull cells correctly when normalized height maps to a decreasing range."""
+        elevation = np.ones((5, 5), dtype=np.float32)
+        elevation[2, 2] = 0.0
+
+        builder = newton.ModelBuilder()
+        heightfield = Heightfield(
+            data=elevation,
+            nrow=5,
+            ncol=5,
+            hx=2.0,
+            hy=2.0,
+            min_z=1.0,
+            max_z=0.0,
+        )
+        builder.add_shape_heightfield(heightfield=heightfield)
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.45), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=1.1)
+
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, max_triangle_pairs=32)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        triangle_count = int(pipeline.narrow_phase.triangle_pairs_count.numpy()[0])
+        self.assertEqual(triangle_count, 8)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def _get_contact_kinematics(self, model, state, *, reduce_contacts=True, requires_grad=False):
         """Return contact distances, normals, and heightfield points for a model state."""
         pipeline = newton.CollisionPipeline(

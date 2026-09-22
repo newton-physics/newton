@@ -30,6 +30,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
+from ..utils.mesh import compute_vertex_normals
 
 try:
     from pxr import Gf, UsdGeom
@@ -38,6 +39,8 @@ except ImportError:
 
 from .camera import Camera
 from .picking import Picking
+from .plot_logger import PlotLogger
+from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD, _compute_segment_xform
@@ -141,6 +144,8 @@ class ViewerRTX(ViewerUSD):
         scaling: float = 1.0,
         environment: Literal["default", "studio", "none"] = "default",
         async_rendering: bool = True,
+        *,
+        plot_history_size: int = 250,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
 
@@ -160,7 +165,11 @@ class ViewerRTX(ViewerUSD):
             async_rendering: Submit OVRTX render work asynchronously and
                 present the previous frame while the next one is still in
                 flight.
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
+
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
         # OVRTX 0.3+ ships with namespaced USD builds that should be safe to use in conjunction with
         # `usd-core`, but the check wasn't removed yet. Upcoming OVRTX releases should remove the check,
@@ -189,6 +198,7 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._uses_fractional_opacity = False
         self._transform_binding = None
         self._async = async_rendering
 
@@ -569,6 +579,8 @@ void main() {
         rp.CreateAttribute("omni:rtx:reflections:denoiser:enabled", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
+        if self._uses_fractional_opacity:
+            rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -842,13 +854,13 @@ void main() {
             self.picking.world_offsets = self.world_offsets
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float) -> None:
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None) -> None:
         """Set the camera position, pitch, and yaw.
 
         Args:
             pos: Camera position [m].
-            pitch: Camera pitch [deg].
-            yaw: Camera yaw [deg].
+            pitch: Camera pitch [deg]. If None, the current pitch is kept.
+            yaw: Camera yaw [deg]. If None, the current yaw is kept.
         """
         from pyglet.math import Vec3 as PyVec3
 
@@ -856,8 +868,10 @@ void main() {
             self.camera.pos = PyVec3(float(pos[0]), float(pos[1]), float(pos[2]))
         except (TypeError, IndexError, KeyError):
             pass
-        self.camera.pitch = pitch
-        self.camera.yaw = yaw
+        if pitch is not None:
+            self.camera.pitch = pitch
+        if yaw is not None:
+            self.camera.yaw = yaw
         self._camera_dirty = True
 
     def _ensure_picking_line_primitive(self):
@@ -1417,6 +1431,28 @@ void main() {
             self._update_ovrtx_mesh_points()
             self._render_and_display()
 
+    # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
+    # build phase. RTX fractional opacity is evaluated per ray hit, so the
+    # authored material opacity is lower than the requested object opacity.
+    _PREVIEW_SURFACE_OPACITY_LAYERS = 4.0
+
+    @override
+    def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
+        """Map object opacity to RTX PreviewSurface per-hit opacity."""
+        requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            self._uses_fractional_opacity = True
+        if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
+            return requested_opacity
+        return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
+
+    @override
+    def _preview_surface_ior_value(self, requested_opacity: float) -> float | None:
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            # Avoid the default glass-like IOR so opacity behaves like viewer alpha.
+            return 1.0
+        return None
+
     @override
     def log_mesh(
         self,
@@ -1432,6 +1468,7 @@ void main() {
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1439,7 +1476,8 @@ void main() {
             name: Unique name for the mesh.
             points: Vertex positions [m].
             indices: Triangle indices.
-            normals: Vertex normals.
+            normals: Vertex normals. If omitted, generate normals from the current
+                triangle geometry, matching the USD and OpenGL viewers.
             uvs: Vertex UVs.
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
@@ -1451,6 +1489,7 @@ void main() {
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -1464,6 +1503,7 @@ void main() {
                 texture,
                 hidden,
                 backface_culling,
+                opacity=opacity,
                 color=color,
                 roughness=roughness,
                 metallic=metallic,
@@ -1477,20 +1517,21 @@ void main() {
                 else np.asarray(points, dtype=np.float32)
             )
             self._pending_mesh_points[name] = pts
+            if dynamic or normals is None:
+                indices_np = (
+                    indices.numpy().astype(np.int32)
+                    if isinstance(indices, wp.array)
+                    else np.asarray(indices, dtype=np.int32)
+                )
             if normals is not None:
                 self._pending_mesh_normals[name] = (
                     normals.numpy().astype(np.float32)
                     if isinstance(normals, wp.array)
                     else np.asarray(normals, dtype=np.float32)
                 )
-            elif dynamic:
-                self._pending_mesh_normals[name] = None
+            else:
+                self._pending_mesh_normals[name] = compute_vertex_normals(pts, indices_np)
             if dynamic:
-                indices_np = (
-                    indices.numpy().astype(np.int32)
-                    if isinstance(indices, wp.array)
-                    else np.asarray(indices, dtype=np.int32)
-                )
                 face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
                 self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
             self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
@@ -1505,6 +1546,7 @@ void main() {
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ) -> None:
         """Log a batch of mesh instances for rendering.
 
@@ -1516,12 +1558,22 @@ void main() {
             colors: Array of colors.
             materials: Array of materials.
             hidden: Whether the instances are hidden.
+            opacities: Optional per-instance opacity values.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
 
         if self._phase == self._PHASE_BUILD:
-            super().log_instances(name, mesh, xforms, scales, colors, materials, hidden)
+            super().log_instances(
+                name,
+                mesh,
+                xforms,
+                scales,
+                colors,
+                materials,
+                opacities=opacities,
+                hidden=hidden,
+            )
             if xforms is not None:
                 count = len(xforms)
                 paths = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
@@ -1765,8 +1817,7 @@ void main() {
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                normals_values = np.empty((0, 3), dtype=np.float32) if normals_np is None else normals_np
-                dl = self._make_point3f_dltensor(normals_values)
+                dl = self._make_point3f_dltensor(normals_np)
                 self._rtx.write_array_attribute(
                     prim_paths=[prim_path],
                     attribute_name="normals",
@@ -2037,6 +2088,47 @@ void main() {
     # ----------------------------------------------------------- viewer API
 
     @override
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray | None):
+        """
+        Log a numeric array as a live heatmap.
+
+        Scalars appear as a single cell, 1-D arrays as a single row, and
+        2-D arrays as a grid. Higher-dimensional arrays are not supported.
+
+        Args:
+            name: Unique path/name for the array signal.
+            array: Array data to visualize, or ``None`` to remove a previously
+                logged array.
+        """
+        self._plot_logger.log_array(self._qualify(name), array)
+
+    @override
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
+        """
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate line plot displayed in an
+        auto-generated "Plots" window.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
+        """
+        self._plot_logger.log_scalar(self._qualify(name), value, clear=clear, smoothing=smoothing)
+
+    @override
     def clear_all_layers(self) -> None:
         """Reset the RTX viewer as one complete layered scene."""
         for layer_id in [lid for lid in self._layers if lid != _DEFAULT_LAYER_ID]:
@@ -2058,6 +2150,9 @@ void main() {
                 "ViewerRTX cannot clear one layer while other user layers are still live; "
                 "create a new ViewerRTX for a different layered scene."
             )
+
+        if getattr(self, "_plot_logger", None) is not None:
+            self._plot_logger.clear_matching(self._is_layer_owned_path)
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -2249,6 +2344,9 @@ void main() {
 
         # release ovrtx renderer
         self._rtx = None
+
+        if getattr(self, "_plot_logger", None) is not None:
+            self._plot_logger.clear()
 
         if self.ui:
             self.ui.shutdown()

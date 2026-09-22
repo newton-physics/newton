@@ -44,6 +44,7 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+PULLEY_OPACITY = 0.55
 CONTACT_KE = 1.0e6
 
 
@@ -236,6 +237,7 @@ def add_pulley(
             half_height=half_height,
             cfg=cfg,
             color=shape_color,
+            opacity=PULLEY_OPACITY,
             label=f"{label}_{suffix}" if label else None,
         )
 
@@ -420,7 +422,6 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # Store viewer and configure simulation cadence.
         self.viewer = viewer
 
@@ -677,13 +678,15 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
+        cable_rod = newton.Rod(cable_points)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in cable_rod.quaternions]
         cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.rod_straight_points_and_quaternions(
+        straight_rod = newton.Rod.create_straight(
             start=left_anchor_world,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=cable_segment_count * cable_segment_length,
-            num_segments=cable_segment_count,
+            segment_count=cable_segment_count,
+            radius=cable_radius,
         )
 
         cable_cfg = builder.default_shape_cfg.copy()
@@ -691,9 +694,7 @@ class Example:
         cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
-            positions=straight_cable_points,
-            quaternions=straight_cable_quats,
-            radius=cable_radius,
+            rod=straight_rod,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,

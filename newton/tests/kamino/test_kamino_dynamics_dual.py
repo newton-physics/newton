@@ -10,13 +10,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
-from newton._src.solvers.kamino._src.models.builders.basics import make_basics_heterogeneous_builder
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.print import print_model_info
+from newton.tests.utils.basics import make_basics_heterogeneous_builder
 
 ###
 # Tests
@@ -42,10 +43,11 @@ class TestDualProblem(unittest.TestCase):
 
         # Construct the model description using model builders for different systems
         builder = make_basics_heterogeneous_builder()
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Create the model and containers from the builder
         model, data, _state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Create the Delassus operator
@@ -112,11 +114,12 @@ class TestDualProblem(unittest.TestCase):
 
         # Construct the model description using model builders for different systems
         builder = make_basics_heterogeneous_builder()
-        num_worlds = builder.num_worlds
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        num_worlds = model.info.num_worlds
 
         # Create the model and containers from the builder
         model, data, state, limits, detector, jacobians = make_containers(
-            builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
+            model=model, max_world_contacts=max_world_contacts
         )
 
         # Update the containers

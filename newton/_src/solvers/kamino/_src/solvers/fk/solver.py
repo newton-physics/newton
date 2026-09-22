@@ -90,7 +90,11 @@ wp.set_module_options({"enable_backward": False})
 
 class ForwardKinematicsSolver:
     """
-    Forward Kinematics solver class
+    Forward Kinematics solver class.
+
+    FK requires every joint to be either fully passive or fully actuated.
+    Dynamics supports per-DoF actuation, but mixed passive and actuated DoFs
+    within one joint are not yet supported by FK.
     """
 
     PreconditionerType = ForwardKinematicsPreconditionerType
@@ -213,6 +217,19 @@ class ForwardKinematicsSolver:
                 device=self.device,
             )
         joints_act_type_prev = resolved_act_type.numpy()
+        joint_dof_start = self.model.joints.dofs_offset.numpy()
+        joint_dof_act_types = self.model.joints.dof_act_types.numpy()
+        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
+        base_joint_id_set = {joint_id for joint_id in base_joint_ids_input if joint_id >= 0}
+        for joint in range(self.model.size.sum_of_num_joints):
+            if joint in base_joint_id_set:
+                continue
+            dof_actuation = joint_dof_act_types[joint_dof_start[joint] : joint_dof_start[joint + 1]]
+            passive = dof_actuation == JointActuationType.PASSIVE
+            if np.any(passive) and not np.all(passive):
+                raise ValueError(
+                    f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
+                )
         # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
         # validation for an explicit base joint that FK replaces.
         built_fk_actuated = (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)
@@ -261,7 +278,6 @@ class ForwardKinematicsSolver:
         actuated_coords_map = []  # Map of new actuated coordinates to these in the model or to the base coordinates
         actuated_dofs_map = []  # Map of new actuated dofs to these in the model or to the base dofs
         base_joint_ids = self.num_worlds * [-1]  # Base joint id per world
-        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
         base_body_ids_input = self.model.info.base_body_index.numpy().tolist()
         for base_joint_id in base_joint_ids_input:
             if base_joint_id >= 0:
