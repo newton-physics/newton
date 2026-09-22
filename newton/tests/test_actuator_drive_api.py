@@ -127,15 +127,15 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertIs(drive.seen_custom_inputs["custom_control_input"], control_input)
         self.assertIsNone(drive.seen_custom_inputs["missing_control_input"])
 
-    def test_actuator_registers_inputs_declared_by_all_components(self):
-        """Collect compatible custom Control declarations from every component."""
+    def test_actuator_registers_drive_inputs_only(self):
+        """Ignore undeclared input conventions on delay and clamping components."""
         drive = actuators.DrivePD(
             kp=wp.array([0.0], dtype=wp.float32),
             kd=wp.array([0.0], dtype=wp.float32),
         )
-        drive.custom_inputs = ("drive_input", "shared_input")
+        drive.custom_inputs = ("drive_input",)
         delay = actuators.Delay(delay_steps=wp.array([0], dtype=wp.int32), max_delay=1)
-        delay.custom_inputs = ("delay_input", "shared_input")
+        delay.custom_inputs = ("delay_input",)
         clamping = actuators.ClampingMaxEffort(max_effort=wp.array([1.0], dtype=wp.float32))
         clamping.custom_inputs = ("clamping_input",)
         actuator = actuators.Actuator(
@@ -149,13 +149,17 @@ class TestActuatorDriveAPI(unittest.TestCase):
         actuator.register_custom_attributes(builder)
         actuator.register_custom_attributes(builder)
 
-        expected = {"drive_input", "delay_input", "clamping_input", "shared_input"}
-        self.assertTrue(expected.issubset(builder.custom_attributes))
-        for name in expected:
-            declaration = builder.custom_attributes[name]
-            self.assertEqual(declaration.dtype, wp.float32)
-            self.assertEqual(declaration.frequency, newton.Model.AttributeFrequency.JOINT_DOF)
-            self.assertEqual(declaration.assignment, newton.Model.AttributeAssignment.CONTROL)
+        self.assertIn("drive_input", builder.custom_attributes)
+        self.assertNotIn("delay_input", builder.custom_attributes)
+        self.assertNotIn("clamping_input", builder.custom_attributes)
+        sim_control = actuator.sim_control()
+        self.assertTrue(hasattr(sim_control, "drive_input"))
+        self.assertFalse(hasattr(sim_control, "delay_input"))
+        self.assertFalse(hasattr(sim_control, "clamping_input"))
+        declaration = builder.custom_attributes["drive_input"]
+        self.assertEqual(declaration.dtype, wp.float32)
+        self.assertEqual(declaration.frequency, newton.Model.AttributeFrequency.JOINT_DOF)
+        self.assertEqual(declaration.assignment, newton.Model.AttributeAssignment.CONTROL)
 
     def test_builder_registers_declared_inputs_on_control(self):
         """Register actuator inputs on Control during model finalization."""

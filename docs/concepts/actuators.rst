@@ -274,11 +274,11 @@ does not look for custom values on a simulation state or control object.
 
 For actuators created by :class:`~newton.ModelBuilder`,
 :meth:`Actuator.register_custom_attributes` automatically registers every
-declared name as a ``wp.float32`` joint-DOF array on :class:`~newton.Control`.
-Registration allocates the array but does not populate or clear it. Write every
-declared value before each actuator evaluation to avoid reusing stale data.
-Users of another simulation engine provide the same-named arrays through their
-``sim_control`` adapter instead.
+name declared by the drive as a ``wp.float32`` joint-DOF array on
+:class:`~newton.Control`. Registration allocates the array but does not
+populate or clear it. Write every declared value before each actuator
+evaluation to avoid reusing stale data. Users of another simulation engine
+provide the same-named arrays through their ``sim_control`` adapter instead.
 
 :meth:`Actuator.sim_state` returns an empty container with exactly the fields
 the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its

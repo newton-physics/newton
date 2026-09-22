@@ -435,13 +435,14 @@ class Actuator:
         return _input_container_class("sim_control", fields)()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register component inputs as custom Newton Control attributes.
+        """Register drive inputs as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
-        finalizing its actuators. Every declared input is registered as a
-        ``wp.float32`` joint-DOF array on :class:`~newton.Control`. Registration
-        allocates the arrays but does not populate or clear them; the caller
-        must update their values before each actuator evaluation.
+        finalizing its actuators. Every input declared by the drive is
+        registered as a ``wp.float32`` joint-DOF array on
+        :class:`~newton.Control`. Registration allocates the arrays but does
+        not populate or clear them; the caller must update their values before
+        each actuator evaluation.
 
         This method is a Newton convenience. Other simulation engines should
         provide arrays with the same names through their ``sim_control``
@@ -452,7 +453,7 @@ class Actuator:
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        for name in self._custom_inputs:
+        for name in self.drive.custom_inputs:
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
@@ -546,22 +547,10 @@ class Actuator:
         )
 
     @property
-    def _custom_inputs(self) -> tuple[str, ...]:
-        """Return the deduplicated custom inputs declared by all components."""
-        components = (self.drive, self.delay, *self.clamping)
-        names = (
-            name
-            for component in components
-            if component is not None
-            for name in getattr(component, "custom_inputs", ())
-        )
-        return tuple(dict.fromkeys(names))
-
-    @property
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
         """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
 
-        Covers the standard arrays and the components' custom inputs.
+        Covers the standard arrays and the drive's custom inputs.
         """
         state_attrs = [self.state_pos_attr, self.state_vel_attr]
         control_attrs = [
@@ -573,7 +562,7 @@ class Actuator:
         ]
         required = {
             "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None] + list(self._custom_inputs),
+            "sim_control": [a for a in control_attrs if a is not None] + list(self.drive.custom_inputs),
         }
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
@@ -606,7 +595,7 @@ class Actuator:
                 :attr:`state_pos_attr` and :attr:`state_vel_attr`. Build one
                 with :meth:`sim_state`.
             sim_control: Object or mapping carrying the target and output
-                arrays, plus the actuator components' custom inputs. Build one
+                arrays, plus the drive's custom inputs. Build one
                 with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
