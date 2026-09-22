@@ -536,7 +536,7 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> int:
         """Add a model-level rigid-body-to-particle attachment.
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.7
             Use :meth:`newton.ModelBuilder.add_attachment_body_particle` instead. Attachments
             authored there are applied inside :class:`~newton.solvers.SolverVBD` when one entry
             owns both endpoints, and coupled by ADMM when the endpoints span two entries.
