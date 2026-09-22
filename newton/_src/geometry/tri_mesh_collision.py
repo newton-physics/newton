@@ -48,10 +48,12 @@ class TriMeshCollisionInfo:
     contacting vertex index per entry. ``*_offsets`` are real prefix sums and
     ``*_count`` equals each row's length. Detection appends hits to one
     internal global scratch buffer per family (sized budget x element count,
-    shared by all elements), so memory scales with the total contact count and
-    a locally dense fold cannot overflow a private per-element budget; rows
-    are rebuilt from that
-    pool after each detection. The vertex and edge rows come out in
+    shared by all elements): capacity follows total demand across the mesh
+    (the budget is a per-element average, grown on demand) and a locally
+    dense fold cannot overflow a private per-element budget. The backing
+    allocation keeps an element-proportional floor of budget x element count
+    rather than scaling with the live contact count itself. Rows are rebuilt
+    from that pool after each detection. The vertex and edge rows come out in
     BVH-traversal order per element and, absent overflow, are deterministic
     run to run (under overflow, which records won a pool slot is an
     inter-thread race; each such row keeps a prefix of its traversal order,
