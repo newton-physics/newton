@@ -120,6 +120,45 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.viewer.log_points("/points", points, radii=0.2)
         self.assertIn("/points", self.viewer._pending_point_batches)
 
+    def test_point_resize_reuses_per_point_colors(self):
+        """Resize a runtime point batch without requiring colors to be resent."""
+        points = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.vec3, device="cpu")
+        colors = wp.array([[1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device="cpu")
+        self.viewer.log_points("/points", points, colors=colors)
+
+        resized_points = wp.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=wp.vec3, device="cpu")
+        self.viewer.log_points("/points", resized_points)
+        self.viewer._update_ovrtx_point_batches()
+
+        self.assertEqual(self.viewer._point_batch_synced_counts["/points"], 3)
+        np.testing.assert_allclose(
+            self.viewer._point_batch_colors["/points"],
+            [[1, 0, 0], [0, 1, 0], [0, 1, 0]],
+        )
+
+    def test_hidden_point_updates_preserve_appearance(self):
+        """Apply hidden point appearance updates before revealing the batch."""
+        points = wp.array([[0, 0, 0]], dtype=wp.vec3, device="cpu")
+        self.viewer.log_points("/points", points, radii=0.1, colors=(1.0, 0.0, 0.0))
+
+        self.viewer.log_points("/points", points, radii=0.2, colors=(0.0, 1.0, 0.0), hidden=True)
+        self.viewer._update_ovrtx_point_batches()
+
+        np.testing.assert_allclose(self.viewer._point_batch_colors["/points"], [[0.0, 1.0, 0.0]])
+        scales_call = next(
+            call for call in self.viewer._rtx.write_array_attribute.call_args_list if call.args[1] == "scales"
+        )
+        np.testing.assert_allclose(scales_call.args[2][0], [[0.2, 0.2, 0.2]])
+
+        self.viewer._rtx.write_attribute.reset_mock()
+        self.viewer.log_points("/points", points)
+        self.viewer._update_ovrtx_point_batches()
+        self.viewer._rtx.write_attribute.assert_called_once_with(
+            prim_paths=[self.viewer._point_batch_paths["/points"]],
+            attribute_name="visibility",
+            tensor=["inherited"],
+        )
+
     def test_replace_build_batch_and_reset_render_history(self):
         """Replace an initial batch without colliding with its prims or retaining old samples."""
         self.viewer._phase = ViewerRTX._PHASE_BUILD

@@ -1899,7 +1899,7 @@ void main() {
                     tensor=["inherited" if not hidden and count > 0 else "invisible"],
                 )
 
-                if hidden or count == 0:
+                if count == 0:
                     continue
 
                 # Sentinel default ensures the first sync for a batch always
@@ -1911,7 +1911,16 @@ void main() {
                     self._write_ovrtx_array_attribute(prim_path, "positions", positions)
                     continue
 
-                point_colors = colors if colors is not None else self._point_batch_colors.get(name)
+                point_colors = colors
+                if point_colors is None:
+                    point_colors = self._point_batch_colors.get(name)
+                    if point_colors is not None and len(point_colors) not in (1, count):
+                        # Preserve colors for existing points by index. New points
+                        # inherit the final cached color until callers provide an
+                        # updated per-point array.
+                        retained_colors = point_colors[:count]
+                        added_colors = np.repeat(point_colors[-1:], max(0, count - len(point_colors)), axis=0)
+                        point_colors = np.concatenate((retained_colors, added_colors))
                 positions, scales, proto_indices, ids, colors_np, color_indices = self._build_point_batch_arrays(
                     points, radii, point_colors
                 )
