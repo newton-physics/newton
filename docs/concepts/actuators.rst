@@ -265,10 +265,13 @@ arrays in :attr:`DriveBase.custom_inputs`, as ``(source, attribute)`` pairs.
 :meth:`Actuator.step` argument carries the array; *attribute* is the name it is
 read under.
 
-The array must have the same joint-DOF layout and length as ``state.joint_qd``,
-and is gathered with the actuator's velocity indices. A name that is missing, or a
-value that is not a Warp array or is the wrong length, raises
-:class:`ValueError` during the step.
+Each value must be a Warp array whose length matches the velocity array in
+``sim_state``. :class:`Actuator` validates the declaration and passes the array
+unchanged to :meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed
+by attribute name. The drive decides how to interpret and index the array and
+may impose additional dtype, device, shape, or semantic requirements. A
+missing name, non-Warp value, or wrong length raises :class:`ValueError` during
+the step.
 
 :meth:`Actuator.sim_state` returns an empty container with exactly the fields
 the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its
@@ -527,7 +530,7 @@ For example, a custom drive needs to implement
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None):
+                   forces, state, dt, device=None, custom_inputs=None):
            # Launch a Warp kernel that writes effort into `forces`
            ...
 
@@ -541,28 +544,9 @@ default :meth:`Actuator.State.assign` behavior copies direct Warp array and
 Torch tensor fields without replacing their storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
 
-A drive can declare additional same-named attributes to bind from the objects
-passed to :meth:`Actuator.step` through
-:attr:`~DriveBase.custom_state_attributes` and
-:attr:`~DriveBase.custom_control_attributes`:
-
-.. code-block:: python
-
-   class MyDrive(DriveBase):
-       custom_state_attributes = ("estimated_load",)
-       custom_control_attributes = ("motor_temperature",)
-
-       def compute(self, ...):
-           # Bound immediately before this evaluation.
-           estimated_load = self.estimated_load
-           motor_temperature = self.motor_temperature
-
-The declarations are public so direct users can inspect which additional
-attributes a drive expects. :class:`Actuator` only binds the values; the drive
-is responsible for deciding whether an input is required and for validating
-its type, shape, device, and meaning. Missing attributes are bound as ``None``.
-When using :class:`~newton.ModelBuilder`, register any required custom State or
-Control arrays with the builder so they are allocated on the finalized model.
+A drive that needs additional per-step arrays declares them through
+:attr:`DriveBase.custom_inputs`. They arrive in the ``custom_inputs`` argument
+to :meth:`~DriveBase.compute`; see :ref:`custom-drive-inputs`.
 
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve
