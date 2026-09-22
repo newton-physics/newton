@@ -25,7 +25,9 @@ from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlock
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    _find_bilateral_factor_row_start,
     _initialize_dvi_status,
+    _solve_bilateral_unilateral_response_cooperative,
     _solve_dvi_inequalities_colored_pgs,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.projections import (
@@ -38,6 +40,8 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
     _sparse_delassus_matvec_rows,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+    _assemble_compact_unilateral_schur,
+    _assemble_compact_unilateral_schur_tiled,
     _color_mapped_dvi_inequalities,
     _map_bounded_constraints,
     _map_ordered_active_contacts,
@@ -358,7 +362,7 @@ class TestDVISolver(unittest.TestCase):
             bilateral_solver=object(),
             use_schur_complement=True,
             size=SimpleNamespace(
-                max_of_num_bilateral_joint_cts=64,
+                max_of_num_bilateral_joint_cts=32,
                 max_of_num_bounded_joint_cts=43,
             ),
         )
@@ -1784,8 +1788,9 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(inequality_bodies.numpy(), [[-1, 0], [2, 1]])
 
     def test_03i_dvi_coldstart_is_repeatable(self):
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        """Repeat cold starts without clearing overwritten Schur workspace."""
+        for sparse, schur in ((False, False), (True, False), (True, True)):
+            with self.subTest(sparse=sparse, schur=schur):
                 test = TestSetup(
                     builder_fn=basics.build_boxes_hinged,
                     max_world_contacts=8,
@@ -1800,6 +1805,7 @@ class TestDVISolver(unittest.TestCase):
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
                 ).dvi
+                config.use_schur_complement = schur
                 solver = _solve_dvi(test.model, test.problem, config=config, setup=test)
                 first_lambdas = solver.data.solution.lambdas.numpy().copy()
                 first_v_plus = solver.data.solution.v_plus.numpy().copy()
@@ -1807,7 +1813,20 @@ class TestDVISolver(unittest.TestCase):
 
                 test.build()
                 solver.reset()
+                response_arrays = ()
+                if schur:
+                    state = solver.data.state
+                    response_arrays = (
+                        state.bilateral_coupling,
+                        state.bilateral_response_factor,
+                        state.bilateral_response,
+                    )
+                    for array in response_arrays:
+                        np.testing.assert_array_equal(array.numpy(), 0.0)
+                        array.fill_(float("nan"))
                 solver.coldstart()
+                for array in response_arrays:
+                    self.assertTrue(np.isnan(array.numpy()).all())
                 solver.solve(test.problem)
 
                 np.testing.assert_allclose(solver.data.solution.lambdas.numpy(), first_lambdas, rtol=0.0, atol=1e-6)
@@ -3206,6 +3225,242 @@ class TestDVISolver(unittest.TestCase):
         x = np.arange(z.size, dtype=np.float64)
         residual = z - np.polyval(np.polyfit(x, z, 1), x)
         self.assertLess(float(np.max(residual) - np.min(residual)), 0.001)
+
+    def test_compact_schur_reference_padded_stride(self):
+        """Pack reference Schur output independently of padded input strides."""
+        njc, nu, stride, offset = 3, 2, 4, 3
+        coupling = np.arange(1, njc * nu + 1, dtype=np.float32).reshape(njc, nu)
+        lower = np.diag(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        white = np.linalg.solve(lower, coupling)
+        full = np.linalg.solve(lower.T, white)
+        capacity = offset + njc * stride + 2
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        padded_coupling = np.zeros(capacity, dtype=np.float32)
+        padded_coupling[offset : offset + njc * stride] = np.pad(coupling, ((0, 0), (0, stride - nu))).ravel()
+        for use_forward_schur in (False, True):
+            with self.subTest(use_forward_schur=use_forward_schur):
+                response = np.zeros(capacity, dtype=np.float32)
+                if use_forward_schur:
+                    response[offset : offset + njc * nu] = white.T.ravel()
+                else:
+                    response[offset : offset + njc * stride] = np.pad(full, ((0, 0), (0, stride - nu))).ravel()
+                schur = wp.full(capacity, -123.0, dtype=wp.float32, device=self.device)
+                correction = wp.full(njc + nu, 99.0, dtype=wp.float32, device=self.device)
+                wp.launch(
+                    _assemble_compact_unilateral_schur,
+                    dim=256,
+                    inputs=[
+                        i32([njc + nu]),
+                        i32([njc]),
+                        i32([0]),
+                        i32([offset]),
+                        i32([stride]),
+                        wp.array(padded_coupling, dtype=wp.float32, device=self.device),
+                        wp.array(response, dtype=wp.float32, device=self.device),
+                        schur,
+                        correction,
+                        use_forward_schur,
+                        256,
+                    ],
+                    block_dim=256,
+                    device=self.device,
+                )
+                expected = np.full(capacity, -123.0, dtype=np.float32)
+                expected[offset : offset + nu * nu] = (coupling.T @ full).T.ravel()
+                np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-6, rtol=1.0e-6)
+                np.testing.assert_array_equal(correction.numpy(), [99.0] * njc + [0.0] * nu)
+
+    def test_compact_schur_uses_response_capacity(self):
+        """Pack Schur matrices into spare response capacity without crossing world bounds."""
+        if not self.device.is_cuda:
+            self.skipTest("Tiled Schur construction requires CUDA")
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        white = np.arange(6, dtype=np.float32).reshape(3, 2) * 0.1
+        response = wp.array(np.pad(white.ravel(), (0, 14)), dtype=wp.float32, device=self.device)
+        schur = wp.full(20, -123.0, dtype=wp.float32, device=self.device)
+        correction = wp.full(11, 99.0, dtype=wp.float32, device=self.device)
+        wp.launch(
+            _assemble_compact_unilateral_schur_tiled,
+            dim=(3, 16, 128),
+            inputs=[
+                i32([5, 6, 0]),
+                i32([2, 2, 0]),
+                i32([0, 5, 11]),
+                i32([0, 10, 20]),
+                i32([5, 5, 0]),
+                response,
+                schur,
+                correction,
+            ],
+            block_dim=128,
+            device=self.device,
+        )
+        expected = np.full(20, -123.0, dtype=np.float32)
+        expected[:9] = (white @ white.T).ravel()
+        np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-7, rtol=1.0e-6)
+        expected_correction = np.full(11, 99.0, dtype=np.float32)
+        expected_correction[2:5] = 0.0
+        np.testing.assert_array_equal(correction.numpy(), expected_correction)
+
+    def test_forward_schur_matches_direct_elimination(self):
+        """Match direct elimination with ragged worlds, scaling, and permutation."""
+        if not self.device.is_cuda:
+            self.skipTest("Cooperative response construction requires CUDA")
+        rng = np.random.default_rng(42)
+        joint_counts = [33, 0, 97, 2, 5]
+        unilateral_counts = [5, 0, 35, 3, 7]
+        response_strides = [5, 0, 35, 3, 10]
+        totals = np.array(joint_counts) + unilateral_counts
+        problem_offsets = np.cumsum(np.concatenate(([0], totals[:-1])))
+        matrix_offsets, vector_offsets, response_offsets = [], [], []
+        factors, scaling, permutations, couplings = [], [], [], []
+        expected = []
+        for n, nu, stride in zip(joint_counts, unilateral_counts, response_strides, strict=True):
+            matrix_offsets.append(len(factors))
+            vector_offsets.append(len(scaling))
+            response_offsets.append(len(couplings))
+            lower = np.tril(rng.normal(0.0, 0.05, (n, n))) + np.eye(n)
+            lower[np.tril_indices(n, -12)] = 0.0
+            scale = rng.uniform(0.5, 1.5, n)
+            permutation = rng.permutation(n)
+            coupling = rng.normal(size=(n, nu))
+            coupling[permutation[: n // 2]] = 0.0
+            if nu:
+                coupling[:, -1] = 0.0
+            # Compare the exact float32 inputs against float64 reference solves.
+            lower, scale, coupling = [a.astype(np.float32) for a in (lower, scale, coupling)]
+            white = np.linalg.solve(lower.astype(np.float64), (scale[:, None] * coupling)[permutation])
+            response = np.empty_like(white)
+            response[permutation] = np.linalg.solve(lower.T.astype(np.float64), white)
+            response *= scale[:, None]
+            expected.append((white, coupling.T @ response, response))
+            factors.extend(lower.ravel())
+            scaling.extend(scale)
+            permutations.extend(permutation)
+            couplings.extend(np.pad(coupling, ((0, 0), (0, stride - nu))).ravel())
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        def f32(values):
+            return wp.array(values, dtype=wp.float32, device=self.device)
+
+        dims = i32(np.array(joint_counts) + unilateral_counts)
+        joints = i32(joint_counts)
+        offsets = i32(response_offsets)
+        strides = i32(response_strides)
+        coupling = f32(couplings)
+        workspace = wp.zeros(len(couplings), dtype=wp.float32, device=self.device)
+        response = wp.zeros_like(workspace)
+        row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
+        wp.launch(
+            _find_bilateral_factor_row_start,
+            dim=(5, max(joint_counts)),
+            inputs=[joints, i32(matrix_offsets), i32(vector_offsets), f32(factors), row_start],
+            device=self.device,
+        )
+        expected_starts = []
+        for n, offset in zip(joint_counts, matrix_offsets, strict=True):
+            lower = np.array(factors[offset : offset + n * n]).reshape(n, n)
+            expected_starts.extend(int(np.flatnonzero(lower[row])[0]) // 16 * 16 for row in range(n))
+        np.testing.assert_array_equal(row_start.numpy(), expected_starts)
+        solve_response = wp.launch(
+            _solve_bilateral_unilateral_response_cooperative,
+            dim=5 * 18 * 32,
+            inputs=[
+                dims,
+                joints,
+                i32(matrix_offsets),
+                i32(vector_offsets),
+                f32(scaling),
+                f32(factors),
+                i32(permutations),
+                True,
+                offsets,
+                strides,
+                coupling,
+                workspace,
+                response,
+                0,
+                18,
+                True,
+                row_start,
+            ],
+            block_dim=128,
+            device=self.device,
+            record_cmd=True,
+        )
+        solve_response.launch()
+        actual_response = response.numpy()
+        row_start.zero_()
+        solve_response.launch()
+        np.testing.assert_array_equal(response.numpy(), actual_response)
+        wp.launch(
+            _assemble_compact_unilateral_schur,
+            dim=5 * 256,
+            inputs=[
+                dims,
+                joints,
+                i32(problem_offsets),
+                offsets,
+                strides,
+                coupling,
+                response,
+                workspace,
+                wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
+                True,
+                256,
+            ],
+            block_dim=256,
+            device=self.device,
+        )
+        actual_schur = workspace.numpy()
+        workspace.fill_(float("nan"))
+        wp.launch(
+            _assemble_compact_unilateral_schur_tiled,
+            dim=(5, 16, 128),
+            inputs=[
+                dims,
+                joints,
+                i32(problem_offsets),
+                offsets,
+                strides,
+                response,
+                workspace,
+                wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
+            ],
+            block_dim=128,
+            device=self.device,
+        )
+        tiled_schur = workspace.numpy()
+        for n, nu, stride, offset, reference in zip(
+            joint_counts, unilateral_counts, response_strides, response_offsets, expected, strict=True
+        ):
+            white, schur, full = reference
+            if nu * nu <= n * stride:
+                np.testing.assert_allclose(
+                    actual_response[offset : offset + n * nu].reshape(nu, n).T, white, atol=2.0e-6, rtol=2.0e-6
+                )
+                if nu <= n:
+                    np.testing.assert_allclose(
+                        actual_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
+                    )
+                np.testing.assert_allclose(
+                    tiled_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
+                )
+            else:
+                np.testing.assert_allclose(
+                    actual_response[offset : offset + n * stride].reshape(n, stride)[:, :nu],
+                    full,
+                    atol=2.0e-6,
+                    rtol=2.0e-6,
+                )
 
 
 if __name__ == "__main__":

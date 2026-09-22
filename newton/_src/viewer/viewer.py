@@ -2259,7 +2259,8 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        geometry_hash = hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        source_hash = geo_src._get_render_hash() if isinstance(geo_src, newton.Mesh) else geo_src
+        geometry_hash = hash((int(geo_type), source_hash, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
         if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
             geometry_hash = hash((geometry_hash, geo_src.texture_transform))
         return geometry_hash
