@@ -154,18 +154,13 @@ def _require_array(source: Any, name: str) -> Any:
     return value
 
 
-def _select_custom_inputs(
+def _collect_custom_inputs(
     owner: str,
     sim_state: Any,
     sim_control: Any,
     declared: tuple[tuple[str, str], ...],
-    length: int,
 ) -> dict[str, Any]:
-    """Read the ``(source, attribute)`` pairs in *declared*, keyed by attribute.
-
-    Raises:
-        ValueError: An array is missing or is not a Warp array.
-    """
+    """Read declared values without validating them, keyed by attribute."""
     if not declared:
         return {}
 
@@ -174,19 +169,7 @@ def _select_custom_inputs(
     for source, attribute in declared:
         if source not in objects:
             raise ValueError(f"{owner} declared the input source '{source}'; expected 'sim_state' or 'sim_control'.")
-        value = _get_attribute(objects[source], attribute, None)
-        if value is None:
-            raise ValueError(
-                f"{owner} requires the array '{attribute}', but {source} does not provide it. "
-                f"Pass a {source} of your own that carries '{attribute}' alongside the usual arrays."
-            )
-        if not isinstance(value, (wp.array, wp.indexedarray, wp.fabricarray)):
-            raise ValueError(f"{owner} input '{source}.{attribute}' must be a wp.array; got {type(value).__name__}.")
-        if len(value) != length:
-            raise ValueError(
-                f"{owner} input '{source}.{attribute}' has length {len(value)}; expected {length}, matching '{source}'."
-            )
-        selected[attribute] = value
+        selected[attribute] = _get_attribute(objects[source], attribute, None)
     return selected
 
 
@@ -560,13 +543,7 @@ class Actuator:
             "sim_control": [a for a in control_attrs if a is not None],
         }
         for source, attribute in self.drive.custom_inputs:
-            names = required.setdefault(source, [])
-            if attribute in names:
-                raise ValueError(
-                    f"{type(self.drive).__name__} custom input '{attribute}' collides with an array the "
-                    f"actuator already reads from {source}."
-                )
-            names.append(attribute)
+            required.setdefault(source, []).append(attribute)
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
     def step(
@@ -649,8 +626,8 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        custom_inputs = _select_custom_inputs(
-            type(self.drive).__name__, sim_state, sim_control, self.drive.custom_inputs, len(velocities)
+        custom_inputs = _collect_custom_inputs(
+            type(self.drive).__name__, sim_state, sim_control, self.drive.custom_inputs
         )
         output_forces = self._effort_mode.compute_force(
             sim_state,

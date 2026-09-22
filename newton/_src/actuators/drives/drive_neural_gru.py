@@ -783,6 +783,16 @@ class DriveNeuralGRU(DriveBase):
                     f"DriveNeuralGRU input_columns includes '{name}', but no array was supplied. Pass a "
                     f"sim_state carrying '{name}' with shape (model.joint_dof_count,)."
                 )
+            if not isinstance(custom_input, (wp.array, wp.indexedarray, wp.fabricarray)):
+                raise ValueError(
+                    f"DriveNeuralGRU custom input 'sim_state.{name}' must be a Warp array; "
+                    f"got {type(custom_input).__name__}."
+                )
+            if len(custom_input) != len(velocities):
+                raise ValueError(
+                    f"DriveNeuralGRU custom input 'sim_state.{name}' has length {len(custom_input)}; "
+                    f"expected {len(velocities)}."
+                )
         if state is None or state.hidden is None:
             raise ValueError("DriveNeuralGRU requires a current drive state with hidden data")
 

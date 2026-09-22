@@ -58,7 +58,9 @@ class DriveBase:
     :meth:`Actuator.step` argument carries the array; *attribute* is the name
     it is read under. Set in ``__init__``; the caller supplies the arrays
     and :class:`~newton.actuators.Actuator` passes them to :meth:`compute` as
-    ``custom_inputs``, keyed by attribute name.
+    ``custom_inputs``, keyed by attribute name. The actuator routes values
+    without validating them; the drive owns requiredness, fallback behavior,
+    and validation.
     """
 
     @classmethod
@@ -119,8 +121,9 @@ class DriveBase:
             dt: Timestep [s].
             device: Warp device for kernel launches.
             custom_inputs: Arrays for the names this drive lists in
-                :attr:`custom_inputs`, keyed by attribute name. Empty when the
-                drive names none.
+                :attr:`custom_inputs`, keyed by attribute name. Values are
+                passed without validation and may be ``None`` when absent.
+                Empty when the drive names none.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 

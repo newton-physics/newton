@@ -265,13 +265,11 @@ arrays in :attr:`DriveBase.custom_inputs`, as ``(source, attribute)`` pairs.
 :meth:`Actuator.step` argument carries the array; *attribute* is the name it is
 read under.
 
-Each value must be a Warp array whose length matches the velocity array in
-``sim_state``. :class:`Actuator` validates the declaration and passes the array
-unchanged to :meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed
-by attribute name. The drive decides how to interpret and index the array and
-may impose additional dtype, device, shape, or semantic requirements. A
-missing name, non-Warp value, or wrong length raises :class:`ValueError` during
-the step.
+:class:`Actuator` reads each declared value and passes it unchanged to
+:meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed by attribute
+name. A missing attribute is passed as ``None``. The drive owns requiredness,
+fallback behavior, and all type, length, dtype, device, shape, and semantic
+validation.
 
 :meth:`Actuator.sim_state` returns an empty container with exactly the fields
 the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its

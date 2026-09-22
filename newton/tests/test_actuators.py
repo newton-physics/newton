@@ -1085,10 +1085,10 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         case = self._make_case(path, 1)
         bare = types.SimpleNamespace(joint_q=case.state.joint_q, joint_qd=case.state.joint_qd)
-        with self.assertRaisesRegex(ValueError, "requires the array 'bias_force'"):
+        with self.assertRaisesRegex(RuntimeError, "no array was supplied"):
             case.actuator.step(bare, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
         wrong = types.SimpleNamespace(joint_q=case.state.joint_q, joint_qd=case.state.joint_qd, bias_force=[0.0] * 6)
-        with self.assertRaisesRegex(ValueError, "must be a wp.array"):
+        with self.assertRaisesRegex(ValueError, "must be a Warp array"):
             case.actuator.step(wrong, case.control, case.state_a, case.state_b, dt=self.SAMPLE_DT)
         short = types.SimpleNamespace(
             joint_q=case.state.joint_q,
@@ -1372,9 +1372,9 @@ class TestDriveNeuralGRU(unittest.TestCase):
         self.assertIsNotNone(_RecordingDrive.seen)
         self.assertIs(_RecordingDrive.seen["bias_force"], bias)
 
-        # The same rules apply: a sim_state without the array still raises.
-        with self.assertRaisesRegex(ValueError, "requires the array 'bias_force'"):
-            actuator.step(state, control, dt=0.01)
+        # The actuator leaves missing-input behavior to the drive.
+        actuator.step(state, control, dt=0.01)
+        self.assertIsNone(_RecordingDrive.seen["bias_force"])
 
     def test_custom_input_name_comes_from_metadata(self):
         """Take the caller-supplied column's name from custom_inputs metadata."""

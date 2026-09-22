@@ -91,8 +91,8 @@ class TestActuatorDriveAPI(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "only one"):
             actuators.Actuator.State(drive_state=drive_state, controller_state=drive_state)
 
-    def test_actuator_passes_declared_state_and_control_inputs(self):
-        """Pass declared state and control arrays to the drive by name."""
+    def test_actuator_passes_declared_inputs_without_validation(self):
+        """Let drives validate or provide fallbacks for declared inputs."""
 
         class _RecordingDrive(actuators.DrivePD):
             custom_inputs = (
@@ -111,8 +111,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
         )
         actuator = actuators.Actuator(indices=indices, drive=drive)
 
-        state_input = wp.zeros(1, dtype=wp.float32)
-        control_input = wp.zeros(1, dtype=wp.float32)
+        state_input = object()
         state = types.SimpleNamespace(
             joint_q=wp.zeros(1, dtype=wp.float32),
             joint_qd=wp.zeros(1, dtype=wp.float32),
@@ -123,13 +122,12 @@ class TestActuatorDriveAPI(unittest.TestCase):
             joint_target_qd=wp.zeros(1, dtype=wp.float32),
             joint_act=wp.zeros(1, dtype=wp.float32),
             joint_f=wp.zeros(1, dtype=wp.float32),
-            custom_control_input=control_input,
         )
 
         actuator.step(state, control, dt=0.01)
 
         self.assertIs(drive.seen_custom_inputs["custom_state_input"], state_input)
-        self.assertIs(drive.seen_custom_inputs["custom_control_input"], control_input)
+        self.assertIsNone(drive.seen_custom_inputs["custom_control_input"])
 
     def test_builder_deprecated_controller_class_keyword(self):
         """Keep the former builder keyword functional with a warning."""
