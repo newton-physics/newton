@@ -43,7 +43,7 @@ from ..solvers.mujoco.utils import (
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd._asset_download import resolve_usd_from_url  # noqa: F401
-from ..usd._usd_resolution_policy import (
+from ..usd._resolution_policy import (
     _PhysicsMaterial,
     _resolve_newton_limit_kd,
     _resolve_newton_limit_ke,

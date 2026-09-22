@@ -1309,7 +1309,7 @@ class TestImportUsdJoints(unittest.TestCase):
         """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
         from pxr import Usd
 
-        from newton._src.usd._usd_resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
+        from newton._src.usd._resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
 
         deg2rad = math.pi / 180.0
 
