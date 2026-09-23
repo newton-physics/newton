@@ -388,6 +388,8 @@ def _resolve_physics_material(
     )
 
 
+# Shape-property warnings pass through _parse_colliders() and parse_usd()
+# before reaching ModelBuilder.add_usd(), so they use stacklevel=4.
 def _resolve_shape_offsets(
     prim: Usd.Prim,
     resolver: SchemaResolverManager,
@@ -421,7 +423,7 @@ def _resolve_shape_offsets(
             warnings.warn(
                 f"Prim '{prim.GetPath()}': legacy translation yields "
                 f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
-                stacklevel=3,
+                stacklevel=4,
             )
         margin_val = newton_margin
     return margin_val, gap_val
@@ -496,7 +498,7 @@ def _resolve_shape_sdf(
             f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
             f"independent collision representations and should not be co-applied; "
             f"SDF configuration will be used.",
-            stacklevel=3,
+            stacklevel=4,
         )
 
     # Resolve target_voxel_size first because it overrides
@@ -511,7 +513,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
             f"(must be > 0); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_target_voxel_size = None
     if sdf_target_voxel_size is None:
@@ -524,21 +526,21 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
             f"(must be > 0); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_max_resolution = None
     elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
             f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_max_resolution = None
     if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
         warnings.warn(
             f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
             f"are set; sdfTargetVoxelSize takes precedence.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_max_resolution = None
     if sdf_max_resolution is None:
@@ -573,7 +575,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
             f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_texture_format = None
     if sdf_texture_format is None:
@@ -585,7 +587,7 @@ def _resolve_shape_sdf(
     elif sdf_padding is not None and sdf_padding < 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid (must be >= 0); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         sdf_padding = None
 
@@ -618,7 +620,7 @@ def _resolve_shape_hydroelastic(
     elif kh is not None and kh <= 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid (must be > 0); falling back to default.",
-            stacklevel=3,
+            stacklevel=4,
         )
         kh = None
     if hydroelastic_enabled is True:
@@ -645,7 +647,7 @@ def _resolve_shape_hydroelastic(
             f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
             f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
             f"disabling hydroelastic for this shape.",
-            stacklevel=3,
+            stacklevel=4,
         )
         is_hydroelastic = False
 
@@ -668,7 +670,7 @@ def _resolve_shape_shell(
         else:
             warnings.warn(
                 f"Shape {prim.GetPath()}: negative shell thickness {shell_thickness_val}; falling back to margin.",
-                stacklevel=3,
+                stacklevel=4,
             )
             inertia_margin = margin_val
     else:
