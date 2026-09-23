@@ -2012,111 +2012,111 @@ class ArticulationView:
 
 
 @wp.kernel
-def _gather_group_vec3_kernel(
+def _gather_object_vec3_kernel(
     src: wp.array[wp.vec3],
     starts: wp.array[wp.int32],
     out: wp.array2d[wp.vec3],
 ):
-    group, i = wp.tid()
-    out[group, i] = src[starts[group] + i]
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
 
 
 @wp.kernel
-def _mark_last_group_row_kernel(
-    groups: wp.array[wp.int32],
-    group_count: int,
+def _mark_last_object_row_kernel(
+    object_indices: wp.array[wp.int32],
+    object_count: int,
     last_rows: wp.array[wp.int32],
 ):
     row = wp.tid()
-    group = groups[row]
-    if group >= 0 and group < group_count:
-        wp.atomic_max(last_rows, group, row)
+    object_index = object_indices[row]
+    if object_index >= 0 and object_index < object_count:
+        wp.atomic_max(last_rows, object_index, row)
 
 
 @wp.kernel
-def _scatter_group_vec3_kernel(
+def _scatter_object_vec3_kernel(
     values: wp.array2d[wp.vec3],
     starts: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
+    object_indices: wp.array[wp.int32],
     source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.vec3],
 ):
     i, j = wp.tid()
-    group = groups[i]
-    if group < 0 or group >= starts.shape[0]:
+    object_index = object_indices[i]
+    if object_index < 0 or object_index >= starts.shape[0]:
         return
-    if deduplicate and last_rows[group] != i:
+    if deduplicate and last_rows[object_index] != i:
         return
     source = source_indices[i] if source_indices else i
     if source < 0 or source >= values.shape[0]:
         return
-    dst[starts[group] + j] = values[source, j]
+    dst[starts[object_index] + j] = values[source, j]
 
 
 @wp.kernel
-def _gather_group_transform_kernel(
+def _gather_object_transform_kernel(
     src: wp.array[wp.transform],
     starts: wp.array[wp.int32],
     out: wp.array2d[wp.transform],
 ):
-    group, i = wp.tid()
-    out[group, i] = src[starts[group] + i]
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
 
 
 @wp.kernel
-def _scatter_group_transform_kernel(
+def _scatter_object_transform_kernel(
     values: wp.array2d[wp.transform],
     starts: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
+    object_indices: wp.array[wp.int32],
     source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.transform],
 ):
     i, j = wp.tid()
-    group = groups[i]
-    if group < 0 or group >= starts.shape[0]:
+    object_index = object_indices[i]
+    if object_index < 0 or object_index >= starts.shape[0]:
         return
-    if deduplicate and last_rows[group] != i:
+    if deduplicate and last_rows[object_index] != i:
         return
     source = source_indices[i] if source_indices else i
     if source < 0 or source >= values.shape[0]:
         return
-    dst[starts[group] + j] = values[source, j]
+    dst[starts[object_index] + j] = values[source, j]
 
 
 @wp.kernel
-def _gather_group_spatial_kernel(
+def _gather_object_spatial_kernel(
     src: wp.array[wp.spatial_vector],
     starts: wp.array[wp.int32],
     out: wp.array2d[wp.spatial_vector],
 ):
-    group, i = wp.tid()
-    out[group, i] = src[starts[group] + i]
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
 
 
 @wp.kernel
-def _scatter_group_spatial_kernel(
+def _scatter_object_spatial_kernel(
     values: wp.array2d[wp.spatial_vector],
     starts: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
+    object_indices: wp.array[wp.int32],
     source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.spatial_vector],
 ):
     i, j = wp.tid()
-    group = groups[i]
-    if group < 0 or group >= starts.shape[0]:
+    object_index = object_indices[i]
+    if object_index < 0 or object_index >= starts.shape[0]:
         return
-    if deduplicate and last_rows[group] != i:
+    if deduplicate and last_rows[object_index] != i:
         return
     source = source_indices[i] if source_indices else i
     if source < 0 or source >= values.shape[0]:
         return
-    dst[starts[group] + j] = values[source, j]
+    dst[starts[object_index] + j] = values[source, j]
 
 
 class _DeformableViewBase:
@@ -2136,68 +2136,76 @@ class _DeformableViewBase:
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
 
-        # Model group metadata is private (the view is the public addressability surface);
-        # resolve the selection from the per-group records emitted by finalize().
-        groups = [g for g in model._deformable_groups if g.family == family]
-        labels = [g.label for g in groups]
-        group_worlds = [g.world for g in groups]
+        # Keep finalized records private; applications address deformable objects
+        # through these views rather than depending on the record layout.
+        objects = [g for g in model._deformable_objects if g.family == family]
+        labels = [g.label for g in objects]
+        object_worlds = [g.world for g in objects]
 
-        group_ids, global_group_ids = find_matching_ids(pattern, labels, group_worlds, model.world_count)
+        object_ids, global_object_ids = find_matching_ids(pattern, labels, object_worlds, model.world_count)
 
         # Keep every model world in the partition, including worlds without a
         # match. Equal adjacent offsets make empty worlds explicit to consumers.
         world_count = model.world_count
-        counts_per_world = [len(ids) for ids in group_ids]
-        group_count = sum(counts_per_world)
+        counts_per_world = [len(ids) for ids in object_ids]
+        object_count = sum(counts_per_world)
 
-        # Global groups have no real model-world rows, so mixing them would make
-        # the flat group's world partition ambiguous.
-        if group_count > 0 and global_group_ids:
+        # Global deformable objects have no real model-world rows, so mixing them would make
+        # the flat selection's world partition ambiguous.
+        if object_count > 0 and global_object_ids:
             raise ValueError(
-                f"Deformable pattern '{pattern}' matches global and per-world groups, which is not supported"
+                f"Deformable pattern '{pattern}' matches global and per-world deformable objects, which is not supported"
             )
 
-        if group_count == 0 and global_group_ids:
+        if object_count == 0 and global_object_ids:
             world_count = 1
-            group_count = len(global_group_ids)
-            counts_per_world = [group_count]
-            group_ids = [global_group_ids]
+            object_count = len(global_object_ids)
+            counts_per_world = [object_count]
+            object_ids = [global_object_ids]
 
-        if group_count == 0:
-            raise KeyError(f"{type(self).__name__}: No {family} groups matching pattern '{pattern}'")
+        if object_count == 0:
+            raise KeyError(f"{type(self).__name__}: No {family} deformable objects matching pattern '{pattern}'")
 
-        self.count = group_count
-        """Number of selected groups across all worlds."""
+        self.count = object_count
+        """Number of selected deformable objects across all worlds."""
         self.world_count = world_count
         """Number of worlds spanned by the selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
-        """Number of selected groups per world, or None when the counts vary."""
-        flat_ids = [i for ids in group_ids for i in ids]
-        selected = [groups[i] for i in flat_ids]
+        """Number of selected deformable objects per world, or None when the counts vary."""
+        flat_ids = [i for ids in object_ids for i in ids]
+        selected = [objects[i] for i in flat_ids]
         self.family = family
         """Geometric family selected by this view."""
         self.labels = [g.label for g in selected]
-        """Label of each selected group, ordered world by world."""
+        """Label of each selected deformable object, ordered world by world."""
         self.worlds = [g.world for g in selected]
-        """World index of each selected group."""
-        world_starts = [0]
+        """World index of each selected deformable object."""
+        deformable_object_boundaries = [0]
         for count in counts_per_world:
-            world_starts.append(world_starts[-1] + count)
-        self._world_starts = world_starts
-        self.world_starts: wp.array[wp.int32] = wp.array(world_starts, dtype=wp.int32, device=self.device)
-        """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
+            deformable_object_boundaries.append(deformable_object_boundaries[-1] + count)
+        self._deformable_object_boundaries = deformable_object_boundaries
+        self.deformable_object_boundaries: wp.array[wp.int32] = wp.array(
+            deformable_object_boundaries, dtype=wp.int32, device=self.device
+        )
+        """Device-side deformable-object boundaries by world, shape ``(world_count + 1,)``.
+
+        World ``i`` spans selected deformable object indices from ``deformable_object_boundaries[i]`` to
+        ``deformable_object_boundaries[i + 1]``, excluding the end. The final entry is the
+        selected deformable object count. Treat this array as read-only. See :meth:`deformable_object_ranges`
+        for the corresponding Python ranges and the global-only case.
+        """
         self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
-        """World index of each flat group, shape ``(count,)``."""
-        self._model_group_ids: list[int] = [g.id for g in selected]
+        """World index of each selected deformable object, shape ``(count,)``."""
+        self._model_object_ids: list[int] = [g.id for g in selected]
 
         # Element ranges are always available; only rectangular operations require homogeneity.
-        self._all_groups: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
-        self._last_group_rows: wp.array[wp.int32] = wp.empty(self.count, dtype=wp.int32, device=self.device)
+        self._all_objects: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
+        self._last_object_rows: wp.array[wp.int32] = wp.empty(self.count, dtype=wp.int32, device=self.device)
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
         self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
-        self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in group.ranges for group in selected))
+        self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in record.ranges for record in selected))
         for kind in self._kinds:
             kind_ranges = [g.ranges[kind] for g in selected]
             sizes = {end - start for start, end in kind_ranges}
@@ -2209,23 +2217,36 @@ class _DeformableViewBase:
             elements = ", ".join(
                 f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
             )
-            print(f"{type(self).__name__} '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
+            print(f"{type(self).__name__} '{pattern}' ({family}): {self.count} deformable object(s) x [{elements}]")
 
     # raw ranges -------------------------------------------------------------
 
-    def world_ranges(self) -> list[tuple[int, int]]:
-        """Return flat group ranges for every model world, including empty worlds.
+    def deformable_object_ranges(self) -> list[tuple[int, int]]:
+        """Return one range of selected deformable-object indices per world.
+
+        Each ``(start, end)`` pair slices :attr:`labels` or rows of batched state
+        returned by this view. Use ``deformable_object_ranges()[world_id]`` to
+        look up a world. The end is excluded. Empty worlds have equal start and
+        end values. These are selected deformable object indices, not the simulation element
+        indices returned by :meth:`ranges`.
+
+        A global-only selection has one range, ``(0, count)``, and its
+        :attr:`world_ids` are all ``-1``. This single range is not indexed by a
+        model world ID.
 
         Returns:
-            ``[start, end)`` group ranges in model-world order.
+            selected deformable-object ranges in model-world order, including empty worlds.
         """
-        return [(self._world_starts[i], self._world_starts[i + 1]) for i in range(self.world_count)]
+        return [
+            (self._deformable_object_boundaries[i], self._deformable_object_boundaries[i + 1])
+            for i in range(self.world_count)
+        ]
 
-    def elements_per_group(
+    def elements_per_deformable_object(
         self,
         kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> int:
-        """Elements of ``kind`` in each selected group (homogeneous across the selection).
+        """Elements of ``kind`` in each selected deformable object (homogeneous across the selection).
 
         Current rods record ``body``/``joint`` ranges, triangle surfaces record
         ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
@@ -2233,14 +2254,14 @@ class _DeformableViewBase:
         element kinds are available.
 
         Args:
-            kind: Element kind recorded by every selected group.
+            kind: Element kind recorded by every selected deformable object.
 
         Returns:
-            Common number of elements in every selected group.
+            Common number of elements in every selected deformable object.
 
         Raises:
-            AttributeError: If the selected groups do not all record ``kind``.
-            ValueError: If the selected groups have different element counts.
+            AttributeError: If the selected deformable objects do not all record ``kind``.
+            ValueError: If the selected deformable objects have different element counts.
         """
         return self._element_count(kind)
 
@@ -2248,20 +2269,20 @@ class _DeformableViewBase:
         self,
         kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> list[tuple[int, int]]:
-        """``[start, end)`` element ranges of the selected groups, in selection order.
+        """``[start, end)`` element ranges of the selected deformable objects, in selection order.
 
-        For consumers that need each group's raw slice of the flat model arrays, e.g. to
+        For consumers that need each deformable object's raw slice of the flat model arrays, e.g. to
         hand per-instance offsets to a renderer sync or to custom kernels. See
-        :meth:`elements_per_group` for the valid ``kind`` values.
+        :meth:`elements_per_deformable_object` for the valid ``kind`` values.
 
         Args:
-            kind: Element kind recorded by every selected group.
+            kind: Element kind recorded by every selected deformable object.
 
         Returns:
-            One ``[start, end)`` range per selected group.
+            One ``[start, end)`` range per selected deformable object.
 
         Raises:
-            AttributeError: If the selected groups do not all record ``kind``.
+            AttributeError: If the selected deformable objects do not all record ``kind``.
         """
         self._validate_kind(kind)
         return list(self._ranges[kind])
@@ -2270,20 +2291,20 @@ class _DeformableViewBase:
         self,
         kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> wp.array[wp.int32]:
-        """Device-side element-range starts of the selected groups, shape ``(count,)``.
+        """Device-side element-range starts of the selected deformable objects, shape ``(count,)``.
 
-        Together with :meth:`elements_per_group` this drives custom kernels over the
+        Together with :meth:`elements_per_deformable_object` this drives custom kernels over the
         selection without a host round-trip; the view's own gather/scatter kernels use
         the same array. Treat the returned internal array as read-only.
 
         Args:
-            kind: Element kind recorded by every selected group.
+            kind: Element kind recorded by every selected deformable object.
 
         Returns:
-            Device array containing one start index per selected group.
+            Device array containing one start index per selected deformable object.
 
         Raises:
-            AttributeError: If the selected groups do not all record ``kind``.
+            AttributeError: If the selected deformable objects do not all record ``kind``.
         """
         self._validate_kind(kind)
         return self._starts[kind]
@@ -2292,7 +2313,7 @@ class _DeformableViewBase:
 
     def _validate_kind(self, kind: str) -> None:
         if kind not in self._kinds:
-            raise AttributeError(f"Selected {self.family} groups have no {kind} elements in common")
+            raise AttributeError(f"Selected {self.family} deformable objects have no {kind} elements in common")
 
     def _element_count(self, kind: str) -> int:
         self._validate_kind(kind)
@@ -2300,7 +2321,7 @@ class _DeformableViewBase:
         if count is None:
             sizes = sorted({end - start for start, end in self._ranges[kind]})
             raise ValueError(
-                f"Varying {kind} counts per {self.family} group cannot form a batched array "
+                f"Varying {kind} counts per {self.family} deformable object cannot form a batched array "
                 f"(got {sizes}); use ranges({kind!r}) and direct slices instead"
             )
         return count
@@ -2365,15 +2386,17 @@ class _DeformableViewBase:
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _resolve_group_indices(
+    def _resolve_deformable_object_indices(
         self,
-        group_indices: Any,
+        deformable_object_indices: Any,
     ) -> wp.array[wp.int32]:
-        if group_indices is None:
-            if self._all_groups is None:
-                self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
-            return self._all_groups
-        return self._resolve_indices(group_indices, "group_indices", self.count, reject_duplicates=True)
+        if deformable_object_indices is None:
+            if self._all_objects is None:
+                self._all_objects = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
+            return self._all_objects
+        return self._resolve_indices(
+            deformable_object_indices, "deformable_object_indices", self.count, reject_duplicates=True
+        )
 
     def _resolve_indices(
         self,
@@ -2413,13 +2436,13 @@ class _DeformableViewBase:
         kernel: Any,
         dst: wp.array[Any],
         dtype: Any,
-        group_indices: Any = None,
+        deformable_object_indices: Any = None,
         source_indices: Any = None,
     ) -> None:
         count = self._element_count(kind)
-        device_indices = isinstance(group_indices, wp.array)
-        groups = self._resolve_group_indices(group_indices)
-        rows = groups.shape[0]
+        device_indices = isinstance(deformable_object_indices, wp.array)
+        objects = self._resolve_deformable_object_indices(deformable_object_indices)
+        rows = objects.shape[0]
         if not isinstance(values, wp.array):
             value_rows = rows if source_indices is None else len(values)
             values = wp.array(values, dtype=dtype, shape=(value_rows, count), device=self.device, copy=False)
@@ -2439,7 +2462,7 @@ class _DeformableViewBase:
             )
             if sources.shape[0] != rows:
                 raise ValueError(
-                    f"Expected source_indices length {rows} to match group_indices, got {sources.shape[0]}"
+                    f"Expected source_indices length {rows} to match deformable_object_indices, got {sources.shape[0]}"
                 )
         # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
         # kernel-launch failure.
@@ -2448,11 +2471,11 @@ class _DeformableViewBase:
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
         if device_indices:
-            self._last_group_rows.fill_(-1)
+            self._last_object_rows.fill_(-1)
             wp.launch(
-                _mark_last_group_row_kernel,
+                _mark_last_object_row_kernel,
                 dim=rows,
-                inputs=[groups, self.count, self._last_group_rows],
+                inputs=[objects, self.count, self._last_object_rows],
                 device=self.device,
             )
         wp.launch(
@@ -2461,9 +2484,9 @@ class _DeformableViewBase:
             inputs=[
                 values,
                 self._starts[kind],
-                groups,
+                objects,
                 sources,
-                self._last_group_rows,
+                self._last_object_rows,
                 device_indices,
                 dst,
             ],
@@ -2475,65 +2498,65 @@ class _DeformableParticleView(_DeformableViewBase):
     """Share particle state access without prescribing a geometric family."""
 
     @property
-    def particles_per_group(self) -> int:
-        """Particles in each selected group."""
+    def particles_per_deformable_object(self) -> int:
+        """Common particle count in each selected deformable object."""
         return self._element_count("particle")
 
     def get_particle_positions(
         self,
         source: Model | State,
     ) -> wp.array2d[wp.vec3]:
-        """Return particle positions [m] for the selected groups.
+        """Return particle positions [m] for the selected deformable objects.
 
         Args:
             source: Model initial state or simulation state to read.
 
         Returns:
-            Particle positions with shape ``(count, particles_per_group)``.
+            Particle positions with shape ``(count, particles_per_deformable_object)``.
 
         Raises:
-            AttributeError: If the selected groups do not all record particles.
-            ValueError: If the selected groups have different particle counts.
+            AttributeError: If the selected deformable objects do not all record particles.
+            ValueError: If the selected deformable objects have different particle counts.
         """
-        return self._gather("particle", source.particle_q, _gather_group_vec3_kernel)
+        return self._gather("particle", source.particle_q, _gather_object_vec3_kernel)
 
     def set_particle_positions(
         self,
         target: Model | State,
         values: Any,
         *,
-        group_indices: Any = None,
+        deformable_object_indices: Any = None,
         source_indices: Any = None,
     ) -> None:
-        """Write particle positions [m] from ``(value_rows, particles_per_group)`` values.
+        """Write particle positions [m] from ``(value_rows, particles_per_deformable_object)`` values.
 
-        ``group_indices`` selects destination groups. ``source_indices`` optionally
+        ``deformable_object_indices`` selects destination deformable objects. ``source_indices`` optionally
         selects one row in ``values`` per destination; otherwise ``values`` must
-        contain one compact row per destination. Other groups are untouched.
+        contain one compact row per destination. Other deformable objects are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
             values: Particle positions [m] with shape
-                ``(value_rows, particles_per_group)``.
-            group_indices: Optional flat group rows. Host entries must be integers;
+                ``(value_rows, particles_per_deformable_object)``.
+            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
             source_indices: Optional rows to read from ``values``, one per destination
-                group. Uses compact rows in order when omitted.
+                deformable object. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If the selected groups do not all record particles.
+            AttributeError: If the selected deformable objects do not all record particles.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "particle",
             values,
-            _scatter_group_vec3_kernel,
+            _scatter_object_vec3_kernel,
             target.particle_q,
             wp.vec3,
-            group_indices,
+            deformable_object_indices,
             source_indices,
         )
 
@@ -2541,74 +2564,74 @@ class _DeformableParticleView(_DeformableViewBase):
         self,
         source: Model | State,
     ) -> wp.array2d[wp.vec3]:
-        """Return particle velocities [m/s] for the selected groups.
+        """Return particle velocities [m/s] for the selected deformable objects.
 
         Args:
             source: Model initial state or simulation state to read.
 
         Returns:
-            Particle velocities with shape ``(count, particles_per_group)``.
+            Particle velocities with shape ``(count, particles_per_deformable_object)``.
 
         Raises:
-            AttributeError: If the selected groups do not all record particles.
-            ValueError: If the selected groups have different particle counts.
+            AttributeError: If the selected deformable objects do not all record particles.
+            ValueError: If the selected deformable objects have different particle counts.
         """
-        return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel)
+        return self._gather("particle", source.particle_qd, _gather_object_vec3_kernel)
 
     def set_particle_velocities(
         self,
         target: Model | State,
         values: Any,
         *,
-        group_indices: Any = None,
+        deformable_object_indices: Any = None,
         source_indices: Any = None,
     ) -> None:
-        """Write particle velocities [m/s] from ``(value_rows, particles_per_group)`` values.
+        """Write particle velocities [m/s] from ``(value_rows, particles_per_deformable_object)`` values.
 
-        ``group_indices`` selects destination groups. ``source_indices`` optionally
+        ``deformable_object_indices`` selects destination deformable objects. ``source_indices`` optionally
         selects one row in ``values`` per destination; otherwise ``values`` must
-        contain one compact row per destination. Other groups are untouched.
+        contain one compact row per destination. Other deformable objects are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
             values: Particle velocities [m/s] with shape
-                ``(value_rows, particles_per_group)``.
-            group_indices: Optional flat group rows. Host entries must be integers;
+                ``(value_rows, particles_per_deformable_object)``.
+            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
             source_indices: Optional rows to read from ``values``, one per destination
-                group. Uses compact rows in order when omitted.
+                deformable object. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If the selected groups do not all record particles.
+            AttributeError: If the selected deformable objects do not all record particles.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "particle",
             values,
-            _scatter_group_vec3_kernel,
+            _scatter_object_vec3_kernel,
             target.particle_qd,
             wp.vec3,
-            group_indices,
+            deformable_object_indices,
             source_indices,
         )
 
 
-class _DeformableBodyView(_DeformableViewBase):
+class _DeformableRigidBodyView(_DeformableViewBase):
     """Share body state access without prescribing a geometric family."""
 
     @property
-    def bodies_per_group(self) -> int:
-        """Segment bodies in each selected curve group."""
+    def bodies_per_deformable_object(self) -> int:
+        """Common rigid-body count in each selected curve, counting its segments."""
         return self._element_count("body")
 
     def get_body_transforms(
         self,
         source: Model | State,
     ) -> wp.array2d[wp.transform]:
-        """Segment transforms of each curve, shape ``(count, bodies_per_group)``.
+        """Segment transforms of each curve, shape ``(count, bodies_per_deformable_object)``.
 
         Each transform contains a world-space translation [m] and a unitless
         quaternion.
@@ -2617,52 +2640,52 @@ class _DeformableBodyView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Segment transforms with shape ``(count, bodies_per_group)``.
+            Segment transforms with shape ``(count, bodies_per_deformable_object)``.
 
         Raises:
-            AttributeError: If the selected groups do not all record bodies.
-            ValueError: If the selected groups have different body counts.
+            AttributeError: If the selected deformable objects do not all record bodies.
+            ValueError: If the selected deformable objects have different body counts.
         """
-        return self._gather("body", source.body_q, _gather_group_transform_kernel)
+        return self._gather("body", source.body_q, _gather_object_transform_kernel)
 
     def set_body_transforms(
         self,
         target: Model | State,
         values: Any,
         *,
-        group_indices: Any = None,
+        deformable_object_indices: Any = None,
         source_indices: Any = None,
     ) -> None:
-        """Write segment transforms from ``(value_rows, bodies_per_group)`` values.
+        """Write segment transforms from ``(value_rows, bodies_per_deformable_object)`` values.
 
         Each transform contains a world-space translation [m] and a unitless
-        quaternion. ``group_indices`` selects destination groups. ``source_indices``
+        quaternion. ``deformable_object_indices`` selects destination deformable objects. ``source_indices``
         optionally selects one row in ``values`` per destination; otherwise
         ``values`` must contain one compact row per destination.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment transforms with shape ``(value_rows, bodies_per_group)``;
+            values: Segment transforms with shape ``(value_rows, bodies_per_deformable_object)``;
                 translations are in meters and quaternions are unitless.
-            group_indices: Optional flat group rows. Host entries must be integers;
+            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
             source_indices: Optional rows to read from ``values``, one per destination
-                group. Uses compact rows in order when omitted.
+                deformable object. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If the selected groups do not all record bodies.
+            AttributeError: If the selected deformable objects do not all record bodies.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "body",
             values,
-            _scatter_group_transform_kernel,
+            _scatter_object_transform_kernel,
             target.body_q,
             wp.transform,
-            group_indices,
+            deformable_object_indices,
             source_indices,
         )
 
@@ -2670,7 +2693,7 @@ class _DeformableBodyView(_DeformableViewBase):
         self,
         source: Model | State,
     ) -> wp.array2d[wp.spatial_vector]:
-        """Segment velocities, shape ``(count, bodies_per_group)``.
+        """Segment velocities, shape ``(count, bodies_per_deformable_object)``.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s].
@@ -2679,58 +2702,58 @@ class _DeformableBodyView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Segment velocities with shape ``(count, bodies_per_group)``.
+            Segment velocities with shape ``(count, bodies_per_deformable_object)``.
 
         Raises:
-            AttributeError: If the selected groups do not all record bodies.
-            ValueError: If the selected groups have different body counts.
+            AttributeError: If the selected deformable objects do not all record bodies.
+            ValueError: If the selected deformable objects have different body counts.
         """
-        return self._gather("body", source.body_qd, _gather_group_spatial_kernel)
+        return self._gather("body", source.body_qd, _gather_object_spatial_kernel)
 
     def set_body_velocities(
         self,
         target: Model | State,
         values: Any,
         *,
-        group_indices: Any = None,
+        deformable_object_indices: Any = None,
         source_indices: Any = None,
     ) -> None:
-        """Write segment velocities from ``(value_rows, bodies_per_group)`` values.
+        """Write segment velocities from ``(value_rows, bodies_per_deformable_object)`` values.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
-        followed by angular velocity [rad/s]. ``group_indices`` selects destination
-        groups. ``source_indices`` optionally selects one row in ``values`` per
+        followed by angular velocity [rad/s]. ``deformable_object_indices`` selects destination
+        deformable objects. ``source_indices`` optionally selects one row in ``values`` per
         destination; otherwise ``values`` must contain one compact row per destination.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment velocities with shape ``(value_rows, bodies_per_group)``;
+            values: Segment velocities with shape ``(value_rows, bodies_per_deformable_object)``;
                 linear components are in meters per second and angular components are
                 in radians per second.
-            group_indices: Optional flat group rows. Host entries must be integers;
+            deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
             source_indices: Optional rows to read from ``values``, one per destination
-                group. Uses compact rows in order when omitted.
+                deformable object. Uses compact rows in order when omitted.
 
         Raises:
-            AttributeError: If the selected groups do not all record bodies.
+            AttributeError: If the selected deformable objects do not all record bodies.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+            ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
                 destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "body",
             values,
-            _scatter_group_spatial_kernel,
+            _scatter_object_spatial_kernel,
             target.body_qd,
             wp.spatial_vector,
-            group_indices,
+            deformable_object_indices,
             source_indices,
         )
 
 
-class DeformableCurveView(_DeformableBodyView):
+class DeformableCurveView(_DeformableRigidBodyView):
     """Select curves by label and read or update their segment body state.
 
     .. experimental::
@@ -2741,7 +2764,7 @@ class DeformableCurveView(_DeformableBodyView):
     describes geometry, not a solver: particle-based curves are not supported yet.
     Matching surfaces and volumes are excluded from the selection.
 
-    Fixed-joint collapse can remove an incomplete curve group. Preserve required
+    Fixed-joint collapse can remove an incomplete deformable curve. Preserve required
     joints with :meth:`~newton.ModelBuilder.collapse_fixed_joints` using
     ``joints_to_keep`` when complete curve access is needed.
 
@@ -2749,7 +2772,7 @@ class DeformableCurveView(_DeformableBodyView):
     indexed writes, and CUDA graph capture.
 
     Args:
-        model: Model containing the finalized deformable groups.
+        model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
         verbose: If True, print a short selection summary. If None, follow Warp's
             logging level.
@@ -2780,7 +2803,7 @@ class DeformableSurfaceView(_DeformableParticleView):
     indexed writes, and CUDA graph capture.
 
     Args:
-        model: Model containing the finalized deformable groups.
+        model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
         verbose: If True, print a short selection summary. If None, follow Warp's
             logging level.
@@ -2811,7 +2834,7 @@ class DeformableVolumeView(_DeformableParticleView):
     indexed writes, and CUDA graph capture.
 
     Args:
-        model: Model containing the finalized deformable groups.
+        model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
         verbose: If True, print a short selection summary. If None, follow Warp's
             logging level.

@@ -126,8 +126,8 @@ class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
 
 
 @dataclass(frozen=True)
-class _DeformableGroup:
-    """One finalized curve, surface, or volume deformable group.
+class _DeformableObjectRecord:
+    """Identity and simulation ranges for one finalized deformable object.
 
     Private backing data for the public deformable selection views. Applications
     use those views to address deformables, so this representation can change freely.
@@ -1147,11 +1147,10 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
-        # Each curve, surface, or volume recorded by the builder is a world-tagged
-        # group with [start, end) index ranges into the per-element arrays. Kept private so
-        # the family-specific selection views remain the public way to address groups;
-        # the representation is free to evolve into a general selection layer.
-        self._deformable_groups: tuple[_DeformableGroup, ...] = ()
+        # Each curve, surface, or volume has a world-tagged deformable object record
+        # with [start, end) simulation ranges. Keep the records private
+        # so their layout can evolve without changing the family-specific views.
+        self._deformable_objects: tuple[_DeformableObjectRecord, ...] = ()
 
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""

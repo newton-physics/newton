@@ -2663,8 +2663,8 @@ class TestModelJoints(unittest.TestCase):
         pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
         rod = newton.Rod(pts, radius=0.02)
         bodies, joints = builder.add_rod(rod=rod, label="cable", wrap_in_articulation=True, body_frame_origin="com")
-        # Record the group the way the USD importer does, so the range remap is exercised.
-        builder._record_curve_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        # Record the object the way the USD importer does, so the range remap is exercised.
+        builder._record_curve_deformable_object("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
         builder.collapse_fixed_joints()

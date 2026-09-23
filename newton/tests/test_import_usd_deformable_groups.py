@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lifecycle tests for addressing deformable groups on the finalized model.
+"""Lifecycle tests for addressing deformable objects on the finalized model.
 
-Groups are addressed through the public family-specific selection views
-(the Model-side group table is private). Every other deformable test locates
-groups through the builder-registry seam in ``_usd_deformable_test_utils``; this module
+Deformable objects are addressed through the public family-specific selection views
+(the Model-side deformable object table is private). Every other deformable test locates
+deformable objects through the builder-registry seam in ``_usd_deformable_test_utils``; this module
 covers the post-``finalize()`` path across lifecycle transformations (replication,
 heterogeneous worlds, fixed-joint collapse).
 """
@@ -32,10 +32,10 @@ _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-class TestUSDDeformableGroups(unittest.TestCase):
-    """Prim-path group lookup on the finalized Model across lifecycle transformations."""
+class TestUSDDeformableObjects(unittest.TestCase):
+    """Prim-path deformable object lookup on the finalized Model across lifecycle transformations."""
 
-    def test_mixed_scene_groups_resolve_after_finalize(self):
+    def test_mixed_scene_objects_resolve_after_finalize(self):
         """Every family of the mixed scene resolves by prim path on the finalized Model."""
         builder = newton.ModelBuilder()
         builder.add_usd(_MIXED_ASSET)
@@ -43,23 +43,23 @@ class TestUSDDeformableGroups(unittest.TestCase):
 
         cable = DeformableCurveView(model, "/World/CableA/sim")
         self.assertEqual(cable.count, 1)
-        self.assertEqual(cable.bodies_per_group, 3)
-        self.assertEqual(cable.elements_per_group("joint"), 2)  # open 3-segment chain
+        self.assertEqual(cable.bodies_per_deformable_object, 3)
+        self.assertEqual(cable.elements_per_deformable_object("joint"), 2)  # open 3-segment chain
         cloth = DeformableSurfaceView(model, "/World/Cloth/sim")
-        self.assertEqual(cloth.particles_per_group, 4)
+        self.assertEqual(cloth.particles_per_deformable_object, 4)
         self.assertEqual(cloth.ranges("triangle"), [(0, 2)])
         soft = DeformableVolumeView(model, "/World/Soft*/sim")
         self.assertEqual(soft.count, 2)
         soft_ranges = soft.ranges("particle")
         self.assertNotEqual(soft_ranges[0], soft_ranges[1])
-        self.assertEqual(soft.elements_per_group("tetrahedron"), 1)
-        # No begin_world -> global groups.
+        self.assertEqual(soft.elements_per_deformable_object("tetrahedron"), 1)
+        # No begin_world -> global deformable objects.
         self.assertEqual(cable.worlds, [-1])
         with self.assertRaises(KeyError):
             DeformableCurveView(model, "/World/DoesNotExist")
 
-    def test_replicated_groups_select_per_world(self):
-        """replicate() duplicates labels across worlds: one group per world, ranges
+    def test_replicated_objects_select_per_world(self):
+        """replicate() duplicates labels across worlds: one deformable object per world, ranges
         offset per world, and raw ranges come back in world order."""
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
@@ -78,7 +78,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         self.assertEqual(view.ranges("particle"), [(4 * w, 4 * w + 4) for w in range(3)])
         self.assertEqual(list(view.starts("particle").numpy()), [0, 4, 8])
 
-    def test_cable_groups_replicate_with_free_and_attached_roots(self):
+    def test_cable_objects_replicate_with_free_and_attached_roots(self):
         """Keep one selectable cable per world with either free or attached roots."""
         from pxr import UsdGeom, UsdPhysics
 
@@ -149,7 +149,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         self.assertEqual(DeformableSurfaceView(model, "/World/Cloth").worlds, [0])
         self.assertEqual(DeformableCurveView(model, "/World/Cable").worlds, [1])
 
-    def test_cable_group_survives_fixed_joint_collapse(self):
+    def test_cable_object_survives_fixed_joint_collapse(self):
         """Cable body ranges ride the reindexing of collapse_fixed_joints onto the Model."""
         from pxr import UsdGeom, UsdPhysics
 

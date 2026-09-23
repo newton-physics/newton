@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for family-specific batched selection over finalized deformable groups."""
+"""Tests for family-specific batched selection over finalized deformable objects."""
 
 import re
 import unittest
@@ -113,14 +113,14 @@ class TestDeformableFamilyViews(unittest.TestCase):
 
         self.assertEqual((view.family, view.labels, view.worlds), ("curve", ["object", "object"], [0, 1]))
         self.assertEqual(view.ranges("body"), [(0, 3), (3, 6)])
-        self.assertEqual(view.world_ranges(), [(0, 1), (1, 2)])
+        self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2)])
         np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1])
         self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
         with self.assertRaisesRegex(AttributeError, "no particle elements"):
             view.ranges("particle")
 
     def test_particle_views_filter_shared_labels_and_isolate_writes(self):
-        """Write only the requested family and group with independent source rows."""
+        """Write only the requested family and deformable object with independent source rows."""
         builder = newton.ModelBuilder()
         _add_test_cable(builder, label="object")
         _add_test_cloth(builder, label="object")
@@ -145,7 +145,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
                     expected = getattr(state, attribute).numpy().copy()
                     values = wp.array(np.full((2, 4, 3), 7.0, dtype=np.float32), dtype=wp.vec3, device="cpu")
 
-                    setter(state, values, group_indices=[1], source_indices=[0])
+                    setter(state, values, deformable_object_indices=[1], source_indices=[0])
 
                     start, end = ranges[1]
                     expected[start:end] = 7.0
@@ -154,7 +154,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
 
 
 class TestDeformableSelection(unittest.TestCase):
-    """Label-pattern selection and batched state access over deformable groups."""
+    """Label-pattern selection and batched state access over deformable objects."""
 
     def test_compiled_regex_uses_shared_label_matching(self):
         """Deformable selection accepts the shared compiled-regex selector."""
@@ -165,14 +165,14 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
 
     def test_cloth_view_selects_and_batches_across_worlds(self):
-        """A replicated cloth selects one group per world with batched particle state."""
+        """A replicated cloth selects one deformable object per world with batched particle state."""
         model = _replicated_model(3)
         state = model.state()
 
         view = DeformableSurfaceView(model, "/World/Cloth")
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.worlds, [0, 1, 2])
-        self.assertEqual(view.particles_per_group, 4)
+        self.assertEqual(view.particles_per_deformable_object, 4)
 
         positions = view.get_particle_positions(state)
         self.assertEqual(positions.shape, (3, 4))
@@ -195,7 +195,7 @@ class TestDeformableSelection(unittest.TestCase):
         state = model.state()
 
         view = DeformableCurveView(model, "/World/Cable")
-        self.assertEqual((view.count, view.bodies_per_group), (2, 3))
+        self.assertEqual((view.count, view.bodies_per_deformable_object), (2, 3))
 
         transforms = view.get_body_transforms(state)
         self.assertEqual(transforms.shape, (2, 3))
@@ -207,18 +207,21 @@ class TestDeformableSelection(unittest.TestCase):
         velocities = view.get_body_velocities(state)
         self.assertEqual(velocities.shape, (2, 3))
 
-    def test_soft_view_over_global_groups(self):
-        """Groups outside any world (world -1) are selectable as a single-world view."""
+    def test_soft_view_over_global_objects(self):
+        """Select global deformable objects (world -1) as a single-world view."""
         builder = newton.ModelBuilder()
         _add_test_soft_body(builder, label="/World/Soft")
         model = builder.finalize()
 
         view = DeformableVolumeView(model, "/World/Soft")
         self.assertEqual((view.count, view.world_count), (1, 1))
+        self.assertEqual(view.deformable_object_ranges(), [(0, 1)])
+        np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1])
+        np.testing.assert_array_equal(view.world_ids.numpy(), [-1])
         self.assertEqual(view.get_particle_positions(model.state()).shape, (1, 4))
 
-    def test_pattern_matches_multiple_groups_per_world(self):
-        """A wildcard pattern selects several groups per world when counts stay equal."""
+    def test_pattern_matches_multiple_objects_per_world(self):
+        """A wildcard pattern selects several deformable objects per world when counts stay equal."""
         sub = newton.ModelBuilder()
         _add_test_cloth(sub, label="/World/ClothA")
         _add_test_cloth(sub, label="/World/ClothB")
@@ -231,8 +234,8 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
         self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
 
-    def test_varying_group_counts_across_worlds_remain_selectable(self):
-        """Worlds may contribute different group counts while retaining stable order."""
+    def test_varying_object_counts_across_worlds_remain_selectable(self):
+        """Worlds may contribute different deformable object counts while retaining stable order."""
         first = newton.ModelBuilder()
         _add_test_cloth(first, label="/World/ClothA")
         second = newton.ModelBuilder()
@@ -247,11 +250,64 @@ class TestDeformableSelection(unittest.TestCase):
 
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, None))
         self.assertEqual(view.worlds, [0, 1, 1])
-        self.assertEqual(view.world_ranges(), [(0, 1), (1, 3), (3, 3)])
-        np.testing.assert_array_equal(view.world_starts.numpy(), [0, 1, 3, 3])
+        self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 3), (3, 3)])
+        np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1, 3, 3])
         np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
+
+    def test_deformable_object_ranges_slice_interleaved_objects_by_world(self):
+        """Select each world's cables without gaps from intervening cloth and volume deformable objects."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        _add_test_cloth(builder, label="cloth")
+        _add_test_cable(builder, label="cable")
+        builder.end_world()
+
+        builder.begin_world()
+        _add_test_cloth(builder, label="cloth")
+        _add_test_cable(builder, label="cable_0")
+        _add_test_cable(builder, label="cable_1")
+        _add_test_soft_body(builder, label="volume")
+        _add_test_cable(builder, label="cable_2")
+        builder.end_world()
+
+        builder.begin_world()
+        _add_test_cloth(builder, label="cloth")
+        _add_test_cable(builder, label="cable")
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+
+        cables = DeformableCurveView(model, "cable*")
+        self.assertEqual(cables.labels, ["cable", "cable_0", "cable_1", "cable_2", "cable"])
+        self.assertEqual(cables.deformable_object_ranges(), [(0, 1), (1, 4), (4, 5)])
+        np.testing.assert_array_equal(cables.world_ids.numpy(), [0, 1, 1, 1, 2])
+        np.testing.assert_array_equal(cables.deformable_object_boundaries.numpy(), [0, 1, 4, 5])
+
+        deformable_object_index = 2
+        self.assertEqual(cables.labels[deformable_object_index], "cable_1")
+        self.assertEqual(cables.worlds[deformable_object_index], 1)
+        self.assertEqual(cables.ranges("body")[deformable_object_index], (6, 9))
+        self.assertEqual(cables.ranges("joint")[deformable_object_index], (6, 9))
+        self.assertEqual(cables.bodies_per_deformable_object, 3)
+        self.assertEqual(cables.elements_per_deformable_object("joint"), 3)
+        self.assertEqual(cables.labels[3], "cable_2")
+
+        world_id = 1
+        start, end = cables.deformable_object_ranges()[world_id]
+        self.assertEqual(cables.labels[start:end], ["cable_0", "cable_1", "cable_2"])
+
+        cloths = DeformableSurfaceView(model, "cloth")
+        self.assertEqual(cloths.deformable_object_ranges(), [(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(cloths.ranges("particle"), [(0, 4), (4, 8), (12, 16)])
+        self.assertEqual(cloths.ranges("triangle"), [(0, 2), (2, 4), (8, 10)])
+        self.assertEqual(cloths.ranges("edge"), [(0, 5), (5, 10), (16, 21)])
+        self.assertEqual(cloths.particles_per_deformable_object, 4)
+        volumes = DeformableVolumeView(model, "volume")
+        self.assertEqual(volumes.deformable_object_ranges(), [(0, 0), (0, 1), (1, 1)])
+        self.assertEqual(volumes.ranges("particle"), [(8, 12)])
+        self.assertEqual(volumes.ranges("tetrahedron"), [(0, 1)])
+        self.assertEqual(volumes.particles_per_deformable_object, 4)
 
     def test_list_patterns_use_shared_label_matching(self):
         """A list of glob patterns follows the matching contract shared by selection views."""
@@ -363,7 +419,7 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual([end - start for start, end in view.ranges("particle")], [4, 5])
         np.testing.assert_array_equal(view.starts("particle").numpy(), [0, 4])
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
-            view.elements_per_group("particle")
+            view.elements_per_deformable_object("particle")
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.get_particle_positions(model.state())
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
@@ -374,8 +430,8 @@ class TestDeformableSelection(unittest.TestCase):
         with self.assertRaises(ValueError):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 
-    def test_indexed_partial_writes_touch_only_selected_groups(self):
-        """group_indices= scatters into selected groups only, from host and device index
+    def test_indexed_partial_writes_touch_only_selected_objects(self):
+        """deformable_object_indices= scatters into selected deformable objects only, from host and device index
         forms, and cable body velocities round-trip through an indexed write."""
         model = _replicated_model(3)
         state = model.state()
@@ -384,43 +440,45 @@ class TestDeformableSelection(unittest.TestCase):
         before = cloth.get_particle_positions(state).numpy()
         moved = before[[1]].copy()
         moved[..., 2] += 5.0
-        cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), group_indices=[1])
+        cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), deformable_object_indices=[1])
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_allclose(after[1], moved[0], atol=1e-6)
 
         cable = DeformableCurveView(model, "/World/Cable")
-        velocities = np.zeros((1, cable.bodies_per_group, 6), dtype=np.float32)
+        velocities = np.zeros((1, cable.bodies_per_deformable_object, 6), dtype=np.float32)
         velocities[..., 3] = 2.0
         device_indices = wp.array([2], dtype=wp.int32, device=model.device)
-        cable.set_body_velocities(state, wp.array(velocities, dtype=wp.spatial_vector), group_indices=device_indices)
+        cable.set_body_velocities(
+            state, wp.array(velocities, dtype=wp.spatial_vector), deformable_object_indices=device_indices
+        )
         out = cable.get_body_velocities(state).numpy()
         np.testing.assert_allclose(out[2], velocities[0], atol=1e-6)
         np.testing.assert_array_equal(out[:2], np.zeros_like(out[:2]))
 
         with self.assertRaisesRegex(ValueError, "must be in"):
-            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), group_indices=[3])
+            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), deformable_object_indices=[3])
         with self.assertRaisesRegex(ValueError, "duplicate"):
             cloth.set_particle_positions(
                 state,
                 wp.array(np.repeat(moved, 2, axis=0), dtype=wp.vec3),
-                group_indices=[1, 1],
+                deformable_object_indices=[1, 1],
             )
 
-    def test_source_indices_map_value_rows_to_groups(self):
-        """Source rows can be mapped independently to destination groups."""
+    def test_source_indices_map_value_rows_to_objects(self):
+        """Source rows can be mapped independently to destination deformable objects."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy().copy()
-        values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values = np.zeros((4, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values[1].fill(10.0)
         values[3].fill(30.0)
 
         cloth.set_particle_positions(
             state,
             wp.array(values, dtype=wp.vec3, device=model.device),
-            group_indices=[0, 2],
+            deformable_object_indices=[0, 2],
             source_indices=[3, 1],
         )
 
@@ -430,18 +488,18 @@ class TestDeformableSelection(unittest.TestCase):
         np.testing.assert_array_equal(after[2], values[1])
 
     def test_source_indices_map_particle_velocity_rows(self):
-        """Particle velocity writes use the same source-to-group mapping."""
+        """Particle velocity writes use the same source-to-deformable-object mapping."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values = np.zeros((4, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values[0].fill(2.0)
         values[3].fill(7.0)
 
         cloth.set_particle_velocities(
             state,
             wp.array(values, dtype=wp.vec3, device=model.device),
-            group_indices=[1, 2],
+            deformable_object_indices=[1, 2],
             source_indices=[3, 0],
         )
 
@@ -463,7 +521,7 @@ class TestDeformableSelection(unittest.TestCase):
         cable.set_body_transforms(
             state,
             wp.array(values, dtype=wp.transform, device=model.device),
-            group_indices=[0, 2],
+            deformable_object_indices=[0, 2],
             source_indices=[3, 1],
         )
 
@@ -477,14 +535,14 @@ class TestDeformableSelection(unittest.TestCase):
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cable = DeformableCurveView(model, "/World/Cable")
-        values = np.zeros((4, cable.bodies_per_group, 6), dtype=np.float32)
+        values = np.zeros((4, cable.bodies_per_deformable_object, 6), dtype=np.float32)
         values[0, :, 0] = 2.0
         values[3, :, 4] = -5.0
 
         cable.set_body_velocities(
             state,
             wp.array(values, dtype=wp.spatial_vector, device=model.device),
-            group_indices=[1, 2],
+            deformable_object_indices=[1, 2],
             source_indices=[3, 0],
         )
 
@@ -498,7 +556,7 @@ class TestDeformableSelection(unittest.TestCase):
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        values = wp.zeros((4, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
+        values = wp.zeros((4, cloth.particles_per_deformable_object), dtype=wp.vec3, device=model.device)
 
         for invalid_indices in ([-1], [4]):
             with self.subTest(source_indices=invalid_indices):
@@ -506,7 +564,7 @@ class TestDeformableSelection(unittest.TestCase):
                     cloth.set_particle_positions(
                         state,
                         values,
-                        group_indices=[0],
+                        deformable_object_indices=[0],
                         source_indices=invalid_indices,
                     )
 
@@ -516,7 +574,7 @@ class TestDeformableSelection(unittest.TestCase):
                     cloth.set_particle_positions(
                         state,
                         values,
-                        group_indices=[0],
+                        deformable_object_indices=[0],
                         source_indices=invalid_indices,
                     )
 
@@ -524,15 +582,15 @@ class TestDeformableSelection(unittest.TestCase):
             cloth.set_particle_positions(
                 state,
                 values,
-                group_indices=[0, 1],
+                deformable_object_indices=[0, 1],
                 source_indices=[0],
             )
 
-        repeated = np.full((1, cloth.particles_per_group, 3), 6.0, dtype=np.float32)
+        repeated = np.full((1, cloth.particles_per_deformable_object, 3), 6.0, dtype=np.float32)
         cloth.set_particle_positions(
             state,
             wp.array(repeated, dtype=wp.vec3, device=model.device),
-            group_indices=[0, 2],
+            deformable_object_indices=[0, 2],
             source_indices=[0, 0],
         )
         after = cloth.get_particle_positions(state).numpy()
@@ -547,19 +605,19 @@ class TestDeformableSelection(unittest.TestCase):
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
         initial = cloth.get_particle_positions(state).numpy().copy()
-        values_np = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values_np = np.zeros((4, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values_np[0].fill(2.0)
         values_np[1].fill(4.0)
         values_np[2].fill(6.0)
         values_np[3].fill(8.0)
         values = wp.array(values_np, dtype=wp.vec3, device=device)
-        groups = wp.array([0, 2], dtype=wp.int32, device=device)
+        objects = wp.array([0, 2], dtype=wp.int32, device=device)
         sources = wp.array([3, 1], dtype=wp.int32, device=device)
 
         cloth.set_particle_positions(
             state,
             values,
-            group_indices=groups,
+            deformable_object_indices=objects,
             source_indices=sources,
         )
         state.particle_q.assign(model.particle_q)
@@ -568,7 +626,7 @@ class TestDeformableSelection(unittest.TestCase):
             cloth.set_particle_positions(
                 state,
                 values,
-                group_indices=groups,
+                deformable_object_indices=objects,
                 source_indices=sources,
             )
 
@@ -578,7 +636,7 @@ class TestDeformableSelection(unittest.TestCase):
         expected[2] = values_np[1]
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), expected)
 
-        groups.assign(np.array([1, 2], dtype=np.int32))
+        objects.assign(np.array([1, 2], dtype=np.int32))
         sources.assign(np.array([0, 2], dtype=np.int32))
         wp.capture_launch(capture.graph)
         expected[1] = values_np[0]
@@ -591,80 +649,80 @@ class TestDeformableSelection(unittest.TestCase):
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
 
     def test_host_indices_require_integral_values(self):
-        """Host selectors reject lossy coercions before they can write another group."""
+        """Host selectors reject lossy coercions before they can write another deformable object."""
         model = _replicated_model(3, device="cpu")
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        values = wp.full((1, cloth.particles_per_group), 9.0, dtype=wp.vec3, device="cpu")
+        values = wp.full((1, cloth.particles_per_deformable_object), 9.0, dtype=wp.vec3, device="cpu")
 
         for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
             with self.subTest(invalid_indices=invalid_indices):
                 state = model.state()
                 before = cloth.get_particle_positions(state).numpy()
-                with self.assertRaisesRegex(TypeError, "group_indices"):
-                    cloth.set_particle_positions(state, values, group_indices=invalid_indices)
+                with self.assertRaisesRegex(TypeError, "deformable_object_indices"):
+                    cloth.set_particle_positions(state, values, deformable_object_indices=invalid_indices)
                 np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
         state = model.state()
         before = cloth.get_particle_positions(state).numpy()
-        cloth.set_particle_positions(state, values, group_indices=[np.int64(1)])
+        cloth.set_particle_positions(state, values, deformable_object_indices=[np.int64(1)])
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_array_equal(after[1], np.full_like(after[1], 9.0))
 
         state = model.state()
         before = cloth.get_particle_positions(state).numpy()
-        empty_values = wp.empty((0, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
-        cloth.set_particle_positions(state, empty_values, group_indices=[])
+        empty_values = wp.empty((0, cloth.particles_per_deformable_object), dtype=wp.vec3, device="cpu")
+        cloth.set_particle_positions(state, empty_values, deformable_object_indices=[])
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
-    def test_invalid_device_group_index_does_not_write(self):
-        """An out-of-range device group index cannot address another group's state."""
+    def test_invalid_device_object_index_does_not_write(self):
+        """An out-of-range device deformable object index cannot address another deformable object's state."""
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
-        values = np.full((1, cloth.particles_per_group, 3), 17.0, dtype=np.float32)
+        values = np.full((1, cloth.particles_per_deformable_object, 3), 17.0, dtype=np.float32)
 
         cloth.set_particle_positions(
             state,
             wp.array(values, dtype=wp.vec3, device=model.device),
-            group_indices=wp.array([cloth.count], dtype=wp.int32, device=model.device),
+            deformable_object_indices=wp.array([cloth.count], dtype=wp.int32, device=model.device),
         )
 
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
-    def test_device_group_indices_must_be_one_dimensional(self):
+    def test_device_deformable_object_indices_must_be_one_dimensional(self):
         """Device index arrays fail clearly before reaching one-dimensional kernel inputs."""
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
+        values = wp.zeros((1, cloth.particles_per_deformable_object), dtype=wp.vec3, device=model.device)
         indices = wp.zeros((1, 2), dtype=wp.int32, device=model.device)
 
         with self.assertRaisesRegex(ValueError, "one-dimensional"):
-            cloth.set_particle_positions(state, values, group_indices=indices)
+            cloth.set_particle_positions(state, values, deformable_object_indices=indices)
         with self.assertRaisesRegex(ValueError, "source_indices.*one-dimensional"):
-            cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
+            cloth.set_particle_positions(state, values, deformable_object_indices=[0], source_indices=indices)
 
     def test_device_selectors_validate_dtype_and_device(self):
         """Warp selectors must be int32 arrays on the view's device."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
+        values = wp.zeros((1, cloth.particles_per_deformable_object), dtype=wp.vec3, device="cpu")
 
         indices = wp.array([0], dtype=wp.int64, device="cpu")
-        with self.assertRaisesRegex(ValueError, "group_indices dtype int32"):
-            cloth.set_particle_positions(state, values, group_indices=indices)
+        with self.assertRaisesRegex(ValueError, "deformable_object_indices dtype int32"):
+            cloth.set_particle_positions(state, values, deformable_object_indices=indices)
         with self.assertRaisesRegex(ValueError, "source_indices dtype int32"):
-            cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
+            cloth.set_particle_positions(state, values, deformable_object_indices=[0], source_indices=indices)
 
         if wp.is_cuda_available():
             indices = wp.array([0], dtype=wp.int32, device="cuda:0")
-            with self.assertRaisesRegex(ValueError, "group_indices on device cpu"):
-                cloth.set_particle_positions(state, values, group_indices=indices)
+            with self.assertRaisesRegex(ValueError, "deformable_object_indices on device cpu"):
+                cloth.set_particle_positions(state, values, deformable_object_indices=indices)
             with self.assertRaisesRegex(ValueError, "source_indices on device cpu"):
-                cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
+                cloth.set_particle_positions(state, values, deformable_object_indices=[0], source_indices=indices)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_device_index_writes_capture_and_replay(self):
@@ -675,19 +733,19 @@ class TestDeformableSelection(unittest.TestCase):
 
         state = model.state()
         initial = cloth.get_particle_positions(state).numpy().copy()
-        values_np = np.zeros((2, cloth.particles_per_group, 3), dtype=np.float32)
+        values_np = np.zeros((2, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values = wp.array(values_np, dtype=wp.vec3, device=device)
         indices = wp.array([cloth.count, cloth.count], dtype=wp.int32, device=device)
 
         # Compile every captured operation without changing state.
-        cloth.set_particle_positions(state, values, group_indices=indices)
+        cloth.set_particle_positions(state, values, deformable_object_indices=indices)
 
         indices.assign(np.array([1, 1], dtype=np.int32))
         values_np[0].fill(3.0)
         values_np[1].fill(8.0)
         values.assign(values_np)
         with wp.ScopedCapture(device) as capture:
-            cloth.set_particle_positions(state, values, group_indices=indices)
+            cloth.set_particle_positions(state, values, deformable_object_indices=indices)
 
         wp.capture_launch(capture.graph)
         expected = initial.copy()
@@ -741,11 +799,11 @@ class TestDeformableSelection(unittest.TestCase):
                 indices = wp.array([cable.count], dtype=wp.int32, device=device)
 
                 # Warm the captured operations with an ignored index.
-                setter(state, values, group_indices=indices)
+                setter(state, values, deformable_object_indices=indices)
 
                 indices.assign(np.array([1], dtype=np.int32))
                 with wp.ScopedCapture(device) as capture:
-                    setter(state, values, group_indices=indices)
+                    setter(state, values, deformable_object_indices=indices)
 
                 wp.capture_launch(capture.graph)
                 expected = initial.copy()
@@ -758,28 +816,28 @@ class TestDeformableSelection(unittest.TestCase):
                 expected[2] = second[0]
                 np.testing.assert_allclose(getter(state).numpy(), expected, atol=1e-6)
 
-    def test_duplicate_device_group_index_uses_last_value(self):
+    def test_duplicate_device_object_index_uses_last_value(self):
         """Device duplicate indices are deterministic: the last row wins."""
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
         before = cloth.get_particle_positions(state).numpy()
-        values = np.empty((2, cloth.particles_per_group, 3), dtype=np.float32)
+        values = np.empty((2, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values[0].fill(3.0)
         values[1].fill(8.0)
 
         cloth.set_particle_positions(
             state,
             wp.array(values, dtype=wp.vec3, device=model.device),
-            group_indices=wp.array([1, 1], dtype=wp.int32, device=model.device),
+            deformable_object_indices=wp.array([1, 1], dtype=wp.int32, device=model.device),
         )
 
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_array_equal(after[1], values[1])
 
-    def test_single_group_per_world_uses_world_ids(self):
-        """Environment IDs use the flat group axis when each world has one match."""
+    def test_single_object_per_world_uses_world_ids(self):
+        """Environment IDs use the flat deformable object axis when each world has one match."""
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
@@ -790,7 +848,7 @@ class TestDeformableSelection(unittest.TestCase):
         cloth.set_particle_positions(
             state,
             wp.array(moved, dtype=wp.vec3, device=model.device),
-            group_indices=wp.array([2], dtype=wp.int32, device=model.device),
+            deformable_object_indices=wp.array([2], dtype=wp.int32, device=model.device),
         )
 
         after = cloth.get_particle_positions(state).numpy()
@@ -949,11 +1007,11 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         cable = DeformableCurveView(model, "cable")
         self.assertEqual((rigid.count, rigid.world_count, rigid.count_per_world), (3, 3, 1))
         self.assertEqual(rigid.get_root_transforms(model).shape, (3, 1))
-        np.testing.assert_array_equal(cloth.world_starts.numpy(), [0, 1, 1, 2])
-        np.testing.assert_array_equal(soft.world_starts.numpy(), [0, 0, 1, 1])
-        np.testing.assert_array_equal(cable.world_starts.numpy(), [0, 0, 0, 1])
+        np.testing.assert_array_equal(cloth.deformable_object_boundaries.numpy(), [0, 1, 1, 2])
+        np.testing.assert_array_equal(soft.deformable_object_boundaries.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(cable.deformable_object_boundaries.numpy(), [0, 0, 0, 1])
 
-    def test_rigid_view_survives_dropped_curve_group(self):
+    def test_rigid_view_survives_dropped_curve_object(self):
         """Dropping an incomplete curve leaves an unrelated rigid view valid."""
         builder = newton.ModelBuilder()
         _add_test_articulation(builder)
@@ -976,8 +1034,8 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
             DeformableCurveView(model, "anchored_curve")
 
 
-class TestDeformableBuilderGroups(unittest.TestCase):
-    """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
+class TestDeformableBuilderObjects(unittest.TestCase):
+    """Select deformable objects recorded by native builder calls without requiring USD."""
 
     def test_builder_deformable_identities_are_public_and_mutable(self):
         """Applications can rebase deformable labels before finalization."""
@@ -1007,15 +1065,15 @@ class TestDeformableBuilderGroups(unittest.TestCase):
                 view = view_type(model, label)
                 self.assertEqual((view.labels, view.worlds), ([label], [-1]))
 
-    def test_unlabeled_curve_builders_get_default_group_labels(self):
-        """Both Rod topology forms record a group without an explicit label."""
+    def test_unlabeled_curve_builders_get_default_object_labels(self):
+        """Both Rod topology forms record a deformable object without an explicit label."""
         rod_builder = newton.ModelBuilder()
         rod_builder.add_rod(
             rod=newton.Rod(_CABLE_PTS, radius=0.02),
             body_frame_origin="com",
         )
         rod = DeformableCurveView(rod_builder.finalize(), "curve_0")
-        self.assertEqual((rod.labels, rod.bodies_per_group), (["curve_0"], 3))
+        self.assertEqual((rod.labels, rod.bodies_per_deformable_object), (["curve_0"], 3))
 
         graph_builder = newton.ModelBuilder()
         graph_builder.add_rod(
@@ -1023,14 +1081,14 @@ class TestDeformableBuilderGroups(unittest.TestCase):
             body_frame_origin="com",
         )
         graph = DeformableCurveView(graph_builder.finalize(), "curve_0")
-        self.assertEqual((graph.labels, graph.bodies_per_group), (["curve_0"], 3))
+        self.assertEqual((graph.labels, graph.bodies_per_deformable_object), (["curve_0"], 3))
 
-    def test_unlabeled_volume_builders_get_default_group_labels(self):
-        """Mesh and grid volume constructors record a group without an explicit label."""
+    def test_unlabeled_volume_builders_get_default_object_labels(self):
+        """Mesh and grid volume constructors record a deformable object without an explicit label."""
         mesh_builder = newton.ModelBuilder()
         _add_test_soft_body(mesh_builder, label=None)
         mesh = DeformableVolumeView(mesh_builder.finalize(), "volume_0")
-        self.assertEqual((mesh.labels, mesh.particles_per_group), (["volume_0"], 4))
+        self.assertEqual((mesh.labels, mesh.particles_per_deformable_object), (["volume_0"], 4))
 
         grid_builder = newton.ModelBuilder()
         grid_builder.add_soft_grid(
@@ -1049,9 +1107,9 @@ class TestDeformableBuilderGroups(unittest.TestCase):
             k_damp=0.0,
         )
         grid = DeformableVolumeView(grid_builder.finalize(), "volume_0")
-        self.assertEqual((grid.labels, grid.particles_per_group), (["volume_0"], 8))
+        self.assertEqual((grid.labels, grid.particles_per_deformable_object), (["volume_0"], 8))
 
-    def test_default_group_labels_survive_replication(self):
+    def test_default_object_labels_survive_replication(self):
         """Generated identities remain selectable after builder replication."""
         prototype = newton.ModelBuilder()
         _add_test_cable(prototype, label=None)
@@ -1103,8 +1161,8 @@ class TestDeformableBuilderGroups(unittest.TestCase):
                 view = view_type(model, label)
                 self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
 
-    def test_labeled_curve_builders_record_one_complete_group(self):
-        """Public rod builders hide their nested construction from group selection."""
+    def test_labeled_curve_builders_record_one_complete_object(self):
+        """Public rod builders hide their nested construction from deformable object selection."""
         closed_builder = newton.ModelBuilder()
         closed_builder.add_rod(
             rod=newton.Rod(
@@ -1116,9 +1174,9 @@ class TestDeformableBuilderGroups(unittest.TestCase):
             body_frame_origin="com",
         )
         closed = DeformableCurveView(closed_builder.finalize(), "closed")
-        self.assertEqual((closed.count, closed.elements_per_group("body")), (1, 3))
-        # Native groups include the automatic free root as well as the rod joints.
-        self.assertEqual(closed.elements_per_group("joint"), 4)
+        self.assertEqual((closed.count, closed.elements_per_deformable_object("body")), (1, 3))
+        # Native deformable objects include the automatic free root as well as the rod joints.
+        self.assertEqual(closed.elements_per_deformable_object("joint"), 4)
         self.assertEqual(closed_builder.joint_type[0], newton.JointType.FREE)
 
         graph_builder = newton.ModelBuilder()
@@ -1132,12 +1190,12 @@ class TestDeformableBuilderGroups(unittest.TestCase):
             body_frame_origin="com",
         )
         graph = DeformableCurveView(graph_builder.finalize(), "graph")
-        self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
-        self.assertEqual(graph.elements_per_group("joint"), 3)
+        self.assertEqual((graph.count, graph.elements_per_deformable_object("body")), (1, 3))
+        self.assertEqual(graph.elements_per_deformable_object("joint"), 3)
         self.assertEqual(graph_builder.joint_type[0], newton.JointType.FREE)
 
-    def test_deprecated_curve_inputs_still_record_groups(self):
-        """Deprecated rod inputs keep their group-selection behavior."""
+    def test_deprecated_curve_inputs_still_record_objects(self):
+        """Deprecated rod inputs keep their deformable-object selection behavior."""
         chain_builder = newton.ModelBuilder()
         with self.assertWarns(DeprecationWarning):
             chain_builder.add_rod(
@@ -1147,7 +1205,7 @@ class TestDeformableBuilderGroups(unittest.TestCase):
                 body_frame_origin="com",
             )
         chain = DeformableCurveView(chain_builder.finalize(), "legacy_chain")
-        self.assertEqual((chain.count, chain.bodies_per_group), (1, 3))
+        self.assertEqual((chain.count, chain.bodies_per_deformable_object), (1, 3))
 
         graph_builder = newton.ModelBuilder()
         with self.assertWarns(DeprecationWarning):
@@ -1159,10 +1217,10 @@ class TestDeformableBuilderGroups(unittest.TestCase):
                 body_frame_origin="com",
             )
         graph = DeformableCurveView(graph_builder.finalize(), "legacy_graph")
-        self.assertEqual((graph.count, graph.bodies_per_group), (1, 3))
+        self.assertEqual((graph.count, graph.bodies_per_deformable_object), (1, 3))
 
     def test_mixed_native_deformables_replicate_with_offset_ranges(self):
-        """Curve, surface, and volume groups retain disjoint ranges after replication."""
+        """Curve, surface, and volume deformable objects retain disjoint ranges after replication."""
         prototype = newton.ModelBuilder()
 
         # Curve first: three segment bodies, two rod joints, and a free root.
@@ -1204,14 +1262,14 @@ class TestDeformableBuilderGroups(unittest.TestCase):
 
         curve = DeformableCurveView(model, "curve")
         self.assertEqual((curve.count, curve.worlds, curve.count_per_world), (2, [0, 1], 1))
-        np.testing.assert_array_equal(curve.world_starts.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(curve.deformable_object_boundaries.numpy(), [0, 1, 2])
         self.assertEqual(curve.ranges("body"), [(0, 3), (3, 6)])
         self.assertEqual(curve.ranges("joint"), [(0, 3), (3, 6)])
         self.assertEqual(curve.get_body_transforms(state).shape, (2, 3))
 
         surface = DeformableSurfaceView(model, "surface")
         self.assertEqual((surface.count, surface.worlds, surface.count_per_world), (2, [0, 1], 1))
-        np.testing.assert_array_equal(surface.world_starts.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(surface.deformable_object_boundaries.numpy(), [0, 1, 2])
         self.assertEqual(surface.ranges("particle"), [(0, 4), (12, 16)])
         self.assertEqual(surface.ranges("triangle"), [(0, 2), (14, 16)])
         self.assertEqual(surface.ranges("edge"), [(0, 5), (23, 28)])
@@ -1219,7 +1277,7 @@ class TestDeformableBuilderGroups(unittest.TestCase):
 
         volume = DeformableVolumeView(model, "volume")
         self.assertEqual((volume.count, volume.worlds, volume.count_per_world), (2, [0, 1], 1))
-        np.testing.assert_array_equal(volume.world_starts.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(volume.deformable_object_boundaries.numpy(), [0, 1, 2])
         self.assertEqual(volume.ranges("particle"), [(4, 12), (16, 24)])
         self.assertEqual(volume.ranges("tetrahedron"), [(0, 5), (5, 10)])
         self.assertEqual(volume.get_particle_positions(state).shape, (2, 8))
@@ -1256,14 +1314,14 @@ class TestDeformableBuilderGroups(unittest.TestCase):
         state = model.state()
 
         soft = DeformableVolumeView(model, "soft_proto")
-        self.assertEqual((soft.count, soft.worlds, soft.particles_per_group), (2, [0, 1], 4))
+        self.assertEqual((soft.count, soft.worlds, soft.particles_per_deformable_object), (2, [0, 1], 4))
         (r0, r1) = soft.ranges("particle")
         self.assertEqual(r1[0] - r0[0], 4)
         self.assertNotEqual(r0, r1)
 
         cable = DeformableCurveView(model, "cable_proto")
-        self.assertEqual((cable.count, cable.worlds, cable.bodies_per_group), (2, [0, 1], 2))
-        self.assertEqual(cable.elements_per_group("joint"), 2)
+        self.assertEqual((cable.count, cable.worlds, cable.bodies_per_deformable_object), (2, [0, 1], 2))
+        self.assertEqual(cable.elements_per_deformable_object("joint"), 2)
 
         # State access round-trips through the offset ranges.
         positions = soft.get_particle_positions(state)
@@ -1272,8 +1330,8 @@ class TestDeformableBuilderGroups(unittest.TestCase):
         soft.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
         np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), lifted, atol=1e-6)
 
-    def test_unlabeled_cloth_gets_a_default_group_label(self):
-        """A cloth group exists even when the caller does not provide its label."""
+    def test_unlabeled_cloth_gets_a_default_object_label(self):
+        """A cloth deformable object exists even when the caller does not provide its label."""
         builder = newton.ModelBuilder()
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 1.0),
@@ -1289,7 +1347,7 @@ class TestDeformableBuilderGroups(unittest.TestCase):
         self.assertEqual(view.labels, ["surface_0"])
         self.assertEqual(view.ranges("particle"), [(0, 4)])
 
-    def test_fixed_joint_collapse_drops_incomplete_curve_group(self):
+    def test_fixed_joint_collapse_drops_incomplete_curve_object(self):
         """A label does not prevent collapse; an incomplete curve is not selectable."""
         builder = newton.ModelBuilder()
         bodies, joints = builder.add_rod(
@@ -1336,7 +1394,7 @@ class TestDeformableBuilderGroups(unittest.TestCase):
         self.assertEqual(labeled.joint_type, unlabeled.joint_type)
 
     def test_fixed_joint_collapse_preserves_explicitly_kept_curve(self):
-        """joints_to_keep retains a complete curve group when requested."""
+        """joints_to_keep retains a complete curve deformable object when requested."""
         builder = newton.ModelBuilder()
         bodies, joints = builder.add_rod(
             rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
@@ -1358,7 +1416,7 @@ class TestDeformableBuilderGroups(unittest.TestCase):
         self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 2))
 
     def test_labeled_soft_grid_is_selectable(self):
-        """A labeled soft grid records one selectable volume group."""
+        """A labeled soft grid records one selectable volume deformable object."""
         builder = newton.ModelBuilder()
         builder.add_soft_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),

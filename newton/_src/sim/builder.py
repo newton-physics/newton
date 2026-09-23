@@ -71,7 +71,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
-from .model import Model, _DeformableGroup, _pack_shape_pair_codes
+from .model import Model, _DeformableObjectRecord, _pack_shape_pair_codes
 from .rod import Rod
 
 if TYPE_CHECKING:
@@ -1877,86 +1877,92 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # One entry describes each recorded deformable group. Public labels and worlds mirror
+        # One entry describes each recorded deformable object. Public labels and worlds mirror
         # articulation_label/articulation_world so applications can rebase identities before
         # finalization. add_builder() and replicate() preserve the entries and assign their
         # destination worlds. Private [start, end) ranges locate simulation data in builder
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
-        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableCurveView`, aligned with :attr:`curve_world`.
+        """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
+
+        Used by :class:`~newton.selection.DeformableCurveView`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self.curve_world: list[int] = []
         """World index corresponding to each entry in :attr:`curve_label`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self._curve_body_start: list[int] = []
-        """Inclusive body-range start of each curve group."""
+        """Inclusive body-range start of each deformable curve."""
         self._curve_body_end: list[int] = []
-        """Exclusive body-range end of each curve group."""
+        """Exclusive body-range end of each deformable curve."""
         self._curve_joint_start: list[int] = []
-        """Inclusive joint-range start of each curve group."""
+        """Inclusive joint-range start of each deformable curve."""
         self._curve_joint_end: list[int] = []
-        """Exclusive joint-range end of each curve group."""
-        self._curve_group_recording_suppressed: int = 0
-        """Nesting depth for private curve-group recording suppression."""
+        """Exclusive joint-range end of each deformable curve."""
+        self._curve_object_recording_suppressed: int = 0
+        """Nesting depth for private deformable-curve recording suppression."""
 
         self.surface_label: list[str] = []
-        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableSurfaceView`, aligned with :attr:`surface_world`.
+        """Labels of deformable objects represented by triangle surfaces, aligned with :attr:`surface_world`.
+
+        Used by :class:`~newton.selection.DeformableSurfaceView`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self.surface_world: list[int] = []
         """World index corresponding to each entry in :attr:`surface_label`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self._surface_particle_start: list[int] = []
-        """Inclusive particle-range start of each surface group."""
+        """Inclusive particle-range start of each deformable surface."""
         self._surface_particle_end: list[int] = []
-        """Exclusive particle-range end of each surface group."""
+        """Exclusive particle-range end of each deformable surface."""
         self._surface_tri_start: list[int] = []
-        """Inclusive triangle-range start of each surface group."""
+        """Inclusive triangle-range start of each deformable surface."""
         self._surface_tri_end: list[int] = []
-        """Exclusive triangle-range end of each surface group."""
+        """Exclusive triangle-range end of each deformable surface."""
         self._surface_edge_start: list[int] = []
-        """Inclusive edge-range start of each surface group."""
+        """Inclusive edge-range start of each deformable surface."""
         self._surface_edge_end: list[int] = []
-        """Exclusive edge-range end of each surface group."""
+        """Exclusive edge-range end of each deformable surface."""
 
         self.volume_label: list[str] = []
-        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableVolumeView`, aligned with :attr:`volume_world`.
+        """Labels of deformable objects represented by tetrahedral volumes, aligned with :attr:`volume_world`.
+
+        Used by :class:`~newton.selection.DeformableVolumeView`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self.volume_world: list[int] = []
         """World index corresponding to each entry in :attr:`volume_label`.
 
         .. experimental::
 
-           Builder-time deformable group identities may change without notice.
+           Builder-time deformable object identities may change without notice.
         """
         self._volume_particle_start: list[int] = []
-        """Inclusive particle-range start of each volume group."""
+        """Inclusive particle-range start of each deformable volume."""
         self._volume_particle_end: list[int] = []
-        """Exclusive particle-range end of each volume group."""
+        """Exclusive particle-range end of each deformable volume."""
         self._volume_tet_start: list[int] = []
-        """Inclusive tetrahedron-range start of each volume group."""
+        """Inclusive tetrahedron-range start of each deformable volume."""
         self._volume_tet_end: list[int] = []
-        """Exclusive tetrahedron-range end of each volume group."""
+        """Exclusive tetrahedron-range end of each deformable volume."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -3861,14 +3867,14 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
-    def _record_curve_group(
+    def _record_curve_deformable_object(
         self,
         label: str | None,
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register a curve as an addressable, world-tagged group."""
-        if self._curve_group_recording_suppressed:
+        """Register a curve as an addressable, world-tagged deformable object."""
+        if self._curve_object_recording_suppressed:
             return
         label = label or f"curve_{len(self.curve_label)}"
         self.curve_label.append(label)
@@ -3879,22 +3885,22 @@ class ModelBuilder:
         self._curve_joint_end.append(joint_range[1])
 
     @contextmanager
-    def _suppress_curve_group_recording(self) -> Iterator[None]:
-        """Temporarily let internal callers choose a different curve grouping."""
-        self._curve_group_recording_suppressed += 1
+    def _suppress_curve_object_recording(self) -> Iterator[None]:
+        """Let internal callers record complete curves instead of their construction parts."""
+        self._curve_object_recording_suppressed += 1
         try:
             yield
         finally:
-            self._curve_group_recording_suppressed -= 1
+            self._curve_object_recording_suppressed -= 1
 
-    def _record_surface_group(
+    def _record_surface_deformable_object(
         self,
         label: str | None,
         particle_range: tuple[int, int],
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register a surface as an addressable, world-tagged group."""
+        """Register a surface as an addressable, world-tagged deformable object."""
         label = label or f"surface_{len(self.surface_label)}"
         self.surface_label.append(label)
         self.surface_world.append(self.current_world)
@@ -3905,13 +3911,13 @@ class ModelBuilder:
         self._surface_edge_start.append(edge_range[0])
         self._surface_edge_end.append(edge_range[1])
 
-    def _record_volume_group(
+    def _record_volume_deformable_object(
         self,
         label: str | None,
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register a volume as an addressable, world-tagged group."""
+        """Register a volume as an addressable, world-tagged deformable object."""
         label = label or f"volume_{len(self.volume_label)}"
         self.volume_label.append(label)
         self.volume_world.append(self.current_world)
@@ -6901,7 +6907,7 @@ class ModelBuilder:
         # Reindex retained bodies in their original relative order: DFS discovery order
         # would reorder bodies whenever a loop-closing joint (e.g. an attachment anchor)
         # reaches a body before its chain root, breaking parent < child joint ordering
-        # and the contiguity of recorded group ranges.
+        # and the contiguity of recorded deformable object ranges.
         retained_bodies.sort()
         for new_id, original_id in enumerate(retained_bodies):
             body_data[original_id]["id"] = new_id
@@ -7037,7 +7043,7 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild curve group ranges after reindexing. A group remains selectable only when
+        # Rebuild deformable curve ranges after reindexing. A deformable object remains selectable only when
         # every one of its simulation bodies and joints survived collapse; exposing a partial
         # range would misrepresent the original curve topology.
         curve_records = []
@@ -7063,9 +7069,9 @@ class ModelBuilder:
             )
             if not old_bodies or not bodies_complete or not joints_complete:
                 warnings.warn(
-                    f"Curve group '{label}' is unavailable after collapse_fixed_joints because one or more "
+                    f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
                     "of its segment bodies or joints were removed; pass the relevant fixed joint through "
-                    "joints_to_keep to preserve the complete group.",
+                    "joints_to_keep to preserve the complete deformable object.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -9161,7 +9167,7 @@ class ModelBuilder:
                 to include the closing segment. When using ``rod``, pass
                 ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                selectable curve group. If None, the group receives a generated ``curve_N``
+                selectable deformable curve. If None, the deformable object receives a generated ``curve_N``
                 label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates
@@ -9267,7 +9273,7 @@ class ModelBuilder:
                 color=color,
                 body_frame_origin=body_frame_origin,
             )
-            self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
             return result
 
         assert positions is not None
@@ -9295,7 +9301,7 @@ class ModelBuilder:
             color=color,
             body_frame_origin=body_frame_origin,
         )
-        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
 
     def add_rod_graph(
@@ -9366,7 +9372,7 @@ class ModelBuilder:
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                selectable curve group. If None, the group receives a generated ``curve_N``
+                selectable deformable curve. If None, the deformable object receives a generated ``curve_N``
                 label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, places each connected component's generated joints and a
@@ -9424,7 +9430,7 @@ class ModelBuilder:
             color=color,
             body_frame_origin=body_frame_origin,
         )
-        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
         return result
 
     def _add_rod_graph(
@@ -10565,7 +10571,7 @@ class ModelBuilder:
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
-                The same name labels the selectable surface group; if None, the group receives
+                The same name labels the selectable deformable surface; if None, the deformable object receives
                 a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
             color: Display color in [0, 1] for the cloth surface. If a single
                 RGB value, applied to all triangles. If array-like, RGB values
@@ -10710,7 +10716,7 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify this cloth.
-                The same name labels the selectable surface group; if None, the group receives
+                The same name labels the selectable deformable surface; if None, the deformable object receives
                 a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
 
         Note:
@@ -10807,7 +10813,7 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-        self._record_surface_group(
+        self._record_surface_deformable_object(
             label,
             (start_vertex, len(self.particle_q)),
             (start_tri, end_tri),
@@ -10990,7 +10996,7 @@ class ModelBuilder:
             opacity: Display opacity in [0, 1] for the generated surface mesh.
                 If scalar, applied to all triangles. If array-like, values are
                 applied per triangle.
-            label: Optional name for the selectable volume group. If None, the group receives
+            label: Optional name for the selectable deformable volume. If None, the deformable object receives
                 a generated ``volume_N`` label. Currently unused by mesh-quality diagnostics
                 because the generated grid is degenerate-free by construction. See
                 :class:`~newton.selection.DeformableVolumeView`.
@@ -11100,7 +11106,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_volume_deformable_object(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     def add_soft_mesh(
         self,
@@ -11179,7 +11185,7 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
                 ``validate_mesh=True`` can identify this soft body. The same name labels the
-                selectable volume group; if None, the group receives a generated ``volume_N``
+                selectable deformable volume; if None, the deformable object receives a generated ``volume_N``
                 label. See :class:`~newton.selection.DeformableVolumeView`.
 
         Note:
@@ -11334,7 +11340,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_volume_deformable_object(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -14017,21 +14023,21 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
-            # Combine public group identities and private simulation ranges into finalized
+            # Combine public deformable object identities and private simulation ranges into finalized
             # records. The selection views are the public interface for selecting those records and
             # accessing their state and topology.
-            deformable_groups: list[_DeformableGroup] = []
+            deformable_objects: list[_DeformableObjectRecord] = []
 
-            def _append_deformable_group_records(
+            def _append_deformable_object_records(
                 family: str,
                 kinds: tuple[tuple[str, str], ...],
             ) -> None:
                 labels = getattr(self, f"{family}_label")
                 worlds = getattr(self, f"{family}_world")
                 for i, label in enumerate(labels):
-                    deformable_groups.append(
-                        _DeformableGroup(
-                            id=len(deformable_groups),
+                    deformable_objects.append(
+                        _DeformableObjectRecord(
+                            id=len(deformable_objects),
                             family=family,
                             label=label,
                             world=worlds[i],
@@ -14045,12 +14051,12 @@ class ModelBuilder:
                         )
                     )
 
-            _append_deformable_group_records("curve", (("body", "body"), ("joint", "joint")))
-            _append_deformable_group_records(
+            _append_deformable_object_records("curve", (("body", "body"), ("joint", "joint")))
+            _append_deformable_object_records(
                 "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
             )
-            _append_deformable_group_records("volume", (("particle", "particle"), ("tet", "tetrahedron")))
-            m._deformable_groups = tuple(deformable_groups)
+            _append_deformable_object_records("volume", (("particle", "particle"), ("tet", "tetrahedron")))
+            m._deformable_objects = tuple(deformable_objects)
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)

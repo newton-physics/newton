@@ -339,28 +339,29 @@ resolved element type under ``simulation``; a legacy untyped mass entry is also 
 ``legacy_implicit_type``.
 
 On the finalized
-:class:`~newton.Model`, select groups by label pattern with
+:class:`~newton.Model`, select deformable objects by label pattern with
 :class:`~newton.selection.DeformableCurveView`,
 :class:`~newton.selection.DeformableSurfaceView`, or
 :class:`~newton.selection.DeformableVolumeView` (following
 :class:`~newton.selection.ArticulationView`). Each view batches its family's state on one flat
-group axis as ``(group_count, elements_per_group)`` arrays. The class supplies the family
+deformable object axis as ``(count, elements_per_deformable_object)`` arrays. The class supplies the family
 filter, so a broad pattern still selects only that family.
-``world_starts`` partitions the flat axis by model world, including empty worlds, and
-``world_ids`` identifies the world of every group. Setters use ``group_indices`` to select flat
+``deformable_object_ranges()`` returns selected deformable-object ranges by world, including empty worlds.
+``deformable_object_boundaries`` stores the same ranges as a device-side boundaries array, and
+``world_ids`` identifies the world of every deformable object. Setters use ``deformable_object_indices`` to select flat
 destination rows and optional ``source_indices`` to select rows from the supplied values. When
-exactly one group matches in each world, the flat group indices coincide with model world IDs.
+exactly one deformable object matches in each world, the flat deformable object indices coincide with model world IDs.
 Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
 zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
-first call and can be replayed in a CUDA graph. The view also exposes raw per-group ranges
+first call and can be replayed in a CUDA graph. The view also exposes raw per-deformable-object ranges
 (``ranges(kind)``) for deformables with different element counts
 and for consumers that need slices of the flat model arrays. The ranges stay valid through
 :meth:`~newton.ModelBuilder.finalize`,
 :meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
-one group per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
+one deformable object per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
 survive (its ranges follow their new indices). Deformable labels do not change which fixed
 joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
-group is omitted with a warning; pass the relevant joint through
+deformable object record is omitted with a warning; pass the relevant joint through
 ``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
 See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
 
@@ -421,8 +422,8 @@ ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
     # Post-finalize selection by label pattern:
     cable = newton.selection.DeformableCurveView(model, "/World/Cable")
     ((body_start, body_end),) = cable.ranges("body")
-    # With one matching cable per world, flat group indices equal model world IDs.
-    cable.set_body_velocities(state, reset_velocities, group_indices=environment_ids)
+    # With one matching cable per world, flat deformable object indices equal model world IDs.
+    cable.set_body_velocities(state, reset_velocities, deformable_object_indices=environment_ids)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
