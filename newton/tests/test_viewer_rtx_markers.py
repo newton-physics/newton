@@ -12,7 +12,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX
 
 if USD_AVAILABLE:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+    from pxr import Gf, Usd, UsdGeom, UsdShade
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -31,6 +31,11 @@ class TestViewerRTXMarkers(unittest.TestCase):
         xforms = wp.array([wp.transform_identity()] * count, dtype=wp.transform, device="cpu")
         colors = wp.array([color] * count, dtype=wp.vec3, device="cpu")
         self.viewer.log_shapes("/markers/spheres", newton.GeoType.SPHERE, 0.1, xforms, colors, hidden=hidden)
+
+    def _stage_from_usda(self, content):
+        stage = Usd.Stage.CreateInMemory()
+        self.assertTrue(stage.GetRootLayer().ImportFromString(content))
+        return stage
 
     def test_add_markers_after_first_frame(self):
         """Register mesh prototypes and instances after rendering starts."""
@@ -85,11 +90,10 @@ class TestViewerRTXMarkers(unittest.TestCase):
         """Keep material bindings valid when a runtime batch is referenced elsewhere."""
         self._log_spheres(2, color=(0.0, 1.0, 0.0))
         content = self.viewer._rtx.add_usd_reference_from_string.call_args.args[0]
-        layer = Sdf.Layer.CreateAnonymous()
-        self.assertTrue(layer.ImportFromString(content))
+        source_stage = self._stage_from_usda(content)
         stage = Usd.Stage.CreateInMemory()
         root = stage.DefinePrim("/Referenced")
-        root.GetReferences().AddReference(layer.identifier)
+        root.GetReferences().AddReference(source_stage.GetRootLayer().identifier)
         mesh = stage.GetPrimAtPath("/Referenced/instance_0")
         material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
         self.assertTrue(material)
@@ -207,9 +211,7 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.viewer.log_lines("/lines", starts, ends, (0.0, 1.0, 0.0))
         first_xforms = self.viewer._pending_xforms["/lines"][0].numpy()
         content = self.viewer._rtx.add_usd_reference_from_string.call_args.args[0]
-        layer = Sdf.Layer.CreateAnonymous()
-        self.assertTrue(layer.ImportFromString(content))
-        stage = Usd.Stage.Open(layer)
+        stage = self._stage_from_usda(content)
         emissive_colors = [
             UsdShade.Shader(prim).GetInput("emissiveColor").Get()
             for prim in stage.Traverse()
