@@ -23,7 +23,7 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl._common import (
-    _invert_spd_block_kernel,
+    _make_invert_spd_block_kernel,
     _null_space_projector_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
@@ -201,15 +201,14 @@ def test_invert_spd_block_matches_numpy_inverse(test, device):
         spd_matrix_np[block_idx, :n, :n] = random_matrix @ random_matrix.T + n * np.eye(n, dtype=np.float32)
         expected_inv_np[block_idx, :n, :n] = np.linalg.inv(spd_matrix_np[block_idx, :n, :n])
 
-    # Preallocate scratch and outputs, then launch the kernel under test.
+    # Preallocate outputs, then launch the kernel under test.
     spd_matrix = wp.array(spd_matrix_np, dtype=float, device=device)
     block_dim = wp.array(block_sizes, dtype=wp.int32, device=device)
-    cholesky_factor = wp.zeros((2, max_dim, max_dim), dtype=float, device=device)
     spd_matrix_inv = wp.zeros((2, max_dim, max_dim), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=2,
-        inputs=[spd_matrix, block_dim, cholesky_factor],
+        _make_invert_spd_block_kernel(max_dim),
+        dim=(2, max_dim),
+        inputs=[spd_matrix, block_dim],
         outputs=[spd_matrix_inv],
         device=device,
     )
@@ -515,12 +514,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         device=device,
     )
 
-    mass_matrix_cholesky = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
     mass_matrix_inv = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[mass_matrix, dof_count, mass_matrix_cholesky],
+        _make_invert_spd_block_kernel(max_dofs),
+        dim=(1, max_dofs),
+        inputs=[mass_matrix, dof_count],
         outputs=[mass_matrix_inv],
         device=device,
     )
@@ -534,12 +532,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         outputs=[operational_space_mass_matrix_inv],
         device=device,
     )
-    operational_space_mass_matrix_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
     operational_space_mass_matrix = wp.zeros((1, 6, 6), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[operational_space_mass_matrix_inv, task_dim, operational_space_mass_matrix_cholesky],
+        _make_invert_spd_block_kernel(6),
+        dim=(1, 6),
+        inputs=[operational_space_mass_matrix_inv, task_dim],
         outputs=[operational_space_mass_matrix],
         device=device,
     )
@@ -553,12 +550,11 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         outputs=[jacobian_times_jacobian_transpose],
         device=device,
     )
-    jacobian_times_jacobian_transpose_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
     jacobian_times_jacobian_transpose_inv = wp.zeros((1, 6, 6), dtype=float, device=device)
     wp.launch(
-        _invert_spd_block_kernel,
-        dim=1,
-        inputs=[jacobian_times_jacobian_transpose, task_dim, jacobian_times_jacobian_transpose_cholesky],
+        _make_invert_spd_block_kernel(6),
+        dim=(1, 6),
+        inputs=[jacobian_times_jacobian_transpose, task_dim],
         outputs=[jacobian_times_jacobian_transpose_inv],
         device=device,
     )

@@ -1,0 +1,1 @@
+Speed up the model-free controllers: read ports bound to plain arrays and write plain-array outputs in place instead of copying them every step, invert the operational-space mass matrices one column per thread, and compute the joint impedance law in a single kernel.

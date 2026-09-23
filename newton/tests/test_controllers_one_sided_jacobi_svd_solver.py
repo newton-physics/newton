@@ -6,11 +6,17 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 import numpy as np
 import warp as wp
 
-from newton._src.controllers.impl.differential_ik._common import _svd_one_sided_jacobi_kernel
+from newton._src.controllers.impl.differential_ik._common import (
+    _JACOBI_SVD_MAX_SWEEPS,
+    _JACOBI_SVD_TOL,
+    _svd_one_sided_jacobi,
+    _svd_one_sided_jacobi_kernel,
+)
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -144,6 +150,47 @@ def test_svd_one_sided_jacobi_handles_more_columns_than_rows(test: unittest.Test
     np.testing.assert_allclose(s_np[3:], [0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(u_np[:, :3] @ np.diag(s_np[:3]) @ v_np[:, :3].T, a_np, atol=1e-4)
     np.testing.assert_allclose(u_np.T @ u_np, np.eye(3), atol=1e-5)
+
+
+@wp.kernel
+def _svd_sweep_count_kernel(
+    matrix: wp.array[Any],
+    n_columns: wp.array[wp.int32],
+    tol: wp.float32,
+    max_sweeps: wp.int32,
+    sweeps: wp.array[wp.int32],
+):
+    idx = wp.tid()
+    _u, _s, _v, used_sweeps = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
+    sweeps[idx] = used_sweeps
+
+
+def test_svd_one_sided_jacobi_converges_for_more_columns_than_rows(test: unittest.TestCase, device):
+    """Verify redundant-arm Jacobians (6x7) converge well within the sweep budget at the controller's tolerance.
+
+    Regression test: seven columns in six dimensions can never all be
+    orthogonal, so one converges to a numerically zero column whose
+    rounding-level correlations never dropped below ``tol``, and every
+    call ran all ``max_sweeps`` sweeps.
+    """
+    rng = np.random.default_rng(42)
+    a_np = rng.normal(size=(256, 6, 7)).astype(np.float32)
+    matrix = wp.array3d(a_np, dtype=wp.float32, device=device).view(wp.types.matrix(shape=(6, 7), dtype=wp.float32))
+    n_columns = wp.full(256, 7, dtype=wp.int32, device=device)
+    sweeps = wp.zeros(256, dtype=wp.int32, device=device)
+    wp.launch(
+        _svd_sweep_count_kernel,
+        dim=256,
+        inputs=[matrix, n_columns, _JACOBI_SVD_TOL, _JACOBI_SVD_MAX_SWEEPS],
+        outputs=[sweeps],
+        device=device,
+    )
+    test.assertLessEqual(int(sweeps.numpy().max()), 10)
+
+    u, s, v = _run_svd(a_np, [7] * 256, device, tol=float(_JACOBI_SVD_TOL))
+    reconstruction = np.einsum("bij,bj,bkj->bik", u, s[:, :6], v[:, :, :6])
+    np.testing.assert_allclose(reconstruction, a_np, atol=1e-4)
+    np.testing.assert_allclose(s[:, :6], np.linalg.svd(a_np.astype(np.float64), compute_uv=False), atol=1e-4)
 
 
 def test_svd_one_sided_jacobi_batch_has_no_cross_talk_with_heterogeneous_n_columns(test: unittest.TestCase, device):
@@ -287,6 +334,12 @@ add_function_test(
     TestOneSidedJacobiSvdSolver,
     "test_svd_one_sided_jacobi_handles_more_columns_than_rows",
     test_svd_one_sided_jacobi_handles_more_columns_than_rows,
+    devices=devices,
+)
+add_function_test(
+    TestOneSidedJacobiSvdSolver,
+    "test_svd_one_sided_jacobi_converges_for_more_columns_than_rows",
+    test_svd_one_sided_jacobi_converges_for_more_columns_than_rows,
     devices=devices,
 )
 add_function_test(

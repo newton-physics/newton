@@ -147,7 +147,7 @@ def _gather_task_error_kernel(
 # path to get wrong for a heterogeneous fleet mixing DOF counts. This only
 # breaks down at exactly λ = 0 (DifferentialIKMethod.PSEUDO_INVERSE): JJᵀ is then
 # rank-deficient whenever dof_count is below the robot's own task dimension,
-# and while the Cholesky pivot floor in _invert_spd_block_kernel keeps that
+# and while the Cholesky pivot floor in _make_invert_spd_block_kernel keeps that
 # from producing NaN, it does not produce a meaningful pseudo-inverse in
 # that regime, so DifferentialIKMethod.PSEUDO_INVERSE requires every robot to have at
 # least as many controlled DOFs as its own task dimension.
@@ -191,7 +191,7 @@ def _damped_pinv_singular_value(sigma: float, lam: float):
     corresponding singular values of its (damped) pseudo-inverse -- with
     ``λ = 0`` this would be exactly ``1/sigma`` (a zero-guard keeps it
     finite at ``sigma = 0``, since the eigenvalue analog of that pivot floor
-    is ``_invert_spd_block_kernel``'s Cholesky pivot floor elsewhere in this
+    is ``_make_invert_spd_block_kernel``'s Cholesky pivot floor elsewhere in this
     codebase); damping shifts it smoothly toward ``0`` as ``sigma`` shrinks
     instead of blowing up near a singularity. The same formula, with a
     different ``λ`` each time, is every matrix-inverting
@@ -632,6 +632,18 @@ def _integrate_position_kernel(
 
 
 @wp.func
+def _unit_roundoff(x: wp.float32):
+    """Unit roundoff of ``float32``, half its machine epsilon."""
+    return wp.float32(5.9604645e-08)  # 2**-24
+
+
+@wp.func
+def _unit_roundoff(x: wp.float64):
+    """Unit roundoff of ``float64``, half its machine epsilon."""
+    return wp.float64(1.1102230246251565e-16)  # 2**-53
+
+
+@wp.func
 def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     """One-sided (Hestenes) Jacobi SVD of a small (possibly non-square) matrix, ``A = U @ diag(S) @ Vᵀ``.
 
@@ -656,7 +668,7 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     to contribute nothing. Padding is not a safety requirement here the way
     it is for ``symmetric_eigenvalues_qr``: an all-zero padding column has
     zero norm, which this function's own convergence check already treats
-    as trivially converged (see ``denominator > zero`` below), so it would
+    as trivially converged (see ``negligible_sq`` below), so it would
     still terminate cleanly with ``n_columns`` left at ``A``'s full column count.
 
     Args:
@@ -676,7 +688,7 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
             expected well before this for any well-scaled small matrix.
 
     Returns:
-        ``(U, S, V)`` such that ``A = U @ diag(S) @ Vᵀ`` over the leftmost
+        ``(U, S, V, sweeps)`` such that ``A = U @ diag(S) @ Vᵀ`` over the leftmost
         ``n_columns`` columns, ``U`` (``m x m``)/``V`` (``n x n``) orthonormal
         there, ``S`` (length ``n``) sorted descending over its first
         ``min(n_columns, m)`` entries. A singular value at or below numerical
@@ -684,7 +696,8 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
         direction is well-defined there. Every row/column at or beyond
         ``n_columns`` (in ``V``) or ``min(n_columns, m)`` (in ``U``/``S``) is left
         untouched, at whatever ``A`` itself (for ``U``) or the identity
-        (for ``V``) already had there.
+        (for ``V``) already had there. ``sweeps`` is the number of sweeps
+        performed, at most ``max_sweeps``.
     """
     zero = A.dtype(0.0)
     one = A.dtype(1.0)
@@ -697,7 +710,19 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     col0 = type(at[0])()  # length m (row count of A, column count of At)
     vt = wp.identity(n=type(row0).length, dtype=A.dtype)
 
+    # Rotations preserve the Frobenius norm, so a column whose norm is below the rounding error of
+    # ``A`` itself is numerically zero, and every pair involving it counts as converged. A matrix with
+    # more columns than rows always ends with such a column; without this, its rounding-level
+    # correlations never drop below ``tol`` and every call runs all ``max_sweeps`` sweeps.
+    frobenius_sq = zero
+    for i in range(n_columns):
+        frobenius_sq += wp.dot(at[i], at[i])
+    roundoff = _unit_roundoff(zero)
+    negligible_sq = roundoff * roundoff * frobenius_sq
+
+    sweeps = int(0)
     for _sweep in range(max_sweeps):
+        sweeps += 1
         max_off_diagonal_ratio = zero
         for i in range(n_columns - 1):
             for j in range(i + 1, n_columns):
@@ -706,8 +731,8 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
                 alpha = wp.dot(col_i, col_i)
                 beta = wp.dot(col_j, col_j)
                 gamma = wp.dot(col_i, col_j)
-                denominator = wp.sqrt(alpha * beta)
-                ratio = wp.where(denominator > zero, wp.abs(gamma) / denominator, zero)
+                significant = wp.min(alpha, beta) > negligible_sq
+                ratio = wp.where(significant, wp.abs(gamma) / wp.sqrt(alpha * beta), zero)
                 max_off_diagonal_ratio = wp.max(max_off_diagonal_ratio, ratio)
                 if ratio > tol:
                     # Golub & Van Loan's robust symmetric Jacobi rotation,
@@ -774,7 +799,7 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
         s_vec[i] = sigma
         ut[i] = wp.where(sigma > A.dtype(1.0e-12), at[i] / sigma, ut[i] * zero)
 
-    return wp.transpose(ut), s_vec, wp.transpose(vt)
+    return wp.transpose(ut), s_vec, wp.transpose(vt), sweeps
 
 
 @wp.kernel
@@ -806,7 +831,7 @@ def _svd_one_sided_jacobi_kernel(
     into that dispatch mechanism, so it isn't a usable substitute here.
     """
     idx = wp.tid()
-    u_local, s_local, v_local = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
+    u_local, s_local, v_local, _sweeps = _svd_one_sided_jacobi(matrix[idx], n_columns[idx], tol, max_sweeps)
     u[idx] = u_local
     s[idx] = s_local
     v[idx] = v_local

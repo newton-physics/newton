@@ -22,6 +22,7 @@ differential-kinematics controller families.
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 import numpy as np
@@ -202,82 +203,85 @@ def _null_space_projector_kernel(
     null_space_projector[robot_idx, row, col] = identity_entry - total
 
 
-@wp.kernel(enable_backward=False)
-def _invert_spd_block_kernel(
-    spd_matrix: wp.array3d[float],  # (block_count, max_dim, max_dim) symmetric positive-definite matrix per block
-    block_dim: wp.array[wp.int32],  # (block_count,) size of the used top-left submatrix of each block
-    # scratch, preallocated by the caller (not valid on entry; written and then read within this kernel)
-    cholesky_factor: wp.array3d[
-        float
-    ],  # (block_count, max_dim, max_dim) lower-triangular L such that spd_matrix = L L^T
-    # outputs
-    spd_matrix_inv: wp.array3d[
-        float
-    ],  # (block_count, max_dim, max_dim) inverse of the top-left block_dim x block_dim submatrix; untouched elsewhere
-):
-    """Explicit inverse of a batch of small SPD matrices, via Cholesky factorization.
+@functools.cache
+def _make_invert_spd_block_kernel(max_dim: int) -> wp.Kernel:
+    """Build the batched inverse of small SPD matrices, via Cholesky factorization.
 
-    Column c of the inverse solves ``spd_matrix @ x = e_c`` (e_c the c'th
-    standard basis vector), found by forward-substituting ``L y = e_c`` and
-    then back-substituting ``L^T x = y``. No dense-inverse routine (cofactor
-    expansion, Gauss-Jordan) is used — this is the numerically standard way to
-    invert a small SPD matrix, and the same recipe
-    ``newton/_src/actuators/joint_space_response.py`` uses for the same reason.
+    Launch the returned kernel with ``dim=(block_count, max_dim)``. Thread ``(b, c)`` factors block
+    ``b`` into a thread-local Cholesky factor ``L`` and solves column ``c`` of its inverse,
+    ``spd_matrix @ x = e_c``, by forward substitution ``L y = e_c`` then back substitution
+    ``L^T x = y``. Keeping the factor thread-local avoids round trips through global memory, and
+    solving columns in parallel shortens each thread's dependency chain. No dense-inverse routine
+    (cofactor expansion, Gauss-Jordan) is used: this is the numerically standard way to invert a small
+    SPD matrix, and the same recipe ``newton/_src/actuators/joint_space_response.py`` uses.
 
-    Backward disabled: this kernel's forward/back-substitution loops read
-    values written earlier in the same launch (an intra-kernel recurrence),
-    a pattern Warp's generic adjoint generation does not differentiate
-    correctly -- gradients through it are silently wrong, not merely
-    unsupported. Any caller under an active tape gets an exact-zero gradient
-    contribution from this kernel instead. Fixing this needs a hand-written
-    adjoint or an algorithm restructured to avoid same-launch recurrence;
-    deferred to a follow-up.
+    Backward disabled: the substitutions read values written earlier in the same thread (an
+    intra-kernel recurrence), which Warp's generic adjoint does not differentiate correctly, so
+    gradients through it would be silently wrong. Any caller under an active tape gets an exact-zero
+    gradient contribution instead. Fixing this needs a hand-written adjoint; deferred to a follow-up.
+
+    Args:
+        max_dim: Padded matrix size, the second and third dimension of the kernel's arrays.
+
+    Returns:
+        A kernel taking ``spd_matrix`` (``(block_count, max_dim, max_dim)`` SPD blocks, read only),
+        ``block_dim`` (``(block_count,)`` size of the used top-left submatrix of each block), and
+        writing ``spd_matrix_inv`` (the inverse of each used submatrix; untouched elsewhere).
     """
-    block_idx = wp.tid()
-    block_size = block_dim[block_idx]
+    matrix_type = wp.types.matrix(shape=(max_dim, max_dim), dtype=float)
+    vector_type = wp.types.vector(length=max_dim, dtype=float)
 
-    # Cholesky factorization: spd_matrix == cholesky_factor @ cholesky_factor^T.
-    for col in range(block_size):
-        diagonal_term = spd_matrix[block_idx, col, col]
-        for prior_col in range(col):
-            diagonal_term -= cholesky_factor[block_idx, col, prior_col] * cholesky_factor[block_idx, col, prior_col]
-        diagonal_term = wp.max(diagonal_term, _FLOAT32_EPS * wp.max(wp.abs(spd_matrix[block_idx, col, col]), 1.0))
-        diagonal_value = wp.sqrt(diagonal_term)
-        cholesky_factor[block_idx, col, col] = diagonal_value
-        for row in range(col + 1, block_size):
-            off_diagonal_term = spd_matrix[block_idx, row, col]
+    @wp.kernel(enable_backward=False, module="unique")
+    def invert_spd_block(
+        spd_matrix: wp.array3d[float],
+        block_dim: wp.array[wp.int32],
+        # outputs
+        spd_matrix_inv: wp.array3d[float],
+    ):
+        block_idx, column = wp.tid()
+        block_size = block_dim[block_idx]
+        if column >= block_size:
+            return
+
+        # Cholesky factorization: spd_matrix == factor @ factor^T.
+        factor = matrix_type()
+        for col in range(block_size):
+            diagonal_term = spd_matrix[block_idx, col, col]
             for prior_col in range(col):
-                off_diagonal_term -= (
-                    cholesky_factor[block_idx, row, prior_col] * cholesky_factor[block_idx, col, prior_col]
-                )
-            cholesky_factor[block_idx, row, col] = off_diagonal_term / diagonal_value
+                diagonal_term -= factor[col, prior_col] * factor[col, prior_col]
+            diagonal_term = wp.max(diagonal_term, _FLOAT32_EPS * wp.max(wp.abs(spd_matrix[block_idx, col, col]), 1.0))
+            diagonal_value = wp.sqrt(diagonal_term)
+            factor[col, col] = diagonal_value
+            for row in range(col + 1, block_size):
+                off_diagonal_term = spd_matrix[block_idx, row, col]
+                for prior_col in range(col):
+                    off_diagonal_term -= factor[row, prior_col] * factor[col, prior_col]
+                factor[row, col] = off_diagonal_term / diagonal_value
 
-    # Solve spd_matrix @ x = e_column for every column, writing x into that column of the inverse.
-    for column in range(block_size):
-        # Forward substitution: cholesky_factor @ y = e_column.
+        # Forward substitution: factor @ y = e_column.
+        solution = vector_type()
         for row in range(block_size):
-            right_hand_side = float(0.0)
-            if row == column:
-                right_hand_side = 1.0
+            right_hand_side = wp.where(row == column, float(1.0), float(0.0))
             for prior_row in range(row):
-                right_hand_side -= (
-                    cholesky_factor[block_idx, row, prior_row] * spd_matrix_inv[block_idx, prior_row, column]
-                )
-            spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
-        # Back substitution: cholesky_factor^T @ x = y, overwriting y with x in place.
+                right_hand_side -= factor[row, prior_row] * solution[prior_row]
+            solution[row] = right_hand_side / factor[row, row]
+        # Back substitution: factor^T @ x = y, overwriting y with x in place.
         for reverse_row in range(block_size):
             row = block_size - 1 - reverse_row
-            right_hand_side = spd_matrix_inv[block_idx, row, column]
+            right_hand_side = solution[row]
             for later_row in range(row + 1, block_size):
-                right_hand_side -= (
-                    cholesky_factor[block_idx, later_row, row] * spd_matrix_inv[block_idx, later_row, column]
-                )
-            spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
+                right_hand_side -= factor[later_row, row] * solution[later_row]
+            solution[row] = right_hand_side / factor[row, row]
+
+        for row in range(block_size):
+            spd_matrix_inv[block_idx, row, column] = solution[row]
+
+    return invert_spd_block
 
 
 @wp.kernel
 def _apply_spatial_matrix_kernel(
-    matrix: wp.array3d[float],  # (robot_count, 6, 6) a 6x6 task-space matrix, from _invert_spd_block_kernel
+    matrix: wp.array3d[float],  # (robot_count, 6, 6) a 6x6 task-space matrix, from _make_invert_spd_block_kernel
     vector: wp.array[wp.spatial_vector],  # (robot_count,) a task-space vector
     # outputs
     result: wp.array[wp.spatial_vector],  # (robot_count,) = matrix @ vector
@@ -286,7 +290,7 @@ def _apply_spatial_matrix_kernel(
 
     ``matrix`` is stored as a plain ``(robot_count, 6, 6)`` float array — not
     a ``wp.spatial_matrix`` array — because it typically comes from
-    :func:`_invert_spd_block_kernel`, which also produces per-robot square
+    :func:`_make_invert_spd_block_kernel`, which also produces per-robot square
     matrices of other, larger sizes; a fixed-size ``spatial_matrix`` only
     fits the always-exactly-6x6 case. This kernel loads ``matrix`` into a
     local ``wp.spatial_matrix`` so it can use Warp's built-in matrix-vector
@@ -443,6 +447,66 @@ _GATHER_KERNELS_BY_DTYPE_AND_RANK = {
     wp.spatial_vector: {1: _gather_rank1_port_kernel},
     wp.quat: {1: _gather_rank1_port_kernel},
 }
+
+
+def _port_source(
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> wp.array:
+    """Return the array kernels should read a bound port from.
+
+    A plain array is read in place, with no copy. A view is gathered into ``buffer`` first, since
+    kernels take plain arrays. Callers must not write to the returned array.
+
+    Args:
+        port: The caller-bound port, a :class:`warp.array` or a view of one.
+        buffer: Gather destination for a view, matching ``port`` in shape and dtype.
+        shape: Launch shape of the gather, see :func:`_read_port`.
+        device: Device to launch on.
+
+    Returns:
+        ``port`` itself when it is a plain array, otherwise ``buffer``.
+    """
+    if isinstance(port, wp.indexedarray):
+        _read_port(port, buffer, shape, device)
+        return buffer
+    return port
+
+
+def _port_destination(port: wp.array | wp.indexedarray, buffer: wp.array) -> wp.array:
+    """Return the array kernels should write a bound output port through.
+
+    A plain array is written in place, with no copy. A view is written through ``buffer`` and then
+    scattered into the port by :func:`_write_port`.
+
+    Args:
+        port: The caller-bound output port, a :class:`warp.array` or a view of one.
+        buffer: Staging array for a view, matching ``port`` in shape and dtype.
+
+    Returns:
+        ``port`` itself when it is a plain array, otherwise ``buffer``.
+    """
+    return buffer if isinstance(port, wp.indexedarray) else port
+
+
+def _write_port(
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> None:
+    """Scatter a staged ``buffer`` into a view port; a plain port was already written in place.
+
+    Args:
+        port: The caller-bound output port.
+        buffer: The array passed to :func:`_port_destination` for ``port``.
+        shape: Launch shape of the scatter.
+        device: Device to launch on.
+    """
+    if isinstance(port, wp.indexedarray):
+        wp.launch(_scatter_port_kernel, dim=shape, inputs=[buffer], outputs=[port], device=device)
 
 
 def _read_port(
