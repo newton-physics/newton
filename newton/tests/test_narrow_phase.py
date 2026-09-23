@@ -2370,6 +2370,25 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
         )
 
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_convex_launch_uses_full_blocks_without_support_acceleration(self):
+        """Launch split-convex work with the full block when support acceleration is off."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            split_gjk_mpr=True,
+            convex_support_acceleration=False,
+            device="cuda:0",
+        )
+
+        self.assertEqual(narrow_phase.split_convex_block_dim, 128)
+        self.assertEqual(narrow_phase.split_convex_block_dim, narrow_phase.block_dim)
+        self.assertEqual(
+            narrow_phase.split_convex_total_num_threads,
+            narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
+        )
+
     def test_broad_phase_buffer_overflow(self):
         """Test that broad phase buffer overflow produces a warning and no crash."""
         # 4 overlapping spheres -> 3 adjacent pairs, but broad phase buffer has capacity 1
