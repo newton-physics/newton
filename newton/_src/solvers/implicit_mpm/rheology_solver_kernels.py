@@ -11,8 +11,6 @@ from warp.fem.linalg import symmetric_eigenvalues_qr
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
 
-_FLOAT32_EPSILON = wp.constant(2.0**-23)
-
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
@@ -175,14 +173,11 @@ def compute_delassus_diagonal(
     majorize: bool,
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
-    reconstruction_rotation: wp.array[mat55],
-    reconstruction_diagonal: wp.array[vec6],
 ):
     """Factor local Delassus blocks for iteration and strain reconstruction.
 
     Drop spherical/deviatoric coupling before QR. If ``majorize`` is true,
-    bound that coupling in the iteration metric. Reconstruction retains the
-    unmajorized diagonal and rotation.
+    bound that coupling in the iteration metric.
 
     Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
     supplied per-batch weights (Jacobi or batched GS).
@@ -221,94 +216,29 @@ def compute_delassus_diagonal(
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
 
-    full_block = diag_block
+    coupling = vec6(0.0)
     for k in range(1, 6):
+        coupling[k] = diag_block[k, 0]
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
     diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
 
-    reconstruction_diag = diag
-    reconstruction_rot = wp.transpose(ev[1:6, 1:6])
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
-        reconstruction_diag = wp.get_diag(diag_block)
-        reconstruction_rot = wp.identity(n=5, dtype=float)
-
-    if wp.static(_ISOTROPIC_LOCAL_LHS):
-        reconstruction_diag = vec6(wp.max(reconstruction_diag))
-        reconstruction_rot = wp.identity(n=5, dtype=float)
-        diag = reconstruction_diag
+        diag = wp.get_diag(diag_block)
         ev = wp.identity(n=6, dtype=float)
 
-    reconstruction_diagonal[tau_i] = reconstruction_diag
-    reconstruction_rotation[tau_i] = reconstruction_rot
-
-    if not majorize:
-        delassus_diagonal[tau_i] = reconstruction_diag
-        delassus_rotation[tau_i] = reconstruction_rot
-        return
-
-    # Bound the symmetric local block; assembly can leave roundoff skew.
-    full_block = 0.5 * full_block + 0.5 * wp.transpose(full_block)
-    coupling = vec6(0.0)
-    for k in range(1, 6):
-        coupling[k] = full_block[k, 0]
-
-    row_bound = wp.float64(0.0)
-    finite_block = True
-    for i in range(6):
-        row_sum = wp.float64(0.0)
-        for j in range(6):
-            finite_block = finite_block and wp.isfinite(full_block[i, j])
-            row_sum += wp.abs(wp.float64(full_block[i, j]))
-        row_bound = wp.max(row_bound, row_sum)
-
-    orthogonality_error = ev @ wp.transpose(ev) - wp.identity(n=6, dtype=float)
-    usable = finite_block and wp.ddot(orthogonality_error, orthogonality_error) < 1.0e-10
-    for k in range(6):
-        usable = usable and wp.isfinite(diag[k]) and diag[k] > 0.0
-    if usable:
+    if majorize:
         # W = [[a, g^T], [g, D]] <= (1 + sqrt(g^T D^-1 g / a)) diag(a, D).
         coupling = ev @ coupling
-        rho_sq = wp.float64(0.0)
+        rho_sq = float(0.0)
         for k in range(1, 6):
-            rho_sq += wp.float64(coupling[k]) * wp.float64(coupling[k]) / wp.float64(diag[k])
-        inflation = float(wp.float64(1.0) + wp.sqrt(rho_sq / wp.float64(diag[0])))
-
-        # Bound the QR residual in the coordinates used by the step.
-        residual = ev @ full_block @ wp.transpose(ev) - wp.diag(diag)
-        for k in range(1, 6):
-            residual[0, k] -= coupling[k]
-            residual[k, 0] -= coupling[k]
-        residual = 0.5 * residual + 0.5 * wp.transpose(residual)
-        # Scale roundoff per transformed row to preserve uncoupled weak modes.
-        abs_ev = mat66(0.0)
-        abs_block = mat66(0.0)
-        for k in range(6):
-            abs_ev[k] = wp.abs(ev[k])
-            abs_block[k] = wp.abs(full_block[k])
-        row_scale = abs_ev @ (abs_block @ (wp.transpose(abs_ev) @ vec6(1.0)))
-        for k in range(6):
-            inflated = diag[k] * inflation
-            residual_bound = wp.dot(wp.abs(residual[k]), vec6(1.0))
-            roundoff = wp.abs(inflated) * (32.0 * _FLOAT32_EPSILON) + row_scale[k] * (32.0 * _FLOAT32_EPSILON)
-            diag[k] = inflated + residual_bound + roundoff
-        usable = wp.min(diag) > 0.0
-        for k in range(6):
-            usable = usable and wp.isfinite(diag[k])
-
-    if not usable:
-        # Gershgorin fallback must retain the coupling removed before QR.
-        bound = float(row_bound * wp.float64(1.0 + 8.0 * _FLOAT32_EPSILON))
-        diag = vec6(bound)
-        ev = wp.identity(n=6, dtype=float)
-
-    # Propagate invalid input rather than silently producing a zero inverse.
-    if not finite_block or not wp.isfinite(diag[0]) or wp.min(diag) <= 0.0:
-        diag = vec6(wp.nan)
+            rho_sq += coupling[k] * coupling[k] / diag[k]
+        diag *= 1.0 + wp.sqrt(rho_sq / diag[0])
 
     if wp.static(_ISOTROPIC_LOCAL_LHS):
         diag = vec6(wp.max(diag))
+        ev = wp.identity(n=6, dtype=float)
 
     delassus_diagonal[tau_i] = diag
     delassus_rotation[tau_i] = wp.transpose(ev[1:6, 1:6])
@@ -387,8 +317,8 @@ def postprocess_stress_and_strain(
         plastic_strain[tau_i] = vec6(0.0)
         return
 
-    minus_elastic_strain = strain_rhs[tau_i]
-    minus_elastic_strain -= unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
+    offset_strain = unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
+    minus_elastic_strain = strain_rhs[tau_i] - offset_strain
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
@@ -403,14 +333,17 @@ def postprocess_stress_and_strain(
     rot = delassus_rotation[tau_i]
     diag = delassus_diagonal[tau_i]
 
-    loc_plastic_strain = _world_to_local(world_plastic_strain, rot)
+    # The critical-fraction law applies to the shifted plastic strain. Keep
+    # the unilateral offset through the final flow-rule solve, then recover
+    # the physical plastic strain by removing it from the result.
+    loc_plastic_strain = _world_to_local(world_plastic_strain + offset_strain, rot)
     loc_stress = _world_to_local(stress[tau_i], rot)
 
     yp = yield_params[tau_i]
     loc_plastic_strain_new = wp.static(make_solve_flow_rule())(
         diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp, strain_node_volume[tau_i]
     )
-    world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
+    world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot) - offset_strain
 
     if _INCLUDE_LEFTOVER_STRAIN:
         minus_elastic_strain -= world_plastic_strain - world_plastic_strain_new

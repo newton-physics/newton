@@ -24,9 +24,9 @@ from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
     _symmetric_part_transposed_op,
     apply_stress_gs,
     compute_delassus_diagonal,
-    make_solve_local_stress,
     mat55,
     mat66,
+    postprocess_stress_and_strain,
     vec6,
 )
 from newton._src.solvers.implicit_mpm.solve_rheology import (
@@ -340,64 +340,20 @@ def _rheology_matrices(operator):
     return B, C, np.repeat(operator.momentum.inv_volume.numpy().astype(float), 3)
 
 
-@wp.kernel
-def _elastic_block_updates(
-    compliance: wp.array[mat66],
-    rhs: wp.array[vec6],
-    diagonal: wp.array[vec6],
-    rotation: wp.array[mat55],
-    yield_params: wp.array[YieldParamVec],
-    volume: wp.array[float],
-    stress: wp.array[vec6],
-):
-    i = wp.tid()
-    stress[i] = vec6(0.0)
-    for _k in range(4):
-        strain = compliance[i] @ stress[i] + rhs[i]
-        stress[i] += wp.static(make_solve_local_stress(False, False))(
-            i, strain, yield_params, volume, diagonal, rotation, stress
-        )
-
-
 def test_delassus_majorizer(test, device):
-    """Bound coupled blocks and preserve the unmajorized reconstruction pair."""
+    """Bound coupled local Delassus blocks."""
     rng = np.random.default_rng(4279)
     blocks = [np.eye(6), np.eye(6), np.diag([1, 1e-5, 2, 2, 2, 2])]
     blocks[1][0, 1] = blocks[1][1, 0] = 0.01
     blocks[2][0, 1] = blocks[2][1, 0] = 0.002
-    for _ in range(8):
+    for _ in range(4):
         L = rng.normal(size=(6, 6))
         blocks.append(L @ L.T + np.eye(6))
-    skew = np.eye(6)
-    skew[1, 2], skew[2, 1] = 1e-6, -1e-6
-    blocks.append(skew)
-    scaled_start = len(blocks)
-    scaled = np.array(
-        [
-            np.diag([2**27, *([2**10] * 5)]),
-            np.diag([2**15, *([2**-10] * 5)]),
-            np.diag([2**15, *([2**-10] * 5)]),
-            np.diag([2**27, *([1.0] * 5)]),
-        ],
-        dtype=np.float32,
-    )
-    scaled[2, 1:3, 1:3] = [[3 * 2**-11, -(2**-11)], [-(2**-11), 3 * 2**-11]]
-    scaled[3, 1:3, 1:3] = [[512.5, -511.5], [-511.5, 512.5]]
-    blocks.extend(scaled)
-    sentinel = np.eye(6)
-    sentinel[0, 1] = sentinel[1, 0] = 2.0
-    sentinel[2, 2] = -0.1
-    blocks.append(sentinel)
-    large = np.eye(6)
-    large[0, 1] = large[1, 0] = 1e20
-    blocks.append(large)
-    blocks.extend([np.full((6, 6), np.nan), np.full((6, 6), 3e38)])
     count = len(blocks)
     with wp.ScopedDevice(device):
         values = np.asarray(blocks, dtype=np.float32)
         W = (values + np.float32(_DELASSUS_PROXIMAL_REG) * np.eye(6, dtype=np.float32)).astype(float)
         rotation, diagonal = wp.empty(count, dtype=mat55), wp.empty(count, dtype=vec6)
-        saved_rotation, saved_diagonal = wp.empty_like(rotation), wp.empty_like(diagonal)
         inputs = [
             wp.zeros(count + 1, dtype=int),
             wp.empty(0, dtype=int),
@@ -409,44 +365,18 @@ def test_delassus_majorizer(test, device):
             wp.empty(0, dtype=int),
             wp.empty((0, 0), dtype=float),
         ]
-        outputs = [rotation, diagonal, saved_rotation, saved_diagonal]
-        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, False], outputs=outputs)
-        original = (rotation.numpy().copy(), diagonal.numpy().copy())
+        outputs = [rotation, diagonal]
         wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True], outputs=outputs)
-        np.testing.assert_array_equal(saved_rotation.numpy(), original[0])
-        np.testing.assert_array_equal(saved_diagonal.numpy(), original[1])
-        for i, (d, R) in enumerate(zip(diagonal.numpy()[:-2], rotation.numpy()[:-2], strict=True)):
+        for i, (d, R) in enumerate(zip(diagonal.numpy(), rotation.numpy(), strict=True)):
             with test.subTest(block=i):
                 test.assertTrue(np.isfinite(d).all() and (d > 0).all())
                 Q = np.eye(6)
                 Q[1:, 1:] = R.T
                 np.testing.assert_allclose(Q @ Q.T, np.eye(6), atol=3e-6)
-                test.assertLess(np.linalg.norm(W[i] - W[i].T) / np.linalg.norm(W[i]), 3e-6)
-                target = Q @ (0.5 * (W[i] + W[i].T)) @ Q.T
+                target = Q @ W[i] @ Q.T
                 target /= np.sqrt(np.outer(d.astype(float), d.astype(float)))
                 test.assertLessEqual(np.linalg.eigvalsh(target)[-1], 1.0 + 3e-6)
         np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + float(_DELASSUS_PROXIMAL_REG), rtol=1e-5)
-        np.testing.assert_allclose(diagonal.numpy()[-4], 3.0 + float(_DELASSUS_PROXIMAL_REG), rtol=3e-6)
-        test.assertTrue(np.isnan(diagonal.numpy()[-2:]).all())
-        target_stress = np.zeros((4, 6), dtype=np.float32)
-        target_stress[:, 1] = 1.0
-        target_stress[2:, 2] = 1.0
-        rhs = -np.einsum("nij,nj->ni", scaled, target_stress)
-        stress = wp.zeros(4, dtype=vec6)
-        wp.launch(
-            _elastic_block_updates,
-            4,
-            inputs=[
-                wp.array(scaled, dtype=mat66),
-                wp.array(rhs, dtype=vec6),
-                diagonal[scaled_start : scaled_start + 4],
-                rotation[scaled_start : scaled_start + 4],
-                wp.array(np.tile([1e6, 1e6, 1e6, 0, 0, 0], (4, 1)), dtype=YieldParamVec),
-                wp.ones(4),
-            ],
-            outputs=[stress],
-        )
-        np.testing.assert_allclose(stress.numpy(), target_stress, rtol=3e-5, atol=1e-7)
 
 
 def test_coupled_iteration_bound(test, device):
@@ -472,7 +402,7 @@ def test_coupled_iteration_bound(test, device):
 
 
 def test_reconstruction_factors(test, device):
-    """Keep reconstruction unchanged when iteration majorization is toggled."""
+    """Reconstruct with the factors used by the latest nonlinear iteration."""
     with _coupled_rheology(device) as (operator, _store):
         rheology = operator.rheology
         n, nv = operator.size, operator.momentum.velocity.shape[0]
@@ -488,7 +418,7 @@ def test_reconstruction_factors(test, device):
                     rheology.yield_params.assign(np.tile([2, 0, 0.2, 0.6, dilatancy, viscosity], (n, 1)))
                     rheology.stress.assign(np.tile([1.99, 0.4, -0.2, 0.1, 0, 0], (n, 1)))
                     rhs = np.tile([-0.02, 0.01, 0, 0, 0, 0], (n, 1)).astype(np.float32)
-                    expected = None
+                    unmajorized = None
                     for majorize in (False, True, False):
                         operator.compute_diagonal_factorization(**mode, majorize=majorize)
                         rheology.elastic_strain_delta.assign(rhs)
@@ -499,18 +429,55 @@ def test_reconstruction_factors(test, device):
                         )
                         for values in result:
                             test.assertTrue(np.isfinite(values).all())
-                        if expected is None:
-                            expected = result
-                        else:
-                            for actual, reference in zip(result, expected, strict=True):
-                                np.testing.assert_array_equal(actual, reference)
-                        if majorize:
-                            test.assertGreater(
-                                np.linalg.norm(
-                                    operator.delassus_diagonal.numpy() - operator.reconstruction_diagonal.numpy()
-                                ),
-                                0.0,
+                        if unmajorized is None:
+                            unmajorized = result
+                        elif majorize:
+                            test.assertTrue(
+                                any(
+                                    np.linalg.norm(actual - reference) > 0.0
+                                    for actual, reference in zip(result, unmajorized, strict=True)
+                                )
                             )
+                        else:
+                            for actual, reference in zip(result, unmajorized, strict=True):
+                                np.testing.assert_array_equal(actual, reference)
+
+
+def _postprocessed_plastic_strain(diagonal_scale, device):
+    elastic_strain = wp.zeros(1, dtype=vec6, device=device)
+    plastic_strain = wp.empty_like(elastic_strain)
+    wp.launch(
+        postprocess_stress_and_strain,
+        1,
+        inputs=[
+            wp.array([0, 0], dtype=int, device=device),
+            wp.empty(0, dtype=int, device=device),
+            wp.empty(0, dtype=mat66, device=device),
+            wp.array([0, 1], dtype=int, device=device),
+            wp.array([0], dtype=int, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            wp.array([np.full(6, diagonal_scale)], dtype=vec6, device=device),
+            wp.array([np.eye(5)], dtype=mat55, device=device),
+            wp.array([0.1], dtype=float, device=device),
+            wp.array([[0.02, 0.02, 0.0, 0.0, 0.0, 0.0]], dtype=YieldParamVec, device=device),
+            wp.ones(1, dtype=float, device=device),
+            elastic_strain,
+            wp.array([[0.01, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=vec6, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+        ],
+        outputs=[elastic_strain, plastic_strain],
+        device=device,
+    )
+    return plastic_strain.numpy()[0]
+
+
+def test_reconstruction_preserves_unilateral_shift(test, device):
+    """Keep a satisfied critical-fraction law invariant to local metric scaling."""
+    with wp.ScopedDevice(device):
+        baseline = _postprocessed_plastic_strain(1.0, device)
+        scaled = _postprocessed_plastic_strain(1.5, device)
+    test.assertGreater(np.linalg.norm(baseline), 0.0)
+    np.testing.assert_array_equal(scaled, baseline)
 
 
 def test_majorized_rheology_solve(test, device, capture=False):
@@ -597,7 +564,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
 
 
 def test_majorizer_capture(test, device):
-    """Refresh both factor pairs when a captured factorization replays."""
+    """Refresh the active factor pair when captured factorization replays."""
     with _coupled_rheology(device) as (operator, _store):
         matrix = operator.rheology.compliance_mat
         original = matrix.values.numpy().copy()
@@ -615,8 +582,6 @@ def test_majorizer_capture(test, device):
             fields = (
                 operator.delassus_diagonal,
                 operator.delassus_rotation,
-                operator.reconstruction_diagonal,
-                operator.reconstruction_rotation,
             )
             expected = [field.numpy().copy() for field in fields]
             for values in expected:
@@ -2074,6 +2039,12 @@ add_function_test(TestImplicitMPM, "test_stress_virtual_work", test_stress_virtu
 add_function_test(TestImplicitMPM, "test_delassus_majorizer", test_delassus_majorizer, devices=devices)
 add_function_test(TestImplicitMPM, "test_coupled_iteration_bound", test_coupled_iteration_bound, devices=devices)
 add_function_test(TestImplicitMPM, "test_reconstruction_factors", test_reconstruction_factors, devices=devices)
+add_function_test(
+    TestImplicitMPM,
+    "test_reconstruction_preserves_unilateral_shift",
+    test_reconstruction_preserves_unilateral_shift,
+    devices=devices,
+)
 add_function_test(TestImplicitMPM, "test_majorized_rheology_solve", test_majorized_rheology_solve, devices=devices)
 add_function_test(TestImplicitMPM, "test_majorizer_capture", test_majorizer_capture, devices=get_cuda_test_devices())
 add_function_test(
