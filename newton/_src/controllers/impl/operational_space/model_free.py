@@ -120,10 +120,11 @@ from .._common import (
     _invert_spd_block_kernel,
     _null_space_projector_kernel,
     _pd_term_kernel,
+    _port_destination,
+    _port_source,
     _pose_error_kernel,
-    _read_port,
-    _scatter_port_kernel,
     _task_matrix_times_jacobian_kernel,
+    _write_port,
 )
 from ._common import (
     _apply_generalized_task_specification_matrix_kernel,
@@ -1241,6 +1242,19 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     f"would be ignored."
                 )
 
+        # Plain-array ports are read in place, and a plain output is written in place; only views are
+        # staged through the internal buffers.
+        sources: dict[str, wp.array] = {}
+        _validate_array(
+            array=outputs.joint_f,
+            name="outputs.joint_f",
+            dtype=wp.float32,
+            shape=(self._total_controlled_dofs,),
+            device=self._device,
+            allow_indexed=True,
+        )
+        joint_f = _port_destination(outputs.joint_f, self._tau_buf)
+
         # Per-robot (transform/spatial_vector) ports: may be bound to a plain
         # array or to an indexed view of a simulation-sized array, via the
         # same graph-capture-safe port machinery outputs.joint_f uses below.
@@ -1268,7 +1282,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             _validate_array(
                 array=port, name=name, dtype=dtype, shape=(robot_count,), device=self._device, allow_indexed=True
             )
-            _read_port(port, buf, robot_count, self._device)
+            sources[name] = _port_source(port, buf, robot_count, self._device)
 
         if self._operational_frame_baked is None:
             _validate_array(
@@ -1279,15 +1293,19 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.operational_frame_pose_world, self._operational_frame_buf, robot_count, self._device)
+            sources["inputs.operational_frame_pose_world"] = _port_source(
+                inputs.operational_frame_pose_world, self._operational_frame_buf, robot_count, self._device
+            )
         operational_frame = (
-            self._operational_frame_baked if self._operational_frame_baked is not None else self._operational_frame_buf
+            self._operational_frame_baked
+            if self._operational_frame_baked is not None
+            else sources["inputs.operational_frame_pose_world"]
         )
 
         wp.launch(
             _pose_twist_to_frame_kernel,
             dim=robot_count,
-            inputs=[operational_frame, self._pose_buf, self._twist_buf],
+            inputs=[operational_frame, sources["inputs.tool_pose_world"], sources["inputs.tool_twist_world"]],
             outputs=[self._tool_pose_operational_buf, self._tool_twist_operational_buf],
             device=self._device,
         )
@@ -1301,7 +1319,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.motion_stiffness, self._stiffness_buf, robot_count, self._device)
+            sources["inputs.motion_stiffness"] = _port_source(
+                inputs.motion_stiffness, self._stiffness_buf, robot_count, self._device
+            )
         if self._damping_baked is None:
             _validate_array(
                 array=inputs.motion_damping,
@@ -1311,7 +1331,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.motion_damping, self._damping_buf, robot_count, self._device)
+            sources["inputs.motion_damping"] = _port_source(
+                inputs.motion_damping, self._damping_buf, robot_count, self._device
+            )
 
         # Jacobian and (optional) mass matrix: plain float32 arrays, so they
         # reuse the shared, view-aware port machinery.
@@ -1323,13 +1345,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             device=self._device,
             allow_indexed=True,
         )
-        _read_port(
+        sources["inputs.jacobian_tool_world"] = _port_source(
             inputs.jacobian_tool_world, self._jacobian_buf, (robot_count, 6, self._max_controlled_dofs), self._device
         )
         wp.launch(
             _rotate_jacobian_to_frame_kernel,
             dim=(robot_count, self._max_controlled_dofs),
-            inputs=[operational_frame, self._jacobian_buf, self._controlled_dofs_per_robot],
+            inputs=[operational_frame, sources["inputs.jacobian_tool_world"], self._controlled_dofs_per_robot],
             outputs=[self._jacobian_operational_buf],
             device=self._device,
         )
@@ -1344,7 +1366,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(
+            sources["inputs.mass_matrix"] = _port_source(
                 inputs.mass_matrix,
                 self._mass_matrix_buf,
                 (robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
@@ -1361,7 +1383,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.gravity_force, self._grav_buf, self._total_controlled_dofs, self._device)
+            sources["inputs.gravity_force"] = _port_source(
+                inputs.gravity_force, self._grav_buf, self._total_controlled_dofs, self._device
+            )
 
         # Null-space posture control: read current/desired joint state and gains.
         if self._use_null_space:
@@ -1379,7 +1403,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(port, buf, self._total_controlled_dofs, self._device)
+                sources[name] = _port_source(port, buf, self._total_controlled_dofs, self._device)
 
             if self._null_stiffness_baked is None:
                 _validate_array(
@@ -1390,7 +1414,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(
+                sources["inputs.null_space_stiffness"] = _port_source(
                     inputs.null_space_stiffness, self._null_stiffness_buf, self._total_controlled_dofs, self._device
                 )
             if self._null_damping_baked is None:
@@ -1402,7 +1426,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(inputs.null_space_damping, self._null_damping_buf, self._total_controlled_dofs, self._device)
+                sources["inputs.null_space_damping"] = _port_source(
+                    inputs.null_space_damping, self._null_damping_buf, self._total_controlled_dofs, self._device
+                )
 
         # Wrench control: read the desired wrench, and (feedback only) the measurement and gain.
         if self._use_wrench:
@@ -1414,7 +1440,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.desired_wrench_world, self._desired_wrench_buf, robot_count, self._device)
+            sources["inputs.desired_wrench_world"] = _port_source(
+                inputs.desired_wrench_world, self._desired_wrench_buf, robot_count, self._device
+            )
 
             if self._use_wrench_feedback:
                 _validate_array(
@@ -1425,7 +1453,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(inputs.measured_wrench_world, self._measured_wrench_buf, robot_count, self._device)
+                sources["inputs.measured_wrench_world"] = _port_source(
+                    inputs.measured_wrench_world, self._measured_wrench_buf, robot_count, self._device
+                )
 
                 if self._wrench_stiffness_baked is None:
                     _validate_array(
@@ -1436,7 +1466,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                         device=self._device,
                         allow_indexed=True,
                     )
-                    _read_port(inputs.wrench_stiffness, self._wrench_stiffness_buf, robot_count, self._device)
+                    sources["inputs.wrench_stiffness"] = _port_source(
+                        inputs.wrench_stiffness, self._wrench_stiffness_buf, robot_count, self._device
+                    )
 
             if self._linear_selection_frame_baked is None:
                 _validate_array(
@@ -1447,7 +1479,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(
+                sources["inputs.linear_selection_frame_operational"] = _port_source(
                     inputs.linear_selection_frame_operational,
                     self._linear_selection_frame_buf,
                     robot_count,
@@ -1462,20 +1494,20 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                     allow_indexed=True,
                 )
-                _read_port(
+                sources["inputs.angular_selection_frame_operational"] = _port_source(
                     inputs.angular_selection_frame_operational,
                     self._angular_selection_frame_buf,
                     robot_count,
                     self._device,
                 )
 
-        stiffness = self._stiffness_baked if self._stiffness_baked is not None else self._stiffness_buf
-        damping = self._damping_baked if self._damping_baked is not None else self._damping_buf
+        stiffness = self._stiffness_baked if self._stiffness_baked is not None else sources["inputs.motion_stiffness"]
+        damping = self._damping_baked if self._damping_baked is not None else sources["inputs.motion_damping"]
 
         wp.launch(
             _pose_error_kernel,
             dim=robot_count,
-            inputs=[self._tool_pose_operational_buf, self._desired_pose_operational_buf],
+            inputs=[self._tool_pose_operational_buf, sources["inputs.desired_tool_pose_operational"]],
             outputs=[self._pose_error_buf],
             device=self._device,
         )
@@ -1485,7 +1517,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             inputs=[
                 self._pose_error_buf,
                 self._tool_twist_operational_buf,
-                self._desired_twist_operational_buf,
+                sources["inputs.desired_twist_operational"],
                 stiffness,
                 damping,
             ],
@@ -1501,12 +1533,12 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             linear_selection_frame = (
                 self._linear_selection_frame_baked
                 if self._linear_selection_frame_baked is not None
-                else self._linear_selection_frame_buf
+                else sources["inputs.linear_selection_frame_operational"]
             )
             angular_selection_frame = (
                 self._angular_selection_frame_baked
                 if self._angular_selection_frame_baked is not None
-                else self._angular_selection_frame_buf
+                else sources["inputs.angular_selection_frame_operational"]
             )
             wp.launch(
                 _apply_generalized_task_specification_matrix_kernel,
@@ -1528,7 +1560,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             wp.launch(
                 _invert_spd_block_kernel,
                 dim=robot_count,
-                inputs=[self._mass_matrix_buf, self._controlled_dofs_per_robot, self._mass_matrix_cholesky],
+                inputs=[sources["inputs.mass_matrix"], self._controlled_dofs_per_robot, self._mass_matrix_cholesky],
                 outputs=[self._mass_matrix_inv],
                 device=self._device,
             )
@@ -1589,7 +1621,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             _jacobian_transpose_force_kernel,
             dim=self._total_controlled_dofs,
             inputs=[self._jacobian_operational_buf, force_source, self._robot_of_dof, self._slot_of_dof],
-            outputs=[self._tau_buf],
+            outputs=[joint_f],
             device=self._device,
         )
 
@@ -1602,7 +1634,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 wp.launch(
                     _wrench_feedforward_kernel,
                     dim=robot_count,
-                    inputs=[operational_frame, self._desired_wrench_buf],
+                    inputs=[operational_frame, sources["inputs.desired_wrench_world"]],
                     outputs=[self._wrench_command_buf],
                     device=self._device,
                 )
@@ -1610,12 +1642,17 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 wrench_stiffness = (
                     self._wrench_stiffness_baked
                     if self._wrench_stiffness_baked is not None
-                    else self._wrench_stiffness_buf
+                    else sources["inputs.wrench_stiffness"]
                 )
                 wp.launch(
                     _wrench_feedback_kernel,
                     dim=robot_count,
-                    inputs=[operational_frame, self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
+                    inputs=[
+                        operational_frame,
+                        sources["inputs.desired_wrench_world"],
+                        sources["inputs.measured_wrench_world"],
+                        wrench_stiffness,
+                    ],
                     outputs=[self._wrench_command_buf],
                     device=self._device,
                 )
@@ -1623,12 +1660,12 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             linear_selection_frame = (
                 self._linear_selection_frame_baked
                 if self._linear_selection_frame_baked is not None
-                else self._linear_selection_frame_buf
+                else sources["inputs.linear_selection_frame_operational"]
             )
             angular_selection_frame = (
                 self._angular_selection_frame_baked
                 if self._angular_selection_frame_baked is not None
-                else self._angular_selection_frame_buf
+                else sources["inputs.angular_selection_frame_operational"]
             )
             wp.launch(
                 _apply_generalized_task_specification_matrix_kernel,
@@ -1658,23 +1695,29 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 _add_term_kernel,
                 dim=self._total_controlled_dofs,
                 inputs=[self._wrench_tau_buf],
-                outputs=[self._tau_buf],
+                outputs=[joint_f],
                 device=self._device,
             )
 
         if self._use_null_space:
             null_stiffness = (
-                self._null_stiffness_baked if self._null_stiffness_baked is not None else self._null_stiffness_buf
+                self._null_stiffness_baked
+                if self._null_stiffness_baked is not None
+                else sources["inputs.null_space_stiffness"]
             )
-            null_damping = self._null_damping_baked if self._null_damping_baked is not None else self._null_damping_buf
+            null_damping = (
+                self._null_damping_baked
+                if self._null_damping_baked is not None
+                else sources["inputs.null_space_damping"]
+            )
             wp.launch(
                 _pd_term_kernel,
                 dim=self._total_controlled_dofs,
                 inputs=[
-                    self._joint_q_buf,
-                    self._joint_qd_buf,
-                    self._joint_q_des_null_buf,
-                    self._joint_qd_des_null_buf,
+                    sources["inputs.joint_q"],
+                    sources["inputs.joint_qd"],
+                    sources["inputs.joint_q_des_null"],
+                    sources["inputs.joint_qd_des_null"],
                     null_stiffness,
                     null_damping,
                 ],
@@ -1749,7 +1792,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     _block_matrix_vector_multiply_kernel,
                     dim=self._total_controlled_dofs,
                     inputs=[
-                        self._mass_matrix_buf,
+                        sources["inputs.mass_matrix"],
                         self._posture_acc_buf,
                         self._robot_of_dof,
                         self._slot_of_dof,
@@ -1779,7 +1822,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 _add_term_kernel,
                 dim=self._total_controlled_dofs,
                 inputs=[self._null_space_tau_buf],
-                outputs=[self._tau_buf],
+                outputs=[joint_f],
                 device=self._device,
             )
 
@@ -1787,27 +1830,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             wp.launch(
                 _add_term_kernel,
                 dim=self._total_controlled_dofs,
-                inputs=[self._grav_buf],
-                outputs=[self._tau_buf],
+                inputs=[sources["inputs.gravity_force"]],
+                outputs=[joint_f],
                 device=self._device,
             )
 
-        _validate_array(
-            array=outputs.joint_f,
-            name="outputs.joint_f",
-            dtype=wp.float32,
-            shape=(self._total_controlled_dofs,),
-            device=self._device,
-            allow_indexed=True,
-        )
         # A view needs the scatter kernel (wp.copy isn't graph-capture-safe for a non-contiguous target).
-        if isinstance(outputs.joint_f, wp.indexedarray):
-            wp.launch(
-                _scatter_port_kernel,
-                dim=self._total_controlled_dofs,
-                inputs=[self._tau_buf],
-                outputs=[outputs.joint_f],
-                device=self._device,
-            )
-        else:
-            wp.copy(outputs.joint_f, self._tau_buf)
+        _write_port(outputs.joint_f, self._tau_buf, self._total_controlled_dofs, self._device)
