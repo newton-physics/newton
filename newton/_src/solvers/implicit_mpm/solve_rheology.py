@@ -434,8 +434,6 @@ class _DelassusOperator:
 
         self.delassus_rotation = fem.borrow_temporary(temporary_store, shape=self.size, dtype=mat55)
         self.delassus_diagonal = fem.borrow_temporary(temporary_store, shape=self.size, dtype=vec6)
-        self.reconstruction_rotation = fem.borrow_temporary(temporary_store, shape=self.size, dtype=mat55)
-        self.reconstruction_diagonal = fem.borrow_temporary(temporary_store, shape=self.size, dtype=vec6)
 
         self._computed = False
         self._split_mass = False
@@ -466,7 +464,6 @@ class _DelassusOperator:
                 multiplicity (float 2D array, shape ``[n_batches, n_vel]``).
                 Overrides *split_mass* when provided.
             majorize: Bound spherical/deviatoric coupling for nonlinear updates.
-                Reconstruction retains the unmajorized factors for this mode.
         """
         if (
             mass_multiplicity is None
@@ -524,8 +521,6 @@ class _DelassusOperator:
             outputs=[
                 self.delassus_rotation,
                 self.delassus_diagonal,
-                self.reconstruction_rotation,
-                self.reconstruction_diagonal,
             ],
         )
 
@@ -559,8 +554,6 @@ class _DelassusOperator:
     def release(self):
         self.delassus_rotation.release()
         self.delassus_diagonal.release()
-        self.reconstruction_rotation.release()
-        self.reconstruction_diagonal.release()
 
     def apply_stress_delta(self, stress_delta: wp.array[vec6], velocity: wp.array[wp.vec3], record_cmd: bool = False):
         return wp.launch(
@@ -617,8 +610,8 @@ class _DelassusOperator:
                 self.rheology.strain_mat.offsets,
                 self.rheology.strain_mat.columns,
                 self.rheology.strain_mat.values.view(dtype=mat13),
-                self.reconstruction_diagonal,
-                self.reconstruction_rotation,
+                self.delassus_diagonal,
+                self.delassus_rotation,
                 self.rheology.unilateral_strain_offset,
                 self.rheology.yield_params,
                 self.rheology.strain_node_volume,
