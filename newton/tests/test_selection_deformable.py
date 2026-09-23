@@ -178,7 +178,7 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual(positions.shape, (3, 4))
 
         # Round-trip: lift each world's cloth by its world index and read it back.
-        lifted = positions.numpy()
+        lifted = positions.numpy().copy()
         for g in range(3):
             lifted[g, :, 2] += float(g + 1)
         view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
@@ -199,7 +199,7 @@ class TestDeformableSelection(unittest.TestCase):
 
         transforms = view.get_body_transforms(state)
         self.assertEqual(transforms.shape, (2, 3))
-        shifted = transforms.numpy()
+        shifted = transforms.numpy().copy()
         shifted[:, :, 1] += 5.0  # translate all segments in y
         view.set_body_transforms(state, wp.array(shifted, dtype=wp.transform))
         np.testing.assert_allclose(view.get_body_transforms(state).numpy(), shifted, atol=1e-6)
@@ -330,8 +330,10 @@ class TestDeformableSelection(unittest.TestCase):
         view = DeformableSurfaceView(model, "/World/Cloth")
         positions = view.get_particle_positions(state)
         self.assertTrue(positions.device.is_cpu)
-        lifted = positions.numpy()
+        before = state.particle_q.numpy().copy()
+        lifted = positions.numpy().copy()
         lifted[..., 2] += 1.0
+        np.testing.assert_array_equal(state.particle_q.numpy(), before)
         view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3, device="cpu"))
         np.testing.assert_allclose(view.get_particle_positions(state).numpy(), lifted, atol=1e-6)
 
