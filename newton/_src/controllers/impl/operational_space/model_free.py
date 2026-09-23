@@ -117,7 +117,7 @@ from .._common import (
     _add_term_kernel,
     _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
-    _invert_spd_block_kernel,
+    _make_invert_spd_block_kernel,
     _null_space_projector_kernel,
     _pd_term_kernel,
     _port_destination,
@@ -796,21 +796,12 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._desired_task_acceleration_buf = _twist_buf()
         self._task_space_force_buf: wp.array[wp.spatial_vector] | None = _twist_buf() if self._use_inertia else None
 
-        # Lambda's Cholesky scratch and inverse-mass-matrix Cholesky scratch,
-        # only needed when inertial decoupling is enabled.
-        self._mass_matrix_cholesky: wp.array3d[wp.float32] | None = None
+        # Inverse mass matrix and Lambda, only needed when inertial decoupling is enabled.
         self._mass_matrix_inv: wp.array3d[wp.float32] | None = None
         self._operational_space_mass_matrix_inv: wp.array3d[wp.float32] | None = None
-        self._operational_space_mass_matrix_cholesky: wp.array3d[wp.float32] | None = None
         self._operational_space_mass_matrix: wp.array3d[wp.float32] | None = None
         self._task_dim: wp.array[wp.int32] | None = None
         if self._use_inertia:
-            self._mass_matrix_cholesky = wp.zeros(
-                (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=requires_grad,
-            )
             self._mass_matrix_inv = wp.zeros(
                 (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
                 dtype=wp.float32,
@@ -818,9 +809,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 requires_grad=requires_grad,
             )
             self._operational_space_mass_matrix_inv = wp.zeros(
-                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
-            )
-            self._operational_space_mass_matrix_cholesky = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
             self._operational_space_mass_matrix = wp.zeros(
@@ -861,7 +849,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._null_space_jacobian_pinv_transpose: wp.array3d[wp.float32] | None = None
         self._null_space_jacobian_pinv_transpose_stage: wp.array3d[wp.float32] | None = None
         self._null_space_jjt: wp.array3d[wp.float32] | None = None
-        self._null_space_jjt_cholesky: wp.array3d[wp.float32] | None = None
         self._null_space_jjt_inv: wp.array3d[wp.float32] | None = None
         self._null_space_projector: wp.array3d[wp.float32] | None = None
         self._null_space_tau_buf: wp.array[wp.float32] | None = None
@@ -916,9 +903,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 # since that Lambda doesn't have the property the
                 # dynamically-consistent formula needs.
                 self._null_space_jjt = wp.zeros(
-                    (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
-                )
-                self._null_space_jjt_cholesky = wp.zeros(
                     (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
                 )
                 self._null_space_jjt_inv = wp.zeros(
@@ -1558,9 +1542,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         if self._use_inertia:
             # Lambda = (J M^-1 J^T)^-1, then premultiply the (Omega-masked) PD term by it.
             wp.launch(
-                _invert_spd_block_kernel,
-                dim=robot_count,
-                inputs=[sources["inputs.mass_matrix"], self._controlled_dofs_per_robot, self._mass_matrix_cholesky],
+                _make_invert_spd_block_kernel(self._max_controlled_dofs),
+                dim=(robot_count, self._max_controlled_dofs),
+                inputs=[sources["inputs.mass_matrix"], self._controlled_dofs_per_robot],
                 outputs=[self._mass_matrix_inv],
                 device=self._device,
             )
@@ -1579,12 +1563,11 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                         device=self._device,
                     )
                     wp.launch(
-                        _invert_spd_block_kernel,
-                        dim=robot_count,
+                        _make_invert_spd_block_kernel(3),
+                        dim=(robot_count, 3),
                         inputs=[
                             self._operational_space_mass_matrix_inv[:, axis_start:axis_end, axis_start:axis_end],
                             self._partial_task_dim,
-                            self._operational_space_mass_matrix_cholesky[:, axis_start:axis_end, axis_start:axis_end],
                         ],
                         outputs=[self._operational_space_mass_matrix[:, axis_start:axis_end, axis_start:axis_end]],
                         device=self._device,
@@ -1598,13 +1581,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                 )
                 wp.launch(
-                    _invert_spd_block_kernel,
-                    dim=robot_count,
-                    inputs=[
-                        self._operational_space_mass_matrix_inv,
-                        self._task_dim,
-                        self._operational_space_mass_matrix_cholesky,
-                    ],
+                    _make_invert_spd_block_kernel(6),
+                    dim=(robot_count, 6),
+                    inputs=[self._operational_space_mass_matrix_inv, self._task_dim],
                     outputs=[self._operational_space_mass_matrix],
                     device=self._device,
                 )
@@ -1759,9 +1738,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                 )
                 wp.launch(
-                    _invert_spd_block_kernel,
-                    dim=robot_count,
-                    inputs=[self._null_space_jjt, self._task_dim, self._null_space_jjt_cholesky],
+                    _make_invert_spd_block_kernel(6),
+                    dim=(robot_count, 6),
+                    inputs=[self._null_space_jjt, self._task_dim],
                     outputs=[self._null_space_jjt_inv],
                     device=self._device,
                 )
