@@ -5122,7 +5122,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._apply_mjc_control_gpu(model, state, control, mj_data)
         else:
             wp.capture_launch(native_graph)
-        if not self._data_is_mjwarp(mj_data):
+        if not self._data_is_mjwarp(mj_data) and self.use_mujoco_cpu:
             if model.device.is_cuda:
                 # Complete the force downloads and previous coordinate uploads
                 # before native MuJoCo consumes or overwrites pinned buffers.
@@ -5141,9 +5141,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         else:
             effective_dof_count = model.joint_dof_count - self._total_loop_joint_dofs
             single_world_template = len(mj_data.qfrc_applied) < effective_dof_count
-            ctrl, ctrl_host = self._mjc_cpu_buffers["ctrl"]
-            qfrc, qfrc_host = self._mjc_cpu_buffers["qfrc_applied"]
-            xfrc, xfrc_host = self._mjc_cpu_buffers["xfrc_applied"]
+            if self.use_mujoco_cpu:
+                ctrl, ctrl_host = self._mjc_cpu_buffers["ctrl"]
+                qfrc, qfrc_host = self._mjc_cpu_buffers["qfrc_applied"]
+                xfrc, xfrc_host = self._mjc_cpu_buffers["xfrc_applied"]
+            else:
+                ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
+                qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
+                xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
+                ctrl_host = qfrc_host = xfrc_host = None
             ctrl.zero_()
             qfrc.zero_()
             xfrc.zero_()
@@ -5255,10 +5261,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=model.device,
             )
         if not is_mjwarp:
-            if model.device.is_cuda:
+            if self.use_mujoco_cpu and model.device.is_cuda:
                 wp.copy(ctrl_host, ctrl)
                 wp.copy(qfrc_host, qfrc)
                 wp.copy(xfrc_host, xfrc)
+            elif not self.use_mujoco_cpu:
+                mj_data.xfrc_applied = xfrc.numpy()
+                mj_data.ctrl[:] = ctrl.numpy().flatten()
+                mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def _update_mjc_data(
         self,
@@ -5365,7 +5375,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 velocities are copied from this state because MuJoCo does not
                 independently integrate those DOFs.
         """
-        if not self._data_is_mjwarp(mj_data):
+        if not self._data_is_mjwarp(mj_data) and self.use_mujoco_cpu:
             for field in ("qpos", "qvel"):
                 self._mjc_cpu_buffers[field][1].numpy()[0] = getattr(mj_data, field)
         if native_graph is None:
@@ -5385,11 +5395,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # we have an MjData object from Mujoco
             effective_coord_count = model.joint_coord_count - self._total_loop_joint_coords
             single_world_template = len(mj_data.qpos) < effective_coord_count
-            qpos, qpos_host = self._mjc_cpu_buffers["qpos"]
-            qvel, qvel_host = self._mjc_cpu_buffers["qvel"]
-            if model.device.is_cuda:
-                wp.copy(qpos, qpos_host)
-                wp.copy(qvel, qvel_host)
+            if self.use_mujoco_cpu:
+                qpos, qpos_host = self._mjc_cpu_buffers["qpos"]
+                qvel, qvel_host = self._mjc_cpu_buffers["qvel"]
+                if model.device.is_cuda:
+                    wp.copy(qpos, qpos_host)
+                    wp.copy(qvel, qvel_host)
+            else:
+                qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+                qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
