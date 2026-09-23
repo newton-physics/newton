@@ -372,7 +372,7 @@ def _parse_colliders(
                                 warnings.warn(
                                     f"{prim.GetPath()}: physics:approximation={approximation!r} is "
                                     f"ignored on a shape with NewtonSDFCollisionAPI applied.",
-                                    stacklevel=2,
+                                    stacklevel=3,
                                 )
                             else:
                                 remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
