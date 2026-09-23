@@ -3860,6 +3860,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_ntree_awake = 0
         self._initial_nbody_awake = 0
         self._initial_nv_awake = 0
+        self._native_io_graphs = []
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._deterministic_max_records = 0
@@ -4190,17 +4191,67 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
 
+    def capture_native_io(self, state_in: State, state_out: State, control: Control | None) -> None:
+        """Capture CUDA transfers around the native CPU integration step.
+
+        The states, control, and their array bindings must remain unchanged;
+        array contents can change normally between steps. Call this method for
+        each state pair used by the application. New state or control objects
+        use the ordinary execution path. Recapture after replacing bound arrays
+        or calling :meth:`notify_model_changed`.
+
+        CPU synchronization and native MuJoCo integration remain outside the
+        graphs, preserving each substep's force and coordinate exchange.
+
+        Args:
+            state_in: Input state whose forces and joint coordinates are read.
+            state_out: Output state whose coordinates and kinematics are written.
+            control: Control object read during each substep, or ``None``.
+
+        Raises:
+            ValueError: The solver is not native CPU MuJoCo with a CUDA model,
+                or the output requests the optional ``mujoco.qfrc_actuator`` field.
+        """
+        if not self.use_mujoco_cpu or not self.model.device.is_cuda:
+            raise ValueError("capture_native_io requires use_mujoco_cpu=True and a CUDA model")
+        if getattr(getattr(state_out, "mujoco", None), "qfrc_actuator", None) is not None:
+            raise ValueError("capture_native_io does not support the optional qfrc_actuator output")
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self._apply_mjc_control_gpu(self.model, state_in, control, self.mj_data)
+        input_graph = capture.graph
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self._update_newton_state_gpu(self.model, state_out, self.mj_data, state_prev=state_in)
+        output_graph = capture.graph
+        self._native_io_graphs = [
+            entry
+            for entry in self._native_io_graphs
+            if not (entry[0] is state_in and entry[1] is state_out and entry[2] is control)
+        ]
+        self._native_io_graphs.append((state_in, state_out, control, input_graph, output_graph))
+
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
         if self.use_mujoco_cpu:
-            self._apply_mjc_control(self.model, state_in, control, self.mj_data)
+            captured = next(
+                (
+                    entry
+                    for entry in self._native_io_graphs
+                    if entry[0] is state_in and entry[1] is state_out and entry[2] is control
+                ),
+                None,
+            )
+            self._apply_mjc_control(
+                self.model, state_in, control, self.mj_data, native_graph=captured[3] if captured else None
+            )
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in)
+            self._update_newton_state(
+                self.model, state_out, self.mj_data, state_prev=state_in, native_graph=captured[4] if captured else None
+            )
         else:
             self._validate_rne_postconstraint(state_out)
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
@@ -4802,6 +4853,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._native_io_graphs.clear()
         if self.use_mujoco_cpu:
             self._notify_model_changed(flags)
         else:
@@ -4888,6 +4940,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+                # Target gains are updated in MJWarp buffers, but native
+                # integration reads the compiled host model.
+                self.mj_model.actuator_gainprm[:] = self.mjw_model.actuator_gainprm.numpy()[0]
+                self.mj_model.actuator_biasprm[:] = self.mjw_model.actuator_biasprm.numpy()[0]
                 self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
                 self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
@@ -5047,10 +5103,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Check if the data is a mujoco_warp Data object
         return hasattr(data, "nworld")
 
-    def _apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
+    def _apply_mjc_control(
+        self,
+        model: Model,
+        state: State,
+        control: Control | None,
+        mj_data: MjWarpData | MjData,
+        native_graph=None,
+    ):
         if control is None or control.joint_f is None:
             if state.body_f is None:
+                if self.use_mujoco_cpu and model.device.is_cuda:
+                    # Even without force transfers, the previous step can
+                    # still be reading the reusable pinned coordinate buffers.
+                    wp.synchronize_stream(wp.get_stream(model.device))
                 return
+        if native_graph is None:
+            self._apply_mjc_control_gpu(model, state, control, mj_data)
+        else:
+            wp.capture_launch(native_graph)
+        if not self._data_is_mjwarp(mj_data):
+            if model.device.is_cuda:
+                # Complete the force downloads and previous coordinate uploads
+                # before native MuJoCo consumes or overwrites pinned buffers.
+                wp.synchronize_stream(wp.get_stream(model.device))
+            for field in ("xfrc_applied", "ctrl", "qfrc_applied"):
+                getattr(mj_data, field)[:] = self._mjc_cpu_buffers[field][1].numpy()[0]
+
+    def _apply_mjc_control_gpu(self, model: Model, state: State, control: Control | None, mj_data):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -5061,9 +5141,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         else:
             effective_dof_count = model.joint_dof_count - self._total_loop_joint_dofs
             single_world_template = len(mj_data.qfrc_applied) < effective_dof_count
-            ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
-            qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
-            xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
+            ctrl, ctrl_host = self._mjc_cpu_buffers["ctrl"]
+            qfrc, qfrc_host = self._mjc_cpu_buffers["qfrc_applied"]
+            xfrc, xfrc_host = self._mjc_cpu_buffers["xfrc_applied"]
+            ctrl.zero_()
+            qfrc.zero_()
+            xfrc.zero_()
             nworld = 1
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
@@ -5172,9 +5255,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=model.device,
             )
         if not is_mjwarp:
-            mj_data.xfrc_applied = xfrc.numpy()
-            mj_data.ctrl[:] = ctrl.numpy().flatten()
-            mj_data.qfrc_applied[:] = qfrc.numpy()
+            if model.device.is_cuda:
+                wp.copy(ctrl_host, ctrl)
+                wp.copy(qfrc_host, qfrc)
+                wp.copy(xfrc_host, xfrc)
 
     def _update_mjc_data(
         self,
@@ -5269,6 +5353,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         state: State,
         mj_data: MjWarpData | MjData,
         state_prev: State,
+        native_graph=None,
     ):
         """Update a Newton state from MuJoCo coordinates and kinematics.
 
@@ -5280,6 +5365,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 velocities are copied from this state because MuJoCo does not
                 independently integrate those DOFs.
         """
+        if not self._data_is_mjwarp(mj_data):
+            for field in ("qpos", "qvel"):
+                self._mjc_cpu_buffers[field][1].numpy()[0] = getattr(mj_data, field)
+        if native_graph is None:
+            self._update_newton_state_gpu(model, state, mj_data, state_prev)
+        else:
+            wp.capture_launch(native_graph)
+
+    def _update_newton_state_gpu(self, model: Model, state: State, mj_data, state_prev: State):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -5291,8 +5385,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # we have an MjData object from Mujoco
             effective_coord_count = model.joint_coord_count - self._total_loop_joint_coords
             single_world_template = len(mj_data.qpos) < effective_coord_count
-            qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
-            qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
+            qpos, qpos_host = self._mjc_cpu_buffers["qpos"]
+            qvel, qvel_host = self._mjc_cpu_buffers["qvel"]
+            if model.device.is_cuda:
+                wp.copy(qpos, qpos_host)
+                wp.copy(qvel, qvel_host)
             nworld = 1
         joints_per_world = (
             model.joint_count // model.world_count if single_world_template else model.joint_count // nworld
@@ -6547,11 +6644,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
-                if np.any(size > 0.0):
+                # Mesh vertices are exported above with their signed Newton
+                # scale already baked in.  MuJoCo geom sizes, however, must be
+                # non-negative.  In particular, a three-axis mirrored USD mesh
+                # has no positive scale component and was previously mistaken
+                # for a zero-size shape here.
+                mjc_size = np.abs(size) if stype == GeoType.MESH or stype == GeoType.CONVEX_MESH else size.copy()
+                if np.any(mjc_size > 0.0):
                     # duplicate nonzero entries at places where size is 0
-                    nonzero = size[size > 0.0][0]
-                    size[size == 0.0] = nonzero
-                    geom_params["size"] = size
+                    nonzero = mjc_size[mjc_size > 0.0][0]
+                    mjc_size[mjc_size == 0.0] = nonzero
+                    geom_params["size"] = mjc_size
                 else:
                     assert stype == GeoType.PLANE, "Only plane shapes are allowed to have a size of zero"
                     # planes are always infinite for collision purposes in mujoco
@@ -7598,6 +7701,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.actuator_biasprm[actuator_id, 2] = dampratio
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_setConst(self.mj_model, self.mj_data)
+        if self.use_mujoco_cpu:
+            # Native MuJoCo has a fixed coordinate layout. Reuse its small
+            # transfer buffers instead of allocating five Warp arrays per step.
+            self._mjc_cpu_buffers = {}
+            for name, dtype in (
+                ("ctrl", wp.float32),
+                ("qfrc_applied", wp.float32),
+                ("xfrc_applied", wp.spatial_vector),
+                ("qpos", wp.float32),
+                ("qvel", wp.float32),
+            ):
+                buffer = wp.empty((1, len(getattr(self.mj_data, name))), dtype=dtype, device=self.model.device)
+                host = wp.empty_like(buffer, device="cpu", pinned=True) if self.model.device.is_cuda else buffer
+                self._mjc_cpu_buffers[name] = buffer, host
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
@@ -8404,10 +8521,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _set_const_0_with_physical_meaninertia(self) -> None:
         """Recompute constants without counting kinematic locking armature in solver statistics."""
+        # mj_setConst writes the reference pose and derived buffers into its data.
+        # Updating model properties must leave live native integration state intact.
+        const_data = self._mujoco.MjData(self.mj_model) if self.use_mujoco_cpu else None
         has_kinematic_bodies = bool(np.any((self.model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0))
         if not has_kinematic_bodies:
             if self.use_mujoco_cpu:
-                self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+                self._mujoco.mj_setConst(self.mj_model, const_data)
             else:
                 self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
             return
@@ -8417,13 +8537,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.use_mujoco_cpu:
             actuator_biasprm = self.mj_model.actuator_biasprm.copy()
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            self._mujoco.mj_setConst(self.mj_model, const_data)
             physical_meaninertia = float(self.mj_model.stat.meaninertia)
 
             self._update_body_properties()
             self.mj_model.actuator_biasprm[:] = actuator_biasprm
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            self._mujoco.mj_setConst(self.mj_model, const_data)
             self.mj_model.stat.meaninertia = physical_meaninertia
         else:
             actuator_biasprm = wp.clone(self.mjw_model.actuator_biasprm)
