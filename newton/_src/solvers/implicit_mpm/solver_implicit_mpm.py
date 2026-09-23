@@ -3084,9 +3084,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
-        """Use row compression when it does not enlarge candidate storage."""
-        # Row compression reserves every partition row; triplets use the restriction's
-        # node-count bound. Both multiply that count by the same Q1 stencil size.
+        """Prefer row compression for validated CUDA contact-map layouts."""
+        # Compact maps with many inactive partition rows can still favor triplets,
+        # even when Warp packs active-row candidate capacity.
         return (
             self.model.device.is_cuda
             and self.velocity_basis == "Q1"
