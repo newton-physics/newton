@@ -2169,7 +2169,7 @@ class _DeformableViewBase:
         self.count = object_count
         """Number of selected deformable objects across all worlds."""
         self.world_count = world_count
-        """Number of worlds spanned by the selection."""
+        """Number of model worlds, including unmatched worlds; one for a global-only selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
         """Number of selected deformable objects per world, or None when the counts vary."""
         flat_ids = [i for ids in object_ids for i in ids]
@@ -2274,6 +2274,11 @@ class _DeformableViewBase:
         For consumers that need each deformable object's raw slice of the flat model arrays, e.g. to
         hand per-instance offsets to a renderer sync or to custom kernels. See
         :meth:`elements_per_deformable_object` for the valid ``kind`` values.
+
+        Native rod joint ranges include any free-root joints created by the rod
+        call. USD curve ranges contain per-curve rod joints, not root attachments.
+        Welded USD curves have empty joint ranges because their joints belong to
+        a shared graph. See :ref:`deformable-selection` for examples and ownership.
 
         Args:
             kind: Element kind recorded by every selected deformable object.

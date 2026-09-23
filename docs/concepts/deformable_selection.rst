@@ -36,6 +36,93 @@ expose particle positions and velocities. A family does not prescribe a solver o
 storage layout. Particle-based curves and solver-owned MPM data are not supported
 yet. There is no simulation-representation filter in this version.
 
+Read and reset state
+--------------------
+
+Getters read either a :class:`~newton.State` or the initial values stored in a
+:class:`~newton.Model`:
+
+.. code-block:: python
+
+    transforms = curves.get_body_transforms(state)
+    positions = surfaces.get_particle_positions(state)
+
+Each row contains one selected deformable object's values. All selected
+deformable objects must have the same count of the requested element kind.
+For example, three cloths with four particles each produce a Warp array with
+shape ``(3, 4)`` and ``wp.vec3`` elements. Its NumPy representation has shape
+``(3, 4, 3)`` because each position has three coordinates.
+
+Save independent reset buffers during setup, then use them to reset the state:
+
+.. code-block:: python
+
+    import warp as wp
+
+    positions_default = wp.clone(surfaces.get_particle_positions(model))
+    velocities_default = wp.clone(surfaces.get_particle_velocities(model))
+
+    # Later, reset positions and velocities for all selected cloths.
+    surfaces.set_particle_positions(state, positions_default)
+    surfaces.set_particle_velocities(state, velocities_default)
+
+Regular layouts return a view into the source arrays, which may have gaps between
+rows. Irregular layouts fill a reusable buffer. A later state change or another
+read can change the returned values. Use ``wp.clone()`` when a result must stay
+unchanged, as in the reset buffers above.
+
+Use setters to change state; do not rely on editing a getter result. Setters
+reject input that shares storage with the target array. Copy such input with
+``wp.clone()`` first. This prevents a write from overwriting values it still
+needs to read, without adding hidden copies to every setter call.
+
+Setters change only the supplied model or state. Applications with two alternating
+states must reset both when both should retain the reset. Model writes change
+initial arrays, not states that were already created.
+
+Update selected deformable objects
+----------------------------------
+
+``deformable_object_indices`` says **which selected deformable objects to change**.
+``source_indices`` says **which input rows to read**. For a view containing at
+least three cloths, reset only cloths 2 and 0 from their saved rows:
+
+.. code-block:: python
+
+    surfaces.set_particle_positions(
+        state,
+        positions_default,
+        deformable_object_indices=[2, 0],
+        source_indices=[2, 0],
+    )
+    surfaces.set_particle_velocities(
+        state,
+        velocities_default,
+        deformable_object_indices=[2, 0],
+        source_indices=[2, 0],
+    )
+
+The two lists need not match. With destinations ``[2, 0]`` and source rows
+``[0, 2]``, the setter copies saved row 0 to cloth 2 and saved row 2 to cloth 0.
+Without ``source_indices``, values contain one compact row per destination.
+Omitting ``deformable_object_indices`` writes every selected deformable object.
+Unselected deformable objects are untouched.
+
+Destination indices are positions in this view, not model-global IDs. They
+coincide with world IDs only when exactly one deformable object is selected in
+every world. The next section explains how to look up objects by world.
+
+Host selectors must contain genuine integers. Destination indices must be in
+range and unique; source rows may repeat. Device selectors must be one-dimensional
+``int32`` arrays on the model device. Out-of-range device indices are ignored.
+For duplicate device destinations, the last input row wins. If that row has an
+invalid source index, the destination is left unchanged.
+
+Construct views and warm up the operations before CUDA graph capture. Preallocate
+independent input values and device selectors. The indexed setters and getters
+that reuse staging buffers can then be captured and replayed. A later replay may
+use changed values or indices without a host copy.
+
 Deformable objects and worlds
 -----------------------------
 
@@ -146,62 +233,16 @@ cables' body ranges even though their selected deformable object indices are con
 ``elements_per_deformable_object(kind)`` returns a common element count or raises when the
 sizes differ. Raw ranges remain available for deformable objects with different sizes.
 
+Joint ranges depend on how a cable was created. Native rod calls include any
+free-root joints they create. USD curves record their per-curve rod joints, not
+the root attachment joint. Curves welded into a shared rod graph have empty
+joint ranges because those joints belong to the shared graph. Do not infer the
+joint count from the segment count.
+
 Recording labels does not prevent fixed-joint collapse. A deformable curve is omitted
 with a warning if collapse removes one of its bodies or joints. Preserve required
 joints using :meth:`~newton.ModelBuilder.collapse_fixed_joints` with
 ``joints_to_keep`` when complete curve access is needed.
-
-Reading state
--------------
-
-.. code-block:: python
-
-    transforms = curves.get_body_transforms(state)
-    positions = surfaces.get_particle_positions(state)
-
-Batched results have shape ``(count, elements_per_deformable_object(kind))``. The selected
-deformable objects must have equal counts for the requested element kind. Getters accept
-either a :class:`~newton.Model` for initial values or a :class:`~newton.State`.
-
-Regular layouts return a view into the source arrays, which may have gaps between
-rows. Irregular layouts fill a reusable buffer. Do not depend on modifying a
-getter result to change the state: use setters instead. Copy a result if it must
-remain unchanged, for example when saving reset values. Another read may
-overwrite a reusable buffer, and later state changes affect a zero-copy result.
-
-Writing state
--------------
-
-.. code-block:: python
-
-    # Write deformable object 2 from input row 5, and deformable object 0 from input row 1.
-    surfaces.set_particle_positions(
-        state,
-        reset_positions,
-        deformable_object_indices=[2, 0],
-        source_indices=[5, 1],
-    )
-
-``deformable_object_indices`` selects destination rows in the view, not model-global deformable object
-IDs. These rows coincide with world IDs only when exactly one deformable object is selected
-in every world. ``source_indices`` selects rows from the input values. Without
-it, values contain one compact row per destination. Omitting ``deformable_object_indices``
-writes every selected deformable object. Unselected deformable objects are untouched.
-
-Host selectors must contain genuine integers. Destination indices must be in
-range and unique; source rows may repeat. Device selectors must be one-dimensional
-``int32`` arrays on the model device. Out-of-range device indices are ignored.
-For duplicate device destinations, the last input row wins. If that row has an
-invalid source index, the destination is left unchanged.
-
-Setters change only the supplied model or state. Applications with two alternating
-states must reset both when both should retain the reset. Model writes change
-initial arrays, not states that were already created.
-
-Construct views and warm up the operations before CUDA graph capture. Preallocate
-input values and device selectors. The indexed setters and getters that reuse
-staging buffers can then be captured and replayed. A later replay may use changed
-values or indices without a host copy.
 
 Comparison with ArticulationView
 --------------------------------
@@ -227,20 +268,21 @@ identical worlds, each with one robot, two cables, and one cloth:
     cable_segment_transforms = cables.get_body_transforms(state)
     cloth_particle_positions = cloths.get_particle_positions(state)
 
-Each selection must satisfy its batched-read requirements. There are important
-differences:
+The method style is similar, but the layouts serve different needs:
 
-* :class:`~newton.selection.ArticulationView` requires equal selected articulation
-  counts per world, compatible element counts, and regular spacing in the model
-  arrays. Deformable views allow uneven deformable object counts per world and irregular
-  spacing. Batched reads still require equal counts of the requested element kind.
-* ``articulation_ids`` contains model articulation IDs. ``deformable_object_indices``
-  contains positions in the chosen view, not model-global IDs.
-* Articulation setters use Boolean masks. Deformable setters use destination
-  indices and optional independent source rows.
+* ArticulationView keeps a world/articulation layout. It requires equal selected
+  articulation counts per world, compatible element counts, and regular spacing
+  in the model arrays. Deformable views use one flat row per selected deformable
+  object. This allows uneven world counts and irregular spacing without padding.
+  Batched reads still require equal counts of the requested element kind.
+* Articulation setters use Boolean masks with full-sized input arrays. Deformable
+  setters use destination indices and compact input rows, with optional source
+  indices for reading from a larger buffer. This supports partial resets without
+  requiring a full-sized array for each write.
 * :meth:`~newton.selection.ArticulationView.get_attribute` is a generic entry
-  point. Deformable views currently provide the specific state getters shown above,
-  plus element ranges. They do not yet expose a public ``get_attribute()``.
+  point. The deformable views start with state getters, setters, and element
+  ranges. Generic attribute access remains a follow-up, not a limitation of
+  deformable simulation.
 
 For example, these calls reset velocities in world 1 of a three-world model.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.
