@@ -88,7 +88,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         self.assertEqual(solver.mj_model.mesh_facenum[0], 4)
 
     def test_three_axis_mirrored_mesh_compiles(self):
-        """Signed mesh scale is baked into vertices, not treated as zero size."""
+        """Handle signed mesh scales without treating them as zero size."""
 
         vertices = np.array(
             [
@@ -127,6 +127,7 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         self.assertEqual(solver.mj_model.nmesh, 1)
 
     def test_zero_scale_non_plane_mesh_remains_rejected(self):
+        """Reject zero-scale non-planar meshes."""
         vertices = np.array(
             [
                 [0.0, 0.0, 0.0],

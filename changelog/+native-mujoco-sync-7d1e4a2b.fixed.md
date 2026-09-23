@@ -1,1 +1,1 @@
-Fix native MuJoCo CPU integration to preserve live state across model refreshes, apply updated target gains, and accept fully mirrored mesh scales. Reuse CUDA transfer buffers and optionally capture the GPU packing/unpacking around the native CPU step with ``SolverMuJoCo.capture_native_io``.
+Fix native MuJoCo CPU integration to preserve live state across model refreshes, apply updated target gains, and accept fully mirrored mesh scales. Reuse CUDA transfer buffers.
