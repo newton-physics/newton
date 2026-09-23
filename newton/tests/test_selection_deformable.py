@@ -487,6 +487,39 @@ class TestDeformableSelection(unittest.TestCase):
         np.testing.assert_array_equal(after[1], before[1])
         np.testing.assert_array_equal(after[2], values[1])
 
+    def test_setters_reject_values_sharing_target_storage(self):
+        """Reject overlapping input before a remapped write changes any state."""
+        for device in wp.get_devices():
+            model = _replicated_model(3, device=device)
+            state = model.state()
+            cloth = DeformableSurfaceView(model, "/World/Cloth")
+            cable = DeformableCurveView(model, "/World/Cable")
+            for getter, setter, dtype in (
+                (cloth.get_particle_positions, cloth.set_particle_positions, wp.vec3),
+                (cloth.get_particle_velocities, cloth.set_particle_velocities, wp.vec3),
+                (cable.get_body_transforms, cable.set_body_transforms, wp.transform),
+                (cable.get_body_velocities, cable.set_body_velocities, wp.spatial_vector),
+            ):
+                before = getter(state).numpy().copy()
+                before[..., 0] = np.arange(3)[:, None]
+                initial = wp.array(before, dtype=dtype, device=device)
+                setter(state, initial)
+                live = getter(state)
+                inputs = [live, live[1:], live[::2]]
+                if device.is_cpu:
+                    inputs.append(live.numpy())
+                for values in inputs:
+                    with self.subTest(device=device, setter=setter.__name__, input_type=type(values), rows=len(values)):
+                        with self.assertRaisesRegex(ValueError, "overlap.*wp.clone"):
+                            setter(state, values, deformable_object_indices=[0, 1], source_indices=[1, 0])
+                        np.testing.assert_array_equal(getter(state).numpy(), before)
+
+                # Independent input makes the row exchange well-defined on every device.
+                setter(state, wp.clone(live), deformable_object_indices=[0, 1], source_indices=[1, 0])
+                expected = before.copy()
+                expected[:2] = before[[1, 0]]
+                np.testing.assert_array_equal(getter(state).numpy(), expected)
+
     def test_source_indices_map_particle_velocity_rows(self):
         """Particle velocity writes use the same source-to-deformable-object mapping."""
         model = _replicated_model(3, device="cpu")

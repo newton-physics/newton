@@ -12,7 +12,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, Literal
 
 import warp as wp
-from warp.types import is_array
+from warp.types import is_array, type_size_in_bytes
 
 from ..sim import (
     Control,
@@ -2470,6 +2470,21 @@ class _DeformableViewBase:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        if rows and count and values.size and dst.size:
+            # A remapped write can destroy a later source row. Check byte spans,
+            # not just pointers, so sliced/strided aliases are caught without a
+            # device readback or an implicit allocation during graph capture.
+            def byte_bounds(array):
+                offsets = [(size - 1) * stride for size, stride in zip(array.shape, array.strides, strict=True)]
+                return (
+                    array.ptr + sum(min(0, offset) for offset in offsets),
+                    array.ptr + sum(max(0, offset) for offset in offsets) + type_size_in_bytes(array.dtype),
+                )
+
+            values_start, values_end = byte_bounds(values)
+            dst_start, dst_end = byte_bounds(dst)
+            if values_start < dst_end and dst_start < values_end:
+                raise ValueError("values must not overlap the target state array; use wp.clone() to copy them first")
         if device_indices:
             self._last_object_rows.fill_(-1)
             wp.launch(
@@ -2537,7 +2552,8 @@ class _DeformableParticleView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Particle positions [m] with shape
-                ``(value_rows, particles_per_deformable_object)``.
+                ``(value_rows, particles_per_deformable_object)``. Must not share
+                storage with the target positions; use ``wp.clone()`` to copy a live getter result.
             deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
@@ -2548,7 +2564,8 @@ class _DeformableParticleView(_DeformableViewBase):
             AttributeError: If the selected deformable objects do not all record particles.
             TypeError: If a host selector entry is not an integer.
             ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid.
+                destination uniqueness, or source/destination alignment are invalid,
+                or if values overlap the target array.
         """
         self._scatter(
             "particle",
@@ -2595,7 +2612,8 @@ class _DeformableParticleView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Particle velocities [m/s] with shape
-                ``(value_rows, particles_per_deformable_object)``.
+                ``(value_rows, particles_per_deformable_object)``. Must not share
+                storage with the target velocities; use ``wp.clone()`` to copy a live getter result.
             deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
@@ -2606,7 +2624,8 @@ class _DeformableParticleView(_DeformableViewBase):
             AttributeError: If the selected deformable objects do not all record particles.
             TypeError: If a host selector entry is not an integer.
             ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid.
+                destination uniqueness, or source/destination alignment are invalid,
+                or if values overlap the target array.
         """
         self._scatter(
             "particle",
@@ -2666,7 +2685,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Segment transforms with shape ``(value_rows, bodies_per_deformable_object)``;
-                translations are in meters and quaternions are unitless.
+                translations are in meters and quaternions are unitless. Must not share
+                storage with the target transforms; use ``wp.clone()`` to copy a live getter result.
             deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
@@ -2677,7 +2697,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             AttributeError: If the selected deformable objects do not all record bodies.
             TypeError: If a host selector entry is not an integer.
             ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid.
+                destination uniqueness, or source/destination alignment are invalid,
+                or if values overlap the target array.
         """
         self._scatter(
             "body",
@@ -2729,7 +2750,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             target: Model initial state or simulation state to update.
             values: Segment velocities with shape ``(value_rows, bodies_per_deformable_object)``;
                 linear components are in meters per second and angular components are
-                in radians per second.
+                in radians per second. Must not share storage with the target velocities;
+                use ``wp.clone()`` to copy a live getter result.
             deformable_object_indices: Optional flat deformable object rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
@@ -2740,7 +2762,8 @@ class _DeformableRigidBodyView(_DeformableViewBase):
             AttributeError: If the selected deformable objects do not all record bodies.
             TypeError: If a host selector entry is not an integer.
             ValueError: If deformable object sizes, value shape/dtype/device, selector bounds,
-                destination uniqueness, or source/destination alignment are invalid.
+                destination uniqueness, or source/destination alignment are invalid,
+                or if values overlap the target array.
         """
         self._scatter(
             "body",
