@@ -356,11 +356,19 @@ class DVISolver:
             self._sparse_path.contacts = contacts
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
-        """Reset scratch state and cached solution data."""
+        """
+        Resets the persistent solution cache used for internal warm-starting, for all worlds
+        or the subset selected by `world_mask`.
+
+        This does not touch the scratch solver state (`self._data.state`) or the diagnostics
+        (`self._data.info`):
+        * `coldstart()`/`warmstart()` reinitialize `state` before every `solve()` call, except
+          for the large response matrices, which they deliberately skip because solves overwrite
+          their active entries before reading them.
+        * `info.status` is overwritten wholesale at the end of every `solve()` call if info
+          collection is enabled.
+        """
         if world_mask is None:
-            self._data.state.reset()
-            if self._data.info is not None:
-                self._data.info.zero()
             self._data.solution.zero()
         else:
             if problem is None:
@@ -380,7 +388,7 @@ class DVISolver:
 
     def coldstart(self):
         """Prepare a cold-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         self._data.solution.zero()
 
     def warmstart(
@@ -392,7 +400,7 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
     ):
         """Prepare a warm-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         if limits is None:
             limits = self._limits
         else:

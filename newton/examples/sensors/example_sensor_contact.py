@@ -36,10 +36,14 @@ class Example:
         self.reset_interval = 8.0
 
         self.viewer = viewer
+        self.solver_type = getattr(args, "solver", "mujoco")
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
 
@@ -59,20 +63,33 @@ class Example:
             measure_total=False,
             verbose=True,
         )
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            njmax=100,
-            nconmax=100,
-            cone="pyramidal",
-            impratio=1,
-        )
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.use_schur_complement = True
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(
+                self.model,
+                njmax=100,
+                nconmax=100,
+                cone="pyramidal",
+                impratio=1,
+            )
 
         # used for storing contact info required by contact sensor
-        self.contacts = Contacts(
-            self.solver.get_max_contact_count(),
-            0,
-            requested_attributes=self.model.get_requested_contact_attributes(),
-        )
+        if self.solver_type == "kamino":
+            self.contacts = newton.CollisionPipeline(self.model).contacts()
+        else:
+            self.contacts = Contacts(
+                self.solver.get_max_contact_count(),
+                0,
+                requested_attributes=self.model.get_requested_contact_attributes(),
+            )
 
         self.viewer.set_model(self.model)
 
@@ -95,6 +112,7 @@ class Example:
         }
 
         self.state_0 = self.model.state()
+        self.state_1 = self.model.state() if self.solver_type == "kamino" else None
 
         self.control = self.model.control()
         hinge_joint_idx = self.model.joint_label.index("/env/Hinge")
@@ -115,7 +133,9 @@ class Example:
     def capture(self):
         self.graph = None
 
-        if not wp.get_device().is_cuda:
+        # Kamino's solver caches are reset periodically, which is not compatible
+        # with replaying a graph captured before the reset.
+        if not wp.get_device().is_cuda or self.solver_type == "kamino":
             return
 
         with wp.ScopedCapture() as capture:
@@ -125,7 +145,11 @@ class Example:
     def simulate(self):
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
-        self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
+        if self.state_1 is None:
+            self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
+        else:
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
         self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
@@ -178,6 +202,11 @@ class Example:
         self.state_0.joint_qd.assign(self.initial_joint_qd)
         # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        if self.solver_type == "kamino":
+            # Synchronize joint history and clear solver caches without requiring
+            # Kamino's optional iterative FK solver.
+            reset_config = newton.solvers.SolverKamino.ResetConfig.preserve()
+            self.solver.reset(self.state_0, config=reset_config)
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -213,6 +242,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
 
     viewer, args = newton.examples.init(parser)
 
