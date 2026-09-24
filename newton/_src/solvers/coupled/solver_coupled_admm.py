@@ -704,6 +704,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @classmethod
     def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
+        """Validate ADMM parameters and collision capacities before allocation."""
         cls._positive_integer(coupling.iterations, "ADMM iterations")
         cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
         cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
@@ -1050,6 +1051,7 @@ class SolverCoupledADMM(SolverCoupled):
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
     def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
+        """Initialize ADMM buffers, constraint groups, and internal collision detection."""
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh())
