@@ -4939,11 +4939,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
-            if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-                # Target gains are updated in MJWarp buffers, but native
+            if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
+                # Both update paths write gains into MJWarp buffers, but native
                 # integration reads the compiled host model.
                 self.mj_model.actuator_gainprm[:] = self.mjw_model.actuator_gainprm.numpy()[0]
                 self.mj_model.actuator_biasprm[:] = self.mjw_model.actuator_biasprm.numpy()[0]
+            if flags & ModelFlags.JOINT_DOF_PROPERTIES:
                 self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
                 self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
@@ -4951,6 +4952,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
+                self.mj_model.actuator_dynprm[:] = self.mjw_model.actuator_dynprm.numpy()[0]
+                self.mj_model.actuator_forcerange[:] = self.mjw_model.actuator_forcerange.numpy()[0]
+                self.mj_model.actuator_actrange[:] = self.mjw_model.actuator_actrange.numpy()[0]
+                self.mj_model.actuator_gear[:] = self.mjw_model.actuator_gear.numpy()[0]
+                self.mj_model.actuator_cranklength[:] = self.mjw_model.actuator_cranklength.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
