@@ -1,1 +1,0 @@
-Filter concave manifold mesh edges whose endpoints are both fully concave by default when building mesh SDFs to reduce redundant contacts; pass `edge_concave_filter=False` to `Mesh.build_sdf()` to retain them.
