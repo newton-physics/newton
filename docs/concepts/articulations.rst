@@ -713,6 +713,13 @@ Construct a view by matching articulation keys with a pattern and optional filte
 Use views to read/write batched state slices (joint positions/velocities, root transforms,
 link transforms) without manual index bookkeeping.
 
+When only body and joint state is needed, pass ``include_shapes=False`` to
+:class:`newton.selection.ArticulationView`. The selected articulations may then
+have different collider counts and shape layouts, provided their body and joint
+counts and strides remain uniform. Shape metadata is empty, and shape-frequency
+attribute reads and writes raise :class:`AttributeError`. This option changes
+selection only; the chosen solver must also support the model's geometry layout.
+
 Move articulations in world space
 """""""""""""""""""""""""""""""""
 

@@ -3751,6 +3751,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
+        allow_heterogeneous_shapes: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -3801,6 +3802,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            allow_heterogeneous_shapes: Allow different collider counts and geometry across worlds with identical body and joint layouts. Requires ``use_mujoco_contacts=False`` and the MuJoCo Warp backend. Sites, spatial tendons, explicit contact pairs, and fluid forces are not supported in this mode. Newton shapes remain unchanged; the solver allocates internal geom slots for the largest per-body shape groups.
+
+                .. experimental::
+
+                    The ``allow_heterogeneous_shapes=True`` mode may change without prior notice.
+
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -3808,6 +3815,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ``wp.config.deterministic``.
         """
         super().__init__(model)
+
+        if allow_heterogeneous_shapes and (use_mujoco_contacts or use_mujoco_cpu):
+            raise ValueError(
+                "allow_heterogeneous_shapes=True requires use_mujoco_contacts=False and use_mujoco_cpu=False."
+            )
+        self._allow_heterogeneous_shapes = allow_heterogeneous_shapes
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -5814,6 +5827,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         sleep_tolerance = resolve_option("sleep_tolerance", sleep_tolerance)
         density = resolve_option("density", density)
         viscosity = resolve_option("viscosity", viscosity)
+        if self._allow_heterogeneous_shapes and (density or viscosity):
+            raise ValueError("allow_heterogeneous_shapes=True does not support fluid density or viscosity.")
         if sleep_tolerance is not None and (not math.isfinite(sleep_tolerance) or sleep_tolerance < 0.0):
             raise ValueError(f"sleep_tolerance must be finite and non-negative, got {sleep_tolerance}.")
 
@@ -6233,6 +6248,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._total_loop_joint_coords = loop_coord_count
             self._total_loop_joint_dofs = loop_dof_count
 
+        heterogeneous_shape_columns = None
+        heterogeneous_body_shapes = None
+        if self._allow_heterogeneous_shapes:
+            selected_shapes, heterogeneous_body_shapes, heterogeneous_shape_columns = (
+                self._build_heterogeneous_shape_slots(
+                    model,
+                    shape_condim,
+                    shape_priority,
+                    skip_visual_only_geoms=skip_visual_only_geoms,
+                )
+            )
+
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
         colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
@@ -6241,17 +6268,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         colliding_shapes_per_world = len(colliding_shapes)
 
         # filter out non-colliding bodies using excludes
-        body_filters = self._find_body_collision_filter_pairs(
-            model,
-            selected_bodies,
-            colliding_shapes,
+        body_filters = (
+            []
+            if self._allow_heterogeneous_shapes
+            else self._find_body_collision_filter_pairs(model, selected_bodies, colliding_shapes)
         )
 
         # Reuse the original masks only when all shapes came from the same
         # add_mjcf() call and the masks already enforce every Newton filter.
         # Otherwise generate new masks from Newton's final allowed shape pairs.
         use_preserved_collision_masks = (
-            shape_mjc_contype is not None
+            not self._allow_heterogeneous_shapes
+            and shape_mjc_contype is not None
             and shape_mjc_conaffinity is not None
             and shape_mjc_collision_mask_domain is not None
             and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
@@ -6269,7 +6297,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         compiled_collision_type = None
         compiled_collision_affinity = None
         shape_color = None
-        if not use_preserved_collision_masks:
+        if self._allow_heterogeneous_shapes:
+            # Newton already applies the collision filters, and representatives
+            # may originate from different worlds of the original model.
+            compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+            compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+        elif not use_preserved_collision_masks:
             compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
             if compiled_masks.exact:
                 compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
@@ -6388,7 +6421,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
-            shapes = model.body_shapes.get(newton_body_id)
+            shapes = (
+                heterogeneous_body_shapes.get(newton_body_id)
+                if heterogeneous_body_shapes is not None
+                else model.body_shapes.get(newton_body_id)
+            )
             if not shapes:
                 return
             for shape in shapes:
@@ -6445,6 +6482,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "type": geom_type_mapping[stype],
                     "name": name,
                 }
+                if self._allow_heterogeneous_shapes:
+                    # Extra internal slots must never contribute inferred body mass.
+                    geom_params["mass"] = 0.0
                 tf = wp.transform(*shape_transform[shape])
                 if stype == GeoType.HFIELD:
                     # Retrieve heightfield source
@@ -7726,7 +7766,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Create mjc_geom_to_newton_shape: MuJoCo[world, geom] -> Newton shape
             self.mjc_geom_to_newton_shape = wp.full((nworld, self.mj_model.ngeom), -1, dtype=wp.int32)
 
-            if self.mjw_model.geom_pos.size:
+            if heterogeneous_shape_columns is not None:
+                shape_map = np.full((nworld, self.mj_model.ngeom), -1, dtype=np.int32)
+                for geom_idx, representative in geom_to_shape_idx.items():
+                    shape_map[:, geom_idx] = heterogeneous_shape_columns[representative]
+                self.mjc_geom_to_newton_shape = wp.array(shape_map, dtype=wp.int32)
+            elif self.mjw_model.geom_pos.size:
                 wp.launch(
                     update_shape_mappings_kernel,
                     dim=(nworld, self.mj_model.ngeom),
@@ -8312,6 +8357,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         newton_sleep_tolerance = get_option("sleep_tolerance")
         newton_density = get_option("density")
         newton_viscosity = get_option("viscosity")
+        if self._allow_heterogeneous_shapes:
+            for option in (newton_density, newton_viscosity):
+                if option is not None and np.any(option.numpy() != 0.0):
+                    raise ValueError("allow_heterogeneous_shapes=True does not support fluid density or viscosity.")
 
         # Get WORLD frequency vector arrays
         newton_wind = get_option("wind")
@@ -9616,6 +9665,74 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    @staticmethod
+    def _build_heterogeneous_shape_slots(
+        model: Model,
+        shape_condim: np.ndarray | None,
+        shape_priority: np.ndarray | None,
+        *,
+        skip_visual_only_geoms: bool,
+    ) -> tuple[np.ndarray, dict[int, list[int]], dict[int, np.ndarray]]:
+        """Build bounded geom slots without padding or mutating Newton shapes.
+
+        A slot belongs to one body and has one geometry type, contact dimension,
+        and priority because MuJoCo Warp stores these properties without a world
+        dimension. Other contact properties are synchronized per world.
+        """
+        shape_flags = model.shape_flags.numpy()
+        if np.any(shape_flags & ShapeFlags.SITE):
+            raise ValueError("allow_heterogeneous_shapes=True does not support sites.")
+        if model.custom_frequency_counts.get("mujoco:pair", 0):
+            raise ValueError("allow_heterogeneous_shapes=True does not support explicit MuJoCo contact pairs.")
+        mujoco_attrs = getattr(model, "mujoco", None)
+        for name in ("tendon_wrap_shape", "tendon_wrap_sidesite"):
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is not None and np.any(attr.numpy() >= 0):
+                raise ValueError("allow_heterogeneous_shapes=True does not support spatial tendons.")
+
+        shape_world = model.shape_world.numpy()
+        shape_body = model.shape_body.numpy()
+        shape_type = model.shape_type.numpy()
+        bodies_per_world = model.body_count // model.world_count
+        groups: dict[tuple[int, int, int, int], list[list[int]]] = {}
+        selected_shapes: list[int] = []
+        body_shapes: dict[int, list[int]] = {}
+        shape_columns: dict[int, np.ndarray] = {}
+        for shape in range(model.shape_count):
+            if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                continue
+            world = int(shape_world[shape])
+            body = int(shape_body[shape])
+            if world < 0:
+                selected_shapes.append(shape)
+                # Legacy single-world models may attach shapes in world -1 to
+                # dynamic bodies. Multi-world validation rejects global bodies.
+                body_shapes.setdefault(body, []).append(shape)
+                shape_columns[shape] = np.full(model.world_count, shape, dtype=np.int32)
+                continue
+            local_body = body % bodies_per_world if body >= 0 else -1
+            key = (
+                local_body,
+                int(shape_type[shape]),
+                int(shape_condim[shape]) if shape_condim is not None else 3,
+                int(shape_priority[shape]) if shape_priority is not None else 0,
+            )
+            if key not in groups:
+                groups[key] = [[] for _ in range(model.world_count)]
+            groups[key][world].append(shape)
+
+        for key, worlds in groups.items():
+            for slot in range(max(map(len, worlds))):
+                column = np.array(
+                    [shapes[slot] if slot < len(shapes) else -1 for shapes in worlds],
+                    dtype=np.int32,
+                )
+                representative = int(column[column >= 0][0])
+                selected_shapes.append(representative)
+                body_shapes.setdefault(key[0], []).append(representative)
+                shape_columns[representative] = column
+        return np.asarray(selected_shapes, dtype=np.int32), body_shapes, shape_columns
+
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 
@@ -9625,6 +9742,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         2. Entity types match across corresponding entities in each world
         3. Corresponding joints have the same linear/angular DOF counts in each world
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
+
+        ``allow_heterogeneous_shapes=True`` replaces the shape count/type
+        restrictions with compatible internal geom slots for Newton contacts.
 
         Args:
             model: The Newton model to validate.
@@ -9692,13 +9812,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Count entities per world (excluding global shapes)
         non_global_shapes = shape_world[shape_world >= 0]
 
-        for entity_name, world_arr in [
+        entity_worlds = [
             ("bodies", body_world),
             ("joints", joint_world),
-            ("shapes", non_global_shapes),
             ("equality constraints", eq_constraint_world),
             ("mimic constraints", mimic_world),
-        ]:
+        ]
+        if not self._allow_heterogeneous_shapes:
+            entity_worlds.append(("shapes", non_global_shapes))
+        for entity_name, world_arr in entity_worlds:
             # Use bincount for O(n) counting instead of O(n * world_count) loop
             if len(world_arr) == 0:
                 continue
@@ -9717,6 +9839,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # --- Check type matching across worlds (vectorized) ---
         # Load type arrays lazily - only when needed for validation
         joints_per_world = model.joint_count // world_count
+        if self._allow_heterogeneous_shapes and joints_per_world:
+            bodies_per_world = model.body_count // world_count
+            body_offsets = (np.arange(world_count, dtype=np.int32) * bodies_per_world)[:, None]
+            for name in ("joint_parent", "joint_child"):
+                indices = getattr(model, name).numpy().reshape(world_count, joints_per_world)
+                normalized = np.where(indices >= 0, indices - body_offsets, -1)
+                if np.any(normalized != normalized[0]):
+                    raise ValueError(
+                        "allow_heterogeneous_shapes=True requires identical body/joint layouts; "
+                        f"{name} differs across worlds."
+                    )
         if joints_per_world > 0:
             joint_type = model.joint_type.numpy()
             joint_types_2d = joint_type.reshape(world_count, joints_per_world)
@@ -9761,7 +9894,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Only check non-global shapes
         shapes_per_world = len(non_global_shapes) // world_count if world_count > 0 else 0
-        if shapes_per_world > 0:
+        if shapes_per_world > 0 and not self._allow_heterogeneous_shapes:
             shape_type = model.shape_type.numpy()
             # Get shape types for non-global shapes only
             non_global_shape_types = shape_type[shape_world >= 0]

@@ -559,6 +559,10 @@ class ArticulationView:
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
+        include_shapes: If False, exclude shapes from the view, allowing articulations
+            with different shape counts and layouts. Body and joint layouts must still
+            be uniform. Shape metadata is empty and shape-frequency attribute access
+            raises :class:`AttributeError`. This does not change solver requirements.
         verbose: If True, prints selection summary.
     """
 
@@ -574,6 +578,7 @@ class ArticulationView:
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
+        include_shapes: bool = True,
         verbose: bool | None = None,
     ):
         self.model = model
@@ -682,7 +687,8 @@ class ArticulationView:
         for link_id in arti_link_ids:
             arti_link_labels.append(model.body_label[link_id])
             arti_link_names.append(get_name_from_label(model.body_label[link_id]))
-            arti_shape_ids.extend(model.body_shapes[link_id])
+            if include_shapes:
+                arti_shape_ids.extend(model.body_shapes[link_id])
 
         # use shape order as they appear in the model
         arti_shape_ids = sorted(arti_shape_ids)
@@ -732,9 +738,10 @@ class ArticulationView:
                     link_ids.append(link_id)
                 link_ids = sorted(set(link_ids))
                 shape_ids = []
-                for link_id in link_ids:
-                    link_shapes = model.body_shapes.get(link_id, [])
-                    shape_ids.extend(link_shapes)
+                if include_shapes:
+                    for link_id in link_ids:
+                        link_shapes = model.body_shapes.get(link_id, [])
+                        shape_ids.extend(link_shapes)
                 link_starts[world_id].append(min(link_ids))
                 link_counts[world_id].append(len(link_ids))
                 num_shapes = len(shape_ids)
@@ -951,7 +958,7 @@ class ArticulationView:
             body_id = arti_link_ids[arti_link_idx]
             self.link_names.append(arti_link_names[arti_link_idx])
             self.link_labels.append(arti_link_labels[arti_link_idx])
-            shape_ids = model.body_shapes[body_id]
+            shape_ids = model.body_shapes[body_id] if include_shapes else []
             for shape_id in shape_ids:
                 arti_shape_idx = arti_shape_ids.index(shape_id)
                 selected_shape_indices.append(arti_shape_idx)
@@ -1008,15 +1015,16 @@ class ArticulationView:
             AttributeFrequency.BODY: FrequencyLayout(
                 link_offset, outer_link_stride, inner_link_stride, arti_link_count, selected_link_indices, self.device
             ),
-            AttributeFrequency.SHAPE: FrequencyLayout(
+        }
+        if include_shapes:
+            self.frequency_layouts[AttributeFrequency.SHAPE] = FrequencyLayout(
                 shape_offset,
                 outer_shape_stride,
                 inner_shape_stride,
                 arti_shape_count,
                 selected_shape_indices,
                 self.device,
-            ),
-        }
+            )
 
         # Build layouts for every custom frequency that declares per-row
         # articulation ownership on the model.
@@ -1111,7 +1119,7 @@ class ArticulationView:
         self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
         self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
         self.links_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
-        self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
+        self.shapes_contiguous = not include_shapes or self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
 
         # articulation ids grouped by world
         self.articulation_ids = wp.array(articulation_ids, dtype=int, device=self.device)
@@ -1202,6 +1210,10 @@ class ArticulationView:
         else:
             layout = self.frequency_layouts.get(frequency)
             if layout is None:
+                if frequency == AttributeFrequency.SHAPE:
+                    raise AttributeError(
+                        f"Shape attribute '{name}' is unavailable because this view was created with include_shapes=False"
+                    )
                 raise AttributeError(
                     f"Unable to determine the layout of frequency '{frequency.name}' for attribute '{name}'"
                 )
