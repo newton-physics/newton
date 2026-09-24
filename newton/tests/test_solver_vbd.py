@@ -6544,7 +6544,6 @@ def _run_sphere_drop(device, enable_dat, drop_speed=8.0, frames=60):
         iterations=4,
         rigid_compliant_alm=True,
         rigid_soft_enable_dat=enable_dat,
-        rigid_body_particle_contact_buffer_size=1024,
         collision_pipeline=pipeline,
     )
     state_in, state_out = model.state(), model.state()
@@ -6604,7 +6603,6 @@ def test_rigid_dat_graph_capture_replays_match_eager(test, device):
             iterations=4,
             rigid_compliant_alm=True,
             rigid_soft_enable_dat=True,
-            rigid_body_particle_contact_buffer_size=1024,
             collision_pipeline=pipeline,
         )
         state_a, state_b = model.state(), model.state()
