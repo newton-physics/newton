@@ -2423,6 +2423,67 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
+    def test_mimic_coeffs_follow_joint_scale(self):
+        """Scale mimic coefficients for linear follower and reference coordinates."""
+        urdf = """
+        <robot name="mimic_scale">
+            <link name="base"/><link name="slide_leader_link"/><link name="slide_follower_link"/>
+            <link name="hinge_leader_link"/><link name="hinge_follower_link"/>
+            <link name="slide_of_hinge_link"/><link name="hinge_of_slide_link"/>
+            <link name="planar_leader_link"/><link name="planar_follower_link"/>
+            <joint name="slide_leader" type="prismatic">
+                <parent link="base"/><child link="slide_leader_link"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="slide_follower" type="prismatic">
+                <parent link="base"/><child link="slide_follower_link"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="slide_leader" multiplier="2" offset="0.5"/>
+            </joint>
+            <joint name="hinge_leader" type="revolute">
+                <parent link="base"/><child link="hinge_leader_link"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="hinge_follower" type="continuous">
+                <parent link="base"/><child link="hinge_follower_link"/>
+                <mimic joint="hinge_leader" multiplier="2" offset="0.5"/>
+            </joint>
+            <joint name="slide_of_hinge" type="prismatic">
+                <parent link="base"/><child link="slide_of_hinge_link"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="hinge_leader" multiplier="0.25" offset="0.1"/>
+            </joint>
+            <joint name="hinge_of_slide" type="revolute">
+                <parent link="base"/><child link="hinge_of_slide_link"/>
+                <limit lower="-3" upper="3"/>
+                <mimic joint="slide_leader" multiplier="4" offset="0.2"/>
+            </joint>
+            <joint name="planar_leader" type="planar">
+                <parent link="base"/><child link="planar_leader_link"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="planar_follower" type="planar">
+                <parent link="base"/><child link="planar_follower_link"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="planar_leader" multiplier="2" offset="0.5"/>
+            </joint>
+        </robot>
+        """
+        for scale in (1.0, 3.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=scale)
+                expected = {
+                    "slide_follower": (0.5 * scale, 2.0),
+                    "hinge_follower": (0.5, 2.0),
+                    "slide_of_hinge": (0.1 * scale, 0.25 * scale),
+                    "hinge_of_slide": (0.2, 4.0 / scale),
+                    "planar_follower": (0.5 * scale, 2.0),
+                }
+                for name, coeffs in expected.items():
+                    joint = builder.joint_label.index(f"mimic_scale/{name}")
+                    np.testing.assert_allclose(builder.joint_mimic_coeffs[joint], coeffs, err_msg=name)
+
 
 class TestOverrideRootXformURDF(unittest.TestCase):
     """Tests that override_root_xform parameter is accepted by the URDF importer."""
