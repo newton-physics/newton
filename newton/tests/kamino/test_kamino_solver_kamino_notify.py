@@ -505,6 +505,22 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         for actual, expected in zip(arrays[3:], pair_values, strict=True):
             np.testing.assert_array_equal(actual.numpy(), expected)
 
+    def test_static_friction_sentinel_and_explicit_equal_value_share_material(self):
+        """An unset mu_static and an explicit mu_static equal to mu are the same material on update."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        model.shape_material_mu_static.assign(np.array([-1.0, 0.2], dtype=np.float32))
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
+        materials = solver._model_kamino.materials
+        geoms = solver._model_kamino.geoms
+        self.assertEqual(len(set(geoms.material.numpy().tolist())), 1)
+
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        model.shape_material_mu_static.assign(np.array([0.5, 0.5], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.5])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.2])
+
     def test_default_material_update_propagates_to_default_pair(self):
         """Updating material zero keeps its explicit self-pair synchronized."""
         model = _build_revolute(shape_materials=((DEFAULT_FRICTION, DEFAULT_RESTITUTION),))

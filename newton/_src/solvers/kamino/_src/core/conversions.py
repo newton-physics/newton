@@ -216,6 +216,14 @@ def material_first_shape_kernel(
         wp.atomic_min(first_shape, material, shape)
 
 
+@wp.func
+def effective_static_friction(friction: wp.float32, static_friction: wp.float32) -> wp.float32:
+    """Static friction a shape material resolves to: negative means "same as mu", otherwise never below mu."""
+    if static_friction < 0.0:
+        return friction
+    return wp.max(static_friction, friction)
+
+
 @wp.kernel
 def validate_material_update_kernel(
     shape_friction: wp.array[wp.float32],
@@ -233,7 +241,8 @@ def validate_material_update_kernel(
     representative = first_shape[material]
     if (
         shape_friction[shape] != shape_friction[representative]
-        or shape_static_friction[shape] != shape_static_friction[representative]
+        or effective_static_friction(shape_friction[shape], shape_static_friction[shape])
+        != effective_static_friction(shape_friction[representative], shape_static_friction[representative])
         or shape_restitution[shape] != shape_restitution[representative]
     ):
         wp.atomic_min(conflict_material, 0, material)
@@ -263,10 +272,7 @@ def update_materials_kernel(
     shape = first_shape[material]
     if shape < shape_count:
         friction = shape_friction[shape]
-        # Negative mu_static means "same as mu"; otherwise never let it drop below mu.
-        friction_static = friction
-        if shape_static_friction[shape] >= 0.0:
-            friction_static = wp.max(shape_static_friction[shape], friction)
+        friction_static = effective_static_friction(friction, shape_static_friction[shape])
         restitution[material] = shape_restitution[shape]
         static_friction[material] = friction_static
         dynamic_friction[material] = friction
