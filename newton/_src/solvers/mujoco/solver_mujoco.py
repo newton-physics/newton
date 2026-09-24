@@ -60,6 +60,7 @@ from .constants import (
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
+from .heterogeneous import HeterogeneousContactFilter
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -87,7 +88,7 @@ from .kernels import (
     restore_sleeping_state_kernel,
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
-    sync_worldbody_geom_xposes_kernel,
+    sync_static_geom_xposes_kernel,
     update_actuator_properties_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -3801,8 +3802,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disable_sensors: If True, disable sensor computation in MuJoCo. On the MuJoCo Warp backend, :meth:`step` raises ``ValueError`` if the output state requests ``body_qdd`` or ``body_parent_f``, which MuJoCo computes inside the sensor stage.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            allow_heterogeneous_shapes: Allow different collider counts and geometry across worlds with identical body and joint layouts. Requires ``use_mujoco_contacts=False`` and the MuJoCo Warp backend. Sites, spatial tendons, explicit contact pairs, and fluid forces are not supported in this mode. Newton shapes remain unchanged; the solver allocates internal geom slots for the largest per-body shape groups.
+            use_mujoco_contacts: If True, generate contacts with MuJoCo. If False, pass Newton-generated contacts to :meth:`step`. Both modes use MuJoCo for dynamics and contact forces.
+            allow_heterogeneous_shapes: Allow different collider counts and geometry across worlds with identical body and joint layouts on the MuJoCo Warp backend. Supports Newton and native MuJoCo contacts. Sites, spatial tendons, explicit contact pairs, and fluid forces are unsupported. Native contacts additionally require fixed geometry sizes and collision filters, and support meshes and primitive shapes except cones and heightfields. Newton shapes remain unchanged; the solver allocates internal geom slots for the largest per-body shape groups.
 
                 .. experimental::
 
@@ -3816,11 +3817,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         super().__init__(model)
 
-        if allow_heterogeneous_shapes and (use_mujoco_contacts or use_mujoco_cpu):
-            raise ValueError(
-                "allow_heterogeneous_shapes=True requires use_mujoco_contacts=False and use_mujoco_cpu=False."
-            )
+        if allow_heterogeneous_shapes and use_mujoco_cpu:
+            raise ValueError("allow_heterogeneous_shapes=True requires use_mujoco_cpu=False.")
         self._allow_heterogeneous_shapes = allow_heterogeneous_shapes
+        self._heterogeneous_contact_filter = None
+        self._heterogeneous_geometry_snapshot = None
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -4068,6 +4069,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
+        if allow_heterogeneous_shapes and model.world_count > 1 and not separate_worlds:
+            raise ValueError("allow_heterogeneous_shapes=True requires separate_worlds=True for multiple worlds.")
         # Buffers for the fast-path contact conversion optimisation.
         # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
         # Initialised before _convert_to_mjc because notify_model_changed (called
@@ -4828,6 +4831,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_cone_shape_scales()
+            self._validate_heterogeneous_geometry()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
@@ -4951,7 +4955,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
 
             if flags & ModelFlags.SHAPE_PROPERTIES:
-                self._sync_worldbody_geom_xposes()
+                self._sync_static_geom_xposes()
                 self._sync_site_xposes()
 
             if flags and getattr(self, "enable_sleeping", False) and not getattr(self, "_initial_model_sync", False):
@@ -4985,23 +4989,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.eq_solimp[:] = self.mjw_model.eq_solimp.numpy()[0]
         self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
 
-    def _sync_worldbody_geom_xposes(self) -> None:
+    def _sync_static_geom_xposes(self) -> None:
         """Refresh derived poses that MJWarp leaves fixed after data creation.
 
-        MJWarp initializes direct worldbody geoms from the single CPU template
-        and skips them during forward kinematics. Newton's batched model can
-        carry distinct per-world geometry transforms, so copy them to the
-        corresponding derived data after shape properties change.
+        MJWarp initializes geoms on bodies welded to the world from the single
+        CPU template and skips them during forward kinematics. Newton can carry
+        distinct per-world geometry transforms, so compose them with the static
+        body poses after shape properties change.
         """
         if self.mj_model.ngeom == 0:
             return
         wp.launch(
-            sync_worldbody_geom_xposes_kernel,
+            sync_static_geom_xposes_kernel,
             dim=(self.mjw_data.nworld, self.mj_model.ngeom),
             inputs=[
                 self.mjw_model.geom_bodyid,
+                self.mjw_model.body_weldid,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
+                self.mjw_data.xpos,
+                self.mjw_data.xquat,
             ],
             outputs=[
                 self.mjw_data.geom_xpos,
@@ -6250,6 +6257,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         heterogeneous_shape_columns = None
         heterogeneous_body_shapes = None
+        native_heterogeneous = self._allow_heterogeneous_shapes and self._use_mujoco_contacts
+        native_geometry = None
         if self._allow_heterogeneous_shapes:
             selected_shapes, heterogeneous_body_shapes, heterogeneous_shape_columns = (
                 self._build_heterogeneous_shape_slots(
@@ -6259,6 +6268,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     skip_visual_only_geoms=skip_visual_only_geoms,
                 )
             )
+            if native_heterogeneous:
+                all_shapes = (
+                    np.unique(np.concatenate(list(heterogeneous_shape_columns.values())))
+                    if heterogeneous_shape_columns
+                    else np.empty(0, dtype=np.int32)
+                )
+                all_shapes = all_shapes[all_shapes >= 0]
+                native_geometry = self._export_heterogeneous_geometry(spec, all_shapes, geom_type_mapping)
 
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
@@ -6298,10 +6315,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         compiled_collision_affinity = None
         shape_color = None
         if self._allow_heterogeneous_shapes:
-            # Newton already applies the collision filters, and representatives
-            # may originate from different worlds of the original model.
             compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
             compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+            if native_heterogeneous:
+                shape_map = (
+                    np.column_stack([heterogeneous_shape_columns[int(s)] for s in selected_shapes])
+                    if len(selected_shapes)
+                    else np.empty((model.world_count, 0), dtype=np.int32)
+                )
+                permissions, _ = self._heterogeneous_pair_filters(model, shape_map)
+                a, b = np.triu_indices(len(selected_shapes), k=1)
+                excluded = np.column_stack((a, b))[~np.any(permissions, axis=0)]
+                masks = compile_newton_collision_graph(
+                    np.ones(len(selected_shapes), dtype=np.int32), excluded_pairs=excluded
+                )
+                self._heterogeneous_masks_exact = masks.exact
+                # An inexact compiler result may omit allowed pairs. Fall back
+                # to conservative masks and let the per-world filter decide.
+                compiled_collision_type[selected_shapes] = masks.collision_type if masks.exact else 1
+                compiled_collision_affinity[selected_shapes] = masks.collision_affinity if masks.exact else 1
+            # With Newton contacts the masks stay zero: Newton already filters.
         elif not use_preserved_collision_masks:
             compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
             if compiled_masks.exact:
@@ -6537,6 +6570,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         maxhullvert=mesh_src.maxhullvert,
                     )
                     geom_params["meshname"] = name
+                elif native_heterogeneous and stype in (GeoType.MESH, GeoType.CONVEX_MESH):
+                    geom_params["meshname"] = native_geometry[2][int(shape)]
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     size = shape_size[shape]
@@ -6600,7 +6635,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
-                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                if native_heterogeneous:
+                    # Slot representatives can be disabled in their own world
+                    # while the same slot is active elsewhere.
+                    geom_params["contype"] = mujoco_mask_to_signed(int(compiled_collision_type[shape]))
+                    geom_params["conaffinity"] = mujoco_mask_to_signed(int(compiled_collision_affinity[shape]))
+                elif not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     # Visual-only Newton shapes never participate in automatic
                     # MuJoCo contacts, even if source metadata carried masks.
                     geom_params["contype"] = 0
@@ -7683,11 +7723,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # ``use_mujoco_contacts=False`` switches MJWarp collision detection off
         # after conversion, but this CPU forward runs before that option exists.
-        # Temporarily suppress MuJoCo contacts so large Newton-contact scenes do
-        # not build an unused contact set (and potentially overflow mjData's
-        # stack) during solver construction. Restore the authored option before
-        # the model is handed to MJWarp; injected Newton contacts remain enabled.
-        restore_contact_disable = not disable_contacts and not self._use_mujoco_contacts
+        # Temporarily suppress unused contacts during construction. Native
+        # heterogeneous geometry is also not installed yet, so template contacts
+        # would initialize the data and capacity from the wrong world's shapes.
+        # Restore the option before handing the model to MJWarp.
+        restore_contact_disable = not disable_contacts and (not self._use_mujoco_contacts or native_heterogeneous)
         if restore_contact_disable:
             self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         try:
@@ -8124,6 +8164,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # expand model fields that can be expanded:
             self._expand_model_fields(self.mjw_model, nworld)
+            if native_geometry is not None:
+                library, geometry_ids, _, placeholders = native_geometry
+                self._init_heterogeneous_geometry(
+                    library, geometry_ids, placeholders, self.mjc_geom_to_newton_shape.numpy()
+                )
 
             # update solver options from Newton model (only if not overridden by constructor)
             self._update_solver_options(overridden_options=overridden_options)
@@ -9666,6 +9711,201 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     @staticmethod
+    def _heterogeneous_pair_filters(model: Model, shape_map: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Deduplicate world pair filters without allocating a dense world/pair table."""
+        geom_a, geom_b = np.triu_indices(shape_map.shape[1], k=1)
+        rows = []
+        row_indices = {}
+        world_to_filter = np.empty(shape_map.shape[0], dtype=np.int32)
+        groups = model.shape_collision_group.numpy()
+        flags = model.shape_flags.numpy()
+        bodies = model.shape_body.numpy()
+        for world, shapes in enumerate(shape_map):
+            allowed = np.zeros(len(geom_a), dtype=bool)
+            valid = (shapes[geom_a] >= 0) & (shapes[geom_b] >= 0)
+            indices = np.flatnonzero(valid)
+            a, b = shapes[geom_a[valid]], shapes[geom_b[valid]]
+            ga, gb = groups[a], groups[b]
+            interacting = (ga != 0) & (gb != 0)
+            interacting &= ((ga > 0) & ((ga == gb) | (gb < 0))) | ((ga < 0) & (ga != gb))
+            interacting &= (flags[a] & ShapeFlags.COLLIDE_SHAPES != 0) & (flags[b] & ShapeFlags.COLLIDE_SHAPES != 0)
+            interacting &= bodies[a] != bodies[b]
+            interacting &= ~model.shape_collision_filter_mask(np.column_stack((a, b)))
+            allowed[indices] = interacting
+            key = allowed.tobytes()
+            if key not in row_indices:
+                row_indices[key] = len(rows)
+                rows.append(allowed)
+            world_to_filter[world] = row_indices[key]
+        filters = np.asarray(rows, dtype=bool).reshape((len(rows), len(geom_a)))
+        return filters, world_to_filter
+
+    def _export_heterogeneous_geometry(self, spec, shapes: np.ndarray, geom_types: dict):
+        """Compile unique geometry once to obtain exact native collision bounds.
+
+        A geometry-only spec avoids recompiling the articulation for every
+        world. Its assets are also inserted into the actual solver spec.
+        """
+        mujoco = self._mujoco
+        model = self.model
+        library = mujoco.MjSpec()
+        shape_types = model.shape_type.numpy()
+        sizes = model.shape_scale.numpy().copy()
+        supported = {
+            GeoType.PLANE,
+            GeoType.SPHERE,
+            GeoType.CAPSULE,
+            GeoType.CYLINDER,
+            GeoType.BOX,
+            GeoType.ELLIPSOID,
+            GeoType.MESH,
+            GeoType.CONVEX_MESH,
+        }
+        unsupported = set(shape_types[shapes]) - supported
+        if unsupported:
+            raise ValueError(
+                "Native contacts with allow_heterogeneous_shapes=True support meshes and primitives "
+                "except cones and heightfields. Use Newton contacts for other geometry."
+            )
+        geometry_ids = np.full(model.shape_count, -1, dtype=np.int32)
+        geometry_cache = {}
+        mesh_names = {}
+        shape_mesh_names = {}
+
+        def add_asset(key, vertices, indices=None, maxhullvert=-1):
+            name = mesh_names.get(key)
+            if name is None:
+                name = f"newton_heterogeneous_mesh_{len(mesh_names)}"
+                params = {"name": name, "uservert": vertices.flatten(), "maxhullvert": maxhullvert}
+                if indices is not None:
+                    params["userface"] = indices.flatten()
+                library.add_mesh(**params)
+                spec.add_mesh(**params)
+                mesh_names[key] = name
+            return name
+
+        for shape in shapes:
+            stype = shape_types[shape]
+            size = sizes[shape].copy()
+            key = (int(stype), tuple(float(v) for v in size))
+            params = {"type": geom_types[stype], "mass": 0.0}
+            if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
+                mesh = model.shape_source[shape]
+                key = (int(stype), _mesh_scale_key(mesh, size))
+                asset_key = _mesh_scale_key(mesh, size)
+                if asset_key not in mesh_names:
+                    vertices = mesh.vertices * size
+                    extent = np.ptp(vertices, axis=0)
+                    if _mujoco_mesh_vertices_are_planar(vertices, extent):
+                        raise ValueError(
+                            f"MuJoCo contact generation does not support planar mesh collider "
+                            f"{model.shape_label[shape]!r}. Use use_mujoco_contacts=False."
+                        )
+                    add_asset(asset_key, vertices, mesh.indices, mesh.maxhullvert)
+                params["meshname"] = mesh_names[asset_key]
+                shape_mesh_names[int(shape)] = mesh_names[asset_key]
+            if key not in geometry_cache:
+                if stype == GeoType.PLANE:
+                    size[:] = 5.0
+                elif np.any(size > 0.0):
+                    size[size == 0.0] = size[size > 0.0][0]
+                params["size"] = size
+                geometry_cache[key] = len(library.geoms)
+                library.worldbody.add_geom(**params)
+            geometry_ids[shape] = geometry_cache[key]
+
+        # Small but valid placeholders keep absent hulls out of most broadphase
+        # pairs. The contact filter remains authoritative, including below ground.
+        placeholders = {}
+        for stype in sorted(set(shape_types[shapes])):
+            params = {"type": geom_types[stype], "mass": 0.0, "size": [0.001] * 3}
+            if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
+                vertices = np.array(
+                    [
+                        [-0.001, -0.001, -0.001],
+                        [0.001, -0.001, -0.001],
+                        [-0.001, 0.001, -0.001],
+                        [-0.001, -0.001, 0.001],
+                    ],
+                    dtype=np.float32,
+                )
+                params["meshname"] = add_asset("placeholder", vertices)
+            placeholders[int(stype)] = len(library.geoms)
+            library.worldbody.add_geom(**params)
+        return library.compile(), geometry_ids, shape_mesh_names, placeholders
+
+    def _init_heterogeneous_geometry(self, library, geometry_ids, placeholders, shape_map: np.ndarray):
+        """Install compiled per-world geometry and compact collision-filter tables."""
+        mujoco = self._mujoco
+        shape_types = self.model.shape_type.numpy()
+        representative = np.argmax(shape_map >= 0, axis=0)
+        geom_types = shape_types[shape_map[representative, np.arange(shape_map.shape[1])]]
+        indices = np.empty_like(shape_map)
+        for world, row in enumerate(shape_map):
+            for geom, shape in enumerate(row):
+                indices[world, geom] = geometry_ids[shape] if shape >= 0 else placeholders[int(geom_types[geom])]
+        mesh_ids = np.full(library.nmesh, -1, dtype=np.int32)
+        for mesh in range(library.nmesh):
+            name = mujoco.mj_id2name(library, mujoco.mjtObj.mjOBJ_MESH, mesh)
+            mesh_ids[mesh] = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_MESH, name)
+        dataid = library.geom_dataid[indices].copy()
+        mesh_geoms = dataid >= 0
+        dataid[mesh_geoms] = mesh_ids[dataid[mesh_geoms]]
+        self.mjw_model.geom_dataid = wp.array(dataid, dtype=wp.int32, device=self.device)
+        for name, dtype in (
+            ("geom_size", wp.vec3),
+            ("geom_rbound", float),
+            ("geom_aabb", wp.vec3),
+            ("geom_pos", wp.vec3),
+            ("geom_quat", wp.quat),
+        ):
+            values = getattr(library, name)[indices]
+            if name == "geom_aabb":
+                values = values.reshape((*shape_map.shape, 2, 3))
+            setattr(self.mjw_model, name, wp.array(values, dtype=dtype, device=self.device))
+        # Missing slots inherit no detection envelope or material from another world.
+        for name in ("geom_margin", "geom_gap"):
+            values = getattr(self.mjw_model, name).numpy().copy()
+            values[shape_map < 0] = 0.0
+            getattr(self.mjw_model, name).assign(values)
+        unique, inverse = self._heterogeneous_pair_filters(self.model, shape_map)
+        if len(unique) > 1 or not self._heterogeneous_masks_exact:
+            self._heterogeneous_contact_filter = HeterogeneousContactFilter(
+                self.mjw_data,
+                wp.array(unique, dtype=wp.bool, device=self.device),
+                self.mj_model.ngeom,
+                world_to_filter=wp.array(inverse, dtype=wp.int32, device=self.device),
+            )
+            self.mjw_model.callback.contactfilter = self._heterogeneous_contact_filter
+        self._heterogeneous_geometry_snapshot = self._heterogeneous_geometry_values()
+
+    def _heterogeneous_geometry_values(self) -> dict[str, np.ndarray]:
+        """Read compile-time geometry properties for explicit update validation."""
+        values = {
+            name: getattr(self.model, name).numpy().copy()
+            for name in ("shape_scale", "shape_type", "shape_collision_group", "shape_flags")
+        }
+        values["shape_flags"] &= ShapeFlags.COLLIDE_SHAPES | ShapeFlags.SITE
+        values["shape_source"] = np.asarray([id(source) for source in self.model.shape_source])
+        values["shape_collision_filter_pairs"] = self.model.shape_collision_filter_pairs_array().copy()
+        for name in ("condim", "geom_priority"):
+            attr = getattr(getattr(self.model, "mujoco", None), name, None)
+            if attr is not None:
+                values[name] = attr.numpy().copy()
+        return values
+
+    def _validate_heterogeneous_geometry(self) -> None:
+        """Reject updates that require recompiling native geometry or pair tables."""
+        if self._heterogeneous_geometry_snapshot is None:
+            return
+        for name, value in self._heterogeneous_geometry_values().items():
+            if not np.array_equal(value, self._heterogeneous_geometry_snapshot[name]):
+                raise ValueError(
+                    f"Native contacts with allow_heterogeneous_shapes=True do not support changing {name}. "
+                    "Recreate the solver after changing geometry or collision filters."
+                )
+
+    @staticmethod
     def _build_heterogeneous_shape_slots(
         model: Model,
         shape_condim: np.ndarray | None,
@@ -9744,7 +9984,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
 
         ``allow_heterogeneous_shapes=True`` replaces the shape count/type
-        restrictions with compatible internal geom slots for Newton contacts.
+        restrictions with compatible internal geom slots.
 
         Args:
             model: The Newton model to validate.

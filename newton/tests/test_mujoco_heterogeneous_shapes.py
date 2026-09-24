@@ -79,11 +79,11 @@ class TestMuJoCoHeterogeneousShapes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "homogeneous worlds"):
             create_simulation(model, heterogeneous=False)
 
-    def test_native_contacts_reject_heterogeneous_mode(self):
-        """Reject native collision detection instead of silently reusing template geometry."""
+    def test_reject_combined_worlds(self):
+        """Reject combining worlds whose geometry slots require separate mappings."""
         model = build_model([(1, 0.1), (3, 0.2)], "cpu")
-        with self.assertRaisesRegex(ValueError, "use_mujoco_contacts=False"):
-            SolverMuJoCo(model, allow_heterogeneous_shapes=True)
+        with self.assertRaisesRegex(ValueError, "separate_worlds=True"):
+            SolverMuJoCo(model, allow_heterogeneous_shapes=True, use_mujoco_contacts=False, separate_worlds=False)
 
     def test_empty_world_has_no_phantom_collider(self):
         """Let a shapeless body fall through the floor while other worlds settle."""

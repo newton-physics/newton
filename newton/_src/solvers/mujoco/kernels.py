@@ -2583,21 +2583,26 @@ def update_site_properties_kernel(
 
 
 @wp.kernel
-def sync_worldbody_geom_xposes_kernel(
+def sync_static_geom_xposes_kernel(
     geom_bodyid: wp.array[int],
+    body_weldid: wp.array[int],
     geom_pos: wp.array2d[wp.vec3],
     geom_quat: wp.array2d[wp.quat],
+    body_xpos: wp.array2d[wp.vec3],
+    body_xquat: wp.array2d[wp.quat],
     geom_xpos: wp.array2d[wp.vec3],
     geom_xmat: wp.array2d[wp.mat33],
 ):
-    """Refresh per-world poses for geoms attached directly to the world body."""
+    """Refresh per-world poses for geoms on bodies welded to the world."""
     world, geom = wp.tid()
-    if geom_bodyid[geom] != 0:
+    body = geom_bodyid[geom]
+    if body_weldid[body] != 0:
         return
 
+    body_q = quat_wxyz_to_xyzw(body_xquat[world, body])
     geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
-    geom_xpos[world, geom] = geom_pos[world, geom]
-    geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
+    geom_xpos[world, geom] = body_xpos[world, body] + wp.quat_rotate(body_q, geom_pos[world, geom])
+    geom_xmat[world, geom] = wp.quat_to_matrix(body_q * geom_q)
 
 
 @wp.kernel
