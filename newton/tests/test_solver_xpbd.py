@@ -715,6 +715,28 @@ def test_particle_shape_restitution_does_not_launch_resting_particle(test, devic
     test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
 
 
+def test_rigid_integration_rotation(test, device):
+    """Preserve finite rotation increments and gradients at zero angular velocity."""
+    dt = 0.002
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, angular_damping=0.0)
+
+    for angle in (0.0, 1.0e-6, -2.4, 2.4):
+        with test.subTest(angle=angle):
+            state_in = model.state(requires_grad=True)
+            state_out = model.state(requires_grad=True)
+            state_in.body_qd.assign([[0.0, 0.0, 0.0, 0.0, 0.0, angle / dt]])
+            with wp.Tape() as tape:
+                solver.step(state_in, state_out, None, None, dt)
+            expected = [0.0, 0.0, np.sin(0.5 * angle), np.cos(0.5 * angle)]
+            np.testing.assert_allclose(state_out.body_q.numpy()[0, 3:], expected, atol=2.0e-7)
+            seed = wp.array([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]], dtype=wp.transform, device=device)
+            tape.backward(grads={state_out.body_q: seed})
+            test.assertAlmostEqual(state_in.body_qd.grad.numpy()[0, 5], 0.5 * dt * np.cos(0.5 * angle), delta=1.0e-9)
+
+
 def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
     """Retain the deprecated full-step angular-velocity reconstruction."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -746,7 +768,7 @@ def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
     wz_incremental = float(state_incremental_out.body_qd.numpy()[body, 5])
     wz_legacy = float(state_legacy_out.body_qd.numpy()[body, 5])
     test.assertAlmostEqual(wz_incremental, 10.0, delta=1.0e-4)
-    test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
+    test.assertAlmostEqual(wz_legacy, 2.0 * np.sin(0.5 * dt * 10.0) / dt, delta=1.0e-4)
 
 
 def test_restitution_flag_does_not_change_body_integration(test, device):
@@ -2615,6 +2637,8 @@ class TestSolverXPBD(unittest.TestCase):
         with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
             self.assertTrue(solver.compute_body_velocity_from_position_delta)
 
+
+add_function_test(TestSolverXPBD, "test_rigid_integration_rotation", test_rigid_integration_rotation, devices=devices)
 
 add_function_test(
     TestSolverXPBD,

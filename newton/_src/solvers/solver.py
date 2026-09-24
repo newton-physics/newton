@@ -98,7 +98,13 @@ def integrate_rigid_body(
     tb = wp.quat_rotate_inv(r0, t0) - wp.cross(wb, inertia * wb)  # coriolis forces
 
     w1 = wp.quat_rotate(r0, wb + inv_inertia * tb * dt)
-    r1 = wp.normalize(r0 + wp.quat(w1, 0.0) * r0 * 0.5 * dt)
+    speed = wp.length(w1)
+    half_angle = 0.5 * dt * speed
+    # Exponential rotation increment, with the correct derivative at zero speed.
+    scale = 0.5 * dt
+    if speed > 0.0:
+        scale = wp.sin(half_angle) / speed
+    r1 = wp.normalize(wp.quat(w1 * scale, wp.cos(half_angle)) * r0)
 
     # angular damping
     w1 *= 1.0 - angular_damping * dt
