@@ -847,6 +847,7 @@ class TestSchemaResolver(unittest.TestCase):
                 actual_vel = joint_qd[qd_start]
 
                 expected_pos_deg, expected_vel = expected_joint_values[joint_label]
+                expected_vel = math.radians(expected_vel)  # angular joint-state velocity is authored in deg/s
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 self.assertAlmostEqual(
@@ -935,6 +936,7 @@ class TestSchemaResolver(unittest.TestCase):
                 # Validate each DOF against expected values
                 for dof_idx in range(min(dof_count, len(expected_values))):
                     expected_pos_deg, expected_vel = expected_values[dof_idx]
+                    expected_vel = math.radians(expected_vel)  # angular joint-state velocity is authored in deg/s
                     expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                     actual_pos = joint_q[q_start + dof_idx]
@@ -965,6 +967,7 @@ class TestSchemaResolver(unittest.TestCase):
             joint_type = joint_types[i]
             if joint_type == 1 and i in expected_revolute_joints:  # JointType.REVOLUTE
                 expected_pos_deg, expected_vel = expected_revolute_joints[i]
+                expected_vel = math.radians(expected_vel)  # angular joint-state velocity is authored in deg/s
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 q_start = int(joint_q_start[i])
@@ -1087,6 +1090,7 @@ class TestSchemaResolver(unittest.TestCase):
             # Validate each DOF maps to the correct expected value
             for dof_idx in range(dof_count):
                 expected_pos_deg, expected_vel = expected_values[dof_idx]
+                expected_vel = math.radians(expected_vel)  # angular joint-state velocity is authored in deg/s
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 actual_pos = joint_q[q_start + dof_idx]
