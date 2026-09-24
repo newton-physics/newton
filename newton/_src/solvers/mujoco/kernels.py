@@ -2733,7 +2733,7 @@ def update_jnt_solref_from_invweight0_kernel(
 @wp.kernel(enable_backward=False)
 def update_tendon_limit_gains_kernel(
     tendon_mapping: wp.array2d[wp.int32],
-    gains_enabled: wp.array[wp.bool],
+    solref_mode: wp.array[wp.int32],
     limit_ke: wp.array[float],
     limit_kd: wp.array[float],
     authored_solref: wp.array[wp.vec2],
@@ -2752,9 +2752,12 @@ def update_tendon_limit_gains_kernel(
     factor = invweight0[world, tendon] * (1.0 - solimp[world, tendon][1])
     tendon_range[world, tendon] = authored_range[source]
     solref[world, tendon] = authored_solref[source]
-    if not gains_enabled[source]:
+    mode = solref_mode[source]
+    if mode == SOLREF_MODE_MJCF_DEFAULT:
+        solref[world, tendon] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
+    if mode != SOLREF_MODE_FORCE_SPACE:
         # Report physical gains for readback/randomization without changing native dynamics.
-        raw = authored_solref[source]
+        raw = solref[world, tendon]
         stiffness = wp.max(-raw[0], 0.0)
         damping = wp.max(-raw[1], 0.0)
         if raw[0] > 0.0 and raw[1] > 0.0:

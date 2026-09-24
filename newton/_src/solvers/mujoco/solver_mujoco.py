@@ -2615,10 +2615,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="tendon_limit_gains_enabled",
+                name="tendon_solref_limit_mode",
                 frequency="mujoco:tendon",
-                dtype=wp.bool,
-                default=False,
+                dtype=wp.int32,
+                # Reuse the joint-limit authoring modes for tendon gain provenance.
+                default=SOLREF_MODE_RAW,
                 namespace="mujoco",
             )
         )
@@ -2993,7 +2994,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "tendon_solref_limit",
             "tendon_limit_ke",
             "tendon_limit_kd",
-            "tendon_limit_gains_enabled",
+            "tendon_solref_limit_mode",
             "tendon_solimp_limit",
             "tendon_solref_friction",
             "tendon_solimp_friction",
@@ -9315,7 +9316,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=self.mjc_tendon_to_newton_tendon.shape,
             inputs=[
                 self.mjc_tendon_to_newton_tendon,
-                attrs.tendon_limit_gains_enabled,
+                attrs.tendon_solref_limit_mode,
                 attrs.tendon_limit_ke,
                 attrs.tendon_limit_kd,
                 attrs.tendon_solref_limit,

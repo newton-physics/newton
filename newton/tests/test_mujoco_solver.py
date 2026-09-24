@@ -11947,7 +11947,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
                 attrs.tendon_limit_ke.fill_(100.0)
                 attrs.tendon_limit_kd.fill_(20.0)
-                attrs.tendon_limit_gains_enabled.fill_(True)
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
 
                 def step_at_equilibrium(model=model, solver=solver):
@@ -11977,17 +11977,25 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 self.assertAlmostEqual(float(step_at_equilibrium()), 3.0 / (2.0 * mass) * 0.001, delta=1.0e-7)
                 np.testing.assert_allclose(attrs.tendon_range.numpy()[0], [-0.1, 0.1])
 
-                attrs.tendon_limit_gains_enabled.fill_(False)
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_RAW)
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
                 np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
                 np.testing.assert_allclose(solver.mj_model.tendon_range[0], [-0.1, 0.1])
 
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [0.02, 1.0])
+                np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
+
     def test_tendon_limit_force_gains_select_worlds(self):
         """Keep native parameters in untouched worlds and update selected gains independently."""
         model = self._build_tendon_limit_model(worlds=2)
+        self.assertFalse(hasattr(model.mujoco, "tendon_limit_gains_enabled"))
         model.mujoco.tendon_limit_ke.fill_(100.0)
         model.mujoco.tendon_limit_kd.fill_(20.0)
-        model.mujoco.tendon_limit_gains_enabled.assign(np.array([True, False]))
+        model.mujoco.tendon_solref_limit_mode.assign(
+            np.array([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW], dtype=np.int32)
+        )
         solver = SolverMuJoCo(model, disable_contacts=True)
         initial = solver.mjw_model.tendon_solref_lim.numpy()
         np.testing.assert_allclose(initial[1, 0], [-100.0, -20.0])
@@ -11996,7 +12004,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         model.mujoco.tendon_limit_ke.assign(np.array([0.0, 100.0], dtype=np.float32))
         model.mujoco.tendon_limit_kd.fill_(20.0)
-        model.mujoco.tendon_limit_gains_enabled.fill_(True)
+        model.mujoco.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
         solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
         updated = solver.mjw_model.tendon_solref_lim.numpy()
         np.testing.assert_allclose(updated[1, 0], initial[0, 0])
