@@ -2158,6 +2158,102 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
         self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
+    MIXED_MIMIC_URDF = """
+    <robot name="mimic_scale">
+        <link name="base_link"/>
+        <link name="slide_leader_link"/>
+        <link name="slide_follower_link"/>
+        <link name="hinge_leader_link"/>
+        <link name="hinge_follower_link"/>
+        <link name="slide_of_hinge_link"/>
+        <link name="hinge_of_slide_link"/>
+
+        <joint name="slide_leader" type="prismatic">
+            <parent link="base_link"/><child link="slide_leader_link"/>
+            <axis xyz="1 0 0"/><limit lower="-1" upper="1"/>
+        </joint>
+        <joint name="slide_follower" type="prismatic">
+            <parent link="base_link"/><child link="slide_follower_link"/>
+            <origin xyz="1 0 0"/>
+            <axis xyz="1 0 0"/><limit lower="-2" upper="2"/>
+            <mimic joint="slide_leader" multiplier="2.0" offset="0.5"/>
+        </joint>
+
+        <joint name="hinge_leader" type="revolute">
+            <parent link="base_link"/><child link="hinge_leader_link"/>
+            <origin xyz="0 1 0"/>
+            <axis xyz="0 0 1"/><limit lower="-1.57" upper="1.57"/>
+        </joint>
+        <joint name="hinge_follower" type="revolute">
+            <parent link="base_link"/><child link="hinge_follower_link"/>
+            <origin xyz="0 2 0"/>
+            <axis xyz="0 0 1"/><limit lower="-3.14" upper="3.14"/>
+            <mimic joint="hinge_leader" multiplier="2.0" offset="0.5"/>
+        </joint>
+
+        <joint name="slide_of_hinge" type="prismatic">
+            <parent link="base_link"/><child link="slide_of_hinge_link"/>
+            <origin xyz="0 0 1"/>
+            <axis xyz="0 0 1"/><limit lower="-2" upper="2"/>
+            <mimic joint="hinge_leader" multiplier="0.25" offset="0.1"/>
+        </joint>
+        <joint name="hinge_of_slide" type="revolute">
+            <parent link="base_link"/><child link="hinge_of_slide_link"/>
+            <origin xyz="0 0 2"/>
+            <axis xyz="0 1 0"/><limit lower="-3.14" upper="3.14"/>
+            <mimic joint="slide_leader" multiplier="4.0" offset="0.2"/>
+        </joint>
+    </robot>
+    """
+
+    def _scaled_mimic_coeffs(self, scale):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(self.MIXED_MIMIC_URDF, scale=scale)
+        model = builder.finalize()
+        coeffs = model.joint_mimic_coeffs.numpy()
+        return {
+            name: tuple(coeffs[model.joint_label.index(f"mimic_scale/{name}")])
+            for name in ("slide_follower", "hinge_follower", "slide_of_hinge", "hinge_of_slide")
+        }
+
+    def test_mimic_coeffs_unchanged_at_unit_scale(self):
+        coeffs = self._scaled_mimic_coeffs(1.0)
+        np.testing.assert_allclose(coeffs["slide_follower"], (0.5, 2.0))
+        np.testing.assert_allclose(coeffs["hinge_follower"], (0.5, 2.0))
+        np.testing.assert_allclose(coeffs["slide_of_hinge"], (0.1, 0.25))
+        np.testing.assert_allclose(coeffs["hinge_of_slide"], (0.2, 4.0))
+
+    def test_mimic_coeffs_follow_prismatic_scale(self):
+        """Mimic coefficients are authored in source units; `scale` only touches prismatic coordinates."""
+        coeffs = self._scaled_mimic_coeffs(3.0)
+        # prismatic -> prismatic: the offset is a distance, the multiplier is unitless
+        np.testing.assert_allclose(coeffs["slide_follower"], (1.5, 2.0))
+        # revolute -> revolute: nothing is a distance
+        np.testing.assert_allclose(coeffs["hinge_follower"], (0.5, 2.0))
+        # prismatic follower of a revolute leader: both coefficients are distances
+        np.testing.assert_allclose(coeffs["slide_of_hinge"], (0.3, 0.75))
+        # revolute follower of a prismatic leader: the multiplier is per unit distance
+        np.testing.assert_allclose(coeffs["hinge_of_slide"], (0.2, 4.0 / 3.0))
+
+    def test_scaled_prismatic_mimic_preserves_authored_relation(self):
+        """With scale=3, a leader at 0.75 source units must place the follower at 0.5 + 2 * 0.75 source units."""
+        scale = 3.0
+        builder = newton.ModelBuilder()
+        builder.add_urdf(self.MIXED_MIMIC_URDF, scale=scale)
+        model = builder.finalize()
+        state = model.state()
+
+        q_start = model.joint_q_start.numpy()
+        leader = q_start[model.joint_label.index("mimic_scale/slide_leader")]
+        follower = q_start[model.joint_label.index("mimic_scale/slide_follower")]
+
+        joint_q = state.joint_q.numpy()
+        joint_q[leader] = 0.75 * scale
+        state.joint_q.assign(joint_q)
+        newton.eval_mimic(model, state)
+
+        self.assertAlmostEqual(float(state.joint_q.numpy()[follower]), 2.0 * scale, places=5)
+
 
 class TestOverrideRootXformURDF(unittest.TestCase):
     """Tests that override_root_xform parameter is accepted by the URDF importer."""
