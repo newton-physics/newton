@@ -5,6 +5,22 @@ with **12 cubic control points per equilibrium channel** (48 coefficients).
 One shared controller uses a fixed batch of **128 CUDA worlds**.
 There is no trunk, opposite leg, hip-angle motor, or added upper-body load.
 
+## Import processed measurements
+
+Raw C3D and processed Visual3D exports use separate preparation paths. To audit
+the new F01 exports without guessing timing or physical metadata:
+
+```bash
+uv run --no-sync -m projects.impedance_instron visual3d inspect data/F01
+```
+
+See [Visual3D inputs](VISUAL3D_INPUTS.md) for the export scripts, manifest,
+normalization command, and Cartesian preparation requirements. All three F01
+trials now contain the required clocks, static measurements, joint centers, and
+force channels. Subject-specific inertias remain provisional. A baseline
+comparison also requires the baseline's exact shoe artifact and fixed
+foot-to-shoe registration.
+
 ## Selected baseline
 
 `outputs/impedance_instron/baseline12_maxwell/` is the current baseline. Maxwell

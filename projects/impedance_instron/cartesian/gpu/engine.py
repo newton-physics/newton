@@ -783,6 +783,10 @@ class Engine:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         reference, profile = deepcopy(reference), deepcopy(profile)
+        if "shoe_static_pitch_rad" in reference and not np.isclose(
+            float(reference["shoe_static_pitch_rad"]), static_pitch_rad, rtol=0, atol=1e-12
+        ):
+            raise ValueError("Ground-angle reference and shoe use different fixed pitch frames")
         self.reference, self.profile = reference, profile
         self.config, self.settings = config, settings
         self.world_count, self.chunk_steps = world_count, chunk_steps

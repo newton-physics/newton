@@ -95,6 +95,16 @@ def validate(reference: dict[str, np.ndarray]) -> None:
         raise ValueError("Segment lengths and context subject mass must be positive")
     if np.any(reference["grf_target_n"][:, 1] < 0):
         raise ValueError("Measured upward GRF must be nonnegative")
+    ground_keys = ("foot_ground_target_rad", "shoe_static_pitch_rad")
+    if any(key in reference for key in ground_keys):
+        if not all(key in reference for key in ground_keys):
+            raise ValueError("Ground foot angles require the fixed shoe pitch")
+        if reference[ground_keys[0]].shape != (n,) or reference[ground_keys[1]].shape != ():
+            raise ValueError("Ground foot angles must match the motion clock and shoe pitch must be scalar")
+        state = reference["state"]
+        reconstructed = state[:, 2] + state[:, 3] + state[:, 4] + np.pi / 2 - reference[ground_keys[1]]
+        if not np.allclose(reconstructed, reference[ground_keys[0]], rtol=0, atol=1e-10):
+            raise ValueError("Reference state does not reconstruct the declared ground foot angle")
     marker_keys = ("foot_marker_target_m", "foot_marker_local_m")
     if any(name in reference for name in marker_keys):
         if not all(name in reference for name in marker_keys):

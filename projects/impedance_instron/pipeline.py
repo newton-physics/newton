@@ -16,7 +16,10 @@ DEFAULT_BASELINE = ROOT / "outputs/impedance_instron/baseline12_maxwell"
 
 def create_parser() -> argparse.ArgumentParser:
     """Expose one fixed-size controller pipeline and its reusable stages."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Processed data: use `visual3d --help` to inspect/import exports or `prepare-visual3d --help` to prepare a reference.",
+    )
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", choices=("all", "prepare", "validate", "fit", "report"), default="all")

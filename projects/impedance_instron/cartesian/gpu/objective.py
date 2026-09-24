@@ -30,6 +30,8 @@ def _evaluate(
     weights: wp.array[wp.float64],
     residual_weights: wp.array[wp.float64],
     scales: wp.array[wp.float64],
+    ground_angle: int,
+    ground_offset: wp.float64,
     loss: wp.array[wp.float64],
     rmse: wp.array2d[wp.float64],
     maximum_error: wp.array2d[wp.float64],
@@ -81,6 +83,10 @@ def _evaluate(
                         predicted[channel] = (
                             state_lo[coordinate] * (wp.float64(1.0) - alpha) + state_hi[coordinate] * alpha
                         )
+                    if block == 1 and ground_angle != 0:
+                        lo_pitch = ((state_lo[2] + state_lo[3]) + state_lo[4]) + ground_offset
+                        hi_pitch = ((state_hi[2] + state_hi[3]) + state_hi[4]) + ground_offset
+                        predicted[1] = lo_pitch * (wp.float64(1.0) - alpha) + hi_pitch * alpha
                 error = predicted - targets[index]
                 for channel in range(2):
                     value = error[channel] / scales[block] * residual_weights[index]
@@ -153,10 +159,15 @@ class MeasuredObjective:
         force_weights = _weights(native_time[force_mask])
         maps = (motion_map, motion_map, force_map)
         weights = np.concatenate((motion_weights, motion_weights, force_weights))
+        angle_targets = np.array(reference["joint_target_rad"], copy=True)
+        self.ground_angle = int("foot_ground_target_rad" in reference)
+        self.ground_offset = np.pi / 2 - float(reference.get("shoe_static_pitch_rad", 0.0))
+        if self.ground_angle:
+            angle_targets[:, 1] = reference["foot_ground_target_rad"]
         targets = np.concatenate(
             (
                 reference["hip_target_m"],
-                reference["joint_target_rad"],
+                angle_targets,
                 np.asarray(reference["grf_target_n"])[force_mask],
             )
         )
@@ -234,6 +245,8 @@ class MeasuredObjective:
                 self._weights,
                 self._residual_weights,
                 self._scales,
+                self.ground_angle,
+                wp.float64(self.ground_offset),
             ],
             outputs=[self.loss, self.rmse, self.maximum_error, self.costs, self.residual],
             device=self.device,

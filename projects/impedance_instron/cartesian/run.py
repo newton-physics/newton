@@ -73,6 +73,10 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
 
     validate_reference(reference)
     validate_profile(profile)
+    if "shoe_static_pitch_rad" in reference and not np.isclose(
+        float(reference["shoe_static_pitch_rad"]), shoe.static_pitch_rad, rtol=0, atol=1e-12
+    ):
+        raise ValueError("Ground-angle reference and shoe use different fixed pitch frames")
     cfg = config or Config()
     duration = float(reference["time_s"][-1])
     if duration <= 0:
