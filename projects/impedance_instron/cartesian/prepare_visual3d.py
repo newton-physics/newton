@@ -207,21 +207,27 @@ def reconstruct_ground_pitch_from_cardan(
         beta = np.deg2rad(v_exp_deg[i, 1])
         gamma = np.deg2rad(v_exp_deg[i, 2])
 
-        R_alpha = np.array([
-            [np.cos(alpha), 0.0, -np.sin(alpha)],
-            [0.0, 1.0, 0.0],
-            [np.sin(alpha), 0.0, np.cos(alpha)],
-        ])
-        R_beta = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, np.cos(beta), -np.sin(beta)],
-            [0.0, np.sin(beta), np.cos(beta)],
-        ])
-        R_gamma = np.array([
-            [np.cos(gamma), -np.sin(gamma), 0.0],
-            [np.sin(gamma), np.cos(gamma), 0.0],
-            [0.0, 0.0, 1.0],
-        ])
+        R_alpha = np.array(
+            [
+                [np.cos(alpha), 0.0, -np.sin(alpha)],
+                [0.0, 1.0, 0.0],
+                [np.sin(alpha), 0.0, np.cos(alpha)],
+            ]
+        )
+        R_beta = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, np.cos(beta), -np.sin(beta)],
+                [0.0, np.sin(beta), np.cos(beta)],
+            ]
+        )
+        R_gamma = np.array(
+            [
+                [np.cos(gamma), -np.sin(gamma), 0.0],
+                [np.sin(gamma), np.cos(gamma), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
 
         R_rel = R_alpha @ R_beta @ R_gamma
         R_foot = R_shank @ R_rel
@@ -452,9 +458,7 @@ def prepare(
     if all(name in proc_labels for name in sh_names) and all(name in labels for name in sh_names):
         sh_proc_ids = [proc_labels.index(name) for name in sh_names]
         sh_static_ids = [labels.index(name) for name in sh_names]
-        _, _, sh_rms, sh_pt_max = _kabsch_rigid_transforms(
-            static[:, sh_static_ids].mean(0), proc[mask][:, sh_proc_ids]
-        )
+        _, _, sh_rms, sh_pt_max = _kabsch_rigid_transforms(static[:, sh_static_ids].mean(0), proc[mask][:, sh_proc_ids])
         qc["shank_tracking_rms_max_m"] = float(np.max(sh_rms))
         qc["shank_tracking_point_max_m"] = float(np.max(sh_pt_max))
 
@@ -469,9 +473,7 @@ def prepare(
     if all(name in proc_labels for name in foot_model_names) and all(name in labels for name in foot_model_names):
         ft_proc_ids = [proc_labels.index(name) for name in foot_model_names]
         ft_static_ids = [labels.index(name) for name in foot_model_names]
-        _, _, ft_rms, ft_pt_max = _kabsch_rigid_transforms(
-            static[:, ft_static_ids].mean(0), proc[mask][:, ft_proc_ids]
-        )
+        _, _, ft_rms, ft_pt_max = _kabsch_rigid_transforms(static[:, ft_static_ids].mean(0), proc[mask][:, ft_proc_ids])
         qc["foot_model_tracking_rms_max_m"] = float(np.max(ft_rms))
         qc["foot_model_tracking_point_max_m"] = float(np.max(ft_pt_max))
 

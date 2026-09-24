@@ -4,8 +4,8 @@
 """Check ground-angle reconstruction, coordinate conversions, and objective gradients."""
 
 import json
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import numpy as np
 import warp as wp
@@ -16,12 +16,8 @@ from projects.impedance_instron.cartesian.gpu.mechanics import Vec5
 from projects.impedance_instron.cartesian.gpu.objective import MeasuredObjective
 from projects.impedance_instron.cartesian.prepare_visual3d import (
     reconstruct_ground_pitch_from_cardan,
-    _aliases,
-    _read_triplets,
-    _kabsch_rigid_transforms,
 )
 from projects.impedance_instron.cartesian.shoe import Shoe
-from projects.impedance_instron.cartesian.visual3d import load_visual3d_export
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -209,7 +205,7 @@ class TestGroundAngleObjective(unittest.TestCase):
         trace = {"time_s": time[:-1], "state": q[:-1], "grf_n": np.zeros((2, 2))}
         summary = {"failure": None, "terminal_state": q[-1], "integrated_steps": 2, "integrated_duration_s": 0.1}
         settings = FitConfig()
-        cpu_residual, cpu_metrics, _ = _Objective(reference, settings).evaluate(trace, summary)
+        cpu_residual, _, _ = _Objective(reference, settings).evaluate(trace, summary)
 
         device = "cuda:0" if wp.is_cuda_available() else "cpu"
         objective = MeasuredObjective(reference, settings, time, 1, device)
@@ -234,7 +230,9 @@ class TestGroundAngleObjective(unittest.TestCase):
                 q_plus[step, col] += eps
                 states_p = wp.array(q_plus[:, None, :], dtype=Vec5, device=device)
                 obj_p = MeasuredObjective(reference, settings, time, 1, device)
-                obj_p.launch(states_p, forces, wp.full(1, 2, dtype=int, device=device), wp.zeros(1, dtype=int, device=device))
+                obj_p.launch(
+                    states_p, forces, wp.full(1, 2, dtype=int, device=device), wp.zeros(1, dtype=int, device=device)
+                )
                 adj_p = ObjectiveAdjoint(obj_p)
                 loss_p = wp.zeros(1, dtype=wp.float64, device=device)
                 adj_p.launch(states_p, forces, loss_p)
@@ -243,7 +241,9 @@ class TestGroundAngleObjective(unittest.TestCase):
                 q_minus[step, col] -= eps
                 states_m = wp.array(q_minus[:, None, :], dtype=Vec5, device=device)
                 obj_m = MeasuredObjective(reference, settings, time, 1, device)
-                obj_m.launch(states_m, forces, wp.full(1, 2, dtype=int, device=device), wp.zeros(1, dtype=int, device=device))
+                obj_m.launch(
+                    states_m, forces, wp.full(1, 2, dtype=int, device=device), wp.zeros(1, dtype=int, device=device)
+                )
                 adj_m = ObjectiveAdjoint(obj_m)
                 loss_m = wp.zeros(1, dtype=wp.float64, device=device)
                 adj_m.launch(states_m, forces, loss_m)
