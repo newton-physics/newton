@@ -1,0 +1,87 @@
+/* Reduce spacing between class members */
+.py-attribute, .py-method, .py-property, .py-class {
+    margin-top: 0.5em !important;
+    margin-bottom: 0.5em !important;
+}
+
+/* Mermaid diagrams emitted by nbsphinx notebook outputs. */
+pre.mermaid {
+    display: block;
+    width: 100%;
+}
+
+pre.mermaid > svg {
+    width: 100%;
+    max-width: 100% !important;
+}
+
+.mermaid-error {
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Reduce spacing in docstring sections */
+.section > dl > dt {
+    margin-top: 0.2em !important;
+    margin-bottom: 0.2em !important;
+}
+
+/* Reduce padding in parameter lists */
+.field-list .field {
+    margin-bottom: 0.2em !important;
+    padding-bottom: 0.2em !important;
+}
+
+/* Reduce spacing between headings and content */
+h2, h3, h4, h5, h6 {
+    margin-top: 1em !important;
+    margin-bottom: 0.5em !important;
+}
+
+/* Reduce spacing in enum documentation */
+.py.class .py.attribute {
+    margin-bottom: 0.5em !important;
+}
+
+/* Reduce spacing between enum values */
+dl.py.attribute {
+    margin-bottom: 0.3em !important;
+}
+
+/* Standard marker for APIs and behavior that may change without prior notice. */
+.admonition.experimental {
+    border-left-color: var(--pst-color-warning);
+}
+
+.admonition.experimental > .admonition-title {
+    background-color: var(--pst-color-warning-bg);
+}
+
+.notebook-link-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    align-items: center;
+    margin: 0 0 1rem;
+    font-size: 0.875rem;
+}
+
+.notebook-link-bar a {
+    border: 1px solid var(--pst-color-border);
+    border-radius: 0.25rem;
+    padding: 0.2rem 0.55rem;
+    color: var(--pst-color-link);
+    text-decoration: none;
+    background: var(--pst-color-background);
+}
+
+.notebook-link-bar a:hover {
+    border-color: var(--pst-color-link);
+    color: var(--pst-color-link-hover);
+    text-decoration: none;
+}
+
+.notebook-link-bar a:focus-visible {
+    outline: 2px solid var(--pst-color-accent);
+    outline-offset: 2px;
+}

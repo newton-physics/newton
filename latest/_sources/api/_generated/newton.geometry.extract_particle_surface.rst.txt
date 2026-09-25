@@ -1,0 +1,6 @@
+﻿newton.geometry.extract\_particle\_surface
+==========================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: extract_particle_surface

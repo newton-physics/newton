@@ -1,0 +1,6 @@
+﻿newton.math.quat\_velocity
+==========================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: quat_velocity

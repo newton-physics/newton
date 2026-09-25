@@ -1,0 +1,6 @@
+﻿newton.math.transform\_wrench
+=============================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: transform_wrench

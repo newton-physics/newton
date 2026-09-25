@@ -1,0 +1,8 @@
+﻿newton.ModelFlags
+=================
+
+.. autoclass:: newton.ModelFlags
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
