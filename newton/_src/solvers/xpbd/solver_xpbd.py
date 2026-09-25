@@ -124,7 +124,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         iterations: int = 2,
         soft_body_relaxation: float = 0.9,
         soft_contact_relaxation: float = 0.9,
-        joint_linear_relaxation: float = 0.7,
+        joint_linear_relaxation: float = 0.5,
         joint_angular_relaxation: float = 0.4,
         joint_linear_compliance: float = 0.0,
         joint_angular_compliance: float = 0.0,
@@ -132,6 +132,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         rigid_contact_restitution_iterations: int = 2,
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
+        joint_legacy_relaxation: bool = False,
         enable_restitution: bool = False,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -144,9 +145,11 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 [dimensionless]. Defaults to 0.9.
             soft_contact_relaxation: Relaxation factor applied to particle-particle and particle-shape contact
                 corrections [dimensionless]. Defaults to 0.9.
-            joint_linear_relaxation: Relaxation factor applied to linear joint constraint corrections
-                [dimensionless]. Defaults to 0.7.
-            joint_angular_relaxation: Relaxation factor applied to angular joint constraint corrections
+            joint_linear_relaxation: Relaxation factor applied to positional joint constraint rows, i.e. to the
+                linear correction and its moment about each body's COM [dimensionless]. Defaults to 0.5 (0.7 before,
+                when the moment was scaled by ``joint_angular_relaxation``; with consistent rows 0.7 injects energy
+                into floating multi-joint bodies such as humanoids, whose joint corrections are summed per body).
+            joint_angular_relaxation: Relaxation factor applied to rotational joint constraint rows
                 [dimensionless]. Defaults to 0.4.
             joint_linear_compliance: Compliance shared by linear joint constraints [m/N]. Defaults to 0.0.
             joint_angular_compliance: Compliance shared by angular joint constraints [rad/(N·m)]. Defaults to 0.0.
@@ -161,6 +164,11 @@ class SolverXPBD(SolverBase, CouplingInterface):
             rigid_contact_con_weighting: Whether to divide each rigid body's contact correction by its number of
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
+            joint_legacy_relaxation: Whether to restore the former scaling of positional joint rows, which scaled the
+                linear part of a correction by ``joint_linear_relaxation`` but the moment of the same impulse about
+                each body's COM by ``joint_angular_relaxation``. With unequal factors that applies an inconsistent
+                impulse (a pendulum responds 1.36x to a joint torque and 0.78x to gravity at the former 0.7/0.4
+                defaults). Defaults to ``False``.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -186,6 +194,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self.joint_angular_relaxation = joint_angular_relaxation
         self.joint_linear_compliance = joint_linear_compliance
         self.joint_angular_compliance = joint_angular_compliance
+        self.joint_legacy_relaxation = joint_legacy_relaxation
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         if rigid_contact_restitution_iterations < 1:
@@ -840,6 +849,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 self.joint_angular_compliance,
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
+                                self.joint_angular_relaxation
+                                if self.joint_legacy_relaxation
+                                else self.joint_linear_relaxation,
                                 dt,
                             ],
                             outputs=[body_deltas, joint_impulse],
