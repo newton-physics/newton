@@ -1,0 +1,1 @@
+Add an experimental graph-compatible rigid-contact collision scheduler for fixed-substep simulations, with per-substep motion checks, travel- and prediction-horizon-triggered contact refreshes, an optional maximum collision interval, and reduced reset and dispatch overhead.

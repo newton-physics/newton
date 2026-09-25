@@ -30,6 +30,7 @@ newton
    Axis
    BodyFlags
    CollisionPipeline
+   CollisionSubstepScheduler
    Contacts
    Control
    EqType

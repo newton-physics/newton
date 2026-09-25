@@ -1393,6 +1393,76 @@ linear and angular velocity at the contact points. Common motion and receding mo
 therefore do not enlarge the gap. Broad phase uses a conservative motion bound; narrow
 phase applies the normal-directed test above.
 
+The configured maximum extension is one limit for the shape pair, not a
+per-shape distance to add twice. If collision detection is skipped between
+solver substeps, sufficiently fast bodies can travel beyond that extension and
+tunnel through one another.
+
+:class:`newton.CollisionSubstepScheduler` reduces this risk by varying how often
+collision detection runs within a frame. The total number of simulation
+substeps remains fixed. The scheduler always runs collision detection at the
+beginning of a frame, tracks a conservative bound derived from the currently
+observed rigid-shape velocities on the device, and runs additional collision
+passes when that bound exhausts the available speculative distance or the
+previous collision prediction horizon expires, whichever occurs first. A drop
+in observed speed does not extend a previously selected horizon. The bound
+assumes that two bodies may move directly toward one another at the maximum
+observed shape speed:
+
+.. code-block:: python
+
+    states = (model.state(), model.state())
+    pipeline = newton.CollisionPipeline(
+        model,
+        speculative_contact_gap_max=0.1,
+    )
+    contacts = pipeline.contacts()
+
+    def collide(state, collision_dt):
+        pipeline.collide(state, contacts, dt=collision_dt)
+
+    def substep(state_in, state_out, substep_dt):
+        solver.step(state_in, state_out, control, contacts, substep_dt)
+
+    schedule = newton.CollisionSubstepScheduler(
+        pipeline,
+        states,
+        collision_callback=collide,
+        substep_callback=substep,
+        frame_dt=1.0 / 60.0,
+        substeps=10,
+        max_collision_dt=1.0 / 120.0,
+    )
+    schedule.step()
+
+An increase in any shape's speed triggers a refresh at the next substep,
+since a collision pass made while that shape was slower may have produced a
+shorter effective speculative gap. The scheduler checks the final substep's
+output when reporting ``interval_overflow``.
+
+The same ``step()`` call works directly or inside CUDA graph capture; callbacks
+must therefore be capture-safe and preallocate their storage. The scheduler
+always executes every configured solver substep. Its two states are ping-pong
+buffers, so the substep count must be even. ``schedule.interval_overflow`` is
+set when observed per-substep or accumulated travel exceeds the budget; in
+that case, increase the substep count or the speculative extension limit.
+Collision prediction horizons are capped at the next frame boundary, where
+contacts are always refreshed.
+
+Set ``max_collision_dt`` to cap the time between collision passes independently
+of the travel estimate. For example, ``1.0 / 120.0`` requests collision
+detection at least 120 times per second. The scheduler rounds the interval down
+to a whole number of solver substeps and rejects a limit shorter than one
+substep.
+
+The scheduler is an experimental optimization for rigid contacts, not
+continuous collision detection. It does not support particles. It observes
+acceleration, impulses, and user-prescribed velocity changes only after a
+substep completes, so abrupt motion can still cross thin geometry within one
+substep. ``interval_overflow`` diagnoses limits implied by observed velocity;
+it cannot predict an acceleration that has not occurred yet. Choose the solver
+substep size for the expected acceleration and impulses.
+
 Enable the feature with the keyword-only ``speculative_contact_gap_max`` constructor argument:
 
 .. code-block:: python
