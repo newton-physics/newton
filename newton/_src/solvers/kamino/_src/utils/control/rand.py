@@ -22,7 +22,7 @@ from ...core.joints import JointActuationType
 from ...core.math import FLOAT32_MAX
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import FloatArrayLike, IntArrayLike, to_warp_int32_array
+from ...core.types import FloatArrayLike
 
 ###
 # Module interface
@@ -60,12 +60,11 @@ class RandomJointControllerData:
     Shape of `(sum_of_num_actuated_joint_dofs,)`.
     """
 
-    decimation: wp.array[wp.int32] | None = None
+    interval: wp.array[wp.float32] | None = None
     """
-    Control decimation of each world expressed as a multiple of simulation steps.
-
-    Values greater than `1` result in a zero-order hold of the control
-    inputs, meaning that they will change only every `decimation` steps.
+    Interval of change for the random torque values, in seconds.
+    For instance, 1.0 means a new random torque is applied and held every second.
+    If set to 0.0, a new random torque is applied at every time step.
 
     Shape of `(num_worlds,)`.
     """
@@ -80,13 +79,15 @@ class RandomJointControllerData:
 def _generate_random_control_inputs(
     # Inputs
     controller_seed: int,
-    controller_decimation: wp.array[wp.int32],
+    controller_interval: wp.array[wp.float32],
     controller_scale: wp.array[wp.float32],
     model_joints_wid: wp.array[wp.int32],
     model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
-    state_time_steps: wp.array[wp.int32],
+    model_time_step: wp.array[wp.float32],
+    state_time: wp.array[wp.float32],
+    state_time_step: wp.array[wp.int32],
     # Outputs
     # TODO: Add support for other control types
     # (e.g. position and velocity targets)
@@ -98,21 +99,20 @@ def _generate_random_control_inputs(
     # Retrieve the the joint index from the thread indices
     jid = wp.tid()
 
-    # Retrieve the total number of joints from the size of the input arrays
-    num_joints = model_joints_wid.shape[0]
-
     # Retrieve the world index from the thread indices
     wid = model_joints_wid[jid]
 
-    # Retrieve the current simulation step
-    step = state_time_steps[wid]
+    # Determine whether we should apply a new torque
+    t = state_time[wid]
+    dt = model_time_step[wid]
+    interval = controller_interval[wid]
+    has_interval = interval > 0.0  # The special value 0.0 means we always apply a new torque
+    n = wp.floor(t / interval) if has_interval else wp.float32(state_time_step[wid])
+    if has_interval and t - n * interval >= dt:
+        return  # Early return if this is not the first time step after an interval multiple
 
-    # Retrieve the control decimation for the world
-    decimation = controller_decimation[wid]
-
-    # Only proceed at simulation steps matching the control decimation.
-    if step % decimation != 0:
-        return
+    # Retrieve the total number of joints from the size of the input arrays
+    num_joints = model_joints_wid.shape[0]
 
     # Retrieve the number of DoFs and offset of the joint
     dofs_start = model_joints_dofs_offset[jid]
@@ -135,8 +135,8 @@ def _generate_random_control_inputs(
         scale_j = controller_scale[joint_dof_index]
 
         # Initialize a random number generator based on the
-        # seed, current step, joint index, and DoF index
-        rng_j_dof = wp.rand_init(controller_seed, (step + 1) * (num_joints * jid + dof))
+        # seed, time step or interval index, joint index, and DoF index
+        rng_j_dof = wp.rand_init(controller_seed + int(n), num_joints * jid + dof)
 
         # Generate a random control input for the joint DoF
         tau_j_c = scale_j * wp.randf(rng_j_dof, -1.0, 1.0)
@@ -162,7 +162,7 @@ class RandomJointController:
     def __init__(
         self,
         model: ModelKamino | None = None,
-        decimation: int | IntArrayLike | None = None,
+        interval: float | FloatArrayLike | None = None,
         scale: float | FloatArrayLike | None = None,
         seed: int | None = None,
     ):
@@ -173,8 +173,10 @@ class RandomJointController:
         Args:
             model: The model container describing the system to be simulated.
                 If `None`, a call to ``finalize()`` must be made later.
-            decimation: Control decimation for each world expressed as a multiple of simulation steps.
-                Defaults to `1` for all worlds if `None`.
+            interval: Interval of change for the random torque values, in seconds.
+                      For instance, 1.0 means a new random torque is applied and held every second.
+                      If set to 0.0, a new random torque is applied at every time step.
+                Defaults to `0.0` for all worlds if `None`.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
                 and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
@@ -188,17 +190,17 @@ class RandomJointController:
         # Declare the device cache
         self._device: wp.DeviceLike = None
 
-        # Cache constructor arguments for potential later
-        self._decimation: int | IntArrayLike | None = decimation
-        self._scale: float | FloatArrayLike | None = scale
-        self._seed: int = seed
-
         # Declare the internal controller data
         self._data: RandomJointControllerData | None = None
 
+        # Cache parameters to allow deferred finalization
+        self._seed = seed
+        self._interval = interval
+        self._scale = scale
+
         # If a model is provided, allocate the controller data
         if model is not None:
-            self.finalize(model=model, seed=seed, decimation=decimation, scale=scale)
+            self.finalize(model=model)
 
     ###
     # Properties
@@ -209,7 +211,7 @@ class RandomJointController:
         """The device used for allocations and execution."""
         if self._data is None:
             raise RuntimeError("Controller data is not allocated. Call finalize() first.")
-        return self._data.decimation.device
+        return self._data.interval.device
 
     @property
     def seed(self) -> int:
@@ -247,7 +249,7 @@ class RandomJointController:
         self,
         model: ModelKamino,
         seed: int | None = None,
-        decimation: int | IntArrayLike | None = None,
+        interval: float | FloatArrayLike | None = None,
         scale: float | FloatArrayLike | None = None,
     ):
         """
@@ -256,8 +258,9 @@ class RandomJointController:
 
         Args:
             model: The model container describing the system to be simulated.
-            decimation: Control decimation for each world expressed as a multiple of simulation steps.
-                Defaults to `1` for all worlds if `None`.
+            interval: Interval of change for the random torque values, in seconds.
+                      For instance, 1.0 means a new random torque is applied and held every second.
+                      If set to 0.0, a new random torque is applied at every time step.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
                 and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
@@ -266,7 +269,7 @@ class RandomJointController:
 
         Raises:
             ValueError: If the model has no actuated DoFs.
-            ValueError: If the length of the decimation array does not match the number of worlds.
+            ValueError: If the length of the interval array does not match the number of worlds.
         """
         # Ensure the model is valid and assign it to the controller
         if model is None:
@@ -283,10 +286,10 @@ class RandomJointController:
             raise ValueError("The provided model has no joint DoFs to generate control inputs for.")
 
         # Validate and process the constructor arguments
-        self._decimation, self._scale, self._seed = self._validate_arguments(
+        self._interval, self._scale, self._seed = self._validate_arguments(
             num_worlds=model.size.num_worlds,
             num_joint_dofs=num_joint_dofs,
-            decimation=decimation if decimation is not None else self._decimation,
+            interval=interval if interval is not None else self._interval,
             scale=scale if scale is not None else self._scale,
             seed=seed if seed is not None else self._seed,
         )
@@ -298,7 +301,7 @@ class RandomJointController:
         with wp.ScopedDevice(self._device):
             self._data = RandomJointControllerData(
                 seed=self._seed,
-                decimation=to_warp_int32_array(self._decimation),
+                interval=wp.array(self._interval, dtype=wp.float32),
                 scale=wp.array(self._scale, dtype=wp.float32),
             )
 
@@ -324,12 +327,14 @@ class RandomJointController:
             inputs=[
                 # Inputs
                 self._data.seed,
-                self._data.decimation,
+                self._data.interval,
                 self._data.scale,
                 self._model.joints.wid,
                 self._model.joints.dof_act_types,
                 self._model.joints.dofs_offset,
                 self._model.joints.tau_j_max,
+                self._model.time.dt,
+                time.time,
                 time.steps,
                 # Outputs
                 # TODO: Add support for other control types
@@ -347,24 +352,28 @@ class RandomJointController:
         self,
         num_worlds: int,
         num_joint_dofs: int,
-        decimation: int | IntArrayLike | None,
+        interval: float | FloatArrayLike | None,
         scale: float | FloatArrayLike | None,
         seed: int | None,
     ):
-        # Check if the decimation argument is specified, and validate it accordingly
-        if decimation is not None:
-            if isinstance(decimation, int):
-                _decimation = np.full(num_worlds, decimation, dtype=np.int32)
-            elif isinstance(decimation, get_args(IntArrayLike)):
-                decsize = len(decimation)
-                if decsize != num_worlds:
-                    raise ValueError(f"Expected decimation `IntArrayLike` of length {num_worlds}, but has {decsize}.")
-                _decimation = np.array(decimation, dtype=np.int32)
+        # Check if the interval argument is specified, and validate it accordingly
+        if interval is not None:
+            if isinstance(interval, float):
+                _interval = np.full(num_worlds, interval, dtype=np.float32)
+            elif isinstance(interval, get_args(FloatArrayLike)):
+                len_interval = len(interval)
+                if len_interval != num_worlds:
+                    raise ValueError(
+                        f"Expected interval `FloatArrayLike` of length {num_worlds}, but has {len_interval}."
+                    )
+                _interval = np.array(interval, dtype=np.float32)
             else:
-                raise ValueError(f"Expected decimation of type `int` or `IntArrayLike`, but got {type(decimation)}.")
-        # Otherwise, set it to the default value of 1 for all worlds
+                raise ValueError(f"Expected interval of type `float` or `FloatArrayLike`, but got {type(interval)}.")
+            if not np.all(np.isfinite(_interval)) or np.any(_interval < 0.0):
+                raise ValueError("Interval values must be finite and non-negative.")
+        # Otherwise, set it to the default value of 1.0 for all worlds
         else:
-            _decimation = np.ones(num_worlds, dtype=np.int32)
+            _interval = np.ones(num_worlds, dtype=np.float32)
 
         # Check if the scale argument is specified, and validate it accordingly
         if scale is not None:
@@ -391,4 +400,4 @@ class RandomJointController:
             _seed = int(0)
 
         # Return the validated and processed arguments
-        return _decimation, _scale, _seed
+        return _interval, _scale, _seed
