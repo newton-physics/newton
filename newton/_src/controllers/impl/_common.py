@@ -445,6 +445,66 @@ _GATHER_KERNELS_BY_DTYPE_AND_RANK = {
 }
 
 
+def _port_source(
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> wp.array:
+    """Return the array kernels should read a bound port from.
+
+    A plain array is read in place, with no copy. A view is gathered into ``buffer`` first, since
+    kernels take plain arrays. Callers must not write to the returned array.
+
+    Args:
+        port: The caller-bound port, a :class:`warp.array` or a view of one.
+        buffer: Gather destination for a view, matching ``port`` in shape and dtype.
+        shape: Launch shape of the gather, see :func:`_read_port`.
+        device: Device to launch on.
+
+    Returns:
+        ``port`` itself when it is a plain array, otherwise ``buffer``.
+    """
+    if isinstance(port, wp.indexedarray):
+        _read_port(port, buffer, shape, device)
+        return buffer
+    return port
+
+
+def _port_destination(port: wp.array | wp.indexedarray, buffer: wp.array) -> wp.array:
+    """Return the array kernels should write a bound output port through.
+
+    A plain array is written in place, with no copy. A view is written through ``buffer`` and then
+    scattered into the port by :func:`_write_port`.
+
+    Args:
+        port: The caller-bound output port, a :class:`warp.array` or a view of one.
+        buffer: Staging array for a view, matching ``port`` in shape and dtype.
+
+    Returns:
+        ``port`` itself when it is a plain array, otherwise ``buffer``.
+    """
+    return buffer if isinstance(port, wp.indexedarray) else port
+
+
+def _write_port(
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> None:
+    """Scatter a staged ``buffer`` into a view port; a plain port was already written in place.
+
+    Args:
+        port: The caller-bound output port.
+        buffer: The array passed to :func:`_port_destination` for ``port``.
+        shape: Launch shape of the scatter.
+        device: Device to launch on.
+    """
+    if isinstance(port, wp.indexedarray):
+        wp.launch(_scatter_port_kernel, dim=shape, inputs=[buffer], outputs=[port], device=device)
+
+
 def _read_port(
     port: wp.array | wp.indexedarray,
     buffer: wp.array,

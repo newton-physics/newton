@@ -61,9 +61,10 @@ from .._common import (
     _add_term_kernel,
     _block_matrix_vector_multiply_kernel,
     _null_space_projector_kernel,
+    _port_destination,
+    _port_source,
     _pose_error_kernel,
-    _read_port,
-    _scatter_port_kernel,
+    _write_port,
 )
 from ._common import (
     _JACOBI_SVD_MAX_SWEEPS,
@@ -1164,18 +1165,26 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     f"would be ignored."
                 )
 
+        # Plain-array ports are read in place; only views are gathered into the internal buffers.
+        sources: dict[str, wp.array] = {}
         for port, name, buf, shape, dtype in bindings:
             _validate_array(array=port, name=name, dtype=dtype, shape=shape, device=self._device, allow_indexed=True)
             if buf is not None:
-                _read_port(port, buf, shape, self._device)
+                sources[name] = _port_source(port, buf, shape, self._device)
+        joint_q = sources["inputs.joint_q"]
+        tool_pose = sources["inputs.tool_pose_world"]
+        desired_pose = sources["inputs.desired_tool_pose_world"]
+        jacobian = sources["inputs.jacobian_tool_world"]
+        joint_qd_target = _port_destination(outputs.joint_qd_target, self._qd_buf)
+        joint_q_target = _port_destination(outputs.joint_q_target, self._q_target_buf)
 
-        bandwidth = self._bandwidth_baked if self._bandwidth_baked is not None else self._bandwidth_buf
-        damping = self._damping_baked if self._damping_baked is not None else self._damping_buf
+        bandwidth = self._bandwidth_baked if self._bandwidth_baked is not None else sources["inputs.bandwidth"]
+        damping = self._damping_baked if self._damping_baked is not None else sources["inputs.damping"]
 
         wp.launch(
             _pose_error_kernel,
             dim=controlled_robot_count,
-            inputs=[self._tool_pose_buf, self._desired_pose_buf],
+            inputs=[tool_pose, desired_pose],
             outputs=[self._pose_error_buf],
             device=self._device,
         )
@@ -1194,7 +1203,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 _qd_from_y_kernel,
                 dim=total_controlled_dofs,
                 inputs=[
-                    self._jacobian_buf,
+                    jacobian,
                     self._pose_error_active_buf,
                     bandwidth,
                     self._robot_of_dof,
@@ -1203,7 +1212,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     self._active_axis_of_slot,
                     self._axis_weight,
                 ],
-                outputs=[self._qd_buf],
+                outputs=[joint_qd_target],
                 device=self._device,
             )
         else:
@@ -1214,7 +1223,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             wp.launch(
                 _gather_and_weight_jacobian_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[self._jacobian_buf, self._task_dim, self._active_axis_of_slot, self._axis_weight],
+                inputs=[jacobian, self._task_dim, self._active_axis_of_slot, self._axis_weight],
                 outputs=[self._jacobian_weighted_buf],
                 device=self._device,
             )
@@ -1287,7 +1296,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     self._slot_of_dof,
                     self._controlled_dofs_per_robot,
                 ],
-                outputs=[self._qd_buf],
+                outputs=[joint_qd_target],
                 device=self._device,
             )
 
@@ -1295,7 +1304,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             null_space_damping = (
                 self._null_space_damping_baked
                 if self._null_space_damping_baked is not None
-                else self._null_space_damping_buf
+                else sources["inputs.null_space_damping"]
             )
             # _null_space_projector_kernel (shared with other controller
             # families) knows nothing about axis_weight -- gather the
@@ -1312,7 +1321,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             wp.launch(
                 _gather_jacobian_by_axis_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[self._jacobian_buf, self._null_space_active_axis_of_slot, self._null_space_task_dim],
+                inputs=[jacobian, self._null_space_active_axis_of_slot, self._null_space_task_dim],
                 outputs=[self._jacobian_active_buf],
                 device=self._device,
             )
@@ -1367,7 +1376,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             wp.launch(
                 _null_space_projector_kernel,
                 dim=(controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
-                inputs=[self._jacobian_buf, self._jacobian_pinv_transpose_buf, self._controlled_dofs_per_robot],
+                inputs=[jacobian, self._jacobian_pinv_transpose_buf, self._controlled_dofs_per_robot],
                 outputs=[self._null_space_projector_buf],
                 device=self._device,
             )
@@ -1378,7 +1387,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     _joint_limit_avoidance_bias_kernel,
                     dim=total_controlled_dofs,
                     inputs=[
-                        self._q_buf,
+                        joint_q,
                         self._joint_pos_lower,
                         self._joint_pos_upper,
                         self._joint_limit_avoidance_gain,
@@ -1393,13 +1402,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 null_space_stiffness = (
                     self._null_space_stiffness_baked
                     if self._null_space_stiffness_baked is not None
-                    else self._null_space_stiffness_buf
+                    else sources["inputs.null_space_stiffness"]
                 )
                 destination = self._dq_scratch_buf if dq_center_written else self._dq_center_buf
                 wp.launch(
                     _posture_bias_kernel,
                     dim=total_controlled_dofs,
-                    inputs=[self._q_buf, self._q_des_null_buf, null_space_stiffness],
+                    inputs=[joint_q, sources["inputs.q_des_null"], null_space_stiffness],
                     outputs=[destination],
                     device=self._device,
                 )
@@ -1430,7 +1439,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 _add_term_kernel,
                 dim=total_controlled_dofs,
                 inputs=[self._qd_null_buf],
-                outputs=[self._qd_buf],
+                outputs=[joint_qd_target],
                 device=self._device,
             )
 
@@ -1444,15 +1453,10 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         wp.launch(
             _integrate_position_kernel,
             dim=total_controlled_dofs,
-            inputs=[self._q_buf, self._qd_buf, dt_buf],
-            outputs=[self._q_target_buf],
+            inputs=[joint_q, joint_qd_target, dt_buf],
+            outputs=[joint_q_target],
             device=self._device,
         )
 
-        for buf, port in ((self._qd_buf, outputs.joint_qd_target), (self._q_target_buf, outputs.joint_q_target)):
-            if isinstance(port, wp.indexedarray):
-                wp.launch(
-                    _scatter_port_kernel, dim=total_controlled_dofs, inputs=[buf], outputs=[port], device=self._device
-                )
-            else:
-                wp.copy(port, buf)
+        _write_port(outputs.joint_qd_target, self._qd_buf, total_controlled_dofs, self._device)
+        _write_port(outputs.joint_q_target, self._q_target_buf, total_controlled_dofs, self._device)
