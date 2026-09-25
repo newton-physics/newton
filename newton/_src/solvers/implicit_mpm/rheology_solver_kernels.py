@@ -128,7 +128,7 @@ def _symmetric_part_op(b: wp.vec3, u: wp.vec3):
 
 @wp.func
 def _symmetric_part_transposed_op(b: wp.vec3, sig: vec6):
-    return fem.SymmetricTensorMapper.dof_to_value_3d(sig) @ (b * 0.5)
+    return fem.SymmetricTensorMapper.dof_to_value_3d(sig) @ b
 
 
 @wp.kernel
@@ -170,25 +170,17 @@ def compute_delassus_diagonal(
     compliance_mat_values: wp.array[mat66],
     strain_batch: wp.array[int],
     mass_multiplicity: wp.array2d[float],
+    majorize: bool,
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
-    """Compute the diagonal blocks of the Delassus operator with eigendecomposition.
+    """Factor local Delassus blocks for iteration and strain reconstruction.
 
-    For each strain node:
+    Drop spherical/deviatoric coupling before QR. If ``majorize`` is true,
+    bound that coupling in the iteration metric.
 
-    1. Assembles the 6x6 diagonal block by summing velocity-node contributions,
-       each scaled by ``inv_volume[u_i] * mass_multiplicity[bi, u_i]`` where
-       ``bi = strain_batch[tau_i]``.
-    2. Zeros the shear-divergence coupling.
-    3. Performs an eigendecomposition of the deviatoric sub-block.
-    4. Stores eigenvalues in ``delassus_diagonal`` and the transpose of the
-       deviatoric eigenvectors in ``delassus_rotation``.
-
-    If ``mass_multiplicity`` is empty (shape ``(0, 0)``), a multiplicity of 1
-    is used for all velocity nodes (Gauss-Seidel mode).  Otherwise, the
-    per-batch multiplicity is looked up from ``mass_multiplicity``
-    (Jacobi or batched mass-splitting mode).
+    Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
+    supplied per-batch weights (Jacobi or batched GS).
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -224,7 +216,9 @@ def compute_delassus_diagonal(
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
 
+    coupling = vec6(0.0)
     for k in range(1, 6):
+        coupling[k] = diag_block[k, 0]
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
@@ -233,6 +227,14 @@ def compute_delassus_diagonal(
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)
         ev = wp.identity(n=6, dtype=float)
+
+    if majorize:
+        # W = [[a, g^T], [g, D]] <= (1 + sqrt(g^T D^-1 g / a)) diag(a, D).
+        coupling = ev @ coupling
+        rho_sq = float(0.0)
+        for k in range(1, 6):
+            rho_sq += coupling[k] * coupling[k] / diag[k]
+        diag *= 1.0 + wp.sqrt(rho_sq / diag[0])
 
     if wp.static(_ISOTROPIC_LOCAL_LHS):
         diag = vec6(wp.max(diag))
@@ -315,8 +317,8 @@ def postprocess_stress_and_strain(
         plastic_strain[tau_i] = vec6(0.0)
         return
 
-    minus_elastic_strain = strain_rhs[tau_i]
-    minus_elastic_strain -= unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
+    offset_strain = unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
+    minus_elastic_strain = strain_rhs[tau_i] - offset_strain
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
@@ -331,14 +333,17 @@ def postprocess_stress_and_strain(
     rot = delassus_rotation[tau_i]
     diag = delassus_diagonal[tau_i]
 
-    loc_plastic_strain = _world_to_local(world_plastic_strain, rot)
+    # The critical-fraction law applies to the shifted plastic strain. Keep
+    # the unilateral offset through the final flow-rule solve, then recover
+    # the physical plastic strain by removing it from the result.
+    loc_plastic_strain = _world_to_local(world_plastic_strain + offset_strain, rot)
     loc_stress = _world_to_local(stress[tau_i], rot)
 
     yp = yield_params[tau_i]
     loc_plastic_strain_new = wp.static(make_solve_flow_rule())(
         diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp, strain_node_volume[tau_i]
     )
-    world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
+    world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot) - offset_strain
 
     if _INCLUDE_LEFTOVER_STRAIN:
         minus_elastic_strain -= world_plastic_strain - world_plastic_strain_new
