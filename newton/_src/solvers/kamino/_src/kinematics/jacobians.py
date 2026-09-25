@@ -34,7 +34,7 @@ from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
-from .joints import gimbal_reciprocal_axes
+from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
 
 ###
 # Module interface
@@ -116,8 +116,7 @@ def build_full_joint_jacobian(
             j_q_j = compute_joint_relative_quaternion(
                 T_B_j, T_F_j, model_joints_X_Bj[joint_id], model_joints_X_Fj[joint_id]
             )
-            R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
-            R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
+            R_X_bar_j = concat6d(R_X_j, R_X_j @ universal_intermediary_axes(j_q_j))
         # Gimbal joint: replace R_X_j with the frame of the reciprocal axes
         else:
             third_axis_sign = -1.0 if dof_type == JointDoFType.GIMBAL_LEFT_HANDED else 1.0
@@ -548,26 +547,6 @@ def compute_joint_relative_quaternion(
     q_Bj = q_B_j * q_X_Bj
     q_Fj = q_F_j * q_X_Fj
     return wp.quat_inverse(q_Bj) * q_Fj
-
-
-@wp.func
-def compute_intermediate_body_frame_universal_joint(
-    j_q_j: wp.quatf,
-) -> wp.mat33f:
-    """Computes the frame of the intermediate body of a universal joint (i.e. x axis on the base,
-    y axis on the follower, and their cross product), from the relative quaternion mapping base to
-    follower joint frame, as a rotation matrix expressed in the joint frame on the base body.
-
-    The result is orthogonalized in case constraints are violated, and the x and y axes are not orthogonal.
-    """
-    e_x = wp.vec3f(1.0, 0.0, 0.0)
-    e_y = wp.vec3f(0.0, 1.0, 0.0)
-    a_x = e_x  # x axis on base
-    a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
-    a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
-    a_y = wp.normalize(a_y)
-    a_z = wp.cross(a_x, a_y)
-    return wp.matrix_from_cols(a_x, a_y, a_z)
 
 
 ###
