@@ -29,7 +29,9 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
-from ..geometry.soft_contacts_sdf import launch_soft_ef_contacts
+from ..geometry.soft_contacts_heightfield import _HEIGHTFIELD_CELLS_PER_TASK, launch_soft_heightfield_contacts
+from ..geometry.soft_contacts_mesh import MeshContactData, launch_soft_mesh_contacts
+from ..geometry.soft_contacts_sdf import _SDF_COMPACTION_MIN_PAIRS, _SDF_SPECIALIZED_GEO_TYPES, launch_soft_ef_contacts
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -926,11 +928,6 @@ def _world_compatible_pairs(
     n_shapes = len(shape_world)
 
     def _pairs(f_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
-        # ``shape_ok`` (optional, indexed by shape) drops pairs whose shape cannot participate -- e.g.
-        # full-surface edge/face excludes shapes without a usable SDF, which fall back to per-particle.
-        if shape_ok is not None and len(s_idx):
-            keep = shape_ok[s_idx.astype(np.intp)]
-            f_idx, s_idx = f_idx[keep], s_idx[keep]
         if len(s_idx):
             order = np.argsort(s_idx, kind="stable")
             f_idx, s_idx = f_idx[order], s_idx[order]
@@ -942,6 +939,10 @@ def _world_compatible_pairs(
 
     features = np.arange(n_features)
     shapes = np.arange(n_shapes)
+    # Filter before the Cartesian products to avoid materializing pairs for other shape passes.
+    if shape_ok is not None:
+        shapes = shapes[shape_ok]
+        shape_world = shape_world[shape_ok]
     f_local = (feature_world >= 0) & (feature_world < world_count)
     s_local = (shape_world >= 0) & (shape_world < world_count)
 
@@ -951,34 +952,37 @@ def _world_compatible_pairs(
     # 1. Global features pair with every shape (any world).
     global_features = features[feature_world < 0]
     if len(global_features):
-        f_cols.append(np.repeat(global_features, len(shapes)))
-        s_cols.append(np.tile(shapes, len(global_features)))
+        f_cols.append(np.tile(global_features, len(shapes)))
+        s_cols.append(np.repeat(shapes, len(global_features)))
 
     # 2. Local-world features additionally pair with every global shape.
     local_features = features[f_local]
     global_shapes = shapes[shape_world < 0]
     if len(local_features) and len(global_shapes):
-        f_cols.append(np.repeat(local_features, len(global_shapes)))
-        s_cols.append(np.tile(global_shapes, len(local_features)))
+        f_cols.append(np.tile(local_features, len(global_shapes)))
+        s_cols.append(np.repeat(global_shapes, len(local_features)))
 
-    # 3. Local-world features pair with the shapes that share their world. Group the local shapes by
-    #    world so each world's shapes are contiguous, then for every feature slice out its world's block.
+    # 3. Group local features by world, then slice out each local shape's compatible block.
     local_feature_world = feature_world[f_local]
-    shapes_per_world = np.bincount(shape_world[s_local], minlength=world_count)
-    reps = shapes_per_world[local_feature_world] if len(local_feature_world) else np.zeros(0, np.intp)
+    local_shapes = shapes[s_local]
+    local_shape_world = shape_world[s_local]
+    features_per_world = np.bincount(local_feature_world, minlength=world_count)
+    reps = features_per_world[local_shape_world] if len(local_shape_world) else np.zeros(0, np.intp)
     if reps.sum():
-        shapes_by_world = shapes[s_local][np.argsort(shape_world[s_local], kind="stable")]
-        world_start = np.cumsum(shapes_per_world) - shapes_per_world
+        features_by_world = local_features[np.argsort(local_feature_world, kind="stable")]
+        world_start = np.cumsum(features_per_world) - features_per_world
         within = np.arange(reps.sum()) - np.repeat(np.cumsum(reps) - reps, reps)
-        f_cols.append(np.repeat(local_features, reps))
-        s_cols.append(shapes_by_world[np.repeat(world_start[local_feature_world], reps) + within])
+        f_cols.append(features_by_world[np.repeat(world_start[local_shape_world], reps) + within])
+        s_cols.append(np.repeat(local_shapes, reps))
 
     if not f_cols:
         return _pairs(np.empty(0), np.empty(0))
-    return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
+    f_idx = np.concatenate(f_cols)
+    s_idx = np.concatenate(s_cols)
+    return _pairs(f_idx, s_idx)
 
 
-def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+def _build_soft_particle_rigid_contact_pairs(model: Model, *, shape_ok: np.ndarray | None = None) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
     Emits every particle-shape pair whose worlds are compatible (see :func:`_world_compatible_pairs`).
@@ -991,7 +995,9 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
     if particle_count == 0 or shape_count == 0:
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
-    return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
+    return _world_compatible_pairs(
+        model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device, shape_ok
+    )
 
 
 def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
@@ -1032,7 +1038,11 @@ def _build_soft_face_rigid_contact_pairs(
     world_count = int(getattr(model, "world_count", 0) or 0)
     face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
     return _world_compatible_pairs(
-        face_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+        face_world,
+        model.shape_world.numpy(),
+        world_count,
+        device,
+        shape_ok=capable_shape_mask,
     )
 
 
@@ -1054,22 +1064,21 @@ def _build_soft_edge_rigid_contact_pairs(
     # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
     edge_world = model.particle_world.numpy()[model.edge_indices.numpy()[:, 2]]
     return _world_compatible_pairs(
-        edge_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+        edge_world,
+        model.shape_world.numpy(),
+        world_count,
+        device,
+        shape_ok=capable_shape_mask,
     )
 
 
 def _full_surface_capable_shape_mask(model: Model) -> np.ndarray:
     """Boolean mask over shapes: ``True`` where the shape can generate full-surface edge/face contacts.
 
-    Capable: analytic primitives (sphere/box/capsule/cylinder/cone/ellipsoid), an *infinite* plane
-    (width=length=0), and a mesh/convex with a real provisioned SDF (nonnegative ``_shape_sdf_index``
-    pointing at a non-empty descriptor). Not capable -- the shape falls back to per-particle soft
-    contact: heightfields (edge/face SDF optimization is unsupported), finite planes (the +Z normal is
-    wrong off the quad), and mesh/convex shapes without a real SDF (a nonnegative index can still point
-    at an empty BVH-fallback descriptor, whose coarse texture is ``None``).
+    Analytic primitives and triangle meshes are supported. Heightfields use a
+    separate structured-grid pass. Mesh contacts do not require a volume SDF.
     """
     stype = model.shape_type.numpy()
-    scale = model.shape_scale.numpy()
     analytic = np.isin(
         stype,
         (
@@ -1079,53 +1088,16 @@ def _full_surface_capable_shape_mask(model: Model) -> np.ndarray:
             int(GeoType.CYLINDER),
             int(GeoType.CONE),
             int(GeoType.ELLIPSOID),
+            int(GeoType.PLANE),
         ),
     )
-    infinite_plane = (stype == int(GeoType.PLANE)) & (scale[:, 0] == 0.0) & (scale[:, 1] == 0.0)
     is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
-    has_real_sdf = np.zeros(len(stype), dtype=bool)
-    if getattr(model, "_shape_sdf_index", None) is not None:
-        sidx = model._shape_sdf_index.numpy()
-        coarse = getattr(model, "_texture_sdf_coarse_textures", None)
-        has_real_sdf = np.array(
-            [s >= 0 and coarse is not None and s < len(coarse) and coarse[s] is not None for s in sidx],
-            dtype=bool,
-        )
-    return analytic | infinite_plane | (is_mesh & has_real_sdf)
-
-
-def _raise_on_unprovisioned_full_surface_meshes(model: Model, capable: np.ndarray) -> None:
-    """A participating mesh/convex without a real SDF is a provisioning *mistake*, not an inherent
-    limitation, so fail loudly (the edge/face passes would otherwise sample an empty descriptor and a
-    soft body could pass straight through). Distinct from the unsupported shape *types*, which warn
-    and fall back -- see :func:`_warn_full_surface_fallbacks`."""
-    stype = model.shape_type.numpy()
-    is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
-    collide_particles = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
-    unprovisioned = np.where(is_mesh & collide_particles & ~capable)[0]
-    if unprovisioned.size == 0:
-        return
-    labels = getattr(model, "shape_key", None)
-    missing = [(labels[i] if labels is not None and i < len(labels) else f"shape {int(i)}") for i in unprovisioned]
-    raise ValueError(
-        f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
-        f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
-        f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
-        f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
-        f"  - For shapes that use the builder's default config (including importer-added shapes): "
-        f"set builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import them.\n"
-        f"  - For a shape you gave an explicit config: call configure_sdf() on that config, e.g. "
-        f"cfg.configure_sdf(force_sdf=True) (optionally max_resolution=... or target_voxel_size=...).\n"
-        f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
-        f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
-    )
+    return analytic | is_mesh
 
 
 def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
-    """Warn about participating shapes whose *type* cannot do edge/face -- heightfields, finite planes,
-    Gaussian splats, the NONE placeholder -- which fall back to per-particle soft contact. Mesh/convex
-    without an SDF is handled separately (it raises; see
-    :func:`_raise_on_unprovisioned_full_surface_meshes`), so it is excluded here."""
+    """Warn about participating shape types that cannot do edge/face contacts and fall back to
+    per-particle soft contact. Meshes use exact feature contacts without an SDF."""
     stype = model.shape_type.numpy()
     is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
     collide_particles = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
@@ -1137,25 +1109,11 @@ def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
     def _label(i: int) -> str:
         return labels[i] if labels is not None and i < len(labels) else f"shape {int(i)}"
 
-    heightfields, finite_planes, other = [], [], []
-    for i in fallback:
-        if stype[i] == int(GeoType.HFIELD):
-            heightfields.append(_label(i))
-        elif stype[i] == int(GeoType.PLANE):
-            finite_planes.append(_label(i))
-        else:
-            other.append(_label(i))
-    reasons = []
-    if heightfields:
-        reasons.append(f"heightfields {heightfields} (edge/face SDF optimization is not supported)")
-    if finite_planes:
-        reasons.append(f"finite planes {finite_planes} (only infinite planes are supported)")
-    if other:
-        reasons.append(f"shape types without an analytic signed-distance field {other}")
+    fallback_labels = [_label(i) for i in fallback]
     warnings.warn(
         "enable_rigid_soft_full_surface_contact=True: these participating shapes cannot generate "
-        "edge/face contacts and fall back to per-particle soft contact only -- "
-        + "; ".join(reasons)
+        f"edge/face contacts and fall back to per-particle soft contact only -- {fallback_labels} "
+        "(shape types without an analytic signed-distance field)"
         + ". Full-surface contacts still apply to the rest of the scene.",
         stacklevel=3,
     )
@@ -1250,12 +1208,11 @@ class CollisionPipeline:
                 value is detection-only slack on top of the particle radius,
                 i.e. a gap under the margin/gap convention).
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
-                surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
-                per-vertex (particle) contacts. Catches rigid features that pass between soft vertices
-                (e.g. a thin box edge through a coarse cloth cell), which the per-particle path misses.
-                Requires an SDF on every participating rigid mesh/convex shape (provision via
-                :meth:`ModelBuilder.ShapeConfig.configure_sdf`, e.g. ``configure_sdf(force_sdf=True)`` on
-                the builder's ``default_shape_cfg``), and is consumed only by
+                surface -- the edges and triangle interiors -- against rigid surfaces, in addition to
+                the per-vertex (particle) contacts. Catches rigid features that pass between soft
+                vertices (e.g. a thin box edge or heightfield cell inside a coarse cloth triangle),
+                which the per-particle path misses. Meshes use exact, locally valid feature contacts
+                without requiring a volume SDF. These full-surface contacts are consumed only by
                 :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
                 emitted into :attr:`Contacts.soft_contact_indices`. Defaults to False. Fixed at
                 construction because it sizes the soft-contact buffer headroom.
@@ -1748,33 +1705,64 @@ class CollisionPipeline:
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
             )
 
-        # Built here (not in finalize) so models/tasks that never collide don't pay for it.
-        # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
-        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
+        mesh_mask = np.zeros(model.shape_count, dtype=bool)
+        if enable_rigid_soft_full_surface_contact and model.shape_count:
+            mesh_mask = np.isin(model.shape_type.numpy(), (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model, shape_ok=~mesh_mask)
         self._soft_contact_pair_count = len(self.soft_rigid_contact_pairs)
         self.enable_rigid_soft_full_surface_contact = enable_rigid_soft_full_surface_contact
-        # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
-        # empty when the flag is off so the flag-off default stays bit-for-bit.
-        if enable_rigid_soft_full_surface_contact:
-            # Only shapes with a usable SDF can generate edge/face contacts (see
-            # _full_surface_capable_shape_mask). A participating mesh/convex WITHOUT an SDF is a
-            # provisioning mistake and fails loudly. Unsupported shape TYPES (heightfields, finite
-            # planes, Gaussian splats, ...) instead warn and are excluded from the edge/face candidate
-            # pairs, falling back to per-particle soft contact -- so one such shape does not disable
-            # full-surface for the rest of the scene.
-            _capable = _full_surface_capable_shape_mask(model) if model.shape_count > 0 else None
-            if _capable is not None:
-                _raise_on_unprovisioned_full_surface_meshes(model, _capable)
-                _warn_full_surface_fallbacks(model, _capable)
-            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model, _capable)
-            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model, _capable)
+        self._soft_mesh_contact_data = None
+        empty_pairs = wp.empty(0, dtype=wp.vec2i, device=model.device)
+
+        if enable_rigid_soft_full_surface_contact and model.shape_count:
+            shape_types = model.shape_type.numpy()
+            common_capable = _full_surface_capable_shape_mask(model) & ~mesh_mask
+            heightfield_capable = shape_types == int(GeoType.HFIELD)
+            _warn_full_surface_fallbacks(model, common_capable | mesh_mask | heightfield_capable)
+            self._soft_face_sdf_geo_types = tuple(
+                int(geo) for geo in _SDF_SPECIALIZED_GEO_TYPES if np.any(common_capable & (shape_types == int(geo)))
+            )
+            self._soft_edge_sdf_geo_types = self._soft_face_sdf_geo_types
+            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model, common_capable)
+            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model, common_capable)
+            self._soft_heightfield_face_pairs = _build_soft_face_rigid_contact_pairs(model, heightfield_capable)
+            mesh_vertex_pairs = _build_soft_particle_rigid_contact_pairs(model, shape_ok=mesh_mask)
+            if len(mesh_vertex_pairs):
+                self._soft_mesh_contact_data = MeshContactData(model, mesh_mask, mesh_vertex_pairs)
         else:
-            _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
-            self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
+            self.soft_edge_rigid_pairs = empty_pairs
+            self.soft_face_rigid_pairs = empty_pairs
+            self._soft_heightfield_face_pairs = empty_pairs
+            self._soft_face_sdf_geo_types = ()
+            self._soft_edge_sdf_geo_types = ()
+
+        self._soft_contact_tids_size = self.soft_contact_pair_count + sum(
+            len(pairs)
+            for pairs in (
+                self.soft_edge_rigid_pairs,
+                self.soft_face_rigid_pairs,
+                self._soft_heightfield_face_pairs,
+            )
+        )
+        if self._soft_contact_tids_size > np.iinfo(np.int32).max:
+            raise ValueError("Soft contact candidates exceed the 32-bit contact indexing capacity.")
+        self._soft_heightfield_large_scan = False
+        if len(self._soft_heightfield_face_pairs):
+            terrain = model.heightfield_data.numpy()
+            self._soft_heightfield_large_scan = bool(
+                np.any((terrain["nrow"] - 1) * (terrain["ncol"] - 1) > _HEIGHTFIELD_CELLS_PER_TASK)
+            )
+        sdf_pairs = max(len(self.soft_edge_rigid_pairs), len(self.soft_face_rigid_pairs))
+        if self.requires_grad or not model.device.is_cuda or sdf_pairs < _SDF_COMPACTION_MIN_PAIRS:
+            sdf_pairs = 0
+        self._soft_sdf_fallback_tids = wp.empty(sdf_pairs, dtype=wp.int32, device=model.device)
+        self._soft_sdf_fallback_count = wp.zeros(1, dtype=wp.int32, device=model.device)
         if soft_contact_max is None:
-            soft_contact_max = self.soft_contact_pair_count
-            # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
-            soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+            soft_contact_max = self._soft_contact_tids_size
+            if self._soft_mesh_contact_data is not None:
+                soft_contact_max += self._soft_mesh_contact_data.contact_capacity_hint
+        if soft_contact_max >= np.iinfo(np.int32).max:
+            raise ValueError("Soft contact capacity exceeds 32-bit contact indexing.")
         self.soft_contact_gap = soft_contact_gap
         # Soft (cloth) self-contact tuning values, populated by
         # init_soft_self_contact(); consumed at detection time like
@@ -1914,9 +1902,7 @@ class CollisionPipeline:
             ),
             # The per-thread replay array must span every soft candidate-pair thread (particle + edge +
             # face), independent of soft_contact_max (which the caller may set smaller). See E2 fix.
-            soft_contact_tids_size=(
-                self._soft_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
-            ),
+            soft_contact_tids_size=self._soft_contact_tids_size,
             requires_grad=self.requires_grad,
             device=self.model.device,
             per_contact_shape_properties=self.narrow_phase.hydroelastic_sdf is not None,
@@ -1925,6 +1911,20 @@ class CollisionPipeline:
             contact_report=self.contact_report,
         )
         contacts._contact_matching_mode = self.contact_matching
+        if self._soft_mesh_contact_data is not None:
+            contacts._soft_contact_mesh_features = wp.empty(
+                contacts.soft_contact_max, dtype=wp.vec3i, device=self.model.device
+            )
+        # Keep scan scratch with the output buffers. The extra count is a zero scan sentinel.
+        # Differentiable contacts retain the serial feature loop's existing replay behavior.
+        contacts._soft_heightfield_work = None
+        if self._soft_heightfield_large_scan and not self.requires_grad:
+            count = len(self._soft_heightfield_face_pairs)
+            contacts._soft_heightfield_work = (
+                wp.zeros(count + 1, dtype=wp.int64, device=self.model.device),
+                wp.empty(count + 1, dtype=wp.int64, device=self.model.device),
+                wp.empty(count, dtype=wp.uint64, device=self.model.device),
+            )
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
         # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
@@ -2004,6 +2004,8 @@ class CollisionPipeline:
             external_vertex_triangle_filtering_map=external_vertex_filter_map,
             external_edge_edge_filtering_map=external_edge_filter_map,
         )
+        if self._soft_mesh_contact_data is not None:
+            self._soft_mesh_contact_data.detector = self._soft_self_contact_detector
 
     def set_collision_detection_range(
         self,
@@ -2568,6 +2570,10 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model._shape_mesh_properties,
                     model.shape_world,
+                    # Persistent bounds may be overwritten before tape backward replays this call.
+                    None if self.requires_grad else self.narrow_phase.shape_aabb_lower,
+                    None if self.requires_grad else self.narrow_phase.shape_aabb_upper,
+                    model.shape_gap,
                     soft_contact_gap,
                     model.shape_margin,
                     self.soft_contact_max,
@@ -2603,7 +2609,11 @@ class CollisionPipeline:
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
+                sdf_fallback_tids=self._soft_sdf_fallback_tids,
+                sdf_fallback_count=self._soft_sdf_fallback_count,
                 n_particle_pairs=self.soft_contact_pair_count,
+                edge_sdf_geo_types=self._soft_edge_sdf_geo_types,
+                face_sdf_geo_types=self._soft_face_sdf_geo_types,
                 # The AABB cull reads a persistent buffer rewritten every collide(); a tape
                 # backward replay would see the LAST step's bounds, changing which contact
                 # kernels early-return versus the forward pass. The cull is a pure optimization,
@@ -2611,6 +2621,27 @@ class CollisionPipeline:
                 shape_aabb_lower=None if self.requires_grad else self.narrow_phase.shape_aabb_lower,
                 shape_aabb_upper=None if self.requires_grad else self.narrow_phase.shape_aabb_upper,
             )
+            launch_soft_heightfield_contacts(
+                model=model,
+                state=state,
+                contacts=contacts,
+                margin=soft_contact_gap,
+                device=self.device,
+                face_pairs=self._soft_heightfield_face_pairs,
+                tid_base=self.soft_contact_pair_count
+                + len(self.soft_edge_rigid_pairs)
+                + len(self.soft_face_rigid_pairs),
+            )
+            # Run the variable-output mesh pass last so its saturated overflow
+            # sentinel cannot be incremented by a subsequent contact producer.
+            if self._soft_mesh_contact_data is not None:
+                launch_soft_mesh_contacts(
+                    model=model,
+                    state=state,
+                    contacts=contacts,
+                    gap=soft_contact_gap,
+                    data=self._soft_mesh_contact_data,
+                )
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching
