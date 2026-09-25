@@ -712,6 +712,40 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         # robot0: [[1,0.5],[0.5,1]] @ [1,0] = [1, 0.5];  robot1: [[4]] @ [1] = [4]
         np.testing.assert_allclose(tau, [1.0, 0.5, 4.0], atol=1e-5)
 
+    def test_heterogeneous_all_terms_combine(self):
+        """Verify τ = M @ (Kp * Δq + Kd * Δq̇ + q̈) + c + g with every term enabled on robots of different sizes."""
+        device = wp.get_device()
+        rng = np.random.default_rng(3)
+        ctrl = _make_mf(
+            dofs_list=[2, 1],
+            kp=2.0,
+            kd=0.5,
+            device=device,
+            use_gravity=True,
+            use_coriolis=True,
+            use_inertia=True,
+            has_qdd=True,
+        )
+        M_np = np.zeros((2, 2, 2), dtype=np.float32)
+        M_np[0] = np.array([[2.0, 0.3], [0.3, 1.5]])
+        M_np[1, 0, 0] = 4.0
+        q, qd, q_des, qd_des, qdd, coriolis, gravity = rng.standard_normal((7, 3)).astype(np.float32)
+        tau = _run_mf(
+            ctrl,
+            q=q.tolist(),
+            qd=qd.tolist(),
+            q_des=q_des.tolist(),
+            qd_des=qd_des.tolist(),
+            device=device,
+            mass_matrix=wp.array(M_np, dtype=wp.float32, device=device),
+            joint_qdd=wp.array(qdd, dtype=wp.float32, device=device),
+            coriolis_force=wp.array(coriolis, dtype=wp.float32, device=device),
+            gravity_force=wp.array(gravity, dtype=wp.float32, device=device),
+        )
+        acceleration = 2.0 * (q_des - q) + 0.5 * (qd_des - qd) + qdd
+        expected = np.concatenate([M_np[0] @ acceleration[:2], M_np[1, :1, :1] @ acceleration[2:]]) + coriolis + gravity
+        np.testing.assert_allclose(tau, expected, rtol=1e-5, atol=1e-5)
+
 
 # ---------------------------------------------------------------------------
 # ControllerJointImpedance (model-based)
