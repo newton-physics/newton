@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType, Model
+from ...sim.articulation import joint_angle_reference
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
 
@@ -1555,6 +1556,40 @@ def solve_simple_body_joints(
 
 
 @wp.kernel
+def compute_joint_angle_references(
+    joint_type: wp.array[int],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    # outputs
+    joint_X_c_solve: wp.array[wp.transform],
+    joint_ref_err: wp.array[wp.vec3],
+):
+    """Per joint with one rotational DOF: the child joint frame rotated by -reference about the axis (used by
+    solve_body_joints in place of ``joint_X_c``) and the reference as an error vector; NaN error for an unlimited
+    joint (reference = drive target, evaluated per step)."""
+    tid = wp.tid()
+    joint_X_c_solve[tid] = joint_X_c[tid]
+    joint_ref_err[tid] = wp.vec3(0.0)
+    if joint_dof_dim[tid, 1] != 1 or joint_type[tid] == JointType.BALL:
+        return
+    idx = joint_qd_start[tid] + joint_dof_dim[tid, 0]
+    lower = joint_limit_lower[idx]
+    upper = joint_limit_upper[idx]
+    if upper >= lower and upper - lower < 2.0 * wp.pi:
+        ref = joint_angle_reference(lower, upper)
+        a = wp.normalize(joint_axis[idx])
+        joint_X_c_solve[tid] = joint_X_c[tid] * wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(a, -ref))
+        joint_ref_err[tid] = a * ref
+    else:
+        nan = wp.nan
+        joint_ref_err[tid] = wp.vec3(nan, 0.0, 0.0)
+
+
+@wp.kernel
 def solve_body_joints(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -1581,6 +1616,7 @@ def solve_body_joints(
     joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
+    joint_ref_err: wp.array[wp.vec3],
     dt: float,
     deltas: wp.array[wp.spatial_vector],
     joint_impulse: wp.array[wp.spatial_vector],
@@ -1893,6 +1929,27 @@ def solve_body_joints(
         q_p = wp.transform_get_rotation(X_wp)
         q_c = wp.transform_get_rotation(X_wc)
 
+        # The relative rotation fixes a hinge angle only modulo 2 pi and the decomposition below returns principal
+        # values in (-pi, pi]. For a single rotational DOF, measure the angle relative to a reference inside its
+        # range (the middle of a limit range narrower than 2 pi, else the drive target): rotate the child frame by
+        # -reference about the axis, decompose, and add the reference back. Without this, a hinge whose range
+        # extends beyond +-pi (or that overshoots a limit near pi) reads an angle ~2 pi away from the true one and
+        # receives a "limit correction" of that size.
+        # (static references of limited joints are baked into joint_X_c, the child frame this kernel receives, and
+        # joint_ref_err; a NaN marks an unlimited joint whose reference is its drive target)
+        ang_ref = wp.vec3(0.0)
+        if ang_axis_count == 1:
+            ref_err = joint_ref_err[tid]
+            if ref_err[0] == ref_err[0]:  # not NaN: static reference, already in X_c
+                ang_ref = ref_err
+            else:
+                ref_idx = axis_start + lin_axis_count
+                if joint_target_ke[ref_idx] > 0.0:
+                    ref = joint_target_q[target_axis_start + lin_axis_count]
+                    ref_axis = wp.normalize(joint_axis[ref_idx])
+                    q_c = q_c * wp.quat_from_axis_angle(ref_axis, -ref)
+                    ang_ref = ref_axis * ref
+
         # make quats lie in same hemisphere
         if wp.dot(q_p, q_c) < 0.0:
             q_c *= -1.0
@@ -1932,20 +1989,23 @@ def solve_body_joints(
 
         # rescale swing
         swing_sq = qswing[3] * qswing[3]
-        # if swing axis magnitude close to zero vector, just treat in quaternion space
+        # rescale the swing from quaternion space (sin(theta / 2)) to an angle: scale = theta / sin(theta / 2), whose
+        # limit for a vanishing swing is 2 (not 1: the unscaled value is half the angle, which halves the error of
+        # compliant rows near zero swing; hard rows are unaffected as error and gradient scale together)
         angularEps = 1.0e-4
+        scale = 2.0
         if swing_sq + angularEps < 1.0:
             d = wp.sqrt(1.0 - qswing[3] * qswing[3])
             theta = 2.0 * wp.acos(wp.clamp(qswing[3], -1.0, 1.0))
             scale = theta / d
 
-            err_1 *= scale
-            err_2 *= scale
+        err_1 *= scale
+        err_2 *= scale
 
-            grad_1 *= scale
-            grad_2 *= scale
+        grad_1 *= scale
+        grad_2 *= scale
 
-        errs = wp.vec3(err_0, err_1, err_2)
+        errs = wp.vec3(err_0, err_1, err_2) + ang_ref
         grad_x = wp.vec3(grad_0[0], grad_1[0], grad_2[0])
         grad_y = wp.vec3(grad_0[1], grad_1[1], grad_2[1])
         grad_z = wp.vec3(grad_0[2], grad_1[2], grad_2[2])
