@@ -2421,6 +2421,11 @@ def parse_usd(
                         margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
+                        # UsdPhysics defaults an unauthored staticFriction to 0; treat any static
+                        # coefficient not above the dynamic one as "no distinction".
+                        mu_static=(
+                            material.staticFriction if material.staticFriction > material.dynamicFriction else None
+                        ),
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,
                         mu_rolling=material.rollingFriction,

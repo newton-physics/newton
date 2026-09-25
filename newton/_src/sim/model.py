@@ -310,6 +310,7 @@ class Model:
         "shape_material_kf": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_ka": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_material_mu_static": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_restitution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_torsional": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_material_mu_rolling": AttributeSpec(AttributeFrequency.SHAPE),
@@ -659,7 +660,14 @@ class Model:
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
-        """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
+        """Shape coefficient of friction [dimensionless], shape [shape_count], float. The dynamic (kinetic)
+        coefficient for solvers that model stick-slip friction (see :attr:`shape_material_mu_static`)."""
+        self.shape_material_mu_static: wp.array[wp.float32] | None = None
+        """Shape coefficient of static friction [dimensionless], shape [shape_count], float.
+        A negative value (the default) means "same as :attr:`shape_material_mu`", so code that edits
+        ``shape_material_mu`` directly keeps a single friction coefficient. Set via
+        :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction``. Solvers use
+        ``max(shape_material_mu_static, shape_material_mu)`` when it is non-negative."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
