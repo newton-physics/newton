@@ -1414,6 +1414,52 @@ class TestSelection(unittest.TestCase):
         qfrc_actuator = view.get_attribute("mujoco.qfrc_actuator", state)
         self.assertEqual(qfrc_actuator.shape[2], 1)  # 1 revolute DOF
 
+    def test_attribute_view_follows_replaced_source_array(self):
+        """A replaced source array must invalidate the cached attribute view."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link(label="robot/link")
+        joint = builder.add_joint_revolute(parent=-1, child=link, label="robot/joint")
+        builder.add_articulation([joint], label="robot")
+
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        view = ArticulationView(model, "robot", verbose=False)
+
+        # keep the original allocation alive so a stale view would read/write it deterministically
+        old_owner = state.joint_q
+        view.get_dof_positions(state)
+
+        state.joint_q = wp.array([42.0], dtype=wp.float32, device="cpu")
+        refreshed = view.get_dof_positions(state)
+
+        self.assertEqual(refreshed.ptr, state.joint_q.ptr)
+        np.testing.assert_array_equal(refreshed.numpy().flatten(), np.array([42.0], dtype=np.float32))
+
+        view.set_dof_positions(state, [[[7.0]]])
+        np.testing.assert_array_equal(state.joint_q.numpy(), np.array([7.0], dtype=np.float32))
+        np.testing.assert_array_equal(old_owner.numpy(), np.array([0.0], dtype=np.float32))
+
+    def test_attribute_view_follows_replaced_grad_array(self):
+        """Replacing only the gradient allocation must also invalidate the cached view."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link(label="robot/link")
+        joint = builder.add_joint_revolute(parent=-1, child=link, label="robot/joint")
+        builder.add_articulation([joint], label="robot")
+
+        model = builder.finalize(device="cpu", requires_grad=True)
+        state = model.state()
+        view = ArticulationView(model, "robot", verbose=False)
+
+        first = view.get_attribute("joint_q", state)
+        self.assertIsNotNone(first.grad)
+        old_grad = state.joint_q.grad
+
+        state.joint_q.grad = wp.zeros_like(state.joint_q)
+        self.assertNotEqual(state.joint_q.grad.ptr, old_grad.ptr)
+
+        refreshed = view.get_attribute("joint_q", state)
+        self.assertEqual(refreshed.grad.ptr, state.joint_q.grad.ptr)
+
     def test_loop_closing_joint_selection_is_opt_in(self):
         """ArticulationView excludes loop-closing joints unless requested."""
         builder = newton.ModelBuilder()
