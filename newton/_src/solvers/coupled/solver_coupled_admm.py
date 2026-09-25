@@ -21,6 +21,12 @@ from .admm_contact_stream import (
     admm_contact_stream_reset_count_kernel,
     admm_contact_stream_update_normal_force_kernel,
 )
+from .admm_convergence import (
+    AdmmConvergenceGroup,
+    check_convergence_kernel,
+    snapshot_forces_kernel,
+    update_convergence_status_kernel,
+)
 from .admm_utils import (
     accumulate_active_body_contact_proximal_lump_kernel,
     accumulate_active_body_point_proximal_lump_kernel,
@@ -576,12 +582,47 @@ class SolverCoupledADMM(SolverCoupled):
         source: str
         destination: str
 
+    @dataclass(frozen=True, kw_only=True)
+    class ConvergenceConfig:
+        """Optional per-row velocity and force fixed-point tolerances.
+
+        Every populated row must satisfy both ``norm(u - Jv) <= linear_velocity_tolerance``
+        and ``norm(f_next - f_used) <= force_tolerance + force_relative_tolerance *
+        max(norm(f_next), norm(f_used))``, with ``f = W * (lambda + rho * W * (u - Jv))``.
+        Norms are Euclidean. ``f_used`` is the force applied during mechanics
+        integration; ``f_next`` is evaluated after projection and dual update.
+        Angular rows use the angular velocity and torque tolerances. Revolute
+        attachment rows omit the free hinge axis. Speculative contacts are included.
+
+        These checks measure agreement at the coupling interface; they do not
+        bound integration error or guarantee nonlinear solver stability. Nonfinite
+        residuals fail convergence. Empty interfaces pass after ``min_iterations``
+        without certifying state finiteness.
+        All tolerances must be finite, nonnegative single-precision values.
+        """
+
+        linear_velocity_tolerance: float = 1.0e-5
+        """Absolute linear velocity tolerance [m/s]."""
+        angular_velocity_tolerance: float = 1.0e-5
+        """Absolute angular velocity tolerance [rad/s]."""
+        force_tolerance: float = 1.0e-3
+        """Absolute force change tolerance [N]."""
+        torque_tolerance: float = 1.0e-3
+        """Absolute torque change tolerance [N*m]."""
+        force_relative_tolerance: float = 1.0e-3
+        """Relative force and torque change tolerance."""
+        min_iterations: int = 2
+        """First iteration to check; must not exceed the iteration cap."""
+        check_interval: int = 1
+        """Iterations between checks after the first check; also check at the cap."""
+
     @dataclass(frozen=True)
     class Config:
         """Linearized ADMM coupling configuration.
 
         Args:
-            iterations: Positive number of ADMM iterations per solver step.
+            iterations: Positive number of ADMM iterations per solver step, or
+                the hard iteration cap when ``convergence`` is enabled.
             rho: Positive ADMM penalty parameter.
             gamma: Nonnegative proximal mass scaling parameter.
             baumgarte: Nonnegative position error correction fraction.
@@ -625,6 +666,9 @@ class SolverCoupledADMM(SolverCoupled):
                 disables ADMM-managed contacts. Use
                 :meth:`SolverCoupledADMM.auto_detect_contact_pairs` to build the
                 old auto-discovery list.
+            convergence: Optional velocity and force stopping criteria. ``None``
+                uses fixed-count execution without convergence buffers or checks.
+                See :ref:`coupled-admm-early-stopping` for CUDA capture requirements.
         """
 
         iterations: int = 5
@@ -643,6 +687,7 @@ class SolverCoupledADMM(SolverCoupled):
         contact_matching_normal_dot_threshold: float | None = None
         contact_matching_force_scale: float = 0.9
         contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
+        convergence: SolverCoupledADMM.ConvergenceConfig | None = field(default=None, kw_only=True)
 
     def __init__(
         self,
@@ -685,10 +730,32 @@ class SolverCoupledADMM(SolverCoupled):
 
         self._setup_admm(coupling)
         self._apply_cached_admm_joint_proxy_effective_masses()
+        self._setup_convergence()
 
     @classmethod
     def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
         cls._positive_integer(coupling.iterations, "ADMM iterations")
+        if coupling.convergence is not None:
+            convergence = coupling.convergence
+            if not isinstance(convergence, cls.ConvergenceConfig):
+                raise TypeError("ADMM convergence must be a SolverCoupledADMM.ConvergenceConfig")
+            cls._positive_integer(convergence.min_iterations, "ADMM convergence min_iterations")
+            cls._positive_integer(convergence.check_interval, "ADMM convergence check_interval")
+            if convergence.min_iterations > coupling.iterations:
+                raise ValueError("ADMM convergence min_iterations must not exceed iterations")
+            for name in (
+                "linear_velocity_tolerance",
+                "angular_velocity_tolerance",
+                "force_tolerance",
+                "torque_tolerance",
+                "force_relative_tolerance",
+            ):
+                cls._finite_scalar(
+                    getattr(convergence, name),
+                    f"ADMM convergence {name}",
+                    lower_bound=0.0,
+                    upper_bound=float(np.finfo(np.float32).max),
+                )
         cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
         cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
         cls._finite_scalar(coupling.baumgarte, "ADMM baumgarte", lower_bound=0.0)
@@ -1776,6 +1843,9 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         """Clear ADMM warm-start and internal contact buffers after reset."""
         super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        if self._coupling.convergence is not None:
+            self._convergence_iteration_count.zero_()
+            self._convergence_converged.zero_()
         if self._admm_collision_pipeline is not None:
             self._reset_collision_provider_contact_matching(self._admm_collision_pipeline, world_mask)
         if world_mask is not None:
@@ -2821,6 +2891,112 @@ class SolverCoupledADMM(SolverCoupled):
                 )
             )
 
+    @property
+    def iteration_count(self) -> wp.array[int] | None:
+        """Completed iterations at the last convergence check, shape [1].
+
+        This device array is zero before the first step and after reset, and
+        ``None`` when convergence is disabled. Reading it with ``.numpy()``
+        synchronizes CUDA execution. Treat the array as read-only.
+        """
+        return self._convergence_iteration_count
+
+    @property
+    def converged(self) -> wp.array[int] | None:
+        """Whether all interface rows passed the last check (0 or 1), shape [1].
+
+        This device array is zero before the first step and after reset, and
+        ``None`` when convergence is disabled. A zero at the iteration cap means
+        the last iterate is returned without convergence. Treat it as read-only.
+        """
+        return self._convergence_converged
+
+    def _setup_convergence(self) -> None:
+        """Allocate convergence state and retain descriptors for each populated group."""
+        self._convergence_iteration_count = None
+        self._convergence_converged = None
+        if self._coupling.convergence is None:
+            return
+        device = self.model.device
+        self._convergence_iteration_count = wp.zeros(1, dtype=int, device=device)
+        self._convergence_converged = wp.zeros(1, dtype=int, device=device)
+        self._convergence_failed = wp.zeros(1, dtype=int, device=device)
+        self._convergence_continuing = wp.zeros(1, dtype=int, device=device)
+        groups = []
+        group_indices = []
+        for collection, angular, revolute in (
+            (self._admm_rr_groups, False, False),
+            (self._admm_rp_groups, False, False),
+            (self._admm_rr_angular_groups, True, False),
+            (self._admm_rr_revolute_angular_groups, True, True),
+            (self._admm_rr_angular_friction_groups, True, False),
+            (self._admm_dynamic_rr_contact_groups, False, False),
+            (self._admm_dynamic_rp_contact_groups, False, False),
+            (self._admm_dynamic_pp_contact_groups, False, False),
+        ):
+            for group in collection:
+                if group.count == 0:
+                    continue
+                descriptor = AdmmConvergenceGroup()
+                descriptor.W = group.W
+                descriptor.u = group.u
+                descriptor.lambda_ = group.lambda_
+                descriptor.Jv = group.Jv
+                descriptor.active_count = getattr(group, "active_count", None)
+                descriptor.offset = len(group_indices)
+                descriptor.capacity = group.count
+                descriptor.angular = angular
+                descriptor.revolute = revolute
+                group_indices.extend([len(groups)] * group.count)
+                groups.append(descriptor)
+        self._convergence_groups = wp.array(groups, dtype=AdmmConvergenceGroup, device=device)
+        self._convergence_group_indices = wp.array(group_indices, dtype=int, device=device)
+        self._convergence_force_used = wp.empty(len(group_indices), dtype=wp.vec3, device=device)
+
+    def _snapshot_convergence_forces(self) -> None:
+        """Save the forces used by the next mechanics solve and clear failure status."""
+        count = self._convergence_force_used.shape[0]
+        if count:
+            wp.launch(
+                snapshot_forces_kernel,
+                dim=count,
+                inputs=[self._convergence_groups, self._convergence_group_indices, float(self._coupling.rho)],
+                outputs=[self._convergence_force_used, self._convergence_failed],
+                device=self.model.device,
+            )
+        else:
+            self._convergence_failed.zero_()
+
+    def _check_convergence(self, iterations: int) -> None:
+        """Evaluate all interface rows and record the completed iteration count."""
+        config = self._coupling.convergence
+        count = self._convergence_force_used.shape[0]
+        if count:
+            wp.launch(
+                check_convergence_kernel,
+                dim=count,
+                inputs=[
+                    self._convergence_groups,
+                    self._convergence_group_indices,
+                    float(self._coupling.rho),
+                    float(config.linear_velocity_tolerance),
+                    float(config.angular_velocity_tolerance),
+                    float(config.force_tolerance),
+                    float(config.torque_tolerance),
+                    float(config.force_relative_tolerance),
+                    self._convergence_force_used,
+                ],
+                outputs=[self._convergence_failed],
+                device=self.model.device,
+            )
+        wp.launch(
+            update_convergence_status_kernel,
+            dim=1,
+            inputs=[iterations, self._convergence_failed],
+            outputs=[self._convergence_iteration_count, self._convergence_converged, self._convergence_continuing],
+            device=self.model.device,
+        )
+
     def _step_coupled(
         self,
         state_in: State,
@@ -2855,34 +3031,85 @@ class SolverCoupledADMM(SolverCoupled):
 
         self._admm_begin_step(dt)
 
-        for k in range(iters):
-            for name, entry in self._entries.items():
-                self._prepare_admm_iteration_state(
-                    entry,
-                    self._admm_buffers[name],
-                    state_in,
-                    dt,
-                    iteration_restart=k > 0,
-                )
+        convergence = coupling.convergence
+        if convergence is None:
+            for k in range(iters):
+                self._step_admm_iteration(k, state_in, control, contacts, dt)
+            return
 
-            self._accumulate_admm_forces(k, dt, refresh_jv=k == 0, initialize_contact_u=k == 0)
+        first_end = convergence.min_iterations
+        self._step_admm_block(0, first_end, state_in, control, contacts, dt)
+        for start in range(first_end, iters, convergence.check_interval):
+            end = min(start + convergence.check_interval, iters)
+            if not self.model.device.is_capturing:
+                if self._convergence_continuing.numpy()[0] == 0:
+                    break
+                self._step_admm_block(start, end, state_in, control, contacts, dt)
+                continue
+            wp.capture_if(
+                self._convergence_continuing,
+                on_true=self._step_admm_block,
+                start=start,
+                end=end,
+                state_in=state_in,
+                control=control,
+                contacts=contacts,
+                dt=dt,
+            )
 
-            for name, entry in self._entries.items():
-                self._apply_admm_force_inputs(entry, self._admm_buffers[name], dt)
+    def _step_admm_block(
+        self, start: int, end: int, state_in: State, control: Control | None, contacts: Contacts | None, dt: float
+    ) -> None:
+        """Run iterations in [start, end) and check convergence after the last one."""
+        for k in range(start, end):
+            self._step_admm_iteration(k, state_in, control, contacts, dt, check=k == end - 1)
+        self._check_convergence(end)
 
-            for entry in self._entries.values():
-                self._step_entry(entry, control, contacts, dt)
+    def _step_admm_iteration(
+        self,
+        k: int,
+        state_in: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        *,
+        check: bool = False,
+    ) -> None:
+        """Run one mechanics, projection, and dual update iteration.
 
-            for name, entry in self._entries.items():
-                buf = self._admm_buffers[name]
-                if buf.body_qd_k is not None:
-                    wp.copy(buf.body_qd_k, entry.state_1.body_qd)
-                if buf.particle_qd_k is not None:
-                    wp.copy(buf.particle_qd_k, entry.state_1.particle_qd)
-                if buf.joint_qd_k is not None:
-                    wp.copy(buf.joint_qd_k, entry.state_1.joint_qd)
+        When ``check`` is true, snapshot forces before mechanics integration for
+        the convergence check at the end of the enclosing iteration block.
+        """
+        for name, entry in self._entries.items():
+            self._prepare_admm_iteration_state(
+                entry,
+                self._admm_buffers[name],
+                state_in,
+                dt,
+                iteration_restart=k > 0,
+            )
 
-            self._update_admm_dual(k, dt)
+        self._accumulate_admm_forces(k, dt, refresh_jv=k == 0, initialize_contact_u=k == 0)
+
+        if check:
+            self._snapshot_convergence_forces()
+
+        for name, entry in self._entries.items():
+            self._apply_admm_force_inputs(entry, self._admm_buffers[name], dt)
+
+        for entry in self._entries.values():
+            self._step_entry(entry, control, contacts, dt)
+
+        for name, entry in self._entries.items():
+            buf = self._admm_buffers[name]
+            if buf.body_qd_k is not None:
+                wp.copy(buf.body_qd_k, entry.state_1.body_qd)
+            if buf.particle_qd_k is not None:
+                wp.copy(buf.particle_qd_k, entry.state_1.particle_qd)
+            if buf.joint_qd_k is not None:
+                wp.copy(buf.joint_qd_k, entry.state_1.joint_qd)
+
+        self._update_admm_dual(k, dt)
 
     def _refresh_collision_contact_groups(self, state_in: State) -> None:
         if (
