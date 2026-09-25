@@ -1616,11 +1616,16 @@ def solve_body_joints(
     joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
+    linear_row_angular_relaxation: float,
     joint_ref_err: wp.array[wp.vec3],
     dt: float,
     deltas: wp.array[wp.spatial_vector],
     joint_impulse: wp.array[wp.spatial_vector],
 ):
+    # ``linear_row_angular_relaxation`` scales the angular part (the moment about each body's COM) of the impulse of a
+    # positional row. It equals ``linear_relaxation`` so that the row applies one consistent impulse; the legacy
+    # behaviour (``joint_legacy_relaxation``) passes ``angular_relaxation``, which transmits joint torque and gravity
+    # wrongly when the two factors differ.
     tid = wp.tid()
     type = joint_type[tid]
 
@@ -1762,9 +1767,9 @@ def solve_body_joints(
             )
 
             lin_delta_p += linear_p * (d_lambda * linear_relaxation)
-            ang_delta_p += angular_p * (d_lambda * angular_relaxation)
+            ang_delta_p += angular_p * (d_lambda * linear_row_angular_relaxation)
             lin_delta_c += linear_c * (d_lambda * linear_relaxation)
-            ang_delta_c += angular_c * (d_lambda * angular_relaxation)
+            ang_delta_c += angular_c * (d_lambda * linear_row_angular_relaxation)
 
     else:
         # compute joint target, stiffness, damping
@@ -1918,9 +1923,9 @@ def solve_body_joints(
                 )
 
                 lin_delta_p += linear_p * (d_lambda * linear_relaxation)
-                ang_delta_p += angular_p * (d_lambda * angular_relaxation)
+                ang_delta_p += angular_p * (d_lambda * linear_row_angular_relaxation)
                 lin_delta_c += linear_c * (d_lambda * linear_relaxation)
-                ang_delta_c += angular_c * (d_lambda * angular_relaxation)
+                ang_delta_c += angular_c * (d_lambda * linear_row_angular_relaxation)
 
     if type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
         # handle angular constraints
