@@ -25,7 +25,7 @@ from ..geometry.contact_data import (
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -248,6 +248,73 @@ def write_contact_speculative(
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
+
+
+@wp.func
+def _mesh_surface_velocity(
+    shape: int,
+    point_world: wp.vec3,
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+) -> wp.vec3:
+    """Interpolate a mesh shape's local surface velocity at a world-space point."""
+    if shape_type[shape] != GeoType.MESH or not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
+        return wp.vec3(0.0)
+
+    mesh_id = shape_source_ptr[shape]
+    if mesh_id == wp.uint64(0):
+        return wp.vec3(0.0)
+
+    scale = shape_scale[shape]
+    X_ws = shape_transform[shape]
+    point_local = wp.cw_div(wp.transform_point(wp.transform_inverse(X_ws), point_world), scale)
+    query = wp.mesh_query_point_no_sign(mesh_id, point_local, 1.0e11)
+    if not query.result:
+        return wp.vec3(0.0)
+
+    velocity_local = wp.mesh_eval_velocity(mesh_id, query.face, query.u, query.v)
+    return wp.transform_vector(X_ws, wp.cw_mul(velocity_local, scale))
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_contact_surface_velocities(
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+    contact_surface_velocity: wp.array[wp.vec3],
+):
+    """Evaluate world-space relative mesh surface velocity for active rigid contacts."""
+    tid = wp.tid()
+    if tid >= contact_count[0]:
+        return
+
+    shape0 = contact_shape0[tid]
+    shape1 = contact_shape1[tid]
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    X_wb0 = wp.transform_identity() if body0 < 0 else body_q[body0]
+    X_wb1 = wp.transform_identity() if body1 < 0 else body_q[body1]
+    point0_world = wp.transform_point(X_wb0, contact_point0[tid])
+    point1_world = wp.transform_point(X_wb1, contact_point1[tid])
+    velocity0_world = _mesh_surface_velocity(
+        shape0, point0_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    velocity1_world = _mesh_surface_velocity(
+        shape1, point1_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    contact_surface_velocity[tid] = velocity1_world - velocity0_world
 
 
 @wp.kernel(enable_backward=False)
@@ -1377,6 +1444,11 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
+        shape_mesh_properties = getattr(model, "_shape_mesh_properties", None)
+        self._rigid_contact_surface_velocity = bool(
+            shape_mesh_properties is not None
+            and np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        )
         self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
@@ -1923,6 +1995,7 @@ class CollisionPipeline:
             requested_attributes=self.model.get_requested_contact_attributes(),
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
+            rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
@@ -2496,6 +2569,33 @@ class CollisionPipeline:
                 body_q=state.body_q,
                 shape_body=writer_data.shape_body,
                 device=self.device,
+            )
+
+        if self._rigid_contact_surface_velocity and contacts.rigid_contact_max > 0:
+            if len(contacts.rigid_contact_surface_velocity) < contacts.rigid_contact_max:
+                raise ValueError(
+                    "contacts must allocate rigid surface velocities for this model; use CollisionPipeline.contacts()"
+                )
+            wp.launch(
+                kernel=eval_rigid_contact_surface_velocities,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    state.body_q,
+                    model.shape_body,
+                    model.shape_type,
+                    model.shape_scale,
+                    self.geom_transform,
+                    model.shape_source_ptr,
+                    model._shape_mesh_properties,
+                ],
+                outputs=[contacts.rigid_contact_surface_velocity],
+                device=self.device,
+                record_tape=False,
             )
 
         # Build the contact report before saving state, because save

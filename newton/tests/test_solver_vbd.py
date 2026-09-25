@@ -39,9 +39,12 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _evaluate_rigid_soft_contact_force_norm,
     _joint_angular_rho_seed,
+    accumulate_body_body_contacts_per_body,
+    accumulate_body_body_contacts_per_body_surface_velocity,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     compute_rigid_contact_forces,
+    compute_rigid_contact_forces_surface_velocity,
     evaluate_angular_constraint_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
@@ -55,6 +58,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     snapshot_body_body_contact_history,
     step_body_body_contact_C0_lambda,
     update_duals_body_body_contacts,
+    update_duals_body_body_contacts_surface_velocity,
     update_duals_body_particle_contacts,
     update_duals_joint,
 )
@@ -355,6 +359,7 @@ def _eval_compliant_sliding_contact_metric_kernel(
             body_q,
             body_q_prev,
             body_com,
+            wp.vec3(0.0),
             wp.vec3(0.0),
             wp.vec3(0.0),
             wp.vec3(0.0),
@@ -904,6 +909,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.0),
         wp.vec3(0.0),
+        wp.vec3(0.0),
         contact_normal[sample],
         0.06,
         100.0,
@@ -937,6 +943,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         rigid_body_com,
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.0),
         wp.vec3(0.0),
         wp.vec3(0.0),
         contact_normal[sample],
@@ -1693,12 +1700,14 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 zeros3,
                 zeros3,
                 zeros3,
+                zeros3,
                 normal,
                 margin,
                 margin,
                 shape_body,
                 body_q,
                 body_q_prev,
+                0.01,
                 contact_mu,
                 zeros3,
                 0.0,
@@ -2680,6 +2689,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
         shape1 = wp.ones(4, dtype=int, device=device)
         point0 = wp.zeros(4, dtype=wp.vec3, device=device)
         point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        surface_velocity = wp.zeros(4, dtype=wp.vec3, device=device)
         offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
         offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
@@ -2720,6 +2730,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
                 shape1,
                 point0,
                 point1,
+                surface_velocity,
                 offset0,
                 offset1,
                 normal,
@@ -4864,7 +4875,31 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
 
 
 class TestSolverVBD(unittest.TestCase):
-    pass
+    def test_contact_kernel_modules_follow_deterministic_mode(self):
+        """Apply VBD deterministic options to specialized contact modules."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        newton.solvers.SolverVBD(
+            model,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
+            rigid_compliant_alm=True,
+        )
+
+        kernels = (
+            accumulate_body_body_contacts_per_body,
+            accumulate_body_body_contacts_per_body_surface_velocity,
+            compute_rigid_contact_forces,
+            compute_rigid_contact_forces_surface_velocity,
+            update_duals_body_body_contacts,
+            update_duals_body_body_contacts_surface_velocity,
+        )
+        for kernel in kernels:
+            options = wp.get_module_options(module=kernel.module)
+            self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
+            self.assertFalse(options["enable_backward"])
 
 
 add_function_test(

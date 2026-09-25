@@ -12858,7 +12858,14 @@ class ModelBuilder:
                     continue
 
                 geo_hash = hash(geo)
-                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                # Distinct meshes with mutable surface-velocity fields need
+                # distinct Warp meshes even when their geometry is identical.
+                # Repeated shapes using the same Mesh object still share via
+                # finalized_geos_by_identity above.
+                geo_cache_key = (
+                    (geo_hash, geo_identity) if isinstance(geo, Mesh) and geo.enable_surface_velocity else geo_hash
+                )
+                if geo_cache_key not in finalized_geos and isinstance(geo, Heightfield):
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
@@ -12869,15 +12876,15 @@ class ModelBuilder:
                         ground_z=geo.min_z,
                         compute_inertia=False,
                     )
-                    finalized_geos[geo_hash] = hf_geo.finalize(
+                    finalized_geos[geo_cache_key] = hf_geo.finalize(
                         device=device,
                         bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                     )
                     # keep mesh alive for the model's lifetime
                     heightfield_meshes.append(hf_geo.mesh)
-                elif geo_hash not in finalized_geos:
+                elif geo_cache_key not in finalized_geos:
                     if isinstance(geo, Mesh):
-                        finalized_geos[geo_hash] = geo.finalize(
+                        finalized_geos[geo_cache_key] = geo.finalize(
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
@@ -12887,14 +12894,14 @@ class ModelBuilder:
                         # object keeping the finalized wp.Mesh alive
                         mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
-                        finalized_geos[geo_hash] = len(gaussians)
+                        finalized_geos[geo_cache_key] = len(gaussians)
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
                     else:
-                        finalized_geos[geo_hash] = geo.finalize()
+                        finalized_geos[geo_cache_key] = geo.finalize()
 
-                finalized_geo = finalized_geos[geo_hash]
+                finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
@@ -12913,6 +12920,8 @@ class ModelBuilder:
                     if mesh_properties is None:
                         mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
                         mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
                 shape_mesh_properties.append(mesh_properties)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)

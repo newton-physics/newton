@@ -2763,9 +2763,68 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     test.assertGreater(contact_count, 0)
 
 
+def test_rigid_mesh_contacts_export_surface_velocity(test, device):
+    """Transform and export a varying mesh velocity field at contacts."""
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    mesh = newton.Mesh(vertices, indices, compute_inertia=False, enable_surface_velocity=True)
+    mesh_xform = wp.transform(
+        wp.vec3(0.4, -0.3, 0.0),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * np.pi),
+    )
+    mesh_scale = wp.vec3(2.0, 0.5, 1.0)
+    contact_point_world = np.array([0.525, 0.2, 0.0], dtype=np.float32)
+    velocity_local = vertices.copy()
+
+    builder = newton.ModelBuilder()
+    mesh_shape = builder.add_shape_mesh(body=-1, xform=mesh_xform, mesh=mesh, scale=mesh_scale)
+    sphere_body = builder.add_body(xform=wp.transform(wp.vec3(*contact_point_world[:2], 0.09), wp.quat_identity()))
+    sphere_shape = builder.add_shape_sphere(
+        body=sphere_body,
+        radius=0.1,
+    )
+    model = builder.finalize(device=device)
+    mesh.mesh.velocities.assign(velocity_local)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    contact_velocity = contacts.rigid_contact_surface_velocity.numpy()[:count]
+    for i in range(count):
+        mesh_point = point1[i] if shape1[i] == mesh_shape else point0[i]
+        expected_mesh_velocity = mesh_point - np.array([0.4, -0.3, 0.0], dtype=np.float32)
+        expected = expected_mesh_velocity if shape1[i] == mesh_shape else -expected_mesh_velocity
+        test.assertIn(sphere_shape, (shape0[i], shape1[i]))
+        np.testing.assert_allclose(contact_velocity[i], expected, atol=1.0e-6)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_rigid_mesh_contacts_export_surface_velocity",
+    test_rigid_mesh_contacts_export_surface_velocity,
+    devices=get_test_devices(),
+)
+
+
 def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
     """A convex mesh with SDF should use the SDF pair route against a triangle mesh."""
     mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh.enable_surface_velocity = True
     convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
     mesh.build_sdf(max_resolution=32, device=device)
     convex.build_sdf(max_resolution=32, device=device)
@@ -2773,10 +2832,12 @@ def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
     builder = newton.ModelBuilder()
     body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     body_convex = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
-    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    mesh_shape = builder.add_shape_mesh(body=body_mesh, mesh=mesh)
     builder.add_shape_convex_hull(body=body_convex, mesh=convex)
 
     model = builder.finalize(device=device)
+    surface_velocity = np.array([0.5, 0.0, 0.0], dtype=np.float32)
+    mesh.mesh.velocities.assign(np.tile(surface_velocity, (len(mesh.vertices), 1)))
     pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
     contacts = pipeline.contacts()
     pipeline.collide(model.state(), contacts)
@@ -2787,6 +2848,11 @@ def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
     test.assertGreater(sdf_pair_count, 0)
     test.assertEqual(mesh_convex_pair_count, 0)
     test.assertGreater(contact_count, 0)
+    shape1 = contacts.rigid_contact_shape1.numpy()[:contact_count]
+    contact_velocity = contacts.rigid_contact_surface_velocity.numpy()[:contact_count]
+    for i in range(contact_count):
+        expected = surface_velocity if shape1[i] == mesh_shape else -surface_velocity
+        np.testing.assert_allclose(contact_velocity[i], expected, atol=1.0e-6)
 
     shape_pairs = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i, device=device)
     explicit_pipeline = newton.CollisionPipeline(
