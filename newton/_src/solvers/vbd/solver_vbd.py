@@ -162,7 +162,8 @@ class SolverVBD(SolverBase, CouplingInterface):
       while ``SolverVBD`` selects an internal ALM metric ``rho`` for numerical
       conditioning. For a material row, they combine as
       ``k_eff = k*rho/(k+rho)``, and a multiplier ``lambda`` carries accumulated
-      reaction. The per-slot joint **hard/soft** API (authored via
+      reaction. Coulomb friction uses projected, bounded reactions without authored
+      friction stiffness. The per-slot joint **hard/soft** API (authored via
       ``model.vbd.joint_is_hard`` or :meth:`set_joint_constraint_mode`) is
       deprecated. ``rigid_contact_hard`` is a separate legacy-contact control and
       has no formulation effect under compliant ALM. Both distinctions will be
@@ -200,7 +201,27 @@ class SolverVBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
-        - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
+          Multi-axis D6 efforts use transported axes, not the generalized
+          Euler-coordinate directions used by joint friction at finite angles.
+          BALL efforts are world-frame torques; BALL friction uses the
+          parent-anchor frame.
+        - :attr:`~newton.Model.joint_friction` provides independent per-DOF dry
+          Coulomb force or torque bounds [N or N·m] for REVOLUTE, PRISMATIC,
+          BALL, and D6 joints with ``rigid_compliant_alm=True``. Projected reactions
+          provide static sticking at convergence and saturated sliding.
+          Finite positive values enable friction; nonpositive values disable it.
+          Bounds are read live, including during CUDA graph replay; legacy AVBD
+          ignores them. Positive bounds are invalid on either joint of a supported
+          mimic pair, even when disabled. D6 friction supports at most three linear
+          and three angular axes, with each nonempty axis group orthonormal.
+          Multi-axis D6 friction requires nonsingular Euler coordinates. BALL
+          friction uses per-step rotation vectors in the parent-anchor frame.
+          Angular friction requires substeps small enough to resolve angular motion.
+          Invalid configurations raise :class:`ValueError` at construction and
+          after :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`. Direct edits must remain
+          valid; stepping and graph replay do not revalidate them.
+        - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_damping`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
@@ -484,9 +505,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed material stiffness instead.
             rigid_avbd_gamma: Per-step decay factor for penalty k and persisted lambda.
-                Compliant ALM joints and validated contacts retain lambda by ``gamma``;
-                the legacy path retains lambda by ``alpha * gamma``. Lower values
-                discard history faster.
+                Compliant ALM structural, drive, limit, and validated contact rows
+                retain lambda by ``gamma``; the legacy path retains lambda by
+                ``alpha * gamma``. Lower values discard history faster. Joint dry
+                friction instead preserves its bounded reaction without decay to
+                avoid finite-iteration restart bias, clipping it to the current friction bound.
             rigid_contact_hard: Legacy body-body contact hard/soft mode. With
                 ``rigid_compliant_alm=True``, contacts use the ALM path. With
                 ``rigid_compliant_alm=False``, ``True`` selects legacy hard AVBD contact
@@ -1081,6 +1104,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.rigid_avbd_gamma = rigid_avbd_gamma
         self.rigid_contact_k_start_value = -1.0 if rigid_avbd_linear_beta == 0.0 else float(rigid_contact_k_start)
         self.rigid_compliant_alm = bool(rigid_compliant_alm)
+        self._validate_joint_friction()
         if self.rigid_compliant_alm:
             self._validate_compliant_contact_materials()
             self._validate_compliant_joint_dof_materials()
@@ -1208,6 +1232,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.joint_C0_ang = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             # Shared directional support; drive and limit derive separate rho policies.
             self.joint_drive_limit_support = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
+            # Previous-step friction coordinates, including inactive Euler axes for branch selection.
+            self.joint_q_prev = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
+            self.joint_friction_rho = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
+            self.joint_friction_lambda = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
             # Bilateral drive dual, cleared whenever the drive row stops existing.
             self.joint_drive_lambda = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
             # Unilateral limit dual, held separately from the drive so neither can
@@ -1312,6 +1340,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
         if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+            self._validate_joint_friction()
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
@@ -1634,6 +1663,59 @@ class SolverVBD(SolverBase, CouplingInterface):
         for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
             _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
+
+    def _validate_joint_friction(self) -> None:
+        """Validate compliant-ALM joint-friction inputs."""
+        if not self.rigid_compliant_alm or not self._integrates_rigid_bodies or self.model.joint_dof_count == 0:
+            return
+        values = self._to_numpy(self.model.joint_friction, dtype=float)
+        if np.any(~np.isfinite(values)):
+            raise ValueError("model.joint_friction must contain finite values")
+        if not np.any(values > 0.0):
+            return
+
+        joint_type = self._to_numpy(self.model.joint_type, dtype=int)
+        joint_qd_start = self._to_numpy(self.model.joint_qd_start, dtype=int)
+        joint_dof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
+        joint_axis = self._to_numpy(self.model.joint_axis, dtype=float)
+        for joint in np.flatnonzero(joint_type == JointType.D6):
+            dof_start = joint_qd_start[joint]
+            if not np.any(values[dof_start : joint_qd_start[joint + 1]] > 0.0):
+                continue
+            linear_count, angular_count = (int(value) for value in joint_dof_dim[joint])
+            if linear_count > 3 or angular_count > 3:
+                raise ValueError(
+                    f"SolverVBD joint friction supports at most three linear and three angular axes on D6 joint "
+                    f"{joint} ({self.model.joint_label[joint]!r}); got {linear_count} linear and "
+                    f"{angular_count} angular axes."
+                )
+            for axis_kind, start, count in (
+                ("linear", dof_start, linear_count),
+                ("angular", dof_start + linear_count, angular_count),
+            ):
+                axes = joint_axis[start : start + count]
+                if count > 0 and not np.allclose(axes @ axes.T, np.eye(count), rtol=0.0, atol=1.0e-6):
+                    raise ValueError(
+                        f"SolverVBD joint friction requires each D6 axis group to be orthonormal; joint "
+                        f"{joint} ({self.model.joint_label[joint]!r}) has invalid {axis_kind} axes."
+                    )
+
+        joint_mimic_joint = self._to_numpy(self.model.joint_mimic_joint, dtype=int)
+        followers = np.flatnonzero(joint_mimic_joint >= 0)
+        supported_types = (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6)
+        # Check configured pairs so enabling a joint cannot bypass validation.
+        for follower in followers:
+            reference = joint_mimic_joint[follower]
+            if joint_type[follower] not in supported_types or joint_type[reference] not in supported_types:
+                continue
+            for joint in (follower, reference):
+                if np.any(values[joint_qd_start[joint] : joint_qd_start[joint + 1]] > 0.0):
+                    raise ValueError(
+                        f"SolverVBD does not support positive joint friction on mimic-linked joint "
+                        f"{joint} ({self.model.joint_label[joint]!r}). "
+                        f"Set friction to zero on reference {reference} and follower {follower}, "
+                        "or remove their mimic relationship before finalizing the model."
+                    )
 
     def _validate_compliant_joint_dof_materials(self) -> None:
         """Validate drive/limit coefficients consumed live by compliant ALM.
@@ -2619,6 +2701,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_lambda_ang,
                 self.joint_drive_lambda,
                 self.joint_limit_lambda,
+                self.joint_friction_lambda,
                 self._rigid_pose_rebaseline_mask,
                 self._contact_history_reset_mask,
                 self._contact_history_reset_pending,
@@ -3497,11 +3580,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.rigid_avbd_gamma,
                         self.joint_penalty_k_min,
                         self.joint_material_k,
+                        self.joint_penalty_kd,
                         model.joint_target_ke,
                         model.joint_target_kd,
                         model.joint_limit_lower,
                         model.joint_limit_upper,
                         model.joint_limit_ke,
+                        model.joint_friction,
                         1.0 / (dt * dt),
                         model.body_com,
                         self.body_inv_mass_effective,
@@ -3517,6 +3602,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.joint_drive_limit_support,
                         self.joint_drive_lambda,
                         self.joint_limit_lambda,
+                        self.joint_q_prev,
+                        self.joint_friction_rho,
+                        self.joint_friction_lambda,
                     ],
                     device=self.device,
                 )
@@ -3948,6 +4036,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.rigid_compliant_alm,
                     model.joint_dof_dim,
                     self.joint_rest_angle,
+                    self.joint_q_prev,
+                    self.joint_friction_rho,
+                    self.joint_friction_lambda,
+                    model.joint_friction,
                     self.body_forces,
                     self.body_torques,
                     self.body_hessian_ll,
@@ -4050,6 +4142,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_q,
                     self.body_q_prev,
                     model.body_q,
+                    model.body_com,
                     model.joint_dof_dim,
                     self.joint_C0_lin,
                     self.joint_C0_ang,
@@ -4070,12 +4163,16 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_limit_kd,
                     self.joint_rest_angle,
                     self.joint_drive_limit_support,
+                    self.joint_q_prev,
+                    self.joint_friction_rho,
+                    model.joint_friction,
                     dt,
                     self.joint_penalty_k,  # input/output
                     self.joint_lambda_lin,  # input/output
                     self.joint_lambda_ang,  # input/output
                     self.joint_drive_lambda,  # input/output
                     self.joint_limit_lambda,  # input/output
+                    self.joint_friction_lambda,  # input/output
                 ],
                 device=self.device,
             )
