@@ -19,6 +19,7 @@ from .kernels import (
     apply_particle_deltas,
     apply_particle_shape_restitution,
     bending_constraint,
+    compute_joint_angle_references,
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
@@ -95,6 +96,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and
           :attr:`~newton.Control.joint_f` are supported.
           Joint limits are enforced as hard positional constraints (``joint_limit_ke``/``joint_limit_kd`` are not used).
+          The angle of a joint with one rotational DOF is measured within pi of the middle of its limit range (of its
+          position target if unlimited), so limit ranges may extend beyond +-pi as long as they are narrower than 2 pi.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
@@ -206,6 +209,16 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
         self._init_kinematic_state()
 
+        # per joint with one rotational DOF: child joint frame rotated by -(angle reference) and the reference as an
+        # error offset (see compute_joint_angle_references); refreshed by notify_model_changed
+        self._joint_X_c_solve = None
+        self._joint_ref_err = None
+        if model.joint_count:
+            with wp.ScopedDevice(model.device):
+                self._joint_X_c_solve = wp.clone(model.joint_X_c)
+                self._joint_ref_err = wp.zeros(model.joint_count, dtype=wp.vec3)
+            self._refresh_joint_references()
+
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -236,8 +249,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Refresh cached body data after model properties change.
 
-        Effective inverse masses and inertia tensors are refreshed for body-property changes. The cached restitution
-        state is refreshed for shape-property changes. Other flags are ignored.
+        Effective inverse masses and inertia tensors are refreshed for body-property changes, the angle references
+        of joints with one rotational DOF for joint and joint-DOF property changes (limits, axes, joint frames), and
+        the cached restitution state for shape-property changes. Other flags are ignored.
 
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
@@ -247,8 +261,30 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+            self._refresh_joint_references()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
+
+    def _refresh_joint_references(self):
+        """Angle references of the joints with one rotational DOF, from their limits and child joint frames."""
+        model = self.model
+        if model.joint_count:
+            wp.launch(
+                kernel=compute_joint_angle_references,
+                dim=model.joint_count,
+                inputs=[
+                    model.joint_type,
+                    model.joint_X_c,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                ],
+                outputs=[self._joint_X_c_solve, self._joint_ref_err],
+                device=model.device,
+            )
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
@@ -825,7 +861,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 model.joint_parent,
                                 model.joint_child,
                                 model.joint_X_p,
-                                model.joint_X_c,
+                                self._joint_X_c_solve,
                                 model.joint_limit_lower,
                                 model.joint_limit_upper,
                                 model.joint_qd_start,
@@ -840,6 +876,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 self.joint_angular_compliance,
                                 self.joint_angular_relaxation,
                                 self.joint_linear_relaxation,
+                                self._joint_ref_err,
                                 dt,
                             ],
                             outputs=[body_deltas, joint_impulse],
