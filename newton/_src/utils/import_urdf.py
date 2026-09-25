@@ -228,7 +228,8 @@ def parse_urdf(
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_limit_effort = builder.default_joint_cfg.effort_limit
-    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_target_kd = builder.default_joint_cfg.target_kd
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
@@ -805,7 +806,7 @@ def parse_urdf(
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
-                target_kd=joint_damping,
+                damping=joint_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
@@ -816,7 +817,7 @@ def parse_urdf(
         elif joint["type"] == "prismatic":
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
-                target_kd=joint_damping,
+                damping=joint_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
@@ -848,7 +849,8 @@ def parse_urdf(
                         axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=joint_damping,
+                        target_kd=default_joint_target_kd,
+                        damping=joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -856,7 +858,8 @@ def parse_urdf(
                         axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=joint_damping,
+                        target_kd=default_joint_target_kd,
+                        damping=joint_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
