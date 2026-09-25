@@ -298,6 +298,12 @@ class ContactsKaminoData:
     Shape of ``(model_max_contacts_host,)``.
     """
 
+    angular_friction: wp.array[wp.vec2f] | None = None
+    """Torsional and rolling friction coefficients [m], averaged per shape pair.
+
+    Shape of ``(model_max_contacts_host,)``; used by spatial LOX contacts.
+    """
+
     margins: wp.array[wp.vec2f] | None = None
     """
     The shape-pair margins of each active contact.
@@ -733,6 +739,12 @@ class ContactsKamino:
         return self._data.material
 
     @property
+    def angular_friction(self) -> wp.array[wp.vec2f]:
+        """Return per-contact torsional and rolling friction coefficients [m]."""
+        self._assert_has_data()
+        return self._data.angular_friction
+
+    @property
     def margins(self) -> wp.array[wp.vec2f]:
         """
         Returns the effective shape-pair margins of each active contact.
@@ -901,6 +913,7 @@ class ContactsKamino:
                 gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec4f),
                 frame=wp.zeros(shape=(model_max_contacts,), dtype=wp.quatf),
                 material=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
+                angular_friction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 margins=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 key=wp.zeros(shape=(model_max_contacts,), dtype=wp.uint64),
                 reaction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
@@ -944,6 +957,7 @@ def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    skip_fully_prescribed: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -953,6 +967,8 @@ def make_convert_contacts_newton_to_kamino(
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
             with positive margin-shifted distance.
+        skip_fully_prescribed: If ``True``, skip contacts between bodies that
+            cannot respond to contact impulses.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -981,6 +997,8 @@ def make_convert_contacts_newton_to_kamino(
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
         shape_restitution: wp.array[wp.float32],
+        shape_mu_torsional: wp.array[wp.float32],
+        shape_mu_rolling: wp.array[wp.float32],
         body_q: wp.array[wp.transformf],
         body_inv_mass: wp.array[wp.float32],
         body_inv_inertia: wp.array[wp.mat33f],
@@ -997,6 +1015,7 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc: wp.array[wp.vec4f],
         kamino_frame: wp.array[wp.quatf],
         kamino_material: wp.array[wp.vec2f],
+        kamino_angular_friction: wp.array[wp.vec2f],
         kamino_margins: wp.array[wp.vec2f],
         kamino_key: wp.array[wp.uint64],
         kamino_reaction: wp.array[wp.vec3f],
@@ -1038,6 +1057,12 @@ def make_convert_contacts_newton_to_kamino(
         bid_1 = shape_body[sid_1]
         wid_0 = shape_world[sid_0]
         wid_1 = shape_world[sid_1]
+
+        if wp.static(skip_fully_prescribed):
+            dynamic_0 = bid_0 >= 0 and body_inv_mass[bid_0] > 0.0
+            dynamic_1 = bid_1 >= 0 and body_inv_mass[bid_1] > 0.0
+            if not dynamic_0 and not dynamic_1:
+                return
 
         # Determine the world index.  Global shapes (shape_world == -1) can
         # collide with shapes from any world, so fall back to the other shape.
@@ -1158,6 +1183,10 @@ def make_convert_contacts_newton_to_kamino(
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
+        kamino_angular_friction[mcid] = wp.vec2f(
+            0.5 * (shape_mu_torsional[sid_0] + shape_mu_torsional[sid_1]),
+            0.5 * (shape_mu_rolling[sid_0] + shape_mu_rolling[sid_1]),
+        )
         kamino_margins[mcid] = wp.vec2f(margin_A, margin_B)
         kamino_key[mcid] = build_pair_key2(wp.uint32(gid_A), wp.uint32(gid_B))
 
@@ -1403,6 +1432,7 @@ def convert_contacts_newton_to_kamino(
     friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
     restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
+    skip_fully_prescribed_contacts: bool = False,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1447,6 +1477,9 @@ def convert_contacts_newton_to_kamino(
         cull_speculative_contacts:
             If ``True`` (the default), drop speculative contacts (contacts with
             positive margin-shifted distance).
+        skip_fully_prescribed_contacts:
+            If ``True``, omit contacts between two world-static or zero-mass
+            bodies. Defaults to ``False``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1493,6 +1526,7 @@ def convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
+        skip_fully_prescribed=skip_fully_prescribed_contacts,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.
@@ -1520,6 +1554,8 @@ def convert_contacts_newton_to_kamino(
             model.shape_world,
             model.shape_material_mu,
             model.shape_material_restitution,
+            model.shape_material_mu_torsional,
+            model.shape_material_mu_rolling,
             state.body_q,
             model.body_inv_mass,
             model.body_inv_inertia,
@@ -1537,6 +1573,7 @@ def convert_contacts_newton_to_kamino(
             contacts_out.gapfunc,
             contacts_out.frame,
             contacts_out.material,
+            contacts_out.angular_friction,
             contacts_out.margins,
             contacts_out.key,
             contacts_out.reaction,

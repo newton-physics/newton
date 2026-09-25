@@ -1,0 +1,157 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Velocity targets for unilateral LOX constraints."""
+
+from __future__ import annotations
+
+import warp as wp
+
+__all__ = [
+    "compute_contact_normal_regularization",
+    "compute_contact_penetration_bias",
+    "compute_contact_restitution_target",
+    "compute_contact_velocity_target",
+    "compute_limit_velocity_target",
+]
+
+wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def compute_contact_normal_regularization(compliance: wp.float32, time_step: wp.float32) -> wp.float32:
+    """Convert scalar normal compliance [m/N] to a velocity-impulse coefficient [1/kg].
+
+    Add this coefficient to the mechanical normal Delassus diagonal before
+    solving the local law. It contributes to the law residual, but not to
+    the velocity impulse scattered to bodies. Zero recovers hard contact.
+    """
+    return compliance / (time_step * time_step)
+
+
+@wp.func
+def compute_contact_penetration_bias(
+    distance: wp.float32,
+    time_step: wp.float32,
+    stabilization_fraction: wp.float32,
+) -> wp.float32:
+    """Compute the affine normal bias for compliant penetration recovery.
+
+    Args:
+        distance: Beginning-of-step margin-shifted signed distance [m].
+        time_step: Time step [s].
+        stabilization_fraction: Penetration recovery fraction; one gives backward Euler.
+
+    Returns:
+        Normal right-hand-side bias [m/s]. Add once to the reaction-free
+        mechanical velocity; subtract any restitution target separately.
+    """
+    return stabilization_fraction * wp.min(distance, 0.0) / time_step
+
+
+@wp.func
+def compute_contact_restitution_target(
+    distance: wp.float32,
+    previous_normal_velocity: wp.float32,
+    free_normal_velocity: wp.float32,
+    restitution: wp.float32,
+    time_step: wp.float32,
+    dead_zone: wp.float32,
+    impact_velocity_threshold: wp.float32,
+) -> wp.float32:
+    """Select the experimental trial-dependent speculative restitution target.
+
+    Evaluate this at each local update from the mechanical, reaction-free
+    right-hand side before adding penetration bias. The beginning-of-step
+    distance and velocity remain frozen; activation has no persistent latch.
+    Penetrated contacts use the closed-contact branch, with their recovery
+    supplied separately by :func:`compute_contact_penetration_bias`.
+
+    Args:
+        distance: Beginning-of-step margin-shifted signed distance [m].
+        previous_normal_velocity: Beginning-of-step normal velocity [m/s].
+        free_normal_velocity: Current reaction-free local normal velocity [m/s].
+        restitution: Newton restitution coefficient.
+        time_step: Time step [s].
+        dead_zone: Distance below which a contact is treated as closed [m].
+        impact_velocity_threshold: Minimum approaching impact speed for bounce [m/s].
+
+    Returns:
+        Normal target [m/s], to subtract from the local right-hand side.
+    """
+    if distance > dead_zone and free_normal_velocity + distance / time_step >= 0.0:
+        return -distance / time_step
+    target = wp.float32(0.0)
+    if previous_normal_velocity < -impact_velocity_threshold:
+        target = -restitution * previous_normal_velocity
+    return target
+
+
+@wp.func
+def compute_contact_velocity_target(
+    distance: wp.float32,
+    previous_normal_velocity: wp.float32,
+    restitution: wp.float32,
+    time_step: wp.float32,
+    stabilization_fraction: wp.float32,
+    dead_zone: wp.float32,
+    impact_velocity_threshold: wp.float32,
+    recoverable_response: wp.bool,
+) -> wp.float32:
+    """Compute the minimum end-of-step normal contact velocity.
+
+    Args:
+        distance: Margin-shifted signed contact distance [m].
+        previous_normal_velocity: Begin-of-step normal velocity [m/s].
+        restitution: Newton restitution coefficient.
+        time_step: Time step [s].
+        stabilization_fraction: Penetration recovery fraction.
+        dead_zone: Symmetric distance dead zone [m].
+        impact_velocity_threshold: Minimum approaching impact speed [m/s].
+        recoverable_response: Whether to permit restitution-recoverable overlap.
+
+    Returns:
+        Minimum feasible normal velocity [m/s].
+    """
+    distance_effective = wp.sign(distance) * wp.max(wp.abs(distance) - dead_zone, 0.0)
+    velocity_gap = (
+        -(stabilization_fraction * wp.min(distance_effective, 0.0) + wp.max(distance_effective, 0.0)) / time_step
+    )
+    # Permit the overlap whose next-step recovery matches the unreduced
+    # restitution response.
+    if (
+        recoverable_response
+        and distance_effective > 0.0
+        and previous_normal_velocity < velocity_gap
+        and previous_normal_velocity < -impact_velocity_threshold
+        and stabilization_fraction > 0.0
+    ):
+        recoverable_overlap = -time_step * restitution * previous_normal_velocity / stabilization_fraction
+        velocity_gap = -(distance_effective + recoverable_overlap) / time_step
+
+    velocity_target = velocity_gap
+    closed = distance <= dead_zone
+    approaching = previous_normal_velocity < -impact_velocity_threshold
+    if closed and approaching:
+        velocity_bounce = -restitution * previous_normal_velocity
+        velocity_target = wp.max(velocity_gap, velocity_bounce)
+    return velocity_target
+
+
+@wp.func
+def compute_limit_velocity_target(
+    violation: wp.float32,
+    time_step: wp.float32,
+    stabilization_fraction: wp.float32,
+) -> wp.float32:
+    """Compute the minimum end-of-step joint-limit velocity.
+
+    Args:
+        violation: Signed limit residual, negative when violated [m or rad].
+        time_step: Time step [s].
+        stabilization_fraction: Violation recovery fraction.
+
+    Returns:
+        Minimum feasible limit velocity [m/s or rad/s].
+    """
+    return -stabilization_fraction * wp.min(violation, 0.0) / time_step
