@@ -113,6 +113,25 @@ _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
+_GRAPH_CAPTURE_OUTPUT_RE = r"\[INFO\] Using graph capture\n?"
+
+
+def _material_binding_warning_re(prim_root: str) -> str:
+    """Match OpenUSD material-binding diagnostics below one prim root."""
+    return (
+        r"Warning: in BindingsAtPrim at line \d+ of [^\n]*materialBindingAPI\.cpp -- Found material bindings on "
+        rf"prim at path \({re.escape(prim_root)}/[^\n]+\) but MaterialBindingAPI is not applied on the prim\n?"
+    )
+
+
+def _robot_policy_info_output_re(robot: str, asset_dir: str, num_dofs: int, policy_file: str) -> str:
+    """Match the deterministic startup summary for one robot policy."""
+    return (
+        rf"\[INFO\] Selected robot: {re.escape(robot)}\n"
+        rf"\[INFO\] Asset directory: [^\n]*[/\\]{re.escape(asset_dir)}\n"
+        rf"\[INFO\] Loaded config with {num_dofs} DOFs\n"
+        rf"\[INFO\] Loading policy from: [^\n]*[/\\]{re.escape(policy_file)}\n?"
+    )
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -938,7 +957,7 @@ add_example_test(
 )
 
 
-class TestRobotPolicyExamples(unittest.TestCase):
+class TestRobotPolicyExamples(NewtonTestCase):
     pass
 
 
@@ -948,6 +967,11 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
+    expect_output_regexes=[(_robot_policy_info_output_re("g1_29dof", "unitree_g1", 43, "mjw_g1_29DOF.onnx"), "stdout")],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/g1"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="G1_29dof",
 )
@@ -956,6 +980,11 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
+    expect_output_regexes=[(_robot_policy_info_output_re("g1_23dof", "unitree_g1", 37, "mjw_g1_23DOF.onnx"), "stdout")],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/g1"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="G1_23dof",
 )
@@ -964,6 +993,13 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
+    expect_output_regexes=[
+        (_robot_policy_info_output_re("g1_23dof", "unitree_g1", 37, "physx_g1_23DOF.onnx"), "stdout")
+    ],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/g1"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -972,6 +1008,13 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal"},
+    expect_output_regexes=[
+        (_robot_policy_info_output_re("anymal", "anybotics_anymal_c", 12, "mjw_anymal.onnx"), "stdout")
+    ],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/anymal"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -980,6 +1023,13 @@ add_example_test(
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
+    expect_output_regexes=[
+        (_robot_policy_info_output_re("anymal", "anybotics_anymal_c", 12, "physx_anymal.onnx"), "stdout")
+    ],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/anymal"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -989,6 +1039,11 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
+    expect_output_regexes=[(_robot_policy_info_output_re("go2", "unitree_go2", 12, "mjw_go2.onnx"), "stdout")],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/go2_description"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="Go2",
 )
@@ -998,6 +1053,11 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
+    expect_output_regexes=[(_robot_policy_info_output_re("go2", "unitree_go2", 12, "physx_go2.onnx"), "stdout")],
+    allow_output_regexes=[
+        (_GRAPH_CAPTURE_OUTPUT_RE, "stdout"),
+        (_material_binding_warning_re("/go2_description"), "stderr"),
+    ],
     use_viewer=True,
     test_suffix="Go2_Physx",
 )
