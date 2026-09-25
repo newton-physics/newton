@@ -175,15 +175,17 @@ uv run --no-sync -m unittest \
   newton.tests.test_mujoco_heterogeneous_filter -v
 ```
 
-The final combined validation run completed **178 tests in 110.305 seconds:
+The initial combined validation run completed **178 tests in 110.305 seconds:
 176 passed and two were skipped**. It covers both contact generators, selection,
 solver validation, geometry properties, collision masks, sleeping, friction,
 contact forces, reset, and planar meshes. CPU and CUDA cases are included in
 the new selection, geometry-mapping, dynamics, and contact-filter tests.
 
 `uvx pre-commit run -a` passed, as did a separate pre-commit run explicitly
-covering all newly added files. `git diff --check` passed. The full repository
-test suite was not run.
+covering all newly added files. `git diff --check` passed. The subsequent
+[comprehensive regression audit](HETEROGENEOUS_COLLIDERS_REGRESSION_AUDIT.md)
+records full-suite validation, comparisons with unmodified upstream, packaging,
+documentation, additional regressions, and the supported-platform limits.
 
 The complete focused regression command is:
 

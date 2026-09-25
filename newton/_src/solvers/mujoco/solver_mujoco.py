@@ -9898,6 +9898,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Reject updates that require recompiling native geometry or pair tables."""
         if self._heterogeneous_geometry_snapshot is None:
             return
+        # Compiled geometry must also stay fixed during graph replay, but its
+        # host-side validation cannot run while capturing supported pose/material updates.
+        if self.device.is_capturing:
+            return
         for name, value in self._heterogeneous_geometry_values().items():
             if not np.array_equal(value, self._heterogeneous_geometry_snapshot[name]):
                 raise ValueError(

@@ -21,8 +21,8 @@ def _create_simulation(model, *, heterogeneous=True, **solver_options):
         use_mujoco_contacts=True,
         iterations=50,
         ls_iterations=20,
-        nconmax=128,
-        njmax=512,
+        nconmax=solver_options.pop("nconmax", 128),
+        njmax=solver_options.pop("njmax", 512),
         **solver_options,
     )
     state = model.state()
@@ -92,6 +92,86 @@ def _build_stack_model(variants, device):
 
 
 class TestMuJoCoHeterogeneousNative(unittest.TestCase):
+    def test_default_capacities_settle_heterogeneous_hulls(self):
+        """Settle ragged hulls with automatic contact and constraint capacities."""
+        from mujoco_warp import OverflowType
+
+        capacity_overflow = int(
+            OverflowType.NEFC
+            | OverflowType.NJMAX_NNZ
+            | OverflowType.BROADPHASE
+            | OverflowType.NARROWPHASE
+            | OverflowType.CCD
+        )
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                model = build_model([(1, 0.1), (3, 0.2), (2, 0.3)], device)
+                simulation = _advance(_create_simulation(model, nconmax=None, njmax=None), 240)
+                np.testing.assert_allclose(simulation[1].body_q.numpy()[:, 2], [0.1, 0.2, 0.3], atol=0.015)
+                self.assertEqual(set(_read_contact_pairs(simulation).flat), set(range(model.shape_count)))
+                self.assertFalse(np.any(simulation[0].mjw_data.overflow.numpy() & capacity_overflow))
+
+    def test_disable_contacts_at_construction_and_runtime(self):
+        """Fall freely with contacts disabled and recover native collision after reenabling."""
+        from mujoco_warp import DisableBit
+
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                model = build_model([(1, 0.1), (3, 0.2)], device)
+                disabled = _advance(_create_simulation(model, disable_contacts=True), 180)
+                self.assertTrue(np.all(disabled[1].body_q.numpy()[:, 2] < -1.0))
+                self.assertEqual(len(_read_contact_pairs(disabled)), 0)
+
+                simulation = _advance(_create_simulation(model), 240)
+                np.testing.assert_allclose(simulation[1].body_q.numpy()[:, 2], [0.1, 0.2], atol=0.015)
+                solver = simulation[0]
+                solver.mjw_model.opt.disableflags |= int(DisableBit.CONTACT)
+                simulation = _advance(simulation, 120)
+                self.assertTrue(np.all(simulation[1].body_q.numpy()[:, 2] < -0.8))
+                self.assertEqual(len(_read_contact_pairs(simulation)), 0)
+
+                solver.mjw_model.opt.disableflags &= ~int(DisableBit.CONTACT)
+                solver.reset(simulation[1])
+                simulation = _advance(simulation, 240)
+                np.testing.assert_allclose(simulation[1].body_q.numpy()[:, 2], [0.1, 0.2], atol=0.015)
+                self.assertEqual(set(_read_contact_pairs(simulation).flat), set(range(model.shape_count)))
+
+    def test_large_pair_graph_keeps_real_contacts_without_phantom_slots(self):
+        """Filter absent colliders when a large pair graph exceeds the exact mask compiler budget."""
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                # Forty-six same-body shapes yield 1,035 exclusions, exceeding
+                # the mask compiler's exact-cover budget. Start below ground so
+                # even tiny unused slots would produce contacts without filtering.
+                for count in (1, 46):
+                    builder.begin_world()
+                    body = builder.add_link(
+                        mass=1.0,
+                        inertia=wp.mat33(np.eye(3)),
+                        xform=wp.transform((0.0, 0.0, -0.15), wp.quat_identity()),
+                    )
+                    joint = builder.add_joint_free(body)
+                    builder.add_articulation([joint])
+                    for slot in range(count):
+                        builder.add_shape_sphere(
+                            body,
+                            radius=0.1,
+                            xform=wp.transform((0.3 * slot, 0.0, 0.0), wp.quat_identity()),
+                            cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+                        )
+                    builder.end_world()
+                model = builder.finalize(device=device)
+                solver, state, next_state, control, contacts = _create_simulation(model)
+                solver.step(state, next_state, control, None, 1.0e-6)
+                pairs = _read_contact_pairs((solver, next_state, state, control, contacts))
+                self.assertEqual(len(pairs), 47)
+                self.assertEqual({tuple(sorted(pair)) for pair in pairs}, {(0, shape) for shape in range(1, 48)})
+                worlds = np.max(model.shape_world.numpy()[pairs], axis=1)
+                np.testing.assert_array_equal(np.bincount(worlds, minlength=2), [1, 46])
+                self.assertTrue(np.isfinite(contacts.force.numpy()[: len(pairs)]).all())
+
     def test_native_trajectories_and_contact_ids_match_isolated_worlds(self):
         """Match isolated native dynamics and report contacts for every original convex hull."""
         variants = [(1, 0.1), (3, 0.2), (2, 0.3)]
@@ -329,9 +409,13 @@ class TestMuJoCoHeterogeneousNative(unittest.TestCase):
         for device in get_test_devices():
             with self.subTest(device=device), wp.ScopedDevice(device):
                 model, platform_shapes, centers = build(variants, device)
-                simulation = _create_simulation(model)
+                with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+                    simulation = _create_simulation(model)
                 reference_models = [build([variant], device) for variant in variants]
-                references = [_create_simulation(reference[0], heterogeneous=False) for reference in reference_models]
+                references = []
+                for reference in reference_models:
+                    with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+                        references.append(_create_simulation(reference[0], heterogeneous=False))
                 expected_heights = centers[:, 2] + 0.2
 
                 for lower_platforms in (False, True):
@@ -362,6 +446,64 @@ class TestMuJoCoHeterogeneousNative(unittest.TestCase):
                             reference[1].body_q.numpy()[1],
                             atol=2.0e-3,
                         )
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph replay requires a CUDA device")
+    def test_shape_property_updates_with_cuda_graph(self):
+        """Match eager native dynamics when graph replay updates collider poses and friction."""
+        with wp.ScopedDevice("cuda:0"):
+            variants = [(1, 0.1), (3, 0.2)]
+            model = build_model(variants, "cuda:0")
+            reference_model = build_model(variants, "cuda:0")
+            simulation = _advance(_create_simulation(model), 2)
+            reference = _advance(_create_simulation(reference_model), 2)
+            transforms = model.shape_transform.numpy().copy()
+            updated_transforms = wp.clone(model.shape_transform)
+            updated_friction = wp.clone(model.shape_material_mu)
+
+            def update_and_step(current_simulation):
+                """Synchronize device-side shape edits and advance both state buffers."""
+                solver = current_simulation[0]
+                wp.copy(solver.model.shape_transform, updated_transforms)
+                wp.copy(solver.model.shape_material_mu, updated_friction)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                _advance(current_simulation, 2)
+
+            update_and_step(simulation)
+            update_and_step(reference)
+            with wp.ScopedCapture() as capture:
+                update_and_step(simulation)
+
+            for phase in range(2):
+                with self.subTest(phase=phase):
+                    poses = transforms.copy()
+                    poses[0, 2] += 0.03
+                    poses[1:, 2] -= 0.05 * phase
+                    friction = np.linspace(0.3, 0.6, model.shape_count, dtype=np.float32) + 0.5 * phase
+                    updated_transforms.assign(poses)
+                    updated_friction.assign(friction)
+                    for _ in range(120):
+                        wp.capture_launch(capture.graph)
+                        update_and_step(reference)
+
+                    np.testing.assert_allclose(simulation[1].body_q.numpy(), reference[1].body_q.numpy(), atol=2.0e-3)
+                    np.testing.assert_allclose(simulation[1].body_qd.numpy(), reference[1].body_qd.numpy(), atol=2.0e-2)
+                    np.testing.assert_allclose(
+                        simulation[1].body_q.numpy()[:, 2],
+                        np.array([0.1, 0.2]) + 0.03 + 0.05 * phase,
+                        atol=0.015,
+                    )
+                    mapping = simulation[0].mjc_geom_to_newton_shape.numpy()
+                    valid = mapping >= 0
+                    np.testing.assert_allclose(
+                        simulation[0].mjw_model.geom_friction.numpy()[:, :, 0][valid], friction[mapping[valid]]
+                    )
+                    self.assertEqual(set(_read_contact_pairs(simulation).flat), set(range(model.shape_count)))
+
+            scales = model.shape_scale.numpy().copy()
+            scales[1] *= 1.1
+            model.shape_scale.assign(scales)
+            with self.assertRaisesRegex(ValueError, "changing shape_scale"):
+                simulation[0].notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph replay requires a CUDA device")
     def test_sixteen_native_variants_with_cuda_graph(self):

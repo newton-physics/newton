@@ -513,7 +513,7 @@ hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
 Different collider counts across worlds
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. experimental::
 
@@ -549,10 +549,15 @@ pairs, and fluid density or viscosity are unsupported and rejected.
 Native contacts support non-planar meshes (as convex hulls), planes, boxes,
 spheres, capsules, cylinders, and ellipsoids. Cones and heightfields require
 Newton contacts in this mode. Geometry sizes, mesh assets, geometry types,
-collision groups and exclusions, contact dimensions, and priorities are fixed
-at construction; recreate the solver after changing them. Shape poses and
-the supported material properties can be updated through
+collision-enable flags, collision groups and exclusions, contact dimensions,
+and priorities are fixed at construction; recreate the solver after changing
+them. Shape poses and the supported material properties can be updated through
 :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`.
+With native contacts, these updates support CUDA graph capture. Call
+``notify_model_changed`` with ``ModelFlags.SHAPE_PROPERTIES`` once outside
+capture to validate the starting geometry. The fixed geometry and
+collision-filter fields listed above must remain unchanged during capture
+and every replay; their host-side validation only runs outside capture.
 
 For per-world placement of fixed bodies, include their fixed root joint in an
 articulation (see :ref:`mujoco-kinematic-links-and-fixed-roots`). Standalone
