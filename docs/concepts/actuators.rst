@@ -85,8 +85,8 @@ Drives and clamping objects are pluggable: implement the
 .. note::
 
    **Current limitations:** the first version does not include a transmission
-   model (gear ratios / linkage transforms), supports only single-input
-   single-output (SISO) actuators (one DOF per actuator), and does not model
+   model (gear ratios / linkage transforms), supports only one DOF per
+   actuator, and does not model
    actuator dynamics (inertia, friction, thermal effects).
 
 Usage
@@ -175,7 +175,8 @@ Stateful Actuators
 ------------------
 
 Drives that maintain internal state (e.g. :class:`DrivePID` with an
-integral accumulator, or :class:`DriveNeuralLSTM` with hidden/cell state) and
+integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
+:class:`DriveNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -252,16 +253,75 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+.. _custom-drive-inputs:
+
+Custom Drive Inputs
+-------------------
+
+A drive may need an array beyond the positions, velocities and targets the
+actuator already reads. It lists the array names in
+:attr:`DriveBase.custom_inputs`. These values are caller-owned inputs for the
+current evaluation, so they are always read from the ``sim_control`` argument
+of :meth:`Actuator.step`, even when a value describes physical state such as an
+estimated load or measured temperature.
+
+:class:`Actuator` reads each declared value and passes it unchanged to
+:meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed by attribute
+name. A missing attribute is passed as ``None``. The drive owns requiredness,
+fallback behavior, and all type, length, dtype, device, shape, and semantic
+validation. A drive called directly receives the same mapping explicitly; it
+does not look for custom values on a simulation state or control object.
+
+For actuators created by :class:`~newton.ModelBuilder`,
+:meth:`Actuator.register_custom_attributes` automatically registers every
+name declared by the drive as a ``wp.float32`` joint-DOF array on
+:class:`~newton.Control`. Registration allocates the array but does not
+populate or clear it. Write every declared value before each actuator
+evaluation to avoid reusing stale data. Users of another simulation engine
+provide the same-named arrays through their ``sim_control`` adapter instead.
+
+:meth:`Actuator.sim_state` returns an empty container with exactly the fields
+the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its
+counterpart and includes all declared custom inputs. Passing your own object or
+a mapping to :meth:`Actuator.step` is also supported.
+
+.. warning::
+
+   ``sim_state`` holds references. The simulation loop swaps ``state_0`` and
+   ``state_1`` each step, so a ``sim_state`` built once from ``state_0`` still
+   points at that buffer after the swap and the actuator reads stale positions
+   and velocities. Re-point its fields every step.
+
+In the loop below the drive declares one array named ``extra_input``:
+
+.. code-block:: python
+
+   sim_state = actuator.sim_state()
+
+   for _ in range(num_steps):
+       extra_input = compute_extra_input(model, state_0)
+
+       sim_state.joint_q = state_0.joint_q
+       sim_state.joint_qd = state_0.joint_qd
+
+       control.clear(model)
+       control.joint_target_q.assign(target_positions)
+       control.extra_input.assign(extra_input)
+       actuator.step(sim_state, control, actuator_state_a, actuator_state_b, dt=dt)
+       actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
+
+       solver.step(state_0, state_1, control, contacts, dt)
+       state_0, state_1 = state_1, state_0
+
 .. _neural-network-checkpoints:
 
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives (:class:`DriveNeuralMLP`,
-:class:`DriveNeuralLSTM`) support two checkpoint backends. `ONNX
-<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
-Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
-and require PyTorch.
+Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
+Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
+:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
+Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -281,6 +341,11 @@ the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
 may omit them: they contain the original module, whose ``torch.nn.LSTM``
 submodule is inspected directly, while ``torch.export`` flattens the network
 into a computation graph that no longer exposes it.
+
+:class:`DriveNeuralGRU` requires ``input_columns``, ``normalization`` and
+``sample_dt_s`` in its ONNX checkpoint metadata, and an optional
+``custom_inputs`` that marks one column of ``input_columns`` as an array the
+application supplies each step.
 
 .. _effort-modes:
 
@@ -415,6 +480,8 @@ Drives
 * :class:`DrivePD` — proportional-derivative control law (stateless).
 * :class:`DrivePID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
+* :class:`DriveNeuralGRU` — GRU neural-network drive
+  (stateful: hidden state; explicit Warp-NN inference).
 * :class:`DriveNeuralMLP` — MLP neural-network drive
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
@@ -470,7 +537,7 @@ For example, a custom drive needs to implement
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None):
+                   forces, state, dt, device=None, custom_inputs=None):
            # Launch a Warp kernel that writes effort into `forces`
            ...
 
@@ -483,6 +550,11 @@ A stateful custom drive also defines a dataclass subclass of
 default :meth:`Actuator.State.assign` behavior copies direct Warp array and
 Torch tensor fields without replacing their storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
+
+A drive that needs additional per-step arrays declares them through
+:attr:`DriveBase.custom_inputs`. They arrive in the ``custom_inputs`` argument
+to :meth:`~DriveBase.compute` after being read from ``sim_control``; see
+:ref:`custom-drive-inputs`.
 
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve

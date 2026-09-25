@@ -40,6 +40,7 @@ class _EffortModeExplicit:
         applied_forces: wp.array[float] | None,
         drive_state: DriveBase.State | None,
         dt: float | None,
+        custom_inputs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Compute raw effort into *computed_forces*, clamp into *applied_forces*.
 
@@ -59,6 +60,7 @@ class _EffortModeExplicit:
             drive_state,
             dt,
             device=self._device,
+            custom_inputs=custom_inputs,
         )
         forces = computed_forces
         for clamp in self._clamping:
