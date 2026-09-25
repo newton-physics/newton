@@ -1317,7 +1317,7 @@ def block_sparse_gemv(
         wp.launch(
             kernel=_make_scale_vector_kernel_2d(0),
             dim=(A.num_matrices, A.max_of_max_dims[0]),
-            inputs=[A.dims, A.row_start, A.col_start, y, beta, matrix_mask],
+            inputs=[A.dims, y, beta, matrix_mask],
             device=A.device,
         )
 
@@ -1390,15 +1390,15 @@ def block_sparse_transpose_gemv(
     else:
         # Compute x <= beta * x
         wp.launch(
-            kernel=_make_scale_vector_kernel(1),
+            kernel=_make_scale_vector_kernel_2d(1),
             dim=(A.num_matrices, A.max_of_max_dims[1]),
-            inputs=[A.dims, A.row_start, A.col_start, x, beta, matrix_mask],
+            inputs=[A.dims, x, beta, matrix_mask],
             device=A.device,
         )
 
         # Compute y += alpha * A^T @ y
         wp.launch(
-            kernel=_make_block_sparse_transpose_gemv_kernel(A.nzb_dtype),
+            kernel=_make_block_sparse_transpose_gemv_kernel_2d(A.nzb_dtype),
             dim=(A.num_matrices, A.max_of_num_nzb),
             inputs=[
                 A.num_nzb,

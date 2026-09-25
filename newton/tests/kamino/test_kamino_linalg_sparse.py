@@ -505,6 +505,59 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
     # Matrix-Vector Product Tests
     ###
 
+    def test_batched_gemv(self):
+        """Match batched forward and transpose GEMV to NumPy without changing masked rows or padding."""
+        matrices = [
+            np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.float32),
+            np.array([[-1, 2], [3, -4], [5, 6], [-7, 8]], dtype=np.float32),
+            np.zeros((2, 2), dtype=np.float32),
+        ]
+        for block_shape in ((1,), (2,), (2, 2)):
+            block_rows, block_cols = (1, block_shape[0]) if len(block_shape) == 1 else block_shape
+            coords = [
+                [(r, c) for r in range(0, m.shape[0], block_rows) for c in range(0, m.shape[1], block_cols)]
+                for m in matrices[:2]
+            ] + [[]]
+            bsm = BlockSparseMatrices(
+                nzb_dtype=BlockDType(shape=block_shape, dtype=wp.float32), device=self.default_device
+            )
+            bsm.finalize(max_dims=[(3, 6), (5, 3), (3, 3)], capacities=[len(c) + 1 for c in coords])
+            bsm.dims.assign([m.shape for m in matrices])
+            bsm.num_nzb.assign([len(c) for c in coords])
+            # Leave an unused block between worlds to exercise nonzero-block offsets.
+            packed_coords = np.zeros((bsm.sum_of_num_nzb, 2), dtype=np.int32)
+            for start, world_coords in zip(bsm.nzb_start.numpy(), coords, strict=True):
+                if world_coords:
+                    packed_coords[start : start + len(world_coords)] = world_coords
+            bsm.nzb_coords.assign(packed_coords)
+            bsm.assign(matrices)
+            ops = BlockSparseLinearOperators(bsm)
+
+            for transpose in (False, True):
+                input_dim, output_dim = (0, 1) if transpose else (1, 0)
+                input_np = np.arange(3 * bsm.max_of_max_dims[input_dim], dtype=np.float32).reshape(3, -1) + 1
+                initial = np.full((3, bsm.max_of_max_dims[output_dim]), 17.0, dtype=np.float32)
+                inputs = wp.array(input_np, dtype=wp.float32, device=self.default_device)
+                for mask_values in ([True, True, True], [True, False, True], [False, False, False]):
+                    mask = wp.array(mask_values, dtype=wp.bool, device=self.default_device)
+                    for alpha, beta in ((2.0, 3.0), (0.0, 1.0), (1.0, 0.0)):
+                        with self.subTest(
+                            block=block_shape, transpose=transpose, mask=mask_values, alpha=alpha, beta=beta
+                        ):
+                            expected = initial.copy()
+                            for world, matrix in enumerate(matrices):
+                                if mask_values[world]:
+                                    operator = matrix.T if transpose else matrix
+                                    size = operator.shape[0]
+                                    expected[world, :size] = (
+                                        alpha * (operator @ input_np[world, : operator.shape[1]])
+                                        + beta * initial[world, :size]
+                                    )
+                            output = wp.array(initial, dtype=wp.float32, device=self.default_device)
+                            operation = ops.gemv_transpose if transpose else ops.gemv
+                            operation(inputs, output, mask, alpha=alpha, beta=beta)
+                            np.testing.assert_allclose(output.numpy(), expected, rtol=1.0e-6, atol=1.0e-6)
+
     def test_00_sparse_matrix_vector_product_full(self):
         """
         Tests multiplication of a random dense block matrix with a random vector.
