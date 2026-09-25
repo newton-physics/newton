@@ -37,8 +37,9 @@ from .._common import (
     _add_term_kernel,
     _block_matrix_vector_multiply_kernel,
     _pd_term_kernel,
-    _read_port,
-    _scatter_port_kernel,
+    _port_destination,
+    _port_source,
+    _write_port,
 )
 
 
@@ -242,9 +243,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         def _buf():
             return wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
 
-        # Every port is copied into one of these before any kernel runs, so a
-        # port may be bound to a plain array or to an indexed view without the
-        # kernels needing to know which.
+        # A port bound to an indexed view is gathered into one of these first;
+        # a plain array is read in place, so the kernels never need to know which.
         self._q_buf = _buf()
         self._qd_buf = _buf()
         self._q_des_buf = _buf()
@@ -388,6 +388,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                     f"would be ignored."
                 )
 
+        # Plain-array ports are read in place; only views are gathered into the internal buffers.
+        sources: dict[str, wp.array[wp.float32]] = {}
         for port, name, buf in bindings:
             _validate_array(
                 array=port,
@@ -398,7 +400,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 allow_indexed=True,
             )
             if buf is not None:
-                _read_port(port, buf, self._total_controlled_dofs, self._device)
+                sources[name] = _port_source(port, buf, self._total_controlled_dofs, self._device)
 
         if self._use_inertia:
             _validate_array(
@@ -410,32 +412,43 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 allow_indexed=True,
             )
 
-        stiffness = self._stiffness_baked if self._stiffness_baked is not None else self._stiffness_buf
-        damping = self._damping_baked if self._damping_baked is not None else self._damping_buf
+        stiffness = self._stiffness_baked if self._stiffness_baked is not None else sources["inputs.stiffness"]
+        damping = self._damping_baked if self._damping_baked is not None else sources["inputs.damping"]
+        joint_f = _port_destination(outputs.joint_f, self._tau_buf)
 
         dim = self._total_controlled_dofs
-        working_buf = self._acc_buf if self._use_inertia else self._tau_buf
+        working_buf = self._acc_buf if self._use_inertia else joint_f
         wp.launch(
             _pd_term_kernel,
             dim=dim,
-            inputs=[self._q_buf, self._qd_buf, self._q_des_buf, self._qd_des_buf, stiffness, damping],
+            inputs=[
+                sources["inputs.joint_q"],
+                sources["inputs.joint_qd"],
+                sources["inputs.joint_q_des"],
+                sources["inputs.joint_qd_des"],
+                stiffness,
+                damping,
+            ],
             outputs=[working_buf],
             device=self._device,
         )
 
         if self._has_qdd:
-            wp.launch(_add_term_kernel, dim=dim, inputs=[self._qdd_buf], outputs=[working_buf], device=self._device)
+            wp.launch(
+                _add_term_kernel,
+                dim=dim,
+                inputs=[sources["inputs.joint_qdd"]],
+                outputs=[working_buf],
+                device=self._device,
+            )
 
         if self._use_inertia:
-            mass_matrix = inputs.mass_matrix
-            if isinstance(mass_matrix, wp.indexedarray):
-                _read_port(
-                    mass_matrix,
-                    self._mass_matrix_buf,
-                    (self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
-                    self._device,
-                )
-                mass_matrix = self._mass_matrix_buf
+            mass_matrix = _port_source(
+                inputs.mass_matrix,
+                self._mass_matrix_buf,
+                (self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                self._device,
+            )
             wp.launch(
                 _block_matrix_vector_multiply_kernel,
                 dim=dim,
@@ -447,22 +460,25 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                     self._dof_offsets,
                     self._controlled_dofs_per_robot,
                 ],
-                outputs=[self._tau_buf],
+                outputs=[joint_f],
                 device=self._device,
             )
 
         if self._use_gravity:
-            wp.launch(_add_term_kernel, dim=dim, inputs=[self._grav_buf], outputs=[self._tau_buf], device=self._device)
-        if self._use_coriolis:
-            wp.launch(_add_term_kernel, dim=dim, inputs=[self._cor_buf], outputs=[self._tau_buf], device=self._device)
-
-        if isinstance(outputs.joint_f, wp.indexedarray):
             wp.launch(
-                _scatter_port_kernel,
-                dim=self._total_controlled_dofs,
-                inputs=[self._tau_buf],
-                outputs=[outputs.joint_f],
+                _add_term_kernel,
+                dim=dim,
+                inputs=[sources["inputs.gravity_force"]],
+                outputs=[joint_f],
                 device=self._device,
             )
-        else:
-            wp.copy(outputs.joint_f, self._tau_buf)
+        if self._use_coriolis:
+            wp.launch(
+                _add_term_kernel,
+                dim=dim,
+                inputs=[sources["inputs.coriolis_force"]],
+                outputs=[joint_f],
+                device=self._device,
+            )
+
+        _write_port(outputs.joint_f, self._tau_buf, self._total_controlled_dofs, self._device)
