@@ -62,7 +62,7 @@ class RandomJointControllerData:
 
     interval: wp.array[wp.float32] | None = None
     """
-    Interval between each torque application for each world.
+    Interval of change for the random torque values, in seconds.
 
     Shape of `(num_worlds,)`.
     """
@@ -169,7 +169,7 @@ class RandomJointController:
         Args:
             model: The model container describing the system to be simulated.
                 If `None`, a call to ``finalize()`` must be made later.
-            interval: Interval at which a random torque is applied, in seconds.
+            interval: Interval of change for the random torque values, in seconds.
                 Defaults to `1.0` for all worlds if `None`.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
@@ -187,9 +187,14 @@ class RandomJointController:
         # Declare the internal controller data
         self._data: RandomJointControllerData | None = None
 
+        # Cache parameters to allow deferred finalization
+        self._seed = seed
+        self._interval = interval
+        self._scale = scale
+
         # If a model is provided, allocate the controller data
         if model is not None:
-            self.finalize(model=model, seed=seed, interval=interval, scale=scale)
+            self.finalize(model=model)
 
     ###
     # Properties
@@ -247,7 +252,7 @@ class RandomJointController:
 
         Args:
             model: The model container describing the system to be simulated.
-            interval: Interval at which a random torque is applied, in seconds.
+            interval: Interval of change for the random torque values, in seconds.
                 Defaults to `1.0` for all worlds if `None`.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
@@ -274,12 +279,12 @@ class RandomJointController:
             raise ValueError("The provided model has no joint DoFs to generate control inputs for.")
 
         # Validate and process the constructor arguments
-        interval, scale, seed = self._validate_arguments(
+        self._interval, self._scale, self._seed = self._validate_arguments(
             num_worlds=model.size.num_worlds,
             num_joint_dofs=num_joint_dofs,
-            interval=interval if interval is not None else 1.0,
-            scale=scale if scale is not None else 1.0,
-            seed=seed if seed is not None else 0,
+            interval=interval if interval is not None else self._interval,
+            scale=scale if scale is not None else self._scale,
+            seed=seed if seed is not None else self._seed,
         )
 
         # Use the model's device
@@ -288,9 +293,9 @@ class RandomJointController:
         # Allocate the controller data
         with wp.ScopedDevice(self._device):
             self._data = RandomJointControllerData(
-                seed=seed,
-                interval=wp.array(interval, dtype=wp.float32),
-                scale=wp.array(scale, dtype=wp.float32),
+                seed=self._seed,
+                interval=wp.array(self._interval, dtype=wp.float32),
+                scale=wp.array(self._scale, dtype=wp.float32),
             )
 
     def compute(self, time: TimeData, control: ControlKamino):
@@ -356,6 +361,8 @@ class RandomJointController:
                 _interval = np.array(interval, dtype=np.float32)
             else:
                 raise ValueError(f"Expected interval of type `float` or `FloatArrayLike`, but got {type(interval)}.")
+            if not np.all(np.isfinite(_interval)) or np.any(_interval <= 0.0):
+                raise ValueError("Interval values must be finite and positive.")
         # Otherwise, set it to the default value of 1.0 for all worlds
         else:
             _interval = np.ones(num_worlds, dtype=np.float32)
