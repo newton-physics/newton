@@ -595,8 +595,8 @@ class ForwardKinematicsSolver:
             )
 
             # Joints — helper data for model updates validation
-            self.data.joints._built_actuated = to_warp_int32_array(built_fk_actuated)
-            self.data.joints._actuation_violations = wp.empty(2, dtype=wp.int32)
+            self.data.joints.built_actuated = to_warp_int32_array(built_fk_actuated)
+            self.data.joints.actuation_violations = wp.empty(2, dtype=wp.int32)
 
             # Joints — FK joints model
             self.data.joints.dof_type = to_warp_int32_array(joint_dof_type)
@@ -1033,19 +1033,19 @@ class ForwardKinematicsSolver:
         if joint_count == 0:
             return
 
-        self.data.joints._actuation_violations.fill_(joint_count)
+        self.data.joints.actuation_violations.fill_(joint_count)
         wp.launch(
             validate_fk_actuation_updates,
             dim=joint_count,
             inputs=[
                 self.model.joints.act_type,
                 self.model.joints.fk_act_flag,
-                self.data.joints._built_actuated,
-                self.data.joints._actuation_violations,
+                self.data.joints.built_actuated,
+                self.data.joints.actuation_violations,
             ],
             device=self.device,
         )
-        changed_joint, invalid_joint = self.data.joints._actuation_violations.numpy()
+        changed_joint, invalid_joint = self.data.joints.actuation_violations.numpy()
         if invalid_joint != joint_count:
             raise ValueError(f"Invalid FK actuation flag for joint {int(invalid_joint)}: expected -1, 0, or 1")
         if changed_joint != joint_count:
@@ -1565,7 +1565,7 @@ class ForwardKinematicsSolver:
                 _add_regularizer_to_diagonal,
                 dim=(self.model.size.num_worlds, self.data.dimensions.num_states_max),
                 inputs=[
-                    self.config.regularization_weight,
+                    wp.float32(self.config.regularization_weight),
                     self.data.dimensions.num_states,
                     world_mask,
                     self.data.linear_system.lhs,
@@ -1613,7 +1613,7 @@ class ForwardKinematicsSolver:
                 inputs=[
                     self.model.info.num_bodies,
                     self.model.info.bodies_offset,
-                    self.config.regularization_weight,
+                    wp.float32(self.config.regularization_weight),
                     body_q.view(wp.float32).flatten(),
                     self.data.problem.body_q_ref.view(wp.float32).flatten(),
                     world_mask,
@@ -1645,7 +1645,7 @@ class ForwardKinematicsSolver:
                 inputs=[
                     1.0,
                     self.data.linear_system.lhs_times_vector,
-                    self.config.regularization_weight,
+                    wp.float32(self.config.regularization_weight),
                     x,
                     self.data.dimensions.num_constraints,
                     world_mask,
@@ -1689,7 +1689,7 @@ class ForwardKinematicsSolver:
                 inputs=[
                     1.0,
                     y,
-                    self.config.regularization_weight,
+                    wp.float32(self.config.regularization_weight),
                     x,
                     self.data.dimensions.num_constraints,
                     world_mask,
@@ -1723,7 +1723,7 @@ class ForwardKinematicsSolver:
                 dim=(self.model.size.num_worlds, self.data.dimensions.num_tiles_vrs_1d),
                 inputs=[
                     self.model.info.bodies_offset,
-                    self.config.regularization_weight,
+                    wp.float32(self.config.regularization_weight),
                     body_q.view(wp.float32).flatten(),
                     self.data.problem.body_q_ref.view(wp.float32).flatten(),
                     merit_function,
@@ -1794,7 +1794,7 @@ class ForwardKinematicsSolver:
                 self.data.line_search.alpha,
                 self.data.line_search.val_alpha,
                 self.data.line_search.iteration,
-                self.config.max_line_search_iterations,
+                wp.int32(self.config.max_line_search_iterations),
                 self.data.line_search.success,
                 self.data.line_search.mask,
                 self.data.line_search.loop_condition,
@@ -1953,10 +1953,10 @@ class ForwardKinematicsSolver:
             dim=(self.model.size.num_worlds,),
             inputs=[
                 self.data.gauss_newton.max_residual,
-                self.config.tolerance,
+                wp.float32(self.config.tolerance),
                 self.data.gauss_newton.iteration,
                 self.data.gauss_newton.min_iterations,
-                self.config.max_newton_iterations,
+                wp.int32(self.config.max_newton_iterations),
                 self.data.line_search.success,
                 self.data.gauss_newton.success,
                 self.data.gauss_newton.mask,
@@ -2465,10 +2465,10 @@ class ForwardKinematicsSolver:
             dim=(self.model.size.num_worlds,),
             inputs=[
                 self.data.gauss_newton.max_residual,
-                self.config.tolerance,
+                wp.float32(self.config.tolerance),
                 self.data.gauss_newton.iteration,
                 self.data.gauss_newton.min_iterations,
-                self.config.max_newton_iterations,
+                wp.int32(self.config.max_newton_iterations),
                 self.data.line_search.success,
                 self.data.gauss_newton.success,
                 self.data.gauss_newton.mask,

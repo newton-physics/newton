@@ -967,21 +967,21 @@ class ForwardKinematicsSolverConfig:
     A container to hold configurations for the Gauss-Newton forward kinematics solver used for state resets.
     """
 
-    tolerance: wp.float32 = 1e-6
+    tolerance: float = 1e-6
     """
     Maximal absolute kinematic constraint value that is acceptable at the solution.
     This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `1e-6`.
     """
 
-    max_newton_iterations: wp.int32 = 30
+    max_newton_iterations: int = 30
     """
     Maximal number of Gauss-Newton iterations.
     This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `30`.
     """
 
-    max_line_search_iterations: wp.int32 = 20
+    max_line_search_iterations: int = 20
     """
     Maximal line search iterations in the inner loop.
     This setting can be altered after the solver's construction (but will get baked in captured graphs).
@@ -1041,7 +1041,7 @@ class ForwardKinematicsSolverConfig:
     Defaults to `False`.
     """
 
-    regularization_weight: wp.float32 = 1e-5
+    regularization_weight: float = 1e-5
     """
     Weight applied to the rigid body pose least-squares regularizer, if regularization is enabled.
     This setting can be altered after the solver's construction (but will get baked in captured graphs).

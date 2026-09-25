@@ -414,13 +414,13 @@ class FKJointsModel:
     has_universal_actuators: bool = False
     """True iff the model has at least one actuated universal joint."""
 
-    _built_actuated: wp.array[wp.int32] | None = None
+    built_actuated: wp.array[wp.int32] | None = None
     """
     Built-time actuated flags per joint.
     Shape of ``(num_joints_tot,)``.
     """
 
-    _actuation_violations: wp.array[wp.int32] | None = None
+    actuation_violations: wp.array[wp.int32] | None = None
     """
     Violations counter for model-change validation.
     Shape of ``(2,)``.
