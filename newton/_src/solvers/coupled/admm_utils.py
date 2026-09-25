@@ -723,10 +723,13 @@ def accumulate_joint_qd_factor_from_body_proximal_lump_kernel(
 # Quadratic attachment local solve
 # ----------------------------------------------------------------------
 #
-# The ADMM update rules for a quadratic coupling energy
-# ``E_c(u) = (kappa/2) ||u - u_target||^2 + (damping/2) ||u||^2`` are:
+# The ADMM update rules for a quadratic coupling energy with physical stiffness
+# ``kappa`` and damping ``damping`` are:
 #
-#     u^{k+1}      = (rho W^2 Jv + kappa u_target - W lambda) / (kappa + damping + rho W^2)
+#     kappa_v       = dt^2 kappa
+#     damping_v     = dt damping
+#     u^{k+1}       = (rho W^2 Jv + kappa_v u_target - W lambda)
+#                       / (kappa_v + damping_v + rho W^2)
 #     lambda^{k+1} = lambda^k + rho W (u^{k+1} - Jv)
 #
 # With ``u_target = 0`` the coupling damps the relative velocity to zero;
@@ -737,6 +740,7 @@ def accumulate_joint_qd_factor_from_body_proximal_lump_kernel(
 def u_update_quadratic_kernel(
     kappa: wp.array[float],
     damping: wp.array[float],
+    dt: float,
     W: wp.array[float],
     rho: float,
     lambda_k: wp.array[wp.vec3],
@@ -748,8 +752,10 @@ def u_update_quadratic_kernel(
     i = wp.tid()
     W_i = W[i]
     W2 = W_i * W_i
-    denom = kappa[i] + damping[i] + rho * W2
-    u_out[i] = (rho * W2 * Jv[i] + kappa[i] * u_target[i] - W_i * lambda_k[i]) / denom
+    kappa_v = dt * dt * kappa[i]
+    damping_v = dt * damping[i]
+    denom = kappa_v + damping_v + rho * W2
+    u_out[i] = (rho * W2 * Jv[i] + kappa_v * u_target[i] - W_i * lambda_k[i]) / denom
 
 
 @wp.kernel(enable_backward=False)
@@ -778,6 +784,7 @@ def _soft_threshold_box(value: float, threshold: float) -> float:
 @wp.kernel(enable_backward=False)
 def joint_box_friction_u_update_kernel(
     friction: wp.array[wp.vec3],
+    dt: float,
     W: wp.array[float],
     rho: float,
     lambda_k: wp.array[wp.vec3],
@@ -798,9 +805,9 @@ def joint_box_friction_u_update_kernel(
         p = p - lambda_k[i] / denom
 
     threshold = wp.vec3(0.0, 0.0, 0.0)
-    force_denom = rho * W_i * W_i
-    if force_denom > 0.0:
-        threshold = friction[i] / force_denom
+    impulse_denom = rho * W_i * W_i
+    if impulse_denom > 0.0:
+        threshold = dt * friction[i] / impulse_denom
 
     u_out[i] = wp.vec3(
         _soft_threshold_box(p[0], threshold[0]),
@@ -830,6 +837,17 @@ def solve_coulomb_isotropic(mu: float, normal: wp.vec3, u: wp.vec3):
             u = u * (1.0 + mu * u_n / wp.sqrt(tau))
 
     return u
+
+
+@wp.func
+def _interface_impulse(
+    rho: float,
+    W: float,
+    lambda_k: wp.vec3,
+    u_k: wp.vec3,
+    Jv_k: wp.vec3,
+) -> wp.vec3:
+    return W * (lambda_k + rho * W * (u_k - Jv_k))
 
 
 @wp.kernel(enable_backward=False)
@@ -942,6 +960,7 @@ def attach_rp_accumulate_forces_kernel(
     particle_b: wp.array[int],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -955,7 +974,7 @@ def attach_rp_accumulate_forces_kernel(
     ba = body_a[i]
     pb = particle_b[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q[ba]
     world_pt_a = wp.transform_point(xform_a, point_a_local[i])
@@ -1098,6 +1117,7 @@ def attach_rr_revolute_angular_local_compute_u_target_kernel(
 def attach_rr_angular_accumulate_forces_kernel(
     body_a: wp.array[int],
     body_b: wp.array[int],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1109,7 +1129,7 @@ def attach_rr_angular_accumulate_forces_kernel(
     """Splat angular attachment torques into both rigid-body force buffers."""
     i = wp.tid()
     W_i = W[i]
-    torque_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     wp.atomic_add(body_f_a, body_a[i], wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_a))
     wp.atomic_sub(body_f_b, body_b[i], wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_a))
 
@@ -1120,6 +1140,7 @@ def attach_rr_angular_local_accumulate_forces_kernel(
     frame_a: wp.array[wp.transform],
     body_b: wp.array[int],
     body_q_a: wp.array[wp.transform],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1132,7 +1153,7 @@ def attach_rr_angular_local_accumulate_forces_kernel(
     i = wp.tid()
     ba = body_a[i]
     W_i = W[i]
-    torque_local = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_local = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     frame_world = body_q_a[ba] * frame_a[i]
     torque_world = wp.quat_rotate(wp.transform_get_rotation(frame_world), torque_local)
     wp.atomic_add(body_f_a, ba, wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_world))
@@ -1145,6 +1166,7 @@ def attach_rr_revolute_angular_local_accumulate_forces_kernel(
     frame_a: wp.array[wp.transform],
     body_b: wp.array[int],
     body_q_a: wp.array[wp.transform],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1157,7 +1179,7 @@ def attach_rr_revolute_angular_local_accumulate_forces_kernel(
     i = wp.tid()
     ba = body_a[i]
     W_i = W[i]
-    torque_local = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_local = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     torque_local = wp.vec3(0.0, torque_local[1], torque_local[2])
     frame_world = body_q_a[ba] * frame_a[i]
     torque_world = wp.quat_rotate(wp.transform_get_rotation(frame_world), torque_local)
@@ -1215,6 +1237,7 @@ def attach_rr_accumulate_forces_kernel(
     body_com_a: wp.array[wp.vec3],
     body_q_b: wp.array[wp.transform],
     body_com_b: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1228,7 +1251,7 @@ def attach_rr_accumulate_forces_kernel(
     ba = body_a[i]
     bb = body_b[i]
     W_i = W[i]
-    force_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q_a[ba]
     point_a = wp.transform_point(xform_a, point_a_local[i])
@@ -1320,6 +1343,7 @@ def contact_rr_accumulate_forces_kernel(
     body_com_a: wp.array[wp.vec3],
     body_q_b: wp.array[wp.transform],
     body_com_b: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1335,7 +1359,7 @@ def contact_rr_accumulate_forces_kernel(
     ba = body_a[i]
     bb = body_b[i]
     W_i = W[i]
-    force_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q_a[ba]
     point_a = contact_surface_point(xform_a, point_a_local[i], point_a_offset_local[i])
@@ -1650,6 +1674,7 @@ def contact_rp_accumulate_forces_kernel(
     body_sign: wp.array[int],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1665,7 +1690,7 @@ def contact_rp_accumulate_forces_kernel(
     b = body_id[i]
     p = particle_id[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     force_body = float(body_sign[i]) * force
 
     xform = body_q[b]
@@ -1877,6 +1902,7 @@ def contact_pp_accumulate_forces_kernel(
     active_count: wp.array[int],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1892,7 +1918,7 @@ def contact_pp_accumulate_forces_kernel(
     pa = particle_a[i]
     pb = particle_b[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     wp.atomic_add(particle_f_a, pa, force)
     wp.atomic_sub(particle_f_b, pb, force)
 

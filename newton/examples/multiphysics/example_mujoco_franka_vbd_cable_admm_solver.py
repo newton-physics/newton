@@ -603,8 +603,8 @@ class Example:
         parser.set_defaults(world_count=8)
         parser.add_argument("--substeps", type=int, default=16, help="Coupled substeps per rendered frame.")
         parser.add_argument("--admm-iterations", type=int, default=5, help="ADMM iterations per coupled substep.")
-        parser.add_argument("--rho", type=float, default=200.0, help="ADMM penalty parameter.")
-        parser.add_argument("--gamma", type=float, default=0.001, help="ADMM proximal metric scale.")
+        parser.add_argument("--rho", type=float, default=0.2, help="Dimensionless ADMM penalty parameter.")
+        parser.add_argument("--gamma", type=float, default=1.0, help="Dimensionless ADMM proximal metric scale.")
         parser.add_argument("--baumgarte", type=float, default=0.5, help="Position error correction fraction.")
         parser.add_argument(
             "--rigid-contact-matching",

@@ -371,10 +371,10 @@ class Example:
         parser.set_defaults(world_count=4)
         parser.add_argument("--substeps", type=int, default=3, help="Coupled substeps per rendered frame.")
         parser.add_argument("--admm-iterations", type=int, default=2, help="ADMM iterations per coupled substep.")
-        parser.add_argument("--rho", type=float, default=50.0, help="ADMM penalty parameter.")
-        parser.add_argument("--gamma", type=float, default=0.1, help="ADMM proximal mass scaling.")
+        parser.add_argument("--rho", type=float, default=0.3, help="Dimensionless ADMM penalty parameter.")
+        parser.add_argument("--gamma", type=float, default=20.0, help="Dimensionless ADMM proximal mass scaling.")
         parser.add_argument("--baumgarte", type=float, default=0.02, help="Position error correction fraction.")
-        parser.add_argument("--joint-stiffness", type=float, default=2.0e4, help="Cross-solver joint stiffness [N/m].")
+        parser.add_argument("--joint-stiffness", type=float, default=3.6e6, help="Cross-solver joint stiffness [N/m].")
         parser.add_argument("--joint-damping", type=float, default=1.0, help="Cross-solver joint damping [N*s/m].")
         parser.add_argument("--kamino-iterations", type=int, default=40, help="Kamino PADMM iterations per substep.")
         parser.add_argument(

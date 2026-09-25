@@ -370,15 +370,15 @@ class Example:
         )
         parser.add_argument(
             "--rho",
-            help="ADMM penalty parameter",
+            help="Dimensionless ADMM penalty parameter",
             type=float,
-            default=45.0,
+            default=0.4,
         )
         parser.add_argument(
             "--gamma",
-            help="ADMM proximal metric scale",
+            help="Dimensionless ADMM proximal metric scale",
             type=float,
-            default=0.001,
+            default=0.1,
         )
         parser.add_argument(
             "--baumgarte",
