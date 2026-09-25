@@ -172,6 +172,85 @@ class TestMuJoCoHeterogeneousNative(unittest.TestCase):
                 np.testing.assert_array_equal(np.bincount(worlds, minlength=2), [1, 46])
                 self.assertTrue(np.isfinite(contacts.force.numpy()[: len(pairs)]).all())
 
+    def test_reordered_geometry_preserves_world_pair_filters(self):
+        """Preserve original contact pairs when body grouping reorders ragged geometry slots."""
+        for device in get_test_devices():
+            for max_hulls in (2, 46):
+                for skip_visual_only_geoms in (False, True):
+                    with (
+                        self.subTest(device=device, max_hulls=max_hulls, skip_visual_only_geoms=skip_visual_only_geoms),
+                        wp.ScopedDevice(device),
+                    ):
+                        builder = newton.ModelBuilder()
+                        ground = builder.add_ground_plane()
+                        cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+                        visual_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False)
+                        expected = set()
+                        for world, counts in enumerate(((1, 1), (max_hulls, 2), (0, 1))):
+                            builder.begin_world()
+                            bodies = []
+                            for _ in range(2):
+                                body = builder.add_link(
+                                    mass=1.0,
+                                    inertia=wp.mat33(np.eye(3)),
+                                    xform=wp.transform((0.0, 0.0, -0.02), wp.quat_identity()),
+                                )
+                                joint = builder.add_joint_free(body)
+                                builder.add_articulation([joint])
+                                bodies.append(body)
+                            shapes = [[], []]
+                            # Add the second body's shapes first; MuJoCo compiles body zero first.
+                            for body in (1, 0):
+                                for hull in range(counts[body]):
+                                    shape = builder.add_shape_sphere(
+                                        bodies[body],
+                                        radius=0.1,
+                                        xform=wp.transform((1.0 * hull, 0.0, 0.0), wp.quat_identity()),
+                                        cfg=cfg,
+                                    )
+                                    shapes[body].append(shape)
+                                    expected.add((ground, shape))
+                                builder.add_shape_box(bodies[body], hx=0.2, hy=0.2, hz=0.2, cfg=visual_cfg)
+                            for first, second in zip(*shapes, strict=False):
+                                expected.add(tuple(sorted((first, second))))
+                            if world == 0:
+                                pair = tuple(sorted((shapes[0][0], shapes[1][0])))
+                            elif world == 1:
+                                pair = (ground, shapes[0][0])
+                            else:
+                                pair = None
+                            if pair is not None:
+                                builder.add_shape_collision_filter_pair(*pair)
+                                expected.remove(pair)
+                            builder.end_world()
+                        model = builder.finalize(device=device)
+                        solver, state, next_state, control, contacts = _create_simulation(
+                            model, skip_visual_only_geoms=skip_visual_only_geoms, nconmax=512, njmax=2048
+                        )
+                        solver.step(state, next_state, control, None, 1.0e-6)
+                        pairs = _read_contact_pairs((solver, next_state, state, control, contacts))
+                        self.assertEqual({tuple(sorted(pair)) for pair in pairs}, expected)
+                        self.assertEqual(solver._heterogeneous_masks_exact, max_hulls == 2)
+                        self.assertTrue(np.isfinite(contacts.force.numpy()[: len(pairs)]).all())
+
+    def test_native_geometry_without_candidate_pairs(self):
+        """Construct native worlds with zero or one geometry slot and no possible contacts."""
+        for shape_count in (0, 1):
+            with self.subTest(shape_count=shape_count):
+                builder = newton.ModelBuilder()
+                for world in range(2):
+                    builder.begin_world()
+                    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                    joint = builder.add_joint_free(body)
+                    builder.add_articulation([joint])
+                    if shape_count and world == 1:
+                        builder.add_shape_sphere(body, radius=0.1)
+                    builder.end_world()
+                simulation = _create_simulation(builder.finalize(device="cpu"))
+                self.assertEqual(simulation[0].mj_model.ngeom, shape_count)
+                simulation = _advance(simulation, 2)
+                self.assertEqual(len(_read_contact_pairs(simulation)), 0)
+
     def test_native_trajectories_and_contact_ids_match_isolated_worlds(self):
         """Match isolated native dynamics and report contacts for every original convex hull."""
         variants = [(1, 0.1), (3, 0.2), (2, 0.3)]

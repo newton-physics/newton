@@ -6323,7 +6323,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if len(selected_shapes)
                     else np.empty((model.world_count, 0), dtype=np.int32)
                 )
-                permissions, _ = self._heterogeneous_pair_filters(model, shape_map)
+                permissions, world_to_filter = self._heterogeneous_pair_filters(model, shape_map)
                 a, b = np.triu_indices(len(selected_shapes), k=1)
                 excluded = np.column_stack((a, b))[~np.any(permissions, axis=0)]
                 masks = compile_newton_collision_graph(
@@ -8166,8 +8166,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._expand_model_fields(self.mjw_model, nworld)
             if native_geometry is not None:
                 library, geometry_ids, _, placeholders = native_geometry
+                # MuJoCo groups geoms by body, which can reorder the selected slots.
+                # Permute compact pair columns instead of filtering every world again.
+                geom_slots = np.empty(self.mj_model.ngeom, dtype=np.int64)
+                for slot, shape in enumerate(selected_shapes):
+                    geom_slots[shape_to_geom_idx[shape]] = slot
+                a, b = np.triu_indices(self.mj_model.ngeom, k=1)
+                first = np.minimum(geom_slots[a], geom_slots[b])
+                second = np.maximum(geom_slots[a], geom_slots[b])
+                pair_columns = first * (2 * self.mj_model.ngeom - first - 1) // 2 + second - first - 1
                 self._init_heterogeneous_geometry(
-                    library, geometry_ids, placeholders, self.mjc_geom_to_newton_shape.numpy()
+                    library,
+                    geometry_ids,
+                    placeholders,
+                    self.mjc_geom_to_newton_shape.numpy(),
+                    (permissions[:, pair_columns], world_to_filter),
                 )
 
             # update solver options from Newton model (only if not overridden by constructor)
@@ -9776,7 +9789,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             name = mesh_names.get(key)
             if name is None:
                 name = f"newton_heterogeneous_mesh_{len(mesh_names)}"
-                params = {"name": name, "uservert": vertices.flatten(), "maxhullvert": maxhullvert}
+                # Compile hull graphs and polygons even for assets used only by
+                # later worlds. Geoms have zero mass; Newton supplies body inertia.
+                params = {
+                    "name": name,
+                    "uservert": vertices.flatten(),
+                    "maxhullvert": maxhullvert,
+                    "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_CONVEX,
+                }
                 if indices is not None:
                     params["userface"] = indices.flatten()
                 library.add_mesh(**params)
@@ -9834,7 +9854,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             library.worldbody.add_geom(**params)
         return library.compile(), geometry_ids, shape_mesh_names, placeholders
 
-    def _init_heterogeneous_geometry(self, library, geometry_ids, placeholders, shape_map: np.ndarray):
+    def _init_heterogeneous_geometry(
+        self,
+        library,
+        geometry_ids,
+        placeholders,
+        shape_map: np.ndarray,
+        pair_filters: tuple[np.ndarray, np.ndarray],
+    ):
         """Install compiled per-world geometry and compact collision-filter tables."""
         mujoco = self._mujoco
         shape_types = self.model.shape_type.numpy()
@@ -9868,7 +9895,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             values = getattr(self.mjw_model, name).numpy().copy()
             values[shape_map < 0] = 0.0
             getattr(self.mjw_model, name).assign(values)
-        unique, inverse = self._heterogeneous_pair_filters(self.model, shape_map)
+        unique, inverse = pair_filters
         if len(unique) > 1 or not self._heterogeneous_masks_exact:
             self._heterogeneous_contact_filter = HeterogeneousContactFilter(
                 self.mjw_data,
