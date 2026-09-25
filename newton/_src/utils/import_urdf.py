@@ -772,6 +772,7 @@ def parse_urdf(
     # add joints, in the desired order starting from root body
     # Track only joints that are actually created (some may be skipped if their child body wasn't inserted).
     joint_name_to_idx: dict[str, int] = {}
+    joint_name_to_type: dict[str, str] = {}
     for joint in sorted_joints:
         parent = link_index[joint["parent"]]
         child = link_index[joint["child"]]
@@ -868,6 +869,7 @@ def parse_urdf(
 
         joint_indices.append(created_joint_idx)
         joint_name_to_idx[joint["name"]] = created_joint_idx
+        joint_name_to_type[joint["name"]] = joint["type"]
 
     # Configure mimic relationships
     for joint in sorted_joints:
@@ -890,10 +892,20 @@ def parse_urdf(
                 )
                 continue
 
+            # Mimic coefficients are authored in source units: q_follower =
+            # offset + multiplier * q_reference. Prismatic coordinates are
+            # scaled on import, revolute ones are not, so rescale the affine
+            # coefficients to keep the authored relation under `scale`.
+            follower_scale = scale if joint["type"] == "prismatic" else 1.0
+            reference_scale = scale if joint_name_to_type[mimic_target_name] == "prismatic" else 1.0
+
             builder.set_joint_mimic(
                 joint=follower_idx,
                 reference_joint=leader_idx,
-                coeffs=(joint.get("mimic_coef0", 0.0), joint.get("mimic_coef1", 1.0)),
+                coeffs=(
+                    joint.get("mimic_coef0", 0.0) * follower_scale,
+                    joint.get("mimic_coef1", 1.0) * follower_scale / reference_scale,
+                ),
             )
 
     # Create articulation from all collected joints
