@@ -63,6 +63,8 @@ class RandomJointControllerData:
     interval: wp.array[wp.float32] | None = None
     """
     Interval of change for the random torque values, in seconds.
+    For instance, 1.0 means a new random torque is applied and held every second.
+    If set to 0.0, a new random torque is applied at every time step.
 
     Shape of `(num_worlds,)`.
     """
@@ -85,6 +87,7 @@ def _generate_random_control_inputs(
     model_joints_tau_j_max: wp.array[wp.float32],
     model_time_step: wp.array[wp.float32],
     state_time: wp.array[wp.float32],
+    state_time_step: wp.array[wp.int32],
     # Outputs
     # TODO: Add support for other control types
     # (e.g. position and velocity targets)
@@ -99,12 +102,13 @@ def _generate_random_control_inputs(
     # Retrieve the world index from the thread indices
     wid = model_joints_wid[jid]
 
-    # Determine whether we should apply torque
+    # Determine whether we should apply a new torque
     t = state_time[wid]
     dt = model_time_step[wid]
     interval = controller_interval[wid]
-    n = wp.floor(t / interval)
-    if t - n * interval >= dt:
+    has_interval = interval > 0.0  # The special value 0.0 means we always apply a new torque
+    n = wp.floor(t / interval) if has_interval else wp.float32(state_time_step[wid])
+    if has_interval and t - n * interval >= dt:
         return  # Early return if this is not the first time step after an interval multiple
 
     # Retrieve the total number of joints from the size of the input arrays
@@ -131,7 +135,7 @@ def _generate_random_control_inputs(
         scale_j = controller_scale[joint_dof_index]
 
         # Initialize a random number generator based on the
-        # seed, interval index, joint index, and DoF index
+        # seed, time step or interval index, joint index, and DoF index
         rng_j_dof = wp.rand_init(controller_seed + int(n), num_joints * jid + dof)
 
         # Generate a random control input for the joint DoF
@@ -170,7 +174,9 @@ class RandomJointController:
             model: The model container describing the system to be simulated.
                 If `None`, a call to ``finalize()`` must be made later.
             interval: Interval of change for the random torque values, in seconds.
-                Defaults to `1.0` for all worlds if `None`.
+                      For instance, 1.0 means a new random torque is applied and held every second.
+                      If set to 0.0, a new random torque is applied at every time step.
+                Defaults to `0.0` for all worlds if `None`.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
                 and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
@@ -253,7 +259,8 @@ class RandomJointController:
         Args:
             model: The model container describing the system to be simulated.
             interval: Interval of change for the random torque values, in seconds.
-                Defaults to `1.0` for all worlds if `None`.
+                      For instance, 1.0 means a new random torque is applied and held every second.
+                      If set to 0.0, a new random torque is applied at every time step.
             scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
                 and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
@@ -328,6 +335,7 @@ class RandomJointController:
                 self._model.joints.tau_j_max,
                 self._model.time.dt,
                 time.time,
+                time.steps,
                 # Outputs
                 # TODO: Add support for other control types
                 # (e.g. position and velocity targets)
@@ -361,8 +369,8 @@ class RandomJointController:
                 _interval = np.array(interval, dtype=np.float32)
             else:
                 raise ValueError(f"Expected interval of type `float` or `FloatArrayLike`, but got {type(interval)}.")
-            if not np.all(np.isfinite(_interval)) or np.any(_interval <= 0.0):
-                raise ValueError("Interval values must be finite and positive.")
+            if not np.all(np.isfinite(_interval)) or np.any(_interval < 0.0):
+                raise ValueError("Interval values must be finite and non-negative.")
         # Otherwise, set it to the default value of 1.0 for all worlds
         else:
             _interval = np.ones(num_worlds, dtype=np.float32)
