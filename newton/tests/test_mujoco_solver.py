@@ -11919,6 +11919,100 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     mixing design.
     """
 
+    @staticmethod
+    def _build_tendon_limit_model(mass=1.0, worlds=1):
+        """Build independent sliders with an authored native tendon limit."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(f"""<mujoco><option gravity="0 0 0"/>
+          <worldbody><body name="slider">
+            <joint name="slide" type="slide" axis="1 0 0" limited="false"/>
+            <geom type="sphere" size="0.05" mass="{mass}" contype="0" conaffinity="0"/>
+          </body></worldbody>
+          <tendon><fixed name="limit" limited="true" range="-0.1 0.1"
+            solreflimit="-100 -20" solimplimit="0.95 0.95 0.001 0.5 2">
+            <joint joint="slide" coef="1"/>
+          </fixed></tendon>
+        </mujoco>""")
+        builder = newton.ModelBuilder()
+        builder.replicate(template, worlds)
+        return builder.finalize()
+
+    def test_tendon_limit_force_gains_preserve_compliance(self):
+        """Preserve static stiffness after mass edits and support zero gains and native restoration."""
+        for use_cpu, mass in itertools.product((False, True), (1.0, 10.0)):
+            with self.subTest(use_cpu=use_cpu, mass=mass):
+                model = self._build_tendon_limit_model(mass)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+                attrs = model.mujoco
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
+                attrs.tendon_limit_ke.fill_(100.0)
+                attrs.tendon_limit_kd.fill_(20.0)
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+
+                def step_at_equilibrium(model=model, solver=solver):
+                    """Apply 3 N at 3 cm penetration, the equilibrium for 100 N/m."""
+                    state_in, state_out = model.state(), model.state()
+                    state_in.joint_q.fill_(0.13)
+                    state_in.joint_qd.zero_()
+                    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+                    control = model.control()
+                    control.joint_f.fill_(3.0)
+                    solver.step(state_in, state_out, control, None, 0.001)
+                    return state_out.joint_qd.numpy()[0]
+
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+                model.body_mass.assign(model.body_mass.numpy() * 2.0)
+                model.body_inertia.assign(model.body_inertia.numpy() * 2.0)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+
+                attrs.tendon_limit_kd.zero_()
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
+                self.assertEqual(float(solver.mj_model.tendon_solref_lim[0, 1]), 0.0)
+
+                attrs.tendon_limit_ke.zero_()
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                self.assertAlmostEqual(float(step_at_equilibrium()), 3.0 / (2.0 * mass) * 0.001, delta=1.0e-7)
+                np.testing.assert_allclose(attrs.tendon_range.numpy()[0], [-0.1, 0.1])
+
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_RAW)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
+                np.testing.assert_allclose(solver.mj_model.tendon_range[0], [-0.1, 0.1])
+
+                attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
+                solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [0.02, 1.0])
+                np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
+
+    def test_tendon_limit_force_gains_select_worlds(self):
+        """Keep native parameters in untouched worlds and update selected gains independently."""
+        model = self._build_tendon_limit_model(worlds=2)
+        self.assertFalse(hasattr(model.mujoco, "tendon_limit_gains_enabled"))
+        model.mujoco.tendon_limit_ke.fill_(100.0)
+        model.mujoco.tendon_limit_kd.fill_(20.0)
+        model.mujoco.tendon_solref_limit_mode.assign(
+            np.array([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW], dtype=np.int32)
+        )
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        initial = solver.mjw_model.tendon_solref_lim.numpy()
+        np.testing.assert_allclose(initial[1, 0], [-100.0, -20.0])
+        self.assertTrue(np.all(initial[0, 0] > 0.0))
+        self.assertGreater(float(model.mujoco.tendon_limit_ke.numpy()[1]), 0.0)
+
+        model.mujoco.tendon_limit_ke.assign(np.array([0.0, 100.0], dtype=np.float32))
+        model.mujoco.tendon_limit_kd.fill_(20.0)
+        model.mujoco.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+        solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+        updated = solver.mjw_model.tendon_solref_lim.numpy()
+        np.testing.assert_allclose(updated[1, 0], initial[0, 0])
+        ranges = solver.mjw_model.tendon_range.numpy()
+        self.assertTrue(np.isneginf(ranges[0, 0, 0]))
+        self.assertTrue(np.isposinf(ranges[0, 0, 1]))
+        np.testing.assert_allclose(ranges[1, 0], [-0.1, 0.1])
+
     def _build_pendulum_model(
         self,
         mass: float,

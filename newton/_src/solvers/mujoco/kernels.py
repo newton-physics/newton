@@ -2731,6 +2731,58 @@ def update_jnt_solref_from_invweight0_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def update_tendon_limit_gains_kernel(
+    tendon_mapping: wp.array2d[wp.int32],
+    solref_mode: wp.array[wp.int32],
+    limit_ke: wp.array[float],
+    limit_kd: wp.array[float],
+    authored_solref: wp.array[wp.vec2],
+    authored_range: wp.array[wp.vec2],
+    invweight0: wp.array2d[float],
+    solimp: wp.array2d[vec5],
+    solref: wp.array2d[wp.vec2],
+    tendon_range: wp.array2d[wp.vec2],
+):
+    """Convert tendon force gains after MuJoCo recomputes inverse inertia."""
+    world, tendon = wp.tid()
+    source = tendon_mapping[world, tendon]
+    if source < 0:
+        return
+
+    factor = invweight0[world, tendon] * (1.0 - solimp[world, tendon][1])
+    tendon_range[world, tendon] = authored_range[source]
+    solref[world, tendon] = authored_solref[source]
+    mode = solref_mode[source]
+    if mode == SOLREF_MODE_MJCF_DEFAULT:
+        solref[world, tendon] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
+    if mode != SOLREF_MODE_FORCE_SPACE:
+        # Report physical gains for readback/randomization without changing native dynamics.
+        raw = solref[world, tendon]
+        stiffness = wp.max(-raw[0], 0.0)
+        damping = wp.max(-raw[1], 0.0)
+        if raw[0] > 0.0 and raw[1] > 0.0:
+            stiffness = 1.0 / (raw[0] * raw[0] * raw[1] * raw[1])
+            damping = 2.0 / raw[0]
+        if factor > 0.0:
+            limit_ke[source] = stiffness / factor
+            limit_kd[source] = damping / factor
+        return
+    ke = limit_ke[source]
+    if ke == 0.0:
+        # Removing the row also removes its acceleration-dependent constraint force.
+        tendon_range[world, tendon] = wp.vec2(-wp.inf, wp.inf)
+        return
+
+    stiffness = ke * factor
+    damping = limit_kd[source] * factor
+    if damping > 0.0:
+        solref[world, tendon] = convert_solref(stiffness, damping, 1.0, 1.0)
+    else:
+        # The direct convention represents an undamped spring without a default fallback.
+        solref[world, tendon] = wp.vec2(-stiffness, 0.0)
+
+
+@wp.kernel(enable_backward=False)
 def create_inverse_shape_mapping_kernel(
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     # output

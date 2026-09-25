@@ -498,6 +498,30 @@ on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
 
+For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
+[N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
+with ``tendon_solref_limit_mode = 0``, then notify
+:attr:`~newton.ModelFlags.TENDON_PROPERTIES`. For angular tendon coordinates,
+the corresponding units are [N m/rad] and [N m s/rad]. The solver converts
+these gains to ``solreflimit`` using tendon inverse inertia and impedance,
+and refreshes the conversion after inertia changes, as it does for joint limits.
+MuJoCo impedance and timestep clamping still affect transient response.
+
+``tendon_solref_limit_mode`` follows the joint-limit authoring convention:
+0 selects Newton force gains, 1 preserves authored MuJoCo parameters, and 2
+uses MuJoCo's implicit default. Tendons default to mode 1 and report their
+equivalent force gains after solver initialization. In force-space mode,
+zero stiffness disables the limit without changing the authored ``tendon_range``.
+Limit damping is independent of passive ``tendon_damping``. Tendon limits must
+already be enabled in the imported model.
+
+.. code-block:: python
+
+    model.mujoco.tendon_limit_ke.fill_(100.0)
+    model.mujoco.tendon_limit_kd.fill_(20.0)
+    model.mujoco.tendon_solref_limit_mode.zero_()  # Newton force-space mode
+    solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
+
 
 .. _mujoco-collision-pipeline:
 
