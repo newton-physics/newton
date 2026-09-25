@@ -179,8 +179,8 @@ class Contacts:
         particle_count: int = 0,
         tri_count: int = 0,
         edge_count: int = 0,
-        soft_self_contact_vertex_buffer_pre_alloc: int = 16,
-        soft_self_contact_edge_buffer_pre_alloc: int = 32,
+        soft_self_contact_vertex_buffer_pre_alloc: int = 8,
+        soft_self_contact_edge_buffer_pre_alloc: int = 16,
         soft_self_contact_record_triangle_vertices: bool = False,
     ):
         """
@@ -224,10 +224,13 @@ class Contacts:
                 ``soft_self_contact=True``.
             tri_count: Number of mesh triangles; used only when ``soft_self_contact=True``.
             edge_count: Number of mesh edges; used only when ``soft_self_contact=True``.
-            soft_self_contact_vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
-            soft_self_contact_edge_buffer_pre_alloc: Per-edge collision buffer capacity;
-                pairs beyond it are silently dropped during detection.
+            soft_self_contact_vertex_buffer_pre_alloc: Sizes the global
+                vertex-triangle contact buffer shared by all vertices:
+                capacity = this value x ``particle_count``; excess pairs are
+                dropped and flagged.
+            soft_self_contact_edge_buffer_pre_alloc: Sizes the global edge-edge
+                contact buffer shared by all edges: capacity = this value x
+                ``edge_count``; excess pairs are dropped and flagged.
             soft_self_contact_record_triangle_vertices: Also record per-triangle
                 contacting vertices.
 

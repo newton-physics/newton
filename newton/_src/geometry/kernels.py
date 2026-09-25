@@ -1279,10 +1279,24 @@ TRI_CONTACT_FEATURE_EDGE_BC = wp.constant(5)
 TRI_CONTACT_FEATURE_FACE_INTERIOR = wp.constant(6)
 
 # constants used to access TriMeshCollisionDetector.resize_flags
-VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(0)
-TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(1)
-EDGE_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(2)
+# (self-contact overflow moved to TriMeshCollisionInfo.global_pair_counts; resize_flags
+# now only serves the on-demand triangle-triangle intersection buffers)
 TRI_TRI_COLLISION_BUFFER_OVERFLOW_INDEX = wp.constant(3)
+
+# slots of TriMeshCollisionInfo.global_pair_counts: the shared pair-array cursors written
+# by the detection kernels and the overflow flags read back by
+# check_self_contact_overflow. Each family's (cursor, flag) pair is contiguous
+# so one slice memset clears a family independently of the other.
+VT_PAIR_CURSOR = wp.constant(0)
+VT_PAIR_OVERFLOW = wp.constant(1)
+EE_PAIR_CURSOR = wp.constant(2)
+EE_PAIR_OVERFLOW = wp.constant(3)
+
+# saturation bound for the demand cursors: reservation stops once a family's
+# demand reaches this value, so the int32 cursor can never wrap (it stays
+# bounded by the constant plus the threads in flight past the read) and the
+# demand readback is exact below it
+DEMAND_CURSOR_SATURATION = wp.constant(1 << 30)
 
 
 @wp.func
@@ -1390,24 +1404,6 @@ def vertex_adjacent_to_triangle(v: wp.int32, a: wp.int32, b: wp.int32, c: wp.int
 
 
 @wp.kernel
-def init_triangle_collision_data_kernel(
-    query_radius: float,
-    # outputs
-    triangle_colliding_vertices_count: wp.array[wp.int32],
-    triangle_colliding_vertices_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
-):
-    tri_index = wp.tid()
-
-    triangle_colliding_vertices_count[tri_index] = 0
-    triangle_colliding_vertices_min_dist[tri_index] = query_radius
-
-    if tri_index == 0:
-        for i in range(4):
-            resize_flags[i] = 0
-
-
-@wp.kernel
 def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
@@ -1417,68 +1413,81 @@ def vertex_triangle_collision_detection_kernel(
     tri_indices: wp.array2d[wp.int32],
     particle_world: wp.array[wp.int32],
     world_count: wp.int32,
-    vertex_colliding_triangles_offsets: wp.array[wp.int32],
-    vertex_colliding_triangles_buffer_sizes: wp.array[wp.int32],
-    triangle_colliding_vertices_offsets: wp.array[wp.int32],
-    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
     vertex_triangle_filtering_list: wp.array[wp.int32],
     vertex_triangle_filtering_list_offsets: wp.array[wp.int32],
     min_distance_filtering_ref_pos: wp.array[wp.vec3],
+    vt_pair_capacity: wp.int32,
     # outputs
-    vertex_colliding_triangles: wp.array[wp.int32],
+    vt_pairs: wp.array[wp.vec2i],
+    global_pair_counts: wp.array[wp.int32],
+    vertex_list_heads: wp.array[wp.int32],
+    vertex_list_next: wp.array[wp.int32],
     vertex_colliding_triangles_count: wp.array[wp.int32],
     vertex_colliding_triangles_min_dist: wp.array[float],
-    triangle_colliding_vertices: wp.array[wp.int32],
+    triangle_list_heads: wp.array[wp.int32],
+    triangle_list_next: wp.array[wp.int32],
     triangle_colliding_vertices_count: wp.array[wp.int32],
     triangle_colliding_vertices_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
 ):
-    """
-    This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
-    record the collision data. This collision detector works both ways, i.e., it records vertices' colliding triangles to
-    `vertex_colliding_triangles`, and records each triangles colliding vertices to `triangle_colliding_vertices`.
+    """Discrete vertex-triangle collision detection into the shared pair scratch.
 
-    This function assumes that all the vertices are on triangles, and can be indexed from the pos argument.
-
-    Note:
-
-        The collision data buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
-        may not be enough. If the space is not enough to record all the collision information, the function will set a
-        certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
-        and vertex_colliding_triangles_count.
+    One thread per vertex walks the triangle BVH and appends every hit as a
+    ``(vertex, triangle)`` record to ``vt_pairs`` through the shared cursor
+    ``global_pair_counts[VT_PAIR_CURSOR]``, linking each stored record into the vertex's
+    list. The thread is its own list's only writer, so the chain head lives in
+    a register; push-front linking means the chain reads in reverse traversal
+    order (the row fill restores forward order). Hits found beyond
+    ``vt_pair_capacity`` are still counted by the cursor (total demand for the
+    overflow report) but not stored or linked, and
+    ``global_pair_counts[VT_PAIR_OVERFLOW]`` is set so the host can warn and grow the
+    array. The demand count saturates at ``DEMAND_CURSOR_SATURATION``, so the
+    cursor cannot wrap.
 
     Args:
-        bvh_id: the bvh id you want to collide with
         max_query_radius: the upper bound of collision distance.
-        min_query_radius: the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
-        pos: positions of all the vertices that make up triangles
-        vertex_colliding_triangles_offsets: where each vertex' collision buffer starts
-        vertex_colliding_triangles_buffer_sizes: size of each vertex' collision buffer, will be modified if resizing is needed
-        vertex_colliding_triangles_min_dist: each vertex' min distance to all (non-neighbor) triangles
-        triangle_colliding_vertices_offsets: where each triangle's collision buffer starts
-        triangle_colliding_vertices_buffer_sizes: size of each triangle's collision buffer, will be modified if resizing is needed
-        min_distance_filtering_ref_pos: the position that minimal collision distance evaluation uses.
-        vertex_colliding_triangles: flattened buffer of vertices' collision triangles
-        vertex_colliding_triangles_count: number of triangles each vertex collides with
-        triangle_colliding_vertices: positions of all the triangles' collision vertices, every two elements
-            records the vertex index and a triangle index it collides to
-        triangle_colliding_vertices_count: number of triangles each vertex collides with
-        triangle_colliding_vertices_min_dist: each triangle's min distance to all (non-self) vertices
-        resized_flag: size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+        min_query_radius: the lower bound of collision distance, evaluated on
+            min_distance_filtering_ref_pos.
+        bvh_id: the triangle BVH to query.
+        bvh_group_roots: per-world BVH subtree roots for grouped traversal.
+        pos: positions of all the vertices that make up the triangles.
+        tri_indices: vertex index buffer for each triangle.
+        particle_world: world index of each particle.
+        world_count: number of worlds in the model.
+        vertex_triangle_filtering_list: vertex-triangle exclusions (flat list).
+        vertex_triangle_filtering_list_offsets: offsets into the exclusion list.
+        min_distance_filtering_ref_pos: positions used for the minimum-distance
+            filtering.
+        vt_pair_capacity: capacity of ``vt_pairs``.
+        vt_pairs: shared (vertex, triangle) pair scratch array.
+        global_pair_counts: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        vertex_list_heads: per-vertex head slot of the linked record list (-1 = empty).
+        vertex_list_next: per-record next slot in the owning vertex's list.
+        vertex_colliding_triangles_count: per-vertex count of records actually
+            stored and linked (the exact CSR row length).
+        vertex_colliding_triangles_min_dist: each vertex's min distance to all
+            non-filtered triangles (including detected hits dropped on overflow).
+        triangle_list_heads: optional (may be empty): per-triangle reverse list
+            heads. Many vertex threads push onto one triangle's list, so the
+            push is a lock-free atomic exchange and the list order is
+            scheduling-dependent.
+        triangle_list_next: optional: next slots of the triangle-keyed lists.
+        triangle_colliding_vertices_count: optional: per-triangle stored count,
+            accumulated with atomics.
+        triangle_colliding_vertices_min_dist: optional (may be empty): per-triangle
+            min distance to all colliding vertices, updated with atomic_min.
     """
 
     v_index = wp.tid()
     v = pos[v_index]
-    vertex_buffer_offset = vertex_colliding_triangles_offsets[v_index]
-    vertex_buffer_size = vertex_colliding_triangles_offsets[v_index + 1] - vertex_buffer_offset
 
     lower = wp.vec3(v[0] - max_query_radius, v[1] - max_query_radius, v[2] - max_query_radius)
     upper = wp.vec3(v[0] + max_query_radius, v[1] + max_query_radius, v[2] + max_query_radius)
 
     tri_index = wp.int32(0)
-    vertex_num_collisions = wp.int32(0)
     min_dis_to_tris = max_query_radius
     vertex_world = particle_world[v_index]
+    list_head = int(-1)
+    stored_count = wp.int32(0)
 
     # Only collide a vertex with triangles in its own world or in the global
     # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
@@ -1552,29 +1561,32 @@ def vertex_triangle_collision_detection_kernel(
                         continue
 
                 if dist < max_query_radius:
-                    # record v-f collision to vertex
+                    # record the (vertex, triangle) pair to the shared array and
+                    # link it into this vertex's single-writer list
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
-                    if vertex_num_collisions < vertex_buffer_size:
-                        vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions)] = v_index
-                        vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions) + 1] = tri_index
-                    else:
-                        resize_flags[VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
-
-                    vertex_num_collisions = vertex_num_collisions + 1
-
-                    if triangle_colliding_vertices:
-                        wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
-                        tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
-                        tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
-
-                        if tri_num_collisions < tri_buffer_size:
-                            tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
-                            # record v-f collision to triangle
-                            triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
+                    # the plain read saturates the demand cursor so it can
+                    # never wrap int32 on pathological demand (>2^30 pairs)
+                    if global_pair_counts[VT_PAIR_CURSOR] < DEMAND_CURSOR_SATURATION:
+                        slot = wp.atomic_add(global_pair_counts, VT_PAIR_CURSOR, 1)
+                        if slot < vt_pair_capacity:
+                            vt_pairs[slot] = wp.vec2i(v_index, tri_index)
+                            vertex_list_next[slot] = list_head
+                            list_head = slot
+                            stored_count = stored_count + 1
+                            if triangle_list_heads:
+                                # triangle-keyed reverse list: many writers, lock-free push-front
+                                triangle_list_next[slot] = wp.atomic_exch(triangle_list_heads, tri_index, slot)
+                                wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
                         else:
-                            resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+                            global_pair_counts[VT_PAIR_OVERFLOW] = 1
+                    else:
+                        global_pair_counts[VT_PAIR_OVERFLOW] = 1
 
-    vertex_colliding_triangles_count[v_index] = vertex_num_collisions
+                    if triangle_colliding_vertices_min_dist:
+                        wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
+
+    vertex_list_heads[v_index] = list_head
+    vertex_colliding_triangles_count[v_index] = stored_count
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
 
 
@@ -1588,34 +1600,55 @@ def edge_colliding_edges_detection_kernel(
     edge_indices: wp.array2d[wp.int32],
     particle_world: wp.array[wp.int32],
     world_count: wp.int32,
-    edge_colliding_edges_offsets: wp.array[wp.int32],
-    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
     edge_filtering_list: wp.array[wp.int32],
     edge_filtering_list_offsets: wp.array[wp.int32],
     min_distance_filtering_ref_pos: wp.array[wp.vec3],
+    ee_pair_capacity: wp.int32,
     # outputs
-    edge_colliding_edges: wp.array[wp.int32],
+    ee_pairs: wp.array[wp.vec2i],
+    global_pair_counts: wp.array[wp.int32],
+    edge_list_heads: wp.array[wp.int32],
+    edge_list_next: wp.array[wp.int32],
     edge_colliding_edges_count: wp.array[wp.int32],
     edge_colliding_edges_min_dist: wp.array[float],
-    resize_flags: wp.array[wp.int32],
 ):
-    """
-    bvh_id: the bvh id you want to do collision detection on
-    max_query_radius: the upper bound of collision distance.
-    min_query_radius: the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
-    pos: positions of all the vertices that make up edges
-    edge_indices: vertex index buffer for each edge
-    edge_colliding_edges_offsets: where each edge's collision buffer starts
-    edge_colliding_edges_buffer_sizes: size of each edge's collision buffer, will be modified if resizing is needed
-    edge_edge_parallel_epsilon: threshold for treating edge directions as parallel
-    edge_filtering_list: edge indices to exclude from collision checks
-    edge_filtering_list_offsets: offsets into the edge filtering list
-    min_distance_filtering_ref_pos: reference positions used for minimum-distance filtering
-    edge_colliding_edges: flattened buffer of colliding edge indices
-    edge_colliding_edges_count: number of edges each edge collides
-    edge_colliding_edges_min_dist: each edge's minimum distance to all non-filtered edges
-    resize_flags: global collision resize flags; this kernel sets the edge-buffer overflow entry
+    """Discrete edge-edge collision detection into the shared pair array.
+
+    One thread per edge walks the edge BVH, appends every hit as an
+    ``(edge, colliding_edge)`` record to ``ee_pairs`` through the shared cursor
+    ``global_pair_counts[EE_PAIR_CURSOR]``, and links each stored record into the edge's
+    single-writer list (chain head in a register; push-front, so the chain
+    reads in reverse traversal order and the row fill restores forward order).
+    Pairs are recorded from both edges' threads, so each edge's row lists the
+    collisions from its own perspective. Hits found beyond ``ee_pair_capacity`` are still
+    counted by the cursor (total demand for the overflow report) but not stored
+    or linked, and ``global_pair_counts[EE_PAIR_OVERFLOW]`` is set. The demand
+    count saturates at ``DEMAND_CURSOR_SATURATION``, so the cursor cannot wrap.
+
+    Args:
+        max_query_radius: the upper bound of collision distance.
+        min_query_radius: the lower bound of collision distance, evaluated on
+            min_distance_filtering_ref_pos.
+        bvh_id: the edge BVH to query.
+        bvh_group_roots: per-world BVH subtree roots for grouped traversal.
+        pos: positions of all the vertices that make up the edges.
+        edge_indices: vertex index buffer for each edge.
+        particle_world: world index of each particle.
+        world_count: number of worlds in the model.
+        edge_edge_parallel_epsilon: threshold for treating edge directions as parallel.
+        edge_filtering_list: edge indices to exclude from collision checks.
+        edge_filtering_list_offsets: offsets into the edge filtering list.
+        min_distance_filtering_ref_pos: positions used for minimum-distance filtering.
+        ee_pair_capacity: capacity of ``ee_pairs``.
+        ee_pairs: shared (edge, colliding_edge) pair scratch array.
+        global_pair_counts: pair cursors/overflow flags, indexed by the ``*_PAIR_*`` constants.
+        edge_list_heads: per-edge head slot of the linked record list (-1 = empty).
+        edge_list_next: per-record next slot in the owning edge's list.
+        edge_colliding_edges_count: per-edge count of records actually stored and
+            linked (the exact CSR row length).
+        edge_colliding_edges_min_dist: each edge's min distance to all non-filtered
+            edges (including detected hits dropped on overflow).
     """
     e_index = wp.tid()
 
@@ -1625,6 +1658,9 @@ def edge_colliding_edges_detection_kernel(
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
 
+    list_head = int(-1)
+    stored_count = wp.int32(0)
+
     lower = wp.min(e0_v0_pos, e0_v1_pos)
     upper = wp.max(e0_v0_pos, e0_v1_pos)
 
@@ -1632,7 +1668,6 @@ def edge_colliding_edges_detection_kernel(
     upper = wp.vec3(upper[0] + max_query_radius, upper[1] + max_query_radius, upper[2] + max_query_radius)
 
     colliding_edge_index = wp.int32(0)
-    edge_num_collisions = wp.int32(0)
     min_dis_to_edges = max_query_radius
     edge_world = particle_world[e0_v0]
 
@@ -1704,21 +1739,148 @@ def edge_colliding_edges_detection_kernel(
                         continue
 
                 if dist < max_query_radius:
-                    edge_buffer_offset = edge_colliding_edges_offsets[e_index]
-                    edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
-
-                    # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
+                    # record e-e collision from e0's side (e1 records its own
+                    # direction) and link it into e0's single-writer list
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-                    if edge_num_collisions < edge_buffer_size:
-                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions)] = e_index
-                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions) + 1] = colliding_edge_index
+                    # the plain read saturates the demand cursor so it can
+                    # never wrap int32 on pathological demand (>2^30 pairs)
+                    if global_pair_counts[EE_PAIR_CURSOR] < DEMAND_CURSOR_SATURATION:
+                        slot = wp.atomic_add(global_pair_counts, EE_PAIR_CURSOR, 1)
+                        if slot < ee_pair_capacity:
+                            ee_pairs[slot] = wp.vec2i(e_index, colliding_edge_index)
+                            edge_list_next[slot] = list_head
+                            list_head = slot
+                            stored_count = stored_count + 1
+                        else:
+                            global_pair_counts[EE_PAIR_OVERFLOW] = 1
                     else:
-                        resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+                        global_pair_counts[EE_PAIR_OVERFLOW] = 1
 
-                    edge_num_collisions = edge_num_collisions + 1
-
-    edge_colliding_edges_count[e_index] = edge_num_collisions
+    edge_list_heads[e_index] = list_head
+    edge_colliding_edges_count[e_index] = stored_count
     edge_colliding_edges_min_dist[e_index] = min_dis_to_edges
+
+
+@wp.kernel
+def finalize_row_offsets(
+    row_counts: wp.array[wp.int32],
+    # outputs
+    row_offsets: wp.array[wp.int32],
+):
+    """Write the final entry of the exclusive-scan offsets (offsets has n+1 entries;
+    the scan fills [0, n); this appends the total)."""
+    n = row_counts.shape[0]
+    if n == 0:
+        row_offsets[0] = 0
+    else:
+        row_offsets[n] = row_offsets[n - 1] + row_counts[n - 1]
+
+
+@wp.kernel
+def fill_self_contact_rows_from_lists(
+    pairs: wp.array[wp.vec2i],
+    list_heads: wp.array[wp.int32],
+    list_next: wp.array[wp.int32],
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Walk each element's linked record list and write its CSR row content.
+
+    Rows store interleaved (element, counterpart) index pairs, exact length
+    per element. The chain holds the records
+    in reverse traversal order (push-front), so the row is written back to
+    front, which restores the forward BVH-traversal order. Single writer per
+    row, no atomics: absent overflow, row contents and order are deterministic
+    (under overflow, which records won a slot is an inter-thread race; each
+    row still stores a prefix of its traversal order).
+    """
+    element = wp.tid()
+    end = row_offsets[element + 1]
+    start = row_offsets[element]
+    cursor = list_heads[element]
+    j = end - start
+    while cursor >= 0:
+        j -= 1
+        pair = pairs[cursor]
+        row_values[2 * (start + j)] = pair[0]
+        row_values[2 * (start + j) + 1] = pair[1]
+        cursor = list_next[cursor]
+
+
+@wp.kernel
+def fill_self_contact_reverse_rows_from_lists(
+    pairs: wp.array[wp.vec2i],
+    list_heads: wp.array[wp.int32],
+    list_next: wp.array[wp.int32],
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Triangle-side variant of the row fill: each row entry stores one
+    contacting vertex index (``pair[0]``). These chains have many writers
+    (``atomic_exch`` push-front), so row order is scheduling-dependent."""
+    element = wp.tid()
+    end = row_offsets[element + 1]
+    start = row_offsets[element]
+    cursor = list_heads[element]
+    j = end - start
+    while cursor >= 0:
+        j -= 1
+        row_values[start + j] = pairs[cursor][0]
+        cursor = list_next[cursor]
+
+
+@wp.kernel
+def sort_self_contact_rows(
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Sort each element's interleaved row by counterpart index, in place.
+
+    One thread per element runs an insertion sort over its own row (rows are
+    short: the average budget per element). Counterparts are unique within a
+    row, so the sorted order is canonical for a given contact set --
+    independent of BVH traversal order and of scheduling.
+    """
+    element = wp.tid()
+    start = row_offsets[element]
+    end = row_offsets[element + 1]
+    i = start + 1
+    while i < end:
+        own = row_values[2 * i]
+        counterpart = row_values[2 * i + 1]
+        j = i - 1
+        while j >= start and row_values[2 * j + 1] > counterpart:
+            row_values[2 * (j + 1)] = row_values[2 * j]
+            row_values[2 * (j + 1) + 1] = row_values[2 * j + 1]
+            j -= 1
+        row_values[2 * (j + 1)] = own
+        row_values[2 * (j + 1) + 1] = counterpart
+        i += 1
+
+
+@wp.kernel
+def sort_self_contact_reverse_rows(
+    row_offsets: wp.array[wp.int32],
+    # outputs
+    row_values: wp.array[wp.int32],
+):
+    """Triangle-side variant of the row sort: single-int entries (contacting
+    vertex indices), insertion-sorted ascending in place."""
+    element = wp.tid()
+    start = row_offsets[element]
+    end = row_offsets[element + 1]
+    i = start + 1
+    while i < end:
+        value = row_values[i]
+        j = i - 1
+        while j >= start and row_values[j] > value:
+            row_values[j + 1] = row_values[j]
+            j -= 1
+        row_values[j + 1] = value
+        i += 1
 
 
 @wp.kernel

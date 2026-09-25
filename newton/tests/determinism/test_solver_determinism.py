@@ -379,6 +379,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
                     self.assertEqual(options["deterministic_max_records"], 0)
 
     def test_vbd_resets_inherited_module_options(self):
+        """Verify SolverVBD construction resets inherited deterministic module options."""
         with wp.ScopedDevice("cpu"):
             model = _build_soft_body("cpu")
             newton.solvers.SolverVBD(
@@ -391,10 +392,10 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             )
             options = wp.get_module_options(module=particle_vbd_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
-            records_per_buffer = (64 + particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE - 1) // (
-                particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE
-            )
-            self.assertEqual(options["deterministic_max_records"], 8 * records_per_buffer)
+            # The shared self-contact pair arrays have no per-element record
+            # bound, so the solver no longer derives a deterministic-atomics
+            # record budget from the contact buffer sizes.
+            self.assertEqual(options["deterministic_max_records"], 0)
 
             wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
             newton.solvers.SolverVBD(
@@ -407,6 +408,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             self.assertEqual(options["deterministic_max_records"], 0)
 
     def test_vbd_coupling_hook_reapplies_deterministic_options(self):
+        """Verify the coupling hook reapplies the solver's deterministic options."""
         with wp.ScopedDevice("cpu"):
             model = _build_soft_body("cpu")
             deterministic_solver = newton.solvers.SolverVBD(
@@ -430,11 +432,8 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             )
 
             options = wp.get_module_options(module=vbd_coupling_kernels)
-            records_per_buffer = (64 + particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE - 1) // (
-                particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE
-            )
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
-            self.assertEqual(options["deterministic_max_records"], 5 * records_per_buffer)
+            self.assertEqual(options["deterministic_max_records"], 0)
 
 
 devices = get_cuda_test_devices(mode="basic")
