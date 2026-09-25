@@ -230,6 +230,22 @@ def _scatter_bilateral_solution(
     solution_lambdas[problem_vio[wid] + row] = bilateral_P[bvio + row] * bilateral_solution[bvio + row]
 
 
+@wp.func_native(
+    """
+#if defined(__CUDA_ARCH__)
+    float r = value;
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        r = fmaxf(r, __shfl_xor_sync(0xffffffffu, r, offset, 32));
+    return r;
+#else
+    return value;
+#endif
+    """
+)
+def _warp_max_32(value: float32) -> float32: ...
+
+
 @wp.kernel
 def _compute_dvi_status_residuals(
     # Inputs:
@@ -252,8 +268,12 @@ def _compute_dvi_status_residuals(
     solution_lambdas: wp.array[float32],
     # Outputs:
     solver_status: wp.array[DVIStatus],
+    workers_per_world: int32,
 ):
-    wid = wp.tid()
+    """Compute terminal maxima with one thread or one 32-thread warp per world."""
+    tid = wp.tid()
+    wid = tid / workers_per_world
+    lane = tid % workers_per_world
 
     ncts = problem_dim[wid]
     vio = problem_vio[wid]
@@ -280,14 +300,14 @@ def _compute_dvi_status_residuals(
     r_c = float32(0.0)
 
     # Bilateral rows require v_aug = 0.
-    for jid in range(njc):
+    for jid in range(lane, njc, workers_per_world):
         v_j = state_v_aug[vio + jid]
         r_b = wp.max(r_b, wp.abs(v_j))
 
     # Bounded-multiplier rows require lambda in the box `[lower, upper]` and directional
     # complementarity with the face selected by the sign of v_aug. There is no dual
     # condition, since v_aug is free to take either sign on a box row.
-    for bid in range(nbc):
+    for bid in range(lane, nbc, workers_per_world):
         bcio_v = vio + bcgo + bid
         lambda_b = solution_lambdas[bcio_v]
         v_b = state_v_aug[bcio_v]
@@ -297,7 +317,7 @@ def _compute_dvi_status_residuals(
         r_c = wp.max(r_c, wp.abs(compute_box_complementarity_residual(lambda_b, v_b, lower, upper)))
 
     # Limits require lambda and v_aug in R+ with lambda * v_aug = 0.
-    for lid in range(nl):
+    for lid in range(lane, nl, workers_per_world):
         lcio = vio + lcgo + lid
         lambda_l = solution_lambdas[lcio]
         v_l = state_v_aug[lcio]
@@ -306,7 +326,7 @@ def _compute_dvi_status_residuals(
         r_c = wp.max(r_c, wp.abs(lambda_l * v_l))
 
     # Contacts require lambda in K_mu, v_aug in its dual cone, and orthogonality.
-    for cid in range(nc):
+    for cid in range(lane, nc, workers_per_world):
         ccio = vio + ccgo + 3 * cid
         mu_c = problem_mu[cio + cid]
         lambda_c = vec3f(solution_lambdas[ccio], solution_lambdas[ccio + 1], solution_lambdas[ccio + 2])
@@ -316,6 +336,14 @@ def _compute_dvi_status_residuals(
         r_p = wp.max(r_p, wp.max(wp.abs(lambda_c - lambda_proj)))
         r_d = wp.max(r_d, wp.max(wp.abs(v_c - v_proj)))
         r_c = wp.max(r_c, wp.abs(wp.dot(lambda_c, v_c)))
+
+    if workers_per_world == int32(32):
+        r_b = _warp_max_32(r_b)
+        r_p = _warp_max_32(r_p)
+        r_d = _warp_max_32(r_d)
+        r_c = _warp_max_32(r_c)
+    if lane != int32(0):
+        return
 
     # Thus r_p and r_d are infinity-norm box- and cone-projection distances, while r_c
     # is the maximum absolute impulse-velocity product.
@@ -542,10 +570,75 @@ def _find_bilateral_factor_row_start(
     if row >= n:
         return
     first = int32(0)
-    offset = mio[wid] + row * n
-    while first < row and factor[offset + first] == float32(0.0):
+    offset = mio[wid]
+    while first < row and factor[offset + n * row + first] == float32(0.0):
         first += int32(1)
     row_start[vio[wid] + row] = first / int32(16) * int32(16)
+
+
+@wp.kernel
+def _find_bilateral_factor_row_start_rcm(
+    njc: wp.array[int32],
+    mio: wp.array[int32],
+    vio: wp.array[int32],
+    factor: wp.array[float32],
+    row_start: wp.array[int32],
+    tpo: wp.array[int32],
+    pattern: wp.array[int32],
+    block_size: int32,
+):
+    """Use the filled RCM tile mask to accelerate the exact leading-zero scan."""
+    wid, row = wp.tid()
+    n = njc[wid]
+    if row >= n:
+        return
+    tiles = (n + block_size - 1) // block_size
+    tile_offset = tpo[wid] + (row // block_size) * tiles
+    offset = mio[wid]
+    first = int32(0)
+    for tile in range((row + block_size - 1) // block_size):
+        end = wp.min(row, (tile + 1) * block_size)
+        if pattern[tile_offset + tile] == 0:
+            # Factorization clears skipped tiles, including when sparsity shrinks.
+            first = end
+        else:
+            # Marked tiles can contain numerical zeros: preserve the exact prefix.
+            while first < end and factor[offset + n * row + first] == float32(0.0):
+                first += 1
+            if first < end:
+                break
+    # Preserve the dense scan's 16-lane response reduction alignment.
+    row_start[vio[wid] + row] = first // 16 * 16
+
+
+@wp.kernel
+def _solve_bilateral_unilateral_response_compact(
+    problem_dim: wp.array[int32],
+    problem_njc: wp.array[int32],
+    bilateral_mio: wp.array[int32],
+    bilateral_vio: wp.array[int32],
+    bilateral_P: wp.array[float32],
+    bilateral_L: wp.array[float32],
+    bilateral_permutation: wp.array[int32],
+    response_mio: wp.array[int32],
+    response_stride: wp.array[int32],
+    coupling: wp.array[float32],
+    response: wp.array[float32],
+    factor_row_start: wp.array[int32],
+):
+    """Whiten permuted response columns independently for large compact batches."""
+    wid, unilateral = wp.tid()
+    njc = problem_njc[wid]
+    nu = problem_dim[wid] - njc
+    if unilateral >= nu or not _compact_schur_fits(njc, nu, response_stride[wid]):
+        return
+    offset = response_mio[wid]
+    for row in range(njc):
+        original_row = bilateral_permutation[bilateral_vio[wid] + row]
+        value = bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
+        for k in range(factor_row_start[bilateral_vio[wid] + row], row):
+            value -= bilateral_L[bilateral_mio[wid] + njc * row + k] * response[offset + k * nu + unilateral]
+        response[offset + row * nu + unilateral] = value / bilateral_L[bilateral_mio[wid] + njc * row + row]
 
 
 @wp.kernel
@@ -567,10 +660,11 @@ def _solve_bilateral_unilateral_response_cooperative(
     tasks_per_world: int32,
     use_forward_schur: bool,
     factor_row_start: wp.array[int32],
+    skip_compact: bool,
 ):
     """Solve response columns, or whiten them for compact Schur construction."""
-    # The whitening workspace and compact-path response are unilateral-major;
-    # the fallback response uses original_row * unilateral_stride + unilateral.
+    # Keep whitening scratch unilateral-major, but output row-major for coalesced Gram loads.
+    # The fallback response uses original_row * unilateral_stride + unilateral.
     tid = wp.tid()
     lane = tid % int32(32)
     task = tid / int32(32)
@@ -583,6 +677,11 @@ def _solve_bilateral_unilateral_response_cooperative(
     bvio = bilateral_vio[wid]
     offset = response_mio[wid]
     unilateral_stride = response_stride[wid]
+    compact_fits = use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride)
+    if skip_compact and compact_fits:
+        return
+    # Compact worlds store the coupling densely (see the coupling assembly kernel).
+    coupling_stride = wp.where(compact_fits, nu, unilateral_stride)
     first_pair = (first_unilateral + int32(1)) / int32(2)
     pair_count = (nu + int32(1)) / int32(2)
     for unilateral_pair in range(first_pair + task_in_world, pair_count, tasks_per_world):
@@ -594,7 +693,7 @@ def _solve_bilateral_unilateral_response_cooperative(
                 original_row = row
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
-                if coupling[offset + original_row * unilateral_stride + unilateral] != float32(0.0):
+                if coupling[offset + original_row * coupling_stride + unilateral] != float32(0.0):
                     first_row = wp.min(first_row, row)
         # Both response columns share warp barriers, so use their common prefix.
         first_row = _warp_min_32(first_row)
@@ -613,7 +712,7 @@ def _solve_bilateral_unilateral_response_cooperative(
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
                 value = (
-                    bilateral_P[bvio + original_row] * coupling[offset + original_row * unilateral_stride + unilateral]
+                    bilateral_P[bvio + original_row] * coupling[offset + original_row * coupling_stride + unilateral]
                 )
                 response_factor[offset + unilateral * njc + row] = (value - total) / bilateral_L[
                     factor + njc * row + row
@@ -642,7 +741,7 @@ def _solve_bilateral_unilateral_response_cooperative(
                 if use_permutation:
                     original_row = bilateral_permutation[bvio + row]
                 if use_forward_schur and _compact_schur_fits(njc, nu, unilateral_stride):
-                    response[offset + unilateral * njc + row] = response_factor[offset + unilateral * njc + row]
+                    response[offset + row * nu + unilateral] = response_factor[offset + unilateral * njc + row]
                 else:
                     response[offset + original_row * unilateral_stride + unilateral] = (
                         bilateral_P[bvio + original_row] * response_factor[offset + unilateral * njc + row]

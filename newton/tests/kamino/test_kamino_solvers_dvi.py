@@ -41,6 +41,7 @@ from newton._src.solvers.kamino._src.solvers.dvi.projections import (
 from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
     _SPARSE_DELASSUS_ROWS_JOINTS,
     _SPARSE_DELASSUS_ROWS_UNILATERAL,
+    _can_reuse_sparse_assembly,
     _can_use_cooperative_articulation,
     _sparse_delassus_matvec_rows,
 )
@@ -423,6 +424,16 @@ class TestDVISolver(unittest.TestCase):
         path.use_schur_complement = False
         self.assertFalse(_can_use_cooperative_articulation(path))
 
+    def test_00_sparse_assembly_reuse_requires_large_constrained_batch(self):
+        """Avoid cached sparse assembly where it regresses ordinary DVI solves."""
+        size = SimpleNamespace(num_worlds=2047, sum_of_num_friction_joint_cts=2047)
+        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
+        size.num_worlds = 2048
+        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
+        size.sum_of_num_friction_joint_cts = 0
+        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
+        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
+
     def test_00_config_selection(self):
         """Verify default, dense, PADMM, and explicit DVI configuration selection."""
         default_config = SolverKamino.Config(dynamics_solver="dvi")
@@ -515,6 +526,20 @@ class TestDVISolver(unittest.TestCase):
             kamino=SimpleNamespace(max_solver_iterations=wp.array([37], dtype=wp.int32, device=self.device))
         )
         self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
+
+    def test_00_schur_ignores_bilateral_solve_interval(self):
+        """Do not fall back to bilateral alternation after Schur elimination."""
+        configs = [
+            kamino_config.DVISolverConfig(max_alternating_iterations=4, bilateral_solve_interval=interval)
+            for interval in (1, 2)
+        ]
+        solver = SimpleNamespace(_use_schur_complement=True, _max_alternating_iterations=4)
+
+        schedule = DVISolver._make_bilateral_solve_schedule(solver, configs)
+
+        self.assertEqual(schedule, (False, False, False))
+        solver._use_schur_complement = False
+        self.assertEqual(DVISolver._make_bilateral_solve_schedule(solver, configs), (True, True, True))
 
     def test_00a_dvi_contact_capacity_uses_geometry_heuristic(self):
         """Limit DVI contact allocation while honoring explicit overrides."""
@@ -4120,8 +4145,8 @@ class TestDVISolver(unittest.TestCase):
 
         self.assertAlmostEqual(slips[0], slips[1], delta=1.0e-6)
 
-    def test_compact_schur_reference_padded_stride(self):
-        """Pack reference Schur output independently of padded input strides."""
+    def test_compact_schur_reference_uses_padded_stride(self):
+        """Store reference Schur output with the padded response stride."""
         njc, nu, stride, offset = 3, 2, 4, 3
         coupling = np.arange(1, njc * nu + 1, dtype=np.float32).reshape(njc, nu)
         lower = np.diag(np.array([1.0, 2.0, 3.0], dtype=np.float32))
@@ -4136,9 +4161,10 @@ class TestDVISolver(unittest.TestCase):
         padded_coupling[offset : offset + njc * stride] = np.pad(coupling, ((0, 0), (0, stride - nu))).ravel()
         for use_forward_schur in (False, True):
             with self.subTest(use_forward_schur=use_forward_schur):
+                coupling_input = np.full(capacity, np.nan, dtype=np.float32) if use_forward_schur else padded_coupling
                 response = np.zeros(capacity, dtype=np.float32)
                 if use_forward_schur:
-                    response[offset : offset + njc * nu] = white.T.ravel()
+                    response[offset : offset + njc * nu] = white.ravel()
                 else:
                     response[offset : offset + njc * stride] = np.pad(full, ((0, 0), (0, stride - nu))).ravel()
                 schur = wp.full(capacity, -123.0, dtype=wp.float32, device=self.device)
@@ -4152,7 +4178,7 @@ class TestDVISolver(unittest.TestCase):
                         i32([0]),
                         i32([offset]),
                         i32([stride]),
-                        wp.array(padded_coupling, dtype=wp.float32, device=self.device),
+                        wp.array(coupling_input, dtype=wp.float32, device=self.device),
                         wp.array(response, dtype=wp.float32, device=self.device),
                         schur,
                         correction,
@@ -4163,7 +4189,8 @@ class TestDVISolver(unittest.TestCase):
                     device=self.device,
                 )
                 expected = np.full(capacity, -123.0, dtype=np.float32)
-                expected[offset : offset + nu * nu] = (coupling.T @ full).T.ravel()
+                expected_schur = expected[offset : offset + nu * stride].reshape(nu, stride)
+                expected_schur[:, :nu] = (coupling.T @ full).T
                 np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-6, rtol=1.0e-6)
                 np.testing.assert_array_equal(correction.numpy(), [99.0] * njc + [0.0] * nu)
 
@@ -4176,7 +4203,7 @@ class TestDVISolver(unittest.TestCase):
             return wp.array(values, dtype=wp.int32, device=self.device)
 
         white = np.arange(6, dtype=np.float32).reshape(3, 2) * 0.1
-        response = wp.array(np.pad(white.ravel(), (0, 14)), dtype=wp.float32, device=self.device)
+        response = wp.array(np.pad(white.T.copy().ravel(), (0, 14)), dtype=wp.float32, device=self.device)
         schur = wp.full(20, -123.0, dtype=wp.float32, device=self.device)
         correction = wp.full(11, 99.0, dtype=wp.float32, device=self.device)
         wp.launch(
@@ -4191,6 +4218,8 @@ class TestDVISolver(unittest.TestCase):
                 response,
                 schur,
                 correction,
+                16,
+                0,
             ],
             block_dim=128,
             device=self.device,
@@ -4237,7 +4266,11 @@ class TestDVISolver(unittest.TestCase):
             factors.extend(lower.ravel())
             scaling.extend(scale)
             permutations.extend(permutation)
-            couplings.extend(np.pad(coupling, ((0, 0), (0, stride - nu))).ravel())
+            if nu * nu <= n * stride:
+                # Compact worlds store the coupling densely with row stride nu.
+                couplings.extend(np.pad(coupling.ravel(), (0, n * (stride - nu))))
+            else:
+                couplings.extend(np.pad(coupling, ((0, 0), (0, stride - nu))).ravel())
 
         def i32(values):
             return wp.array(values, dtype=wp.int32, device=self.device)
@@ -4285,6 +4318,7 @@ class TestDVISolver(unittest.TestCase):
                 18,
                 True,
                 row_start,
+                False,
             ],
             block_dim=128,
             device=self.device,
@@ -4328,6 +4362,8 @@ class TestDVISolver(unittest.TestCase):
                 response,
                 workspace,
                 wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
+                16,
+                0,
             ],
             block_dim=128,
             device=self.device,
@@ -4339,7 +4375,7 @@ class TestDVISolver(unittest.TestCase):
             white, schur, full = reference
             if nu * nu <= n * stride:
                 np.testing.assert_allclose(
-                    actual_response[offset : offset + n * nu].reshape(nu, n).T, white, atol=2.0e-6, rtol=2.0e-6
+                    actual_response[offset : offset + n * nu].reshape(n, nu), white, atol=2.0e-6, rtol=2.0e-6
                 )
                 if nu <= n:
                     np.testing.assert_allclose(
