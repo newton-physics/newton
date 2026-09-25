@@ -3348,6 +3348,15 @@ class ModelBuilder:
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
+            if not translations_only:
+                for world_index, xform in enumerate(xforms):
+                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
+                        continue
+                    start = world_index * counts["particle"]
+                    rotation = np.asarray(wp.quat_to_matrix(xform.q)).reshape(3, 3)
+                    particle_q[start : start + counts["particle"]] = (
+                        particle_q[start : start + counts["particle"]] @ rotation.T
+                    )
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
@@ -3390,6 +3399,7 @@ class ModelBuilder:
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+        free_roots = []
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -3533,6 +3543,52 @@ class ModelBuilder:
                 extend_referenced(attr, destination, source, self._builder_frequency_key(spec.references))
             else:
                 destination.extend(source * world_count)
+
+        import newton  # noqa: PLC0415
+
+        for world_index, xform in enumerate(xforms):
+            if xform is None:
+                continue
+            has_rotation = not np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION)
+            if has_rotation:
+                rotation = np.asarray(wp.quat_to_matrix(xform.q)).reshape(3, 3)
+                # Both components of a body twist are world-frame, COM-referenced vectors.
+                for attr, kind in (("particle_qd", "particle"), ("body_qd", "body")):
+                    if not counts[kind]:
+                        continue
+                    destination = getattr(self, attr)
+                    start = int(starts(kind)[world_index])
+                    values = np.asarray(destination[start : start + counts[kind]])
+                    rotated = (values.reshape(-1, 3) @ rotation.T).reshape(values.shape)
+                    destination[start : start + counts[kind]] = rotated.tolist()
+
+            for joint in free_roots:
+                source_q = builder.joint_q_start[joint]
+                source_qd = builder.joint_qd_start[joint]
+                target_q = int(joint_coord_starts[world_index]) + source_q
+                target_qd = int(joint_dof_starts[world_index]) + source_qd
+                X_pj = wp.transform(*builder.joint_X_p[joint])
+                xform_local = transform_mul(transform_mul(wp.transform_inverse(X_pj), xform), X_pj)
+
+                # FREE roots retain their parent anchor, so targets follow joint_q's frame change.
+                target_pos = wp.vec3(*builder.joint_target_q[source_q : source_q + 3])
+                self.joint_target_q[target_q : target_q + 3] = list(wp.transform_point(xform_local, target_pos))
+                if has_rotation:
+                    target_angles = builder.joint_target_q[source_q + 3 : source_q + 6]
+                    target_rot = (
+                        wp.quat(*builder.joint_target_q[source_q + 3 : source_q + 7])
+                        if newton.use_coord_layout_targets
+                        else wp.quat_from_euler(wp.vec3(*target_angles), 2, 1, 0)
+                    )
+                    target_rot = xform_local.q * target_rot
+                    if newton.use_coord_layout_targets:
+                        self.joint_target_q[target_q + 3 : target_q + 7] = list(target_rot)
+                    else:
+                        self.joint_target_q[target_q + 3 : target_q + 6] = list(wp.quat_to_euler(target_rot, 2, 1, 0))
+                    local_rotation = np.asarray(wp.quat_to_matrix(xform_local.q)).reshape(3, 3)
+                    for attr in ("joint_qd", "joint_target_qd"):
+                        values = np.asarray(getattr(builder, attr)[source_qd : source_qd + 6]).reshape(2, 3)
+                        getattr(self, attr)[target_qd : target_qd + 6] = (values @ local_rotation.T).ravel().tolist()
 
         self.joint_dof_count += world_count * counts["joint_dof"]
         self.joint_coord_count += world_count * counts["joint_coord"]
@@ -4988,7 +5044,9 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional offset transform applied to root bodies.
+            xform: Optional offset transform applied to body poses and particle positions.
+                Rotates world-space velocities and transforms free-root joint state and
+                pose/velocity targets in the joint parent frame.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
