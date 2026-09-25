@@ -185,6 +185,8 @@ def apply_subgrid_impulse(
     u_i = wp.tid()
     block_beg = tr_collider_mat_offsets[u_i]
     block_end = tr_collider_mat_offsets[u_i + 1]
+    if block_beg == block_end:
+        return
 
     delta_f = wp.vec3(0.0)
     for b in range(block_beg, block_end):
