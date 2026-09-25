@@ -68,7 +68,7 @@ def _rigid_solver_entry_args(
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled:
+    if not enabled or not wp.is_conditional_graph_supported():
         return None
 
     with wp.ScopedDevice(model.device):
