@@ -298,6 +298,8 @@ class _UsdJointProperties:
                 velocity_limit *= self.degrees_to_radian
             if initial_position is not None:
                 initial_position *= self.degrees_to_radian
+            if initial_velocity is not None:
+                initial_velocity *= self.degrees_to_radian
 
         return _DofParams(
             armature=armature,

@@ -481,10 +481,10 @@ def parse_joint(
                     print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = vel  # D6 velocities are already in correct units
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} ({'deg/s' if is_rot else 'm/s'})")
 
     return joint_index
 

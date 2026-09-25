@@ -793,6 +793,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate that joint positions and velocities are correctly initialized during
         model building. Tests revolute joint state initialization with degree-to-radian
         conversion and confirms expected values match the authored USD content.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -847,6 +848,7 @@ class TestSchemaResolver(unittest.TestCase):
                 actual_vel = joint_qd[qd_start]
 
                 expected_pos_deg, expected_vel = expected_joint_values[joint_label]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 self.assertAlmostEqual(
@@ -875,6 +877,7 @@ class TestSchemaResolver(unittest.TestCase):
         to validate D6 joint state initialization. Tests multi-DOF joint handling, per-axis
         state initialization, and validates both D6 joints (multiple rotational DOFs) and
         revolute joints (single DOF) are correctly initialized from authored Newton attributes.
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -935,6 +938,7 @@ class TestSchemaResolver(unittest.TestCase):
                 # Validate each DOF against expected values
                 for dof_idx in range(min(dof_count, len(expected_values))):
                     expected_pos_deg, expected_vel = expected_values[dof_idx]
+                    expected_vel = math.radians(expected_vel)
                     expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                     actual_pos = joint_q[q_start + dof_idx]
@@ -965,6 +969,7 @@ class TestSchemaResolver(unittest.TestCase):
             joint_type = joint_types[i]
             if joint_type == 1 and i in expected_revolute_joints:  # JointType.REVOLUTE
                 expected_pos_deg, expected_vel = expected_revolute_joints[i]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 q_start = int(joint_q_start[i])
@@ -996,6 +1001,8 @@ class TestSchemaResolver(unittest.TestCase):
         1. DOF indices correctly map to the actual DOF axes that were added
         2. Missing initial values don't cause index shifts for subsequent axes
         3. Only axes that were actually added as DOFs are processed
+
+        Angular joint-state positions and velocities are authored in degrees and degrees per second.
         """
         test_dir = Path(__file__).parent
         assets_dir = test_dir / "assets"
@@ -1087,6 +1094,7 @@ class TestSchemaResolver(unittest.TestCase):
             # Validate each DOF maps to the correct expected value
             for dof_idx in range(dof_count):
                 expected_pos_deg, expected_vel = expected_values[dof_idx]
+                expected_vel = math.radians(expected_vel)
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 actual_pos = joint_q[q_start + dof_idx]

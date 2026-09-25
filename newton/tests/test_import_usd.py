@@ -2890,6 +2890,69 @@ class TestImportUsdPhysics(unittest.TestCase):
                 assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_joint_state_velocity_units(self):
+        """PhysX joint-state angular velocities are authored in deg/s and imported in rad/s."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def connect(joint, body_name):
+            # Each joint attaches its own body to the world.
+            body = UsdGeom.Xform.Define(stage, f"/World/{body_name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(1.0)
+            joint.CreateBody1Rel().SetTargets([body.GetPath()])
+            return joint.GetPrim()
+
+        def set_state(prim, axis, position, velocity):
+            for quantity, value in (("position", position), ("velocity", velocity)):
+                prim.CreateAttribute(f"state:{axis}:physics:{quantity}", Sdf.ValueTypeNames.Float).Set(value)
+
+        revolute = UsdPhysics.RevoluteJoint.Define(stage, "/World/Revolute")
+        revolute.CreateAxisAttr().Set(UsdPhysics.Tokens.z)
+        set_state(connect(revolute, "Hinge"), "angular", 90.0, 180.0)
+
+        prismatic = UsdPhysics.PrismaticJoint.Define(stage, "/World/Prismatic")
+        prismatic.CreateAxisAttr().Set(UsdPhysics.Tokens.x)
+        set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
+
+        d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
+        # Newton creates D6 DOFs only for axes with a limit; rotX is the single rotational DOF.
+        limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
+        limit.CreateLowAttr().Set(-180.0)
+        limit.CreateHighAttr().Set(180.0)
+        set_state(d6, "rotX", 90.0, 180.0)
+
+        # Two world joints on one body are merged into a single D6 (linear DOFs first).
+        merged_slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/MergedSlide")
+        merged_slide.CreateAxisAttr().Set(UsdPhysics.Tokens.x)
+        set_state(connect(merged_slide, "Merged"), "linear", 0.25, 0.5)
+        merged_hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/MergedHinge")
+        merged_hinge.CreateAxisAttr().Set(UsdPhysics.Tokens.z)
+        merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
+        set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
+        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+        for path, position, velocity in (
+            ("/World/Revolute", 0.5 * np.pi, np.pi),
+            ("/World/Prismatic", 0.25, 0.5),
+            ("/World/D6", 0.5 * np.pi, np.pi),
+        ):
+            with self.subTest(joint=path):
+                joint = result["path_joint_map"][path]
+                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint]], position, places=5)
+                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint]], velocity, places=5)
+
+        merged = result["path_joint_map"]["/World/MergedHinge"]
+        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+        qd_start = builder.joint_qd_start[merged]
+        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
