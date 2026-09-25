@@ -31,7 +31,7 @@ current viewer session, or a persistent artifact:
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
       - Real-time display
-      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
+      - ovrtx, ovstage, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Persistent state-snapshot recording and visual playback
       - ``.json`` or ``.bin`` file
@@ -320,8 +320,9 @@ RTX Viewer
 ~~~~~~~~~~
 
 :class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
-It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
-presenting the result in a pyglet/OpenGL window.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the renderer's runtime
+scene interface, presenting the result in a pyglet/OpenGL window. ViewerRTX selects the legacy OVRTX attribute
+interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 and newer.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
@@ -334,13 +335,35 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
 
+.. note::
+    The first image can take a while to appear while OVRTX loads and compiles RTX shaders.
+    A blank window during this startup work does not necessarily indicate a rendering failure;
+    wait for shader compilation to finish before diagnosing the viewer.
+
 **Installation**: Requires the ``rtx`` dependency group:
 
 .. code-block:: bash
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
+``usd-core``, in addition to ``pyglet`` for the window.
+
+ViewerRTX has been validated with the following renderer configurations:
+
+- ``ovrtx==0.3.0.312915`` (local compatibility testing)
+- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
+
+OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
+Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
+group and therefore does not exercise the OVRTX 0.3 integration.
+
+.. warning::
+    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
+    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
+    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
+    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
+    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
 
