@@ -251,7 +251,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * ``UsdPhysicsCollisionGroup`` membership is **not** applied to deformables; deformable
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
-* Every imported deformable can be found by prim path in the import results (see below).
+* Every imported deformable can be found by prim path in the import results and,
+  after ``finalize()``, through the selection view (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -332,10 +333,45 @@ Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
 ``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
 ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
-ranges. Without the flag the return shape carries no deformable entries.
-The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses``
-values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
-marked ``legacy_implicit_type``.
+ranges. Without the flag the return shape carries no deformable entries. The corresponding
+``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses`` values with their
+resolved element type under ``simulation``; a legacy untyped mass entry is also marked
+``legacy_implicit_type``.
+
+On the finalized
+:class:`~newton.Model`, select deformable objects by label pattern with
+:class:`~newton.selection.DeformableCurveView`,
+:class:`~newton.selection.DeformableSurfaceView`, or
+:class:`~newton.selection.DeformableVolumeView` (following
+:class:`~newton.selection.ArticulationView`). Each view batches its family's state on one flat
+deformable object axis as ``(count, elements_per_deformable_object)`` arrays. The class supplies the family
+filter, so a broad pattern still selects only that family.
+``deformable_object_ranges()`` returns selected deformable-object ranges by world, including empty worlds.
+``deformable_object_boundaries`` stores the same ranges as a device-side boundaries array, and
+``world_ids`` identifies the world of every deformable object. Setters use ``deformable_object_indices`` to select flat
+destination rows and optional ``source_indices`` to select rows from the supplied values. When
+exactly one deformable object matches in each world, the flat deformable object indices coincide with model world IDs.
+Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
+zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
+first call and can be replayed in a CUDA graph. The view also exposes raw per-deformable-object ranges
+(``ranges(kind)``) for deformables with different element counts
+and for consumers that need slices of the flat model arrays. The ranges stay valid through
+:meth:`~newton.ModelBuilder.finalize`,
+:meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
+one deformable object per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
+survive (its ranges follow their new indices). Deformable labels do not change which fixed
+joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
+deformable object record is omitted with a warning; pass the relevant joint through
+``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
+See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
+
+Before finalization, :class:`~newton.ModelBuilder` exposes the label and world of every recorded
+deformable through ``curve_label`` / ``curve_world``, ``surface_label`` / ``surface_world``, and
+``volume_label`` / ``volume_world``. Applications may change existing entries when composing or
+cloning a builder, for example to replace a template label with an application asset path. Keep
+each label list the same length as its corresponding world list. The simulation ranges remain
+private builder details; use the family-specific selection views to access them after
+finalization.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -380,9 +416,14 @@ ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 .. code-block:: python
 
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Look up an imported cable by prim path:
+    # Build-time lookup by prim path (attach joints, pin particles):
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Post-finalize selection by label pattern:
+    cable = newton.selection.DeformableCurveView(model, "/World/Cable")
+    ((body_start, body_end),) = cable.ranges("body")
+    # With one matching cable per world, flat deformable object indices equal model world IDs.
+    cable.set_body_velocities(state, reset_velocities, deformable_object_indices=environment_ids)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,

@@ -125,6 +125,22 @@ class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
         return self._pairs_array
 
 
+@dataclass(frozen=True)
+class _DeformableObjectRecord:
+    """Identity and simulation ranges for one finalized deformable object.
+
+    Private backing data for the public deformable selection views. Applications
+    use those views to address deformables, so this representation can change freely.
+    ``ranges`` maps an element kind to its ``[start, end)`` index range.
+    """
+
+    id: int
+    family: str
+    label: str
+    world: int
+    ranges: dict[str, tuple[int, int]]
+
+
 class Model:
     """
     Represents the static (non-time-varying) definition of a simulation model in Newton.
@@ -1130,6 +1146,11 @@ class Model:
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
+
+        # Each curve, surface, or volume has a world-tagged deformable object record
+        # with [start, end) simulation ranges. Keep the records private
+        # so their layout can evolve without changing the family-specific views.
+        self._deformable_objects: tuple[_DeformableObjectRecord, ...] = ()
 
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
