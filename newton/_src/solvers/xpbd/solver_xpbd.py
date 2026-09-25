@@ -2,17 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from typing import ClassVar
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, integrate_bodies
 from . import kernels, restitution_kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,
+    add_joint_armature_inertia,
     apply_body_delta_velocities,
     apply_body_deltas,
     apply_joint_forces,
@@ -20,11 +23,14 @@ from .kernels import (
     apply_particle_shape_restitution,
     bending_constraint,
     compute_joint_angle_references,
+    compute_joint_drive_warmstart,
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
+    invert_body_inertia,
     solve_body_contact_positions,
     solve_body_joints,
+    solve_joint_drive_rows,
     solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
@@ -98,8 +104,10 @@ class SolverXPBD(SolverBase, CouplingInterface):
           Joint limits are enforced as hard positional constraints (``joint_limit_ke``/``joint_limit_kd`` are not used).
           The angle of a joint with one rotational DOF is measured within pi of the middle of its limit range (of its
           position target if unlimited), so limit ranges may extend beyond +-pi as long as they are narrower than 2 pi.
-        - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
-          :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
+        - :attr:`~newton.Model.joint_effort_limit` bounds the drive force (``joint_drive_mode`` ``"pd"`` or
+          ``"implicit"``); :attr:`~newton.Model.joint_armature` enters as added child-body inertia when
+          ``joint_armature_inertia`` is ``"isotropic"`` or ``"axis"``.
+        - :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
           Equality constraints and the deprecated sparse mimic constraints are not supported.
@@ -120,6 +128,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     """
 
+    _DRIVE_MODES: ClassVar[dict[str, int]] = {"compliance": 0, "implicit": 1, "pd": 2}
+
     def __init__(
         self,
         model: Model,
@@ -136,6 +146,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
         joint_legacy_relaxation: bool = False,
+        joint_drive_mode: str = "compliance",
+        joint_drive_relaxation: float = 1.0,
+        joint_armature_inertia: str = "none",
         enable_restitution: bool = False,
         deterministic: wp.DeterministicMode | None = None,
     ):
@@ -172,6 +185,29 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 each body's COM by ``joint_angular_relaxation``. With unequal factors that applies an inconsistent
                 impulse (a pendulum responds 1.36x to a joint torque and 0.78x to gravity at the former 0.7/0.4
                 defaults). Defaults to ``False``.
+            joint_drive_mode: How position/velocity drives (:attr:`~newton.Model.joint_target_ke`,
+                :attr:`~newton.Model.joint_target_kd`) are solved. Defaults to ``"compliance"``: compliance rows
+                (compliance ``1 / ke``, damping ``kd / ke``, no multiplier accumulation), whose effective stiffness
+                grows with the iteration count and which ignore :attr:`~newton.Model.joint_effort_limit`.
+                ``"pd"``: ``ke`` [N/m or N·m/rad] and ``kd`` are the stiffness and damping at any iteration count,
+                and the drive force is clamped at the effort limit. The spring ``ke * (target_pos - q)`` of the state
+                at the start of the step (exact static equilibria) is split between a joint force applied before the
+                solve (a fraction ``1 / ((1 + kd * dt * w) * (1 + x^2))``, ``x = ke * dt^2 * w``, ``w`` the inverse
+                inertia or mass of the two bodies along the axis) and a backward-Euler damper row
+                ``kd * (target_vel - qd)``, solved on the velocity after the joint's other rows, that carries the
+                rest. Light, heavily damped links then follow the damper instead of receiving an explicit velocity
+                kick, and very light links stay stable. ``"implicit"``: implicit (backward-Euler) PD rows with an
+                impulse accumulated over the iterations, warm-started with the spring; exact when the iterations
+                converge. Under ``"pd"`` and ``"implicit"``, D6 joints with several rotational DOFs keep compliance
+                rows for those DOFs.
+            joint_drive_relaxation: Relaxation factor of the drive rows (the damper of ``"pd"``, the PD rows of
+                ``"implicit"``) [dimensionless]; a row is exact for its own DOF in one step at 1.0. Defaults to 1.0.
+            joint_armature_inertia: How :attr:`~newton.Model.joint_armature` of rotational DOFs enters the dynamics:
+                ``"none"`` (default: ignored, as before; models that already add their armature to the body inertia
+                keep working), ``"isotropic"`` (``armature * I3`` added to the child body's inertia; always a valid
+                inertia; recommended with ``joint_drive_mode="pd"`` and stiff drives on light links) or ``"axis"`` (``armature * a a^T`` about the joint axis; may violate
+                the triangle inequality of the inertia). Maximal coordinates cannot represent a rotor exactly; both
+                are approximations that are exact about the axis when the parent is fixed.
             enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -198,6 +234,39 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self.joint_linear_compliance = joint_linear_compliance
         self.joint_angular_compliance = joint_angular_compliance
         self.joint_legacy_relaxation = joint_legacy_relaxation
+        if joint_drive_mode not in self._DRIVE_MODES:
+            raise ValueError(f"joint_drive_mode must be one of {tuple(self._DRIVE_MODES)}, not {joint_drive_mode!r}")
+        self.joint_drive_mode = joint_drive_mode
+        self.joint_drive_relaxation = joint_drive_relaxation
+        if joint_armature_inertia not in ("none", "isotropic", "axis"):
+            raise ValueError(
+                f"joint_armature_inertia must be 'none', 'isotropic' or 'axis', not {joint_armature_inertia!r}"
+            )
+        self.joint_armature_inertia = joint_armature_inertia
+        self._body_inertia = model.body_inertia
+        self._body_inv_inertia = model.body_inv_inertia
+        if joint_armature_inertia != "none" and model.body_count:
+            self._body_inertia = wp.empty_like(model.body_inertia)
+            self._body_inv_inertia = wp.empty_like(model.body_inv_inertia)
+        self._joint_drive_impulse = None
+        self._joint_pending_p = None
+        self._joint_pending_c = None
+        self._drive_joints = None
+        self._drive_joint_count = 0
+        self._joint_drive_base = None
+        self._joint_drive_offset = None
+        self._joint_drive_force = None
+        self._joint_drive_hinge = None
+        if model.joint_count:
+            with wp.ScopedDevice(model.device):
+                self._joint_drive_impulse = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
+                self._joint_pending_p = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
+                self._joint_pending_c = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
+                self._joint_drive_base = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
+                self._joint_drive_offset = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
+                self._joint_drive_force = wp.zeros(model.joint_dof_count, dtype=float)
+                self._joint_drive_hinge = wp.zeros(model.joint_count, dtype=wp.vec4)
+            self._refresh_drive_joints()
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         if rigid_contact_restitution_iterations < 1:
@@ -259,8 +328,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
         """Refresh cached body data after model properties change.
 
         Effective inverse masses and inertia tensors are refreshed for body-property changes, the angle references
-        of joints with one rotational DOF for joint and joint-DOF property changes (limits, axes, joint frames), and
-        the cached restitution state for shape-property changes. Other flags are ignored.
+        of joints with one rotational DOF (and, with ``joint_armature_inertia``, the armature added to the body
+        inertia) for joint and joint-DOF property changes (limits, axes, joint frames), and the cached restitution
+        state for shape-property changes. Other flags are ignored.
 
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
@@ -272,8 +342,28 @@ class SolverXPBD(SolverBase, CouplingInterface):
             self._refresh_kinematic_state()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._refresh_joint_references()
+            self._refresh_drive_joints()
+            if self.joint_armature_inertia != "none":
+                self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
+
+    def _refresh_drive_joints(self):
+        """Joints the drive kernels run over: revolute, prismatic and D6 joints with a linear DOF or a single rotational
+        DOF (the kernels skip joints without gains, so gains may change at any time)."""
+        model = self.model
+        if not model.joint_count:
+            return
+        dof_dim = model.joint_dof_dim.numpy()
+        jtype = model.joint_type.numpy()
+        ids = [
+            j
+            for j in range(model.joint_count)
+            if jtype[j] in (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6)
+            and int(dof_dim[j, 0]) + (1 if int(dof_dim[j, 1]) == 1 else 0) > 0
+        ]
+        self._drive_joint_count = len(ids)
+        self._drive_joints = wp.array(np.array(ids or [0], dtype=np.int32), dtype=int, device=model.device)
 
     def _refresh_joint_references(self):
         """Angle references of the joints with one rotational DOF, from their limits and child joint frames."""
@@ -294,6 +384,66 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 outputs=[self._joint_X_c_solve, self._joint_ref_err],
                 device=model.device,
             )
+
+    def _refresh_kinematic_state(self):
+        super()._refresh_kinematic_state()
+        model = self.model
+        if getattr(self, "joint_armature_inertia", "none") == "none" or not model.body_count:
+            return
+        wp.copy(self._body_inertia, model.body_inertia)
+        if model.joint_count:
+            wp.launch(
+                kernel=add_joint_armature_inertia,
+                dim=model.joint_count,
+                inputs=[
+                    model.joint_type,
+                    model.joint_child,
+                    model.joint_X_c,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                    model.joint_armature,
+                    1 if self.joint_armature_inertia == "isotropic" else 0,
+                ],
+                outputs=[self._body_inertia],
+                device=model.device,
+            )
+        wp.launch(
+            kernel=invert_body_inertia,
+            dim=model.body_count,
+            inputs=[model.body_flags, model.body_inv_mass, self._body_inertia],
+            outputs=[self._body_inv_inertia, self.body_inv_inertia_effective],
+            device=model.device,
+        )
+
+    @override
+    def integrate_bodies(
+        self, model: Model, state_in: State, state_out: State, dt: float, angular_damping: float = 0.0
+    ):
+        """Integrate the rigid bodies with the solver's inertia (including joint armature when enabled)."""
+        if not model.body_count:
+            return
+        wp.launch(
+            kernel=integrate_bodies,
+            dim=model.body_count,
+            inputs=[
+                state_in.body_q,
+                state_in.body_qd,
+                state_in.body_f,
+                model.body_com,
+                model.body_mass,
+                self._body_inertia,
+                model.body_inv_mass,
+                self._body_inv_inertia,
+                model.body_flags,
+                model.body_world,
+                model.gravity,
+                angular_damping,
+                dt,
+            ],
+            outputs=[state_out.body_q, state_out.body_qd],
+            device=model.device,
+        )
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
@@ -415,7 +565,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                     body_q,
                     body_qd,
                     model.body_com,
-                    model.body_inertia,
+                    self._body_inertia,
                     self.body_inv_mass_effective,
                     self.body_inv_inertia_effective,
                     body_deltas,
@@ -596,6 +746,47 @@ class SolverXPBD(SolverBase, CouplingInterface):
                         outputs=[body_f_tmp, joint_impulse],
                         device=model.device,
                     )
+                    if self.joint_drive_mode != "compliance" and self._drive_joint_count:
+                        wp.launch(
+                            kernel=compute_joint_drive_warmstart,
+                            dim=self._drive_joint_count,
+                            inputs=[
+                                state_in.body_q,
+                                state_in.body_qd,
+                                model.body_com,
+                                self.body_inv_mass_effective,
+                                self.body_inv_inertia_effective,
+                                model.joint_type,
+                                model.joint_enabled,
+                                model.joint_parent,
+                                model.joint_child,
+                                model.joint_X_p,
+                                model.joint_X_c,
+                                model.joint_qd_start,
+                                model.joint_target_q_start,
+                                model.joint_dof_dim,
+                                model.joint_axis,
+                                model.joint_limit_lower,
+                                model.joint_limit_upper,
+                                control.joint_target_q,
+                                model.joint_target_ke,
+                                model.joint_target_kd,
+                                model.joint_effort_limit,
+                                self._DRIVE_MODES[self.joint_drive_mode],
+                                self._drive_joints,
+                                dt,
+                            ],
+                            outputs=[
+                                body_f_tmp,
+                                joint_impulse,
+                                self._joint_drive_impulse,
+                                self._joint_drive_base,
+                                self._joint_drive_offset,
+                                self._joint_drive_force,
+                                self._joint_drive_hinge,
+                            ],
+                            device=model.device,
+                        )
 
                 if body_f_tmp is state_in.body_f:
                     self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
@@ -888,12 +1079,58 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 self.joint_angular_relaxation
                                 if self.joint_legacy_relaxation
                                 else self.joint_linear_relaxation,
+                                self._DRIVE_MODES[self.joint_drive_mode] if self._drive_joint_count else 0,
                                 self._joint_ref_err,
                                 dt,
                             ],
-                            outputs=[body_deltas, joint_impulse],
+                            outputs=[body_deltas, joint_impulse, self._joint_pending_p, self._joint_pending_c],
                             device=model.device,
                         )
+                        if self.joint_drive_mode != "compliance" and self._drive_joint_count:
+                            wp.launch(
+                                kernel=solve_joint_drive_rows,
+                                dim=self._drive_joint_count,
+                                inputs=[
+                                    body_q,
+                                    body_qd,
+                                    model.body_com,
+                                    self.body_inv_mass_effective,
+                                    self.body_inv_inertia_effective,
+                                    model.joint_type,
+                                    model.joint_enabled,
+                                    model.joint_parent,
+                                    model.joint_child,
+                                    model.joint_X_p,
+                                    model.joint_X_c,
+                                    model.joint_qd_start,
+                                    model.joint_target_q_start,
+                                    model.joint_dof_dim,
+                                    model.joint_axis,
+                                    model.joint_limit_lower,
+                                    model.joint_limit_upper,
+                                    control.joint_target_q,
+                                    control.joint_target_qd,
+                                    model.joint_target_ke,
+                                    model.joint_target_kd,
+                                    model.joint_effort_limit,
+                                    self._DRIVE_MODES[self.joint_drive_mode],
+                                    self.joint_drive_relaxation,
+                                    self._joint_drive_base,
+                                    self._joint_drive_offset,
+                                    self._joint_pending_p,
+                                    self._joint_pending_c,
+                                    self._drive_joints,
+                                    dt,
+                                ],
+                                outputs=[
+                                    self._joint_drive_impulse,
+                                    body_deltas,
+                                    joint_impulse,
+                                    self._joint_drive_force,
+                                    self._joint_drive_hinge,
+                                ],
+                                device=model.device,
+                            )
 
                         if self._has_joint_mimics:
                             wp.launch(
@@ -1138,6 +1375,13 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
+
+    @property
+    def joint_drive_force(self) -> wp.array | None:
+        """Force [N] or torque [N·m] of each DOF's drive in the last :meth:`step` (``joint_drive_mode`` ``"pd"`` or
+        ``"implicit"``; zero for DOFs without a drive or outside the solver's drive list), shape
+        ``(joint_dof_count,)``. Like :attr:`~newton.Control.joint_f`, a generalized force on the DOF."""
+        return self._joint_drive_force
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
