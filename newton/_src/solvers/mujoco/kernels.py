@@ -1256,8 +1256,11 @@ def update_connect_constraint_anchors_kernel(
 @wp.kernel
 def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    joint_type: wp.array[wp.int32],
     joint_parent: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     ref_body_q: wp.array[wp.transform],
     # outputs
     q_rel_out: wp.array2d[wp.quat],
@@ -1266,12 +1269,23 @@ def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
     """Compute relative body transforms for joint-synthesized CONNECT constraints.
 
     For each MuJoCo equality constraint that maps to a Newton joint (via
-    ``mjc_eq_to_newton_jnt``), computes ``q_rel`` and ``t_rel`` from the
-    reference body poses of the joint's parent and child bodies such that::
+    ``mjc_eq_to_newton_jnt``), computes ``q_rel`` and ``t_rel`` such that::
 
         anchor2 = quat_rotate(q_rel, anchor1) + t_rel
 
-    where ``q_rel = inv(q_child) * q_parent`` and
+    **Ball (spherical) loop joints** define a pure point constraint whose two
+    anchors are the joint's own parent/child frames. ``q_rel`` / ``t_rel`` are
+    taken from ``joint_X_p`` / ``joint_X_c`` directly, so ``anchor2 == p_c`` (the
+    authored child-side anchor, ``joint_X_c.p``) regardless of whether the model
+    is assembled at the reference joint configuration. This is what lets a
+    closed-loop mechanism whose default pose does not close the loop still pin
+    each spherical closure at its authored point. (For a model that *is*
+    assembled at the reference pose, ``X_parent * X_p == X_child * X_c``, so this
+    matches the reference-pose computation exactly.)
+
+    **All other loop joints** (e.g. revolute, whose CONNECT pair also encodes the
+    hinge axis) keep deriving ``q_rel`` / ``t_rel`` from the bodies' reference
+    pose (``ref_body_q``), i.e. ``q_rel = inv(q_child) * q_parent`` and
     ``t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)``.
 
     Unmapped entries (``newton_jnt < 0``) are skipped.
@@ -1280,10 +1294,16 @@ def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
         mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
             joint index, shape ``[world_count, neq]``.
             Negative values indicate unmapped entries.
+        joint_type: Joint type per joint, shape ``[joint_count]``,
+            dtype ``wp.int32`` (see :class:`JointType`).
         joint_parent: Parent body index per joint,
             shape ``[joint_count]``, dtype ``wp.int32``.
         joint_child: Child body index per joint,
             shape ``[joint_count]``, dtype ``wp.int32``.
+        joint_X_p: Parent-body-local joint transform [m],
+            shape ``[joint_count]``, dtype ``wp.transform``.
+        joint_X_c: Child-body-local joint transform [m],
+            shape ``[joint_count]``, dtype ``wp.transform``.
         ref_body_q: Body transforms at the reference pose [m],
             shape ``[body_count]``, dtype ``wp.transform``.
         q_rel_out: *(output)* Relative rotation per ``[world, eq]``,
@@ -1294,6 +1314,20 @@ def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
     world, mjc_eq = wp.tid()
     newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
     if newton_jnt < 0:
+        return
+
+    if joint_type[newton_jnt] == JointType.BALL:
+        # Pure point constraint: anchors are the joint's own frames, so the
+        # relationship at assembly is inv(X_child) * X_parent == X_c * inv(X_p).
+        xform_p = joint_X_p[newton_jnt]
+        xform_c = joint_X_c[newton_jnt]
+        p_p = wp.transform_get_translation(xform_p)
+        q_p = wp.transform_get_rotation(xform_p)
+        p_c = wp.transform_get_translation(xform_c)
+        q_c = wp.transform_get_rotation(xform_c)
+        q_rel = q_c * wp.quat_inverse(q_p)
+        q_rel_out[world, mjc_eq] = q_rel
+        t_rel_out[world, mjc_eq] = p_c - wp.quat_rotate(q_rel, p_p)
         return
 
     body1 = joint_parent[newton_jnt]

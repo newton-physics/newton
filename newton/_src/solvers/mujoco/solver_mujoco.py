@@ -8910,12 +8910,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mjw_neq: int,
         ref_body_q: wp.array[wp.transform],
     ) -> tuple[wp.array2d[wp.quat], wp.array2d[wp.vec3]]:
-        """Compute relative body transforms for joint-synthesized CONNECT constraints at the reference pose.
+        """Compute relative body transforms for joint-synthesized CONNECT constraints.
 
         Launches
-        :func:`update_jnt_connect_constraint_rel_body_poses_at_qref_kernel`
-        to produce per-``[world, eq]`` ``(q_rel, t_rel)`` arrays from the
-        precomputed ``ref_body_q``.
+        :func:`update_jnt_connect_constraint_rel_body_poses_at_qref_kernel`.
+        Ball (spherical) loop joints derive ``(q_rel, t_rel)`` from their own
+        parent/child frames (``joint_X_p`` / ``joint_X_c``), honoring the
+        authored child anchor regardless of whether the model is assembled at
+        the reference pose; all other loop joints derive them from
+        ``ref_body_q``.
 
         Args:
             model: The Newton :class:`Model`.
@@ -8941,8 +8944,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=(world_count, mjw_neq),
             inputs=[
                 mjc_eq_to_newton_jnt,
+                model.joint_type,
                 model.joint_parent,
                 model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
                 ref_body_q,
             ],
             outputs=[
