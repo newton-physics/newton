@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from ...core.types import vec5
+from ...core.types import MAXVAL, vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
@@ -2246,6 +2246,7 @@ def update_jnt_properties_kernel(
     joint_stiffness: wp.array[float],
     limit_margin: wp.array[float],
     dof_ref: wp.array[wp.float32],
+    dof_limit_range: wp.array[wp.vec2],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2283,7 +2284,13 @@ def update_jnt_properties_kernel(
     ref = float(0.0)
     if dof_ref:
         ref = dof_ref[newton_dof]
-    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
+    lower = joint_limit_lower[newton_dof]
+    upper = joint_limit_upper[newton_dof]
+    jnt_range[world, mjc_jnt] = wp.vec2(lower + ref, upper + ref)
+    if dof_limit_range and lower <= -MAXVAL and upper >= MAXVAL:
+        authored_range = dof_limit_range[newton_dof]
+        if wp.isfinite(authored_range[0]) and wp.isfinite(authored_range[1]):
+            jnt_range[world, mjc_jnt] = authored_range
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)

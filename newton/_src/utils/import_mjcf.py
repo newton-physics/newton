@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..core.types import MAXVAL, Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
@@ -1939,6 +1939,8 @@ def parse_mjcf(
 
         linear_axes = []
         angular_axes = []
+        linear_disabled_ranges: dict[int, wp.vec2] = {}
+        angular_disabled_ranges: dict[int, wp.vec2] = {}
         joint_type = None
 
         freejoint_tags = body.findall("freejoint")
@@ -2022,6 +2024,19 @@ def parse_mjcf(
                 # Only convert deg->rad when an explicit range is given; the default
                 # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
                 has_range = "range" in joint_attrib
+                limited = joint_attrib.get("limited", "auto").lower()
+                if limited not in {"false", "true", "auto"}:
+                    raise ValueError(f"Invalid MJCF joint limited value: {limited!r}.")
+                range_defined = has_range and (joint_range[0] != 0.0 or joint_range[1] != 0.0)
+                if (
+                    limited == "auto"
+                    and range_defined
+                    and compiler_attribs.get("autolimits", "true").lower() == "false"
+                ):
+                    raise ValueError(
+                        f"MJCF joint '{joint_name[-1]}' has range but no explicit limited setting "
+                        'while compiler autolimits="false".'
+                    )
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
                 # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
@@ -2032,6 +2047,15 @@ def parse_mjcf(
                         joint_ref_value = np.deg2rad(joint_ref_value)
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
+
+                if limited == "false" or (limited == "auto" and has_range and not range_defined):
+                    # Generic solvers must not enforce the authored range. Keep
+                    # raw values: MuJoCo does not convert disabled angular ranges.
+                    if has_range:
+                        disabled_ranges = angular_disabled_ranges if is_angular else linear_disabled_ranges
+                        axis_index = len(angular_axes) if is_angular else len(linear_axes)
+                        disabled_ranges[axis_index] = wp.vec2(joint_range[0], joint_range[1])
+                    limit_lower, limit_upper = -MAXVAL, MAXVAL
 
                 # ``solreflimit`` is a native MuJoCo solver parameter, not a
                 # force-space gain. Preserve it through the custom attribute and
@@ -2112,6 +2136,13 @@ def parse_mjcf(
                 # Track this MJCF joint's name and DOF offset within the combined Newton joint
                 mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                 current_dof_index += 1
+
+        if linear_disabled_ranges or angular_disabled_ranges:
+            # Combined D6 joints store linear DOFs before angular DOFs,
+            # which need not match the order of joints in the MJCF body.
+            dof_custom_attributes["mujoco:dof_limit_range"] = linear_disabled_ranges | {
+                len(linear_axes) + index: value for index, value in angular_disabled_ranges.items()
+            }
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_link(
@@ -3324,6 +3355,9 @@ def parse_mjcf(
                         dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
                     lower = builder.joint_limit_lower[qd_start] + dof_ref_value
                     upper = builder.joint_limit_upper[qd_start] + dof_ref_value
+                    disabled_range = builder.custom_attributes["mujoco:dof_limit_range"].values.get(qd_start)
+                    if disabled_range is not None:
+                        lower, upper = disabled_range
                     if lower < upper:
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange
