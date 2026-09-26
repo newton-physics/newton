@@ -2233,6 +2233,41 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                 self.assertEqual(has_generic_convex_pairs, expected_has_pairs)
                 self.assertEqual(estimate, expected_estimate)
 
+    def test_explicit_pipeline_skips_per_world_pair_bound(self):
+        """Use explicit pair counts without computing an unused per-world bound."""
+        world = newton.ModelBuilder()
+        for _ in range(2):
+            world.add_shape_box(body=world.add_body())
+        builder = newton.ModelBuilder()
+        builder.add_world(world)
+        builder.add_world(world)
+        model = builder.finalize(device="cpu")
+        cases = (
+            ("cross-world pairs", [[0, 2], [0, 3], [1, 2], [1, 3]], 4),
+            ("empty pairs", [], 0),
+            ("model pairs", None, 2),
+        )
+
+        for name, pairs, expected_count in cases:
+            with (
+                self.subTest(name),
+                mock.patch(
+                    "newton._src.sim.collide._compute_per_world_shape_pairs_max",
+                    side_effect=AssertionError("explicit pairs already provide their own bound"),
+                ),
+                mock.patch("newton._src.sim.collide.NarrowPhase", wraps=NarrowPhase) as narrow_phase,
+            ):
+                shape_pairs = (
+                    wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i, device="cpu")
+                    if pairs is not None
+                    else None
+                )
+                pipeline = newton.CollisionPipeline(model, broad_phase="explicit", shape_pairs_filtered=shape_pairs)
+
+                self.assertEqual(pipeline.shape_pairs_max, expected_count)
+                self.assertEqual(pipeline.narrow_phase.max_candidate_pairs, expected_count)
+                self.assertEqual(narrow_phase.call_args.kwargs["candidate_pair_work_estimate"], expected_count)
+
     def test_explicit_generic_convex_work_estimate_vectorizes_pair_classification(self):
         """Classify explicit generic convex pairs without a Python pair loop."""
         model = self._make_model(num_worlds=1, shapes_per_world=7)
@@ -2315,6 +2350,58 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 0)
         pipeline.collide(model.state(), contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    def test_explicit_nonmesh_pairs_skip_mesh_stage_classification(self):
+        """Read explicit pairs only for generic convex classification when mesh stages are absent."""
+        for geometry in ("box", "convex", "heightfield"):
+            with self.subTest(geometry=geometry):
+                builder = newton.ModelBuilder()
+                builder.add_shape_box(body=builder.add_body())
+                if geometry == "box":
+                    builder.add_shape_box(body=builder.add_body())
+                elif geometry == "convex":
+                    builder.add_shape_convex_hull(body=builder.add_body(), mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+                else:
+                    builder.add_shape_heightfield(
+                        heightfield=newton.Heightfield(
+                            data=np.zeros((3, 3), dtype=np.float32),
+                            nrow=3,
+                            ncol=3,
+                            hx=1.0,
+                            hy=1.0,
+                            min_z=0.0,
+                            max_z=0.0,
+                        )
+                    )
+                model = builder.finalize(device="cpu")
+                shape_pairs = wp.array([[0, 1]], dtype=wp.vec2i, device="cpu")
+                with mock.patch.object(shape_pairs, "numpy", wraps=shape_pairs.numpy) as read_pairs:
+                    pipeline = newton.CollisionPipeline(model, broad_phase="explicit", shape_pairs_filtered=shape_pairs)
+
+                self.assertEqual(read_pairs.call_count, 1)
+                self.assertEqual(pipeline.narrow_phase.max_mesh_mesh_pairs, 0)
+                self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 0)
+                self.assertEqual(pipeline.narrow_phase.has_generic_convex_pairs, geometry != "heightfield")
+
+    def test_absent_texture_sdfs_skip_shape_iteration(self):
+        """Skip per-shape texture classification when no texture SDF storage exists."""
+
+        class NonIterableIndices(np.ndarray):
+            def __iter__(self):
+                raise AssertionError("absent texture SDFs need no per-shape iteration")
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(body=builder.add_body())
+        model = builder.finalize(device="cpu")
+        shape_sdf_index = model._shape_sdf_index.numpy().view(NonIterableIndices)
+        for textures in (None, []):
+            with (
+                self.subTest(textures=textures),
+                mock.patch.object(model, "_texture_sdf_coarse_textures", textures),
+                mock.patch.object(model._shape_sdf_index, "numpy", return_value=shape_sdf_index),
+            ):
+                pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+                self.assertFalse(pipeline.narrow_phase.mesh_sdf_texture_only)
 
     def test_explicit_mesh_plane_keeps_required_stage(self):
         """Keep the mesh-plane stage for explicit mesh-infinite-plane pairs."""

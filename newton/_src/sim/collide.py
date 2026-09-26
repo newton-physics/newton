@@ -1575,17 +1575,17 @@ class CollisionPipeline:
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
-                    has_texture_sdf = np.array(
-                        [
-                            sdf_idx >= 0
-                            and coarse_textures is not None
-                            and sdf_idx < len(coarse_textures)
-                            and coarse_textures[sdf_idx] is not None
-                            for sdf_idx in shape_sdf_index
-                        ],
-                        dtype=bool,
-                    )
-                    mesh_sdf_texture_only = bool(np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes]))
+                    if coarse_textures is not None and len(coarse_textures) > 0:
+                        has_texture_sdf = np.array(
+                            [
+                                sdf_idx >= 0 and sdf_idx < len(coarse_textures) and coarse_textures[sdf_idx] is not None
+                                for sdf_idx in shape_sdf_index
+                            ],
+                            dtype=bool,
+                        )
+                        mesh_sdf_texture_only = bool(
+                            np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
+                        )
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
@@ -1598,11 +1598,12 @@ class CollisionPipeline:
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
-                    explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
-                    if len(explicit_pairs) == 0:
+                    # Both stages require a mesh or planar SDF, even in heightfield scenes.
+                    if not has_meshes or self.shape_pairs_max == 0:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
+                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
                         box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
@@ -1643,9 +1644,10 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
-            candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
+            else:
+                candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             has_generic_convex_pairs, generic_convex_pair_work_estimate = _compute_generic_convex_pair_stats(
                 model,
                 broad_phase_mode=self.broad_phase_mode,
