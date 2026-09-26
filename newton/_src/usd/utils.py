@@ -319,9 +319,12 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     Returns:
         The scale as a Warp vec3.
     """
-    mat = get_transform_matrix(prim, local=local, xform_cache=xform_cache)
-    _pos, _rot, scale = wp.transform_decompose(mat)
-    scale = np.array(scale, dtype=np.float32)
+    mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
+    # USD stores basis vectors in rows. Only their lengths are needed here;
+    # constructing a Warp matrix and extracting its quaternion is unnecessary.
+    # Match transform_decompose's host-side scalar arithmetic before sqrt.
+    basis = mat[:3, :3].astype(np.float64)
+    scale = np.sqrt(np.sum(basis * basis, axis=1).astype(np.float32))
 
     authored_scale = _get_authored_scale(prim, local=local)
     if authored_scale is not None:

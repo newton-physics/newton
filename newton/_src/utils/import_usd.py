@@ -1124,6 +1124,8 @@ def parse_usd(
         incoming_xform: wp.transform | None = None,
         add_body_to_builder: bool = True,
         articulation_root_xform: wp.transform | None = None,
+        *,
+        origin: wp.transform | None = None,
     ) -> int | dict[str, Any]:
         """Parses a rigid body description.
         If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
@@ -1134,10 +1136,11 @@ def parse_usd(
         if not rigid_body_desc.rigidBodyEnabled and only_load_enabled_rigid_bodies:
             return -1
 
-        rot = rigid_body_desc.rotation
-        origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
-        if incoming_xform is not None:
-            origin = wp.mul(incoming_xform, origin)
+        if origin is None:
+            rot = rigid_body_desc.rotation
+            origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
+            if incoming_xform is not None:
+                origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
         _warn_mirrored_body_transform(prim, path, xform_cache)
 
@@ -1774,7 +1777,6 @@ def parse_usd(
 
                 if key in body_specs:
                     body_desc = body_specs[key]
-                    desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     if override_root_xform:
                         # Strip the articulation root's world-space pose and rebase at the user-specified xform.
@@ -1782,25 +1784,24 @@ def parse_usd(
                         desired_world = incoming_world_xform * body_in_root_frame
                     else:
                         desired_world = incoming_world_xform * body_world
-                    body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     art_root_for_visuals = articulation_root_xform if override_root_xform else None
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
                             body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
                             articulation_root_xform=art_root_for_visuals,
+                            origin=desired_world,
                         )
                     else:
                         # look up description and add body to builder
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
                             articulation_root_xform=art_root_for_visuals,
+                            origin=desired_world,
                         )
                         if bid >= 0:
                             art_bodies.append(bid)
@@ -1876,7 +1877,7 @@ def parse_usd(
                             # Use incoming_world_xform as the base parent-relative offset
                             parent_xform = incoming_world_xform
                             # If the USD body has a non-identity local transform, compose it with incoming_xform
-                            # Note: incoming_world_xform already includes the child's USD local transform via body_incoming_xform
+                            # Note: body_data[i]["xform"] already includes the child's USD transform.
                             # So we can use body_data[i]["xform"] directly for the intended position
                             # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
                             # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.
@@ -2302,7 +2303,7 @@ def parse_usd(
                 if verbose:
                     print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
                 body_id = path_body_map.get(body_path, -1)
-                scale = usd.get_scale(prim, local=False)
+                scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
                 collision_group = builder.default_shape_cfg.collision_group
                 collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]
