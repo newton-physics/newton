@@ -342,7 +342,7 @@ def _make_nonplanar_mujoco_mesh(
     else:
         vertices64 = np.asarray(vertices, dtype=np.float64)
         centered = vertices64 - vertices64.mean(axis=0)
-        _, singular_values, vh = np.linalg.svd(centered, full_matrices=True)
+        _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
         largest = float(singular_values[0]) if singular_values.size else 0.0
         if int(np.count_nonzero(singular_values > eps * max(largest, eps))) >= 3:
             return vertices, indices, maxhullvert
@@ -6275,7 +6275,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     else np.empty(0, dtype=np.int32)
                 )
                 all_shapes = all_shapes[all_shapes >= 0]
-                native_geometry = self._export_heterogeneous_geometry(spec, all_shapes, geom_type_mapping)
+                native_geometry = self._export_heterogeneous_geometry(
+                    spec,
+                    all_shapes,
+                    geom_type_mapping,
+                    shape_has_contacts=(
+                        (not disable_contacts)
+                        & ((shape_flags & ShapeFlags.COLLIDE_SHAPES) != 0)
+                        & (shape_collision_group != 0)
+                    ),
+                )
 
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
@@ -9753,11 +9762,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         filters = np.asarray(rows, dtype=bool).reshape((len(rows), len(geom_a)))
         return filters, world_to_filter
 
-    def _export_heterogeneous_geometry(self, spec, shapes: np.ndarray, geom_types: dict):
+    def _export_heterogeneous_geometry(
+        self, spec, shapes: np.ndarray, geom_types: dict, *, shape_has_contacts: np.ndarray
+    ):
         """Compile unique geometry once to obtain exact native collision bounds.
 
         A geometry-only spec avoids recompiling the articulation for every
         world. Its assets are also inserted into the actual solver spec.
+        ``shape_has_contacts`` is indexed by Newton shape ID and accounts for
+        collision flags, groups, and disabled native contacts.
         """
         mujoco = self._mujoco
         model = self.model
@@ -9783,6 +9796,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         geometry_ids = np.full(model.shape_count, -1, dtype=np.int32)
         geometry_cache = {}
         mesh_names = {}
+        mesh_planarity = {}
         shape_mesh_names = {}
 
         def add_asset(key, vertices, indices=None, maxhullvert=-1):
@@ -9816,12 +9830,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if asset_key not in mesh_names:
                     vertices = mesh.vertices * size
                     extent = np.ptp(vertices, axis=0)
-                    if _mujoco_mesh_vertices_are_planar(vertices, extent):
-                        raise ValueError(
-                            f"MuJoCo contact generation does not support planar mesh collider "
-                            f"{model.shape_label[shape]!r}. Use use_mujoco_contacts=False."
+                    mesh_planarity[asset_key] = _mujoco_mesh_vertices_are_planar(vertices, extent)
+                # A cached visual asset must not bypass validation for a collider.
+                if mesh_planarity[asset_key] and shape_has_contacts[shape]:
+                    raise ValueError(
+                        f"MuJoCo contact generation does not support planar mesh collider "
+                        f"{model.shape_label[shape]!r}. Use use_mujoco_contacts=False."
+                    )
+                if asset_key not in mesh_names:
+                    indices, maxhullvert = mesh.indices, mesh.maxhullvert
+                    if mesh_planarity[asset_key]:
+                        vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
+                            vertices, indices, maxhullvert, extent
                         )
-                    add_asset(asset_key, vertices, mesh.indices, mesh.maxhullvert)
+                    add_asset(asset_key, vertices, indices, maxhullvert)
                 params["meshname"] = mesh_names[asset_key]
                 shape_mesh_names[int(shape)] = mesh_names[asset_key]
             if key not in geometry_cache:
