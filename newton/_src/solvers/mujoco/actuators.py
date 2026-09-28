@@ -7,13 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import warp as wp
 
 from ...geometry import ShapeFlags
 from ...sim import ModelBuilder
-from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes
+from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes, _tristate, _vector
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 
 
@@ -26,20 +27,41 @@ class ActuatorTarget:
     resolves the target to MuJoCo's heterogeneous ``trnid`` representation.
     """
 
-    kind: str
+    class Kind(Enum):
+        """Transmission target kinds supported by :class:`ActuatorTarget`."""
+
+        JOINT = "joint"
+        """A Newton joint, optionally restricted to one local DOF."""
+
+        JOINT_DOF = "joint_dof"
+        """An absolute Newton joint-DOF index."""
+
+        TENDON = "tendon"
+        """A ``mujoco:tendon`` row."""
+
+        SITE = "site"
+        """A Newton site shape, optionally relative to a reference site."""
+
+        BODY = "body"
+        """A Newton body."""
+
+        SLIDER_CRANK = "slider_crank"
+        """The crank and slider sites of a slider-crank transmission."""
+
+    kind: ActuatorTarget.Kind
     """Transmission target kind."""
 
     index: int
     """Primary Newton entity index."""
 
     secondary_index: int = -1
-    """Optional secondary Newton entity index."""
+    """Secondary Newton entity index, or ``-1`` if unused."""
 
     dof: int | None = None
-    """Local joint DOF, when :attr:`kind` is ``"joint"``."""
+    """Local joint DOF, when :attr:`kind` is :attr:`Kind.JOINT`."""
 
     @classmethod
-    def joint(cls, joint: int, dof: int | None = None) -> ActuatorTarget:
+    def joint(cls, joint: int, *, dof: int | None = None) -> ActuatorTarget:
         """Target a Newton joint, optionally selecting one local DOF.
 
         Args:
@@ -49,7 +71,7 @@ class ActuatorTarget:
         Returns:
             A typed joint target.
         """
-        return cls("joint", int(joint), dof=None if dof is None else int(dof))
+        return cls(cls.Kind.JOINT, int(joint), dof=None if dof is None else int(dof))
 
     @classmethod
     def joint_dof(cls, dof: int) -> ActuatorTarget:
@@ -61,7 +83,7 @@ class ActuatorTarget:
         Returns:
             A typed joint-DOF target.
         """
-        return cls("joint_dof", int(dof))
+        return cls(cls.Kind.JOINT_DOF, int(dof))
 
     @classmethod
     def tendon(cls, tendon: int) -> ActuatorTarget:
@@ -74,10 +96,10 @@ class ActuatorTarget:
         Returns:
             A typed tendon target.
         """
-        return cls("tendon", int(tendon))
+        return cls(cls.Kind.TENDON, int(tendon))
 
     @classmethod
-    def site(cls, site: int, refsite: int | None = None) -> ActuatorTarget:
+    def site(cls, site: int, *, refsite: int | None = None) -> ActuatorTarget:
         """Target a Newton site shape, optionally relative to another site.
 
         Args:
@@ -87,7 +109,7 @@ class ActuatorTarget:
         Returns:
             A typed site target.
         """
-        return cls("site", int(site), -1 if refsite is None else int(refsite))
+        return cls(cls.Kind.SITE, int(site), -1 if refsite is None else int(refsite))
 
     @classmethod
     def body(cls, body: int) -> ActuatorTarget:
@@ -99,7 +121,7 @@ class ActuatorTarget:
         Returns:
             A typed body target.
         """
-        return cls("body", int(body))
+        return cls(cls.Kind.BODY, int(body))
 
     @classmethod
     def slider_crank(cls, cranksite: int, slidersite: int) -> ActuatorTarget:
@@ -112,7 +134,7 @@ class ActuatorTarget:
         Returns:
             A typed slider-crank target.
         """
-        return cls("slider_crank", int(cranksite), int(slidersite))
+        return cls(cls.Kind.SLIDER_CRANK, int(cranksite), int(slidersite))
 
 
 def _validate_index(name: str, index: int, count: int) -> None:
@@ -132,7 +154,7 @@ def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int,
     if not isinstance(target, ActuatorTarget):
         raise TypeError("target must be an ActuatorTarget.")
 
-    if target.kind == "joint":
+    if target.kind == ActuatorTarget.Kind.JOINT:
         _validate_index("joint", target.index, len(builder.joint_type))
         linear_dofs, angular_dofs = builder.joint_dof_dim[target.index]
         dof_count = linear_dofs + angular_dofs
@@ -148,59 +170,31 @@ def _resolve_target(builder: ModelBuilder, target: ActuatorTarget) -> tuple[int,
         dof = int(builder.joint_qd_start[target.index]) + local_dof
         return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(dof, -1)
 
-    if target.kind == "joint_dof":
+    if target.kind == ActuatorTarget.Kind.JOINT_DOF:
         _validate_index("joint dof", target.index, len(builder.joint_qd))
         return int(SolverMuJoCo.TrnType.JOINT), wp.vec2i(target.index, -1)
 
-    if target.kind == "tendon":
+    if target.kind == ActuatorTarget.Kind.TENDON:
         tendon_count = builder._custom_frequency_counts.get("mujoco:tendon", 0)
         _validate_index("tendon", target.index, tendon_count)
         return int(SolverMuJoCo.TrnType.TENDON), wp.vec2i(target.index, -1)
 
-    if target.kind == "site":
+    if target.kind == ActuatorTarget.Kind.SITE:
         _validate_site(builder, target.index, "site")
         if target.secondary_index >= 0:
             _validate_site(builder, target.secondary_index, "refsite")
         return int(SolverMuJoCo.TrnType.SITE), wp.vec2i(target.index, target.secondary_index)
 
-    if target.kind == "body":
+    if target.kind == ActuatorTarget.Kind.BODY:
         _validate_index("body", target.index, len(builder.body_mass))
         return int(SolverMuJoCo.TrnType.BODY), wp.vec2i(target.index, -1)
 
-    if target.kind == "slider_crank":
+    if target.kind == ActuatorTarget.Kind.SLIDER_CRANK:
         _validate_site(builder, target.index, "cranksite")
         _validate_site(builder, target.secondary_index, "slidersite")
         return int(SolverMuJoCo.TrnType.SLIDERCRANK), wp.vec2i(target.index, target.secondary_index)
 
     raise ValueError(f"Unsupported actuator target kind {target.kind!r}.")
-
-
-def _vector(
-    builder: ModelBuilder,
-    key: str,
-    values: Sequence[float],
-    length: int,
-    *,
-    exact: bool = False,
-) -> Any:
-    components = [float(value) for value in values]
-    if (exact and len(components) != length) or len(components) > length:
-        requirement = "exactly" if exact else "at most"
-        raise ValueError(f"{key} requires {requirement} {length} values, got {len(components)}.")
-    components.extend([0.0] * (length - len(components)))
-    return builder.custom_attributes[key].dtype(*components)
-
-
-def _tristate(value: bool | int | str) -> int:
-    if isinstance(value, str):
-        try:
-            return {"false": 0, "true": 1, "auto": 2}[value.lower().strip()]
-        except KeyError as error:
-            raise ValueError(f"Expected false, true, or auto, got {value!r}.") from error
-    result = int(value)
-    if result not in (0, 1, 2):
-        raise ValueError(f"Expected a MuJoCo tri-state value in {{0, 1, 2}}, got {value!r}.")
-    return result
 
 
 def _enum_value(value: int | str, mapping: dict[str, int], name: str) -> int:
@@ -311,29 +305,29 @@ def _add_actuator(
         "mujoco:actuator_ctrlrange": _vector(
             builder,
             "mujoco:actuator_ctrlrange",
-            ctrlrange if ctrlrange is not None else (),
+            ctrlrange if ctrlrange is not None else (0.0, 0.0),
             2,
         ),
         "mujoco:actuator_has_ctrlrange": int(ctrlrange is not None),
         "mujoco:actuator_forcerange": _vector(
             builder,
             "mujoco:actuator_forcerange",
-            forcerange if forcerange is not None else (),
+            forcerange if forcerange is not None else (0.0, 0.0),
             2,
         ),
         "mujoco:actuator_has_forcerange": int(forcerange is not None),
-        "mujoco:actuator_gear": _vector(builder, "mujoco:actuator_gear", gear, 6),
+        "mujoco:actuator_gear": _vector(builder, "mujoco:actuator_gear", gear, 6, exact=False),
         "mujoco:actuator_damping": float(damping),
         "mujoco:actuator_armature": float(armature),
         "mujoco:actuator_cranklength": 0.0 if cranklength is None else float(cranklength),
-        "mujoco:actuator_dynprm": _vector(builder, "mujoco:actuator_dynprm", dynprm, 10),
-        "mujoco:actuator_gainprm": _vector(builder, "mujoco:actuator_gainprm", gainprm, 10),
-        "mujoco:actuator_biasprm": _vector(builder, "mujoco:actuator_biasprm", biasprm, 10),
+        "mujoco:actuator_dynprm": _vector(builder, "mujoco:actuator_dynprm", dynprm, 10, exact=False),
+        "mujoco:actuator_gainprm": _vector(builder, "mujoco:actuator_gainprm", gainprm, 10, exact=False),
+        "mujoco:actuator_biasprm": _vector(builder, "mujoco:actuator_biasprm", biasprm, 10, exact=False),
         "mujoco:actuator_actlimited": _tristate(actlimited),
         "mujoco:actuator_actrange": _vector(
             builder,
             "mujoco:actuator_actrange",
-            actrange if actrange is not None else (),
+            actrange if actrange is not None else (0.0, 0.0),
             2,
         ),
         "mujoco:actuator_has_actrange": int(actrange is not None),
@@ -685,23 +679,15 @@ def add_actuator_dcmotor(
     _ensure_mujoco_attributes(builder, "mujoco:actuator_trnid")
     SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     specific_values = {
-        "mujoco:actuator_dcmotor_motorconst": _vector(
-            builder, "mujoco:actuator_dcmotor_motorconst", motorconst, 2, exact=True
-        ),
+        "mujoco:actuator_dcmotor_motorconst": _vector(builder, "mujoco:actuator_dcmotor_motorconst", motorconst, 2),
         "mujoco:actuator_dcmotor_resistance": float(resistance),
-        "mujoco:actuator_dcmotor_nominal": _vector(builder, "mujoco:actuator_dcmotor_nominal", nominal, 3, exact=True),
-        "mujoco:actuator_dcmotor_saturation": _vector(
-            builder, "mujoco:actuator_dcmotor_saturation", saturation, 3, exact=True
-        ),
-        "mujoco:actuator_dcmotor_inductance": _vector(
-            builder, "mujoco:actuator_dcmotor_inductance", inductance, 2, exact=True
-        ),
-        "mujoco:actuator_dcmotor_cogging": _vector(builder, "mujoco:actuator_dcmotor_cogging", cogging, 3, exact=True),
-        "mujoco:actuator_dcmotor_controller": _vector(
-            builder, "mujoco:actuator_dcmotor_controller", controller, 6, exact=True
-        ),
-        "mujoco:actuator_dcmotor_thermal": _vector(builder, "mujoco:actuator_dcmotor_thermal", thermal, 6, exact=True),
-        "mujoco:actuator_dcmotor_lugre": _vector(builder, "mujoco:actuator_dcmotor_lugre", lugre, 5, exact=True),
+        "mujoco:actuator_dcmotor_nominal": _vector(builder, "mujoco:actuator_dcmotor_nominal", nominal, 3),
+        "mujoco:actuator_dcmotor_saturation": _vector(builder, "mujoco:actuator_dcmotor_saturation", saturation, 3),
+        "mujoco:actuator_dcmotor_inductance": _vector(builder, "mujoco:actuator_dcmotor_inductance", inductance, 2),
+        "mujoco:actuator_dcmotor_cogging": _vector(builder, "mujoco:actuator_dcmotor_cogging", cogging, 3),
+        "mujoco:actuator_dcmotor_controller": _vector(builder, "mujoco:actuator_dcmotor_controller", controller, 6),
+        "mujoco:actuator_dcmotor_thermal": _vector(builder, "mujoco:actuator_dcmotor_thermal", thermal, 6),
+        "mujoco:actuator_dcmotor_lugre": _vector(builder, "mujoco:actuator_dcmotor_lugre", lugre, 5),
         "mujoco:actuator_dcmotor_input": _input_mode(input_mode),
     }
     return _add_actuator(

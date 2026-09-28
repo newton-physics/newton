@@ -133,6 +133,24 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dof"):
             mujoco.add_actuator_motor(builder, target=mujoco.ActuatorTarget.joint(joint))
 
+    def test_actuator_target_kinds(self):
+        """Tag each actuator target factory with its enum kind."""
+        kind = mujoco.ActuatorTarget.Kind
+        self.assertEqual(mujoco.ActuatorTarget.joint(2, dof=1), mujoco.ActuatorTarget(kind.JOINT, 2, dof=1))
+        self.assertEqual(mujoco.ActuatorTarget.joint_dof(3).kind, kind.JOINT_DOF)
+        self.assertEqual(mujoco.ActuatorTarget.tendon(0).kind, kind.TENDON)
+        self.assertEqual(mujoco.ActuatorTarget.site(4, refsite=5), mujoco.ActuatorTarget(kind.SITE, 4, 5))
+        self.assertEqual(mujoco.ActuatorTarget.body(1).kind, kind.BODY)
+        self.assertEqual(mujoco.ActuatorTarget.slider_crank(4, 5), mujoco.ActuatorTarget(kind.SLIDER_CRANK, 4, 5))
+
+    def test_reject_malformed_actuator_ranges(self):
+        """Require two-value ranges instead of silently padding them."""
+        builder = newton.ModelBuilder()
+        _, joint = _add_revolute(builder, "hinge")
+
+        with self.assertRaisesRegex(ValueError, "ctrlrange requires exactly 2 values"):
+            mujoco.add_actuator_motor(builder, target=mujoco.ActuatorTarget.joint(joint), ctrlrange=(1.0,))
+
     def test_remap_actuator_target_when_merging_builders(self):
         """Offset heterogeneous actuator targets during builder composition."""
         blueprint = newton.ModelBuilder()
@@ -142,7 +160,9 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         blueprint_tendon = mujoco.add_tendon_fixed(blueprint, joints=[(blueprint_joint, 1.0)])
         mujoco.add_actuator_motor(blueprint, target=mujoco.ActuatorTarget.joint(blueprint_joint))
         mujoco.add_actuator_motor(blueprint, target=mujoco.ActuatorTarget.tendon(blueprint_tendon))
-        mujoco.add_actuator_motor(blueprint, target=mujoco.ActuatorTarget.site(blueprint_site0, blueprint_site1))
+        mujoco.add_actuator_motor(
+            blueprint, target=mujoco.ActuatorTarget.site(blueprint_site0, refsite=blueprint_site1)
+        )
         mujoco.add_actuator_motor(blueprint, target=mujoco.ActuatorTarget.body(blueprint_body))
         mujoco.add_actuator_motor(
             blueprint,
@@ -187,6 +207,19 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.pair_geom2.numpy(), [shape1])
         np.testing.assert_array_equal(model.mujoco.pair_condim.numpy(), [4])
         np.testing.assert_allclose(model.mujoco.pair_friction.numpy(), [[0.8, 0.7, 0.01, 0.02, 0.03]])
+
+    def test_reject_contact_pair_across_worlds(self):
+        """Reject contact pairs whose shapes belong to another world."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        shape0 = builder.add_shape_sphere(body=-1, radius=0.1)
+        builder.end_world()
+        builder.begin_world()
+        shape1 = builder.add_shape_sphere(body=-1, radius=0.1)
+
+        with self.assertRaisesRegex(ValueError, "belongs to world 0"):
+            mujoco.add_contact_pair(builder, shape0, shape1)
+        builder.end_world()
 
     def test_add_fixed_tendon_and_tendon_actuator(self):
         """Create a fixed tendon and target it with an actuator."""
@@ -263,6 +296,18 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         )
         np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[2], [1.0, 2.0, 0.0, 0.0, 0.0])
+
+    def test_reject_self_referencing_equalities(self):
+        """Reject equality constraints whose two operands are identical."""
+        builder = newton.ModelBuilder()
+        body, joint = _add_revolute(builder, "hinge")
+
+        with self.assertRaisesRegex(ValueError, "two distinct bodies"):
+            mujoco.add_equality_connect(builder, body, body)
+        with self.assertRaisesRegex(ValueError, "two distinct bodies"):
+            mujoco.add_equality_weld(builder, body, body)
+        with self.assertRaisesRegex(ValueError, "two distinct joints"):
+            mujoco.add_equality_joint(builder, joint, joint)
 
 
 if __name__ == "__main__":

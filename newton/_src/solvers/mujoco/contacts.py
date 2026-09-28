@@ -9,14 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ...sim import ModelBuilder
-from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes
-
-
-def _vector(builder: ModelBuilder, key: str, values: Sequence[float], length: int) -> Any:
-    components = [float(value) for value in values]
-    if len(components) != length:
-        raise ValueError(f"{key} requires exactly {length} values, got {len(components)}.")
-    return builder.custom_attributes[key].dtype(*components)
+from ._authoring import _add_custom_frequency_row, _ensure_mujoco_attributes, _vector
 
 
 def add_contact_pair(
@@ -34,6 +27,9 @@ def add_contact_pair(
     custom_attributes: dict[str, Any] | None = None,
 ) -> int:
     """Add an explicit MuJoCo contact pair.
+
+    The pair belongs to :attr:`~newton.ModelBuilder.current_world`. Both shapes
+    must belong to that world or to the global world (``-1``).
 
     Args:
         builder: Model builder receiving the pair.
@@ -58,6 +54,13 @@ def add_contact_pair(
             raise IndexError(f"{name} index {shape} is outside [0, {shape_count}).")
     if shape0 == shape1:
         raise ValueError("A MuJoCo contact pair requires two distinct shapes.")
+    world = builder.current_world
+    for name, shape in (("shape0", shape0), ("shape1", shape1)):
+        shape_world = int(builder.shape_world[shape])
+        if shape_world not in (-1, world):
+            raise ValueError(
+                f"{name} index {shape} belongs to world {shape_world}, but the pair is added to world {world}."
+            )
     if condim not in (1, 3, 4, 6):
         raise ValueError("condim must be one of 1, 3, 4, or 6.")
 

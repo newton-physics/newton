@@ -4,12 +4,12 @@
 newton.solvers.mujoco
 =====================
 
-MuJoCo solver and programmatic model-authoring helpers.
+Programmatic model-authoring helpers for :class:`~newton.solvers.SolverMuJoCo`.
 
-Use :class:`~newton.solvers.SolverMuJoCo` as the solver class. The module-level
-helpers create MuJoCo-specific actuators, tendons, contact pairs, and equality
-constraints on a :class:`~newton.ModelBuilder` without exposing custom-frequency
-storage details.
+The module-level helpers create MuJoCo-specific actuators, tendons, contact
+pairs, and equality constraints on a :class:`~newton.ModelBuilder` without
+exposing custom-frequency storage details. Use
+:class:`~newton.solvers.SolverMuJoCo` as the canonical public solver class.
 
 Example::
 
@@ -64,3 +64,4 @@ Example::
 .. autofunction:: add_tendon_fixed
 
 .. autofunction:: add_tendon_spatial
+

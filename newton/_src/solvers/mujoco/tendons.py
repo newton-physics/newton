@@ -11,7 +11,7 @@ from typing import Any
 
 from ...geometry import ShapeFlags
 from ...sim import ModelBuilder
-from ._authoring import _ensure_mujoco_attributes, _prepare_custom_frequency_row
+from ._authoring import _ensure_mujoco_attributes, _prepare_custom_frequency_row, _tristate, _vector
 
 
 @dataclass(frozen=True)
@@ -39,25 +39,6 @@ class TendonWrapPulley:
 
     divisor: float
     """Positive pulley divisor."""
-
-
-def _vector(builder: ModelBuilder, key: str, values: Sequence[float], length: int) -> Any:
-    components = [float(value) for value in values]
-    if len(components) != length:
-        raise ValueError(f"{key} requires exactly {length} values, got {len(components)}.")
-    return builder.custom_attributes[key].dtype(*components)
-
-
-def _tristate(value: bool | int | str) -> int:
-    if isinstance(value, str):
-        try:
-            return {"false": 0, "true": 1, "auto": 2}[value.lower().strip()]
-        except KeyError as error:
-            raise ValueError(f"Expected false, true, or auto, got {value!r}.") from error
-    result = int(value)
-    if result not in (0, 1, 2):
-        raise ValueError(f"Expected a MuJoCo tri-state value in {{0, 1, 2}}, got {value!r}.")
-    return result
 
 
 def _validate_shape(builder: ModelBuilder, shape: int, *, site: bool, name: str) -> None:

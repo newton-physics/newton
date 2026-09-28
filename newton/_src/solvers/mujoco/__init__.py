@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""MuJoCo solver and programmatic model-authoring helpers.
+"""Programmatic model-authoring helpers for :class:`~newton.solvers.SolverMuJoCo`.
 
-Use :class:`~newton.solvers.SolverMuJoCo` as the solver class. The module-level
-helpers create MuJoCo-specific actuators, tendons, contact pairs, and equality
-constraints on a :class:`~newton.ModelBuilder` without exposing custom-frequency
-storage details.
+The module-level helpers create MuJoCo-specific actuators, tendons, contact
+pairs, and equality constraints on a :class:`~newton.ModelBuilder` without
+exposing custom-frequency storage details. Use
+:class:`~newton.solvers.SolverMuJoCo` as the canonical public solver class.
 
 Example::
 
@@ -30,7 +30,6 @@ from .actuators import (
 )
 from .contacts import add_contact_pair
 from .equality import add_equality_connect, add_equality_joint, add_equality_weld
-from .solver_mujoco import SolverMuJoCo
 from .tendons import (
     TendonWrapGeom,
     TendonWrapPulley,
@@ -41,7 +40,6 @@ from .tendons import (
 
 __all__ = [
     "ActuatorTarget",
-    "SolverMuJoCo",
     "TendonWrapGeom",
     "TendonWrapPulley",
     "TendonWrapSite",

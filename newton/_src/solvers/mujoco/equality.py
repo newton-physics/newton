@@ -400,6 +400,8 @@ def add_equality_connect(
     _validate_body(builder, body2, "body2")
     if body1 < 0 and body2 < 0:
         raise ValueError("A connect equality must reference at least one body.")
+    if body1 == body2:
+        raise ValueError("A connect equality requires two distinct bodies.")
     return _add_equality_constraint(
         builder,
         EqType.CONNECT,
@@ -447,6 +449,8 @@ def add_equality_weld(
     _validate_body(builder, body2, "body2")
     if body1 < 0 and body2 < 0:
         raise ValueError("A weld equality must reference at least one body.")
+    if body1 == body2:
+        raise ValueError("A weld equality requires two distinct bodies.")
     return _add_equality_constraint(
         builder,
         EqType.WELD,
@@ -491,6 +495,8 @@ def add_equality_joint(
     _ensure_equality_attributes(builder)
     _validate_joint(builder, joint1, "joint1")
     _validate_joint(builder, joint2, "joint2")
+    if joint1 == joint2:
+        raise ValueError("A joint equality requires two distinct joints.")
     coefficients = [float(value) for value in polycoef]
     if len(coefficients) > 5:
         raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
