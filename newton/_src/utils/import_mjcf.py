@@ -388,7 +388,7 @@ def parse_mjcf(
     SolverMuJoCo.register_custom_attributes(builder)
     # Avoid replicating and allocating high-level DC-motor arrays for the
     # overwhelmingly common case where the MJCF contains no DC motors.
-    if any(True for _ in root.iter("dcmotor")):
+    if root.find(".//dcmotor") is not None:
         SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are

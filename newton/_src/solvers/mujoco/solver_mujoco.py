@@ -752,6 +752,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             for joint_idx, coef in joint_entries
         ]
 
+    _DCMOTOR_PARAMETER_NAMES = (
+        "actuator_dcmotor_motorconst",
+        "actuator_dcmotor_resistance",
+        "actuator_dcmotor_nominal",
+        "actuator_dcmotor_saturation",
+        "actuator_dcmotor_inductance",
+        "actuator_dcmotor_cogging",
+        "actuator_dcmotor_controller",
+        "actuator_dcmotor_thermal",
+        "actuator_dcmotor_lugre",
+        "actuator_dcmotor_input",
+    )
+    """High-level MJCF ``<dcmotor>`` parameters in the ``mujoco`` namespace.
+
+    Registered lazily by :meth:`_register_dcmotor_custom_attributes` only for
+    sources that contain DC-motor actuators.
+    """
+
     @classmethod
     def _register_dcmotor_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Declare high-level MJCF DC-motor parameters when a source uses them."""
@@ -3652,21 +3670,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ctrlspec_arr = mujoco_attrs.actuator_ctrlspec.numpy() if hasattr(mujoco_attrs, "actuator_ctrlspec") else None
         damping_arr = mujoco_attrs.actuator_damping.numpy() if hasattr(mujoco_attrs, "actuator_damping") else None
         armature_arr = mujoco_attrs.actuator_armature.numpy() if hasattr(mujoco_attrs, "actuator_armature") else None
-        dcmotor_parameter_names = (
-            "actuator_dcmotor_motorconst",
-            "actuator_dcmotor_resistance",
-            "actuator_dcmotor_nominal",
-            "actuator_dcmotor_saturation",
-            "actuator_dcmotor_inductance",
-            "actuator_dcmotor_cogging",
-            "actuator_dcmotor_controller",
-            "actuator_dcmotor_thermal",
-            "actuator_dcmotor_lugre",
-            "actuator_dcmotor_input",
-        )
         has_dcmotor_shortcut = ctrl_type_arr is not None and np.any(ctrl_type_arr == int(SolverMuJoCo.CtrlType.DCMOTOR))
         missing_dcmotor_parameters = (
-            [name for name in dcmotor_parameter_names if not hasattr(mujoco_attrs, name)]
+            [name for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES if not hasattr(mujoco_attrs, name)]
             if has_dcmotor_shortcut
             else []
         )
@@ -3678,7 +3684,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dcmotor_parameter_arrays = (
             {
                 name: getattr(mujoco_attrs, name).numpy()
-                for name in dcmotor_parameter_names
+                for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES
                 if hasattr(mujoco_attrs, name)
             }
             if has_dcmotor_shortcut
@@ -9979,19 +9985,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"DC-motor actuator layouts; world {world} differs from world 0."
                         )
 
-                dcmotor_parameter_names = (
-                    "actuator_dcmotor_motorconst",
-                    "actuator_dcmotor_resistance",
-                    "actuator_dcmotor_nominal",
-                    "actuator_dcmotor_saturation",
-                    "actuator_dcmotor_inductance",
-                    "actuator_dcmotor_cogging",
-                    "actuator_dcmotor_controller",
-                    "actuator_dcmotor_thermal",
-                    "actuator_dcmotor_lugre",
-                    "actuator_dcmotor_input",
-                )
-                for name in dcmotor_parameter_names:
+                for name in SolverMuJoCo._DCMOTOR_PARAMETER_NAMES:
                     attribute = getattr(mujoco_attrs, name, None)
                     if attribute is None:
                         raise ValueError(f"High-level DC-motor actuator rows are missing mujoco:{name}.")
