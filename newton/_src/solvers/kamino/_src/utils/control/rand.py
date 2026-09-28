@@ -83,7 +83,7 @@ def _generate_random_control_inputs(
     controller_decimation: wp.array[wp.int32],
     controller_scale: wp.array[wp.float32],
     model_joints_wid: wp.array[wp.int32],
-    model_joints_act_type: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
     state_time_steps: wp.array[wp.int32],
@@ -99,10 +99,7 @@ def _generate_random_control_inputs(
     jid = wp.tid()
 
     # Retrieve the total number of joints from the size of the input arrays
-    num_joints = model_joints_act_type.shape[0]
-
-    # Retrieve the joint actuation type
-    act_type = model_joints_act_type[jid]
+    num_joints = model_joints_wid.shape[0]
 
     # Retrieve the world index from the thread indices
     wid = model_joints_wid[jid]
@@ -113,9 +110,8 @@ def _generate_random_control_inputs(
     # Retrieve the control decimation for the world
     decimation = controller_decimation[wid]
 
-    # Only proceed for force actuated joints and at
-    # simulation steps matching the control decimation
-    if act_type == JointActuationType.PASSIVE or step % decimation != 0:
+    # Only proceed at simulation steps matching the control decimation.
+    if step % decimation != 0:
         return
 
     # Retrieve the number of DoFs and offset of the joint
@@ -126,6 +122,9 @@ def _generate_random_control_inputs(
     for dof in range(num_dofs_j):
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_start + dof
+        act_type = model_joints_dof_act_types[joint_dof_index]
+        if act_type != JointActuationType.FORCE and act_type != JointActuationType.POSITION_VELOCITY_FORCE:
+            continue
 
         # Retrieve the maximum limit of the generalized actuator forces
         tau_j_max = model_joints_tau_j_max[joint_dof_index]
@@ -328,7 +327,7 @@ class RandomJointController:
                 self._data.decimation,
                 self._data.scale,
                 self._model.joints.wid,
-                self._model.joints.act_type,
+                self._model.joints.dof_act_types,
                 self._model.joints.dofs_offset,
                 self._model.joints.tau_j_max,
                 time.steps,

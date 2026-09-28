@@ -159,6 +159,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # pointer changes.
         self._reorder_callback = None
         self._reorder_attached_to: wp.array[dtype] | None = None
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id: int | None = None
 
         # Cache the fixed block/tile dimensions
         self._block_size: int = block_size
@@ -242,6 +245,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
         info = self._operator.info
         self._max_dim = int(info.max_dimension)
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
+        self._reorder_callback = None
+        self._reorder_attached_to = None
 
         # Resolve auxiliary kernels now that max_dim is known.
         self._permute_vector_kernel = make_llt_blocked_rcm_permute_vector_kernel(self._max_dim)
@@ -304,6 +312,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_scratch["permutation_valid"].zero_()
         self._rcm_scratch["permutation_dim"].zero_()
         self._inv_P.zero_()
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
         self._tile_pattern.zero_()
         self._has_factors = False
 
@@ -340,6 +351,31 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
     def _factorize_impl(self, A: wp.array[Any]) -> None:
         info = self._operator.info
         num_blocks = info.num_blocks
+        is_capturing = bool(self._device.is_capturing)
+        capture_id = None
+        if is_capturing and self._device.is_cuda:
+            capture = self._device.captures.get(self._device.stream)
+            if capture is not None:
+                capture_id = capture.capture_id
+
+        # Recording RCM launches mutates host cache state before a captured
+        # graph executes. Validate that one-time transition against the device
+        # flags after capture, so an unlaunched or aborted graph cannot leave
+        # the replacement permutation buffers marked as initialized.
+        if self._reuse_permutation and self._permutation_initialized_during_capture:
+            if is_capturing and capture_id != self._permutation_capture_id:
+                self._permutation_initialized = False
+                self._permutation_initialized_during_capture = False
+                self._permutation_capture_id = None
+            elif not is_capturing:
+                valid = self._rcm_scratch["permutation_valid"].numpy()
+                valid_dims = self._rcm_scratch["permutation_dim"].numpy()
+                self._permutation_initialized = all(
+                    int(is_valid) != 0 and int(valid_dim) == expected_dim
+                    for is_valid, valid_dim, expected_dim in zip(valid, valid_dims, info.dimensions, strict=True)
+                )
+                self._permutation_initialized_during_capture = False
+                self._permutation_capture_id = None
 
         # Bind / rebind views to the current A buffer.
         self._ensure_reorder_launches_bound(A)
@@ -347,7 +383,13 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Compute per-block P via the batched RCM callback. The callback is a
         # set of recorded Warp launches and is safe to replay under CUDA graph
         # capture initiated by the caller.
-        self._reorder_callback()
+        if not self._reuse_permutation or not self._permutation_initialized:
+            self._reorder_callback()
+            # Later calls are ordered behind these launches on the same stream,
+            # including calls recorded later in the same CUDA graph capture.
+            self._permutation_initialized = True
+            self._permutation_initialized_during_capture = self._reuse_permutation and is_capturing
+            self._permutation_capture_id = capture_id if self._permutation_initialized_during_capture else None
 
         # 2. Fused: build inv_P, permute A -> A_hat, and reduce |A_hat| into the
         #    raw tile pattern in a single launch. Each thread writes only its

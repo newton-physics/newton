@@ -1645,6 +1645,22 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise
         self.assertEqual(len(builder.custom_frequencies), baseline + 3)
 
+    def test_custom_frequency_metadata_names_follow_convention(self):
+        """Reject owner and label attributes that do not follow the frequency naming convention."""
+        with self.assertRaisesRegex(ValueError, "test:item_articulation"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:owner",
+            )
+
+        with self.assertRaisesRegex(ValueError, "test:item_label"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                label_attribute="test:label",
+            )
+
     def test_custom_frequency_validation_inconsistent_counts(self):
         """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""
         builder = ModelBuilder()
@@ -1691,6 +1707,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Verify values: pair_a should have [1, 2, 0] (padded), pair_b should have [0, 0, 10]
         np.testing.assert_array_equal(model.test.pair_a.numpy(), [1, 2, 0])  # 0 is default for int32
         np.testing.assert_array_equal(model.test.pair_b.numpy(), [0, 0, 10])  # None values replaced with defaults
+
+    def test_custom_frequency_owner_resolver_validates_row_count(self):
+        """Reject owner resolver output that does not cover every frequency row."""
+        builder = ModelBuilder()
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+                articulation_owner_resolver=lambda _builder: [],
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        builder.add_custom_values(**{"test:item_articulation": -1})
+
+        with self.assertRaisesRegex(ValueError, "returned 0 values, expected 1"):
+            builder.finalize(device=self.device)
 
     def test_custom_frequency_add_custom_values_rejects_enum_frequency(self):
         """Test that add_custom_values() rejects enum frequency attributes."""
@@ -1930,8 +1971,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "unknown"):
             model.get_custom_frequency_count("test:unknown")
 
-    def test_custom_frequency_articulation_view_rejection(self):
-        """Test that ArticulationView raises error for custom string frequency attributes."""
+    def test_custom_frequency_articulation_view_rejects_unscoped_rows(self):
+        """Reject custom-frequency rows without articulation ownership."""
 
         builder = ModelBuilder()
 
@@ -1964,6 +2005,151 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
 
         self.assertIn("custom frequency", str(context.exception).lower())
         self.assertIn("item", str(context.exception))
+
+    def test_custom_frequency_articulation_view_uses_declared_owners(self):
+        """Expose every attribute whose custom frequency declares articulation owners."""
+        robot = ModelBuilder()
+        body = robot.add_link(mass=1.0)
+        joint = robot.add_joint_revolute(parent=-1, child=body)
+        robot.add_articulation([joint], label="robot")
+
+        def resolve_item_owners(builder: ModelBuilder) -> list[int]:
+            item_joints = builder.custom_attributes["test:item_joint"].values
+            return [int(builder.joint_articulation[int(item_joint)]) for item_joint in item_joints]
+
+        robot.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+                articulation_owner_resolver=resolve_item_owners,
+                label_attribute="test:item_label",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_joint",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="joint",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_label",
+                namespace="test",
+                frequency="test:item",
+                dtype=str,
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.float32,
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_control",
+                namespace="test",
+                frequency="test:item",
+                assignment=AttributeAssignment.CONTROL,
+                dtype=wp.float32,
+            )
+        )
+        robot.add_custom_values(
+            **{
+                "test:item_joint": joint,
+                "test:item_label": "tool/item",
+                "test:item_value": 42.0,
+                "test:item_control": 3.0,
+            }
+        )
+
+        world = ModelBuilder()
+        world.add_builder(robot, label_prefix="left")
+        world.add_builder(robot, label_prefix="right")
+        scene = ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize(device=self.device)
+        control = model.control()
+
+        view = ArticulationView(model, "*/robot")
+        self.assertEqual(view.custom_frequency_counts["test:item"], 1)
+        self.assertEqual(view.custom_frequency_labels["test:item"], ["item"])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["test:item"].numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(model.test.item_joint.numpy(), [0, 1, 2, 3])
+        self.assertEqual(
+            model.test.item_label,
+            ["left/tool/item", "right/tool/item", "left/tool/item", "right/tool/item"],
+        )
+        np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), 42.0)
+        np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), 3.0)
+
+        values = np.arange(4, dtype=np.float32).reshape(2, 2, 1)
+        view.set_attribute("test.item_control", control, values)
+        np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), values)
+
+    def test_custom_frequency_articulation_view_handles_sparse_rows(self):
+        """Expose non-contiguous rows owned by one articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint], label="robot")
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.float32,
+            )
+        )
+
+        for owner, value in ((0, 10.0), (-1, 20.0), (0, 30.0)):
+            builder.add_custom_values(
+                **{
+                    "test:item_articulation": owner,
+                    "test:item_value": value,
+                }
+            )
+
+        model = builder.finalize(device=self.device)
+        view = ArticulationView(model, "robot")
+
+        self.assertEqual(view.custom_frequency_counts["test:item"], 2)
+        self.assertEqual(view.frequency_layouts["test:item"].value_count, 3)
+        np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), [[[10.0, 30.0]]])
+
+        view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
+        np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
 
     def test_world_frequency_merge_add_world(self):
         """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""

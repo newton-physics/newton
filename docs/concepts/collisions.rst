@@ -685,14 +685,19 @@ The :attr:`~ModelBuilder.shape_collision_filter_pairs` list stores explicit shap
 This is Newton's internal representation for pairwise filtering (including pairs imported from
 UsdPhysics ``physics:filteredPairs`` relationships).
 
+The built-in broad phases reject pairs of shapes attached to the same non-static
+body and static-static pairs. These inherent exclusions are therefore not stored
+in the explicit filter-pair list.
+
 .. testcode:: filter-pairs
 
     builder = newton.ModelBuilder()
     
     # Add shapes
-    body = builder.add_body()
-    shape_a = builder.add_shape_sphere(body, radius=0.5)
-    shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+    body_a = builder.add_body()
+    body_b = builder.add_body()
+    shape_a = builder.add_shape_sphere(body_a, radius=0.5)
+    shape_b = builder.add_shape_box(body_b, hx=0.5, hy=0.5, hz=0.5)
 
     # Exclude this specific pair from collision detection
     builder.add_shape_collision_filter_pair(shape_a, shape_b)
@@ -703,19 +708,14 @@ Filter pairs are automatically populated in several cases:
   ``collision_filter_parent=True``). For USD joints with two explicit bodies,
   ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
   create a body-pair filter. Also applies to max-coordinate jointed bodies.
-- **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
 
-The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
-``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
-
-.. deprecated:: 1.4
-   Mutating this finalized-model set is deprecated; update
-   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
-   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
-   post-finalize filter edits.
+The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a read-only
+set of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``). Update
+:attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+model to change collision filters.
 
 **USD Import Example**
 
@@ -1014,6 +1014,13 @@ separated-shapes distance query.
 For convex primitive pairs, multiple contact points are generated for stable stacking and
 resting contacts. The collision pipeline estimates buffer sizes based on the model; you
 can override this value with ``rigid_contact_max`` when instantiating the pipeline.
+The automatic capacity is a conservative heuristic based on colliding shape types,
+contact-pair metadata, and world layout. It generally grows linearly with replicated
+worlds, but it is not a guaranteed worst-case bound. When the estimate implies at least
+256 MiB for the base rigid-contact buffers, the pipeline warns with the resolved capacity
+and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to select the
+memory budget and silence the warning. Optional collision features and solvers may
+allocate additional per-contact memory.
 
 .. _Mesh Collisions:
 
@@ -1082,6 +1089,7 @@ Two approaches available:
         shape_margin=0.001,                   # Shrink SDF surface inward [m] (0.0)
         scale=(1.0, 1.0, 1.0),                # Bake non-unit scale into the SDF (None)
         edge_lower_angle_threshold_rad=math.radians(0.1),  # Drop near-coplanar edges below this angle (0.1 deg)
+        edge_concave_filter=True,             # Drop concave edges with two fully concave endpoints
         edge_box_absorption=False,            # Drop edges fully covered by another edge's oriented box
     )
 
@@ -1101,9 +1109,14 @@ which materially reduces edge-vs-shape work for typical CAD or scanned meshes. T
 threshold (``edge_lower_angle_threshold_rad=math.radians(0.1)``) drops only edges that are
 geometrically coplanar to within 0.1 degrees, so it is safe for most meshes; raise it to
 prune more aggressively, set it to ``0`` to keep every manifold edge, or pass a negative
-value (e.g. ``-1.0``) to opt out of the simplification pass entirely. Set
-``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered by
-another nearby edge's oriented box — useful for densely tessellated curved surfaces.
+value (e.g. ``-1.0``) to opt out of the simplification pass entirely. By default,
+``edge_concave_filter=True`` also drops a concave manifold edge when both endpoints are
+fully concave: every neighbor in each endpoint's closed manifold one-ring lies on or
+outward from its angle-weighted tangent plane, with at least one neighbor strictly outward.
+The filter is skipped for ``sign_method="normal"`` because pseudo-normal SDFs do not
+define an unambiguous solid interior.
+Set ``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered
+by another nearby edge's oriented box — useful for densely tessellated curved surfaces.
 ``edge_box_half_normal``/``edge_box_half_normal_rel`` and
 ``edge_box_half_lateral``/``edge_box_half_lateral_rel`` tune the box extents (absolute
 metres or fractions of the mesh AABB diagonal); see :meth:`~Mesh.build_sdf` for full
@@ -1444,24 +1457,22 @@ linear and angular velocity at the contact points. Common motion and receding mo
 therefore do not enlarge the gap. Broad phase uses a conservative motion bound; narrow
 phase applies the normal-directed test above.
 
-Enable the feature with :class:`CollisionPipeline.SpeculativeContactConfig`:
+Enable the feature with the keyword-only ``speculative_contact_gap_max`` constructor argument:
 
 .. code-block:: python
 
     pipeline = newton.CollisionPipeline(
         model,
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            max_speculative_extension=0.1,
-        ),
+        speculative_contact_gap_max=0.1,
     )
 
     pipeline.collide(state, contacts, dt=1.0 / 60.0)
 
 The per-call ``dt`` is the time [s] until the next planned
 :meth:`CollisionPipeline.collide` call, including skipped solver substeps, and is
-required when speculative contacts are enabled. ``dt=0.0`` uses only the fixed
-gaps. ``max_speculative_extension`` caps the velocity-based distance [m]; ``0.0``
-also disables velocity adaptation.
+required when speculative contacts are enabled. ``dt=0.0`` uses only the authored
+gaps. ``speculative_contact_gap_max`` caps the velocity-derived detection gap [m];
+it must be non-negative and finite. ``0.0`` does not enlarge authored gaps.
 
 Speculation changes when a contact is retained, not its geometry: contact points remain
 at their current separation rather than a predicted impact pose. Mesh and SDF contact
@@ -1525,8 +1536,8 @@ Soft contacts are generated automatically when particles are present. They use a
 
 .. testcode:: soft-contacts
 
-    # Set soft contact margin
-    pipeline = CollisionPipeline(model, soft_contact_margin=0.01)
+    # Set the soft-contact detection gap (slack added to the particle radius)
+    pipeline = CollisionPipeline(model, soft_contact_gap=0.01)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
@@ -1545,7 +1556,18 @@ do not control collision detection performed inside a solver. For example,
 :class:`~solvers.SolverMuJoCo` generates contacts internally when
 ``use_mujoco_contacts=True`` (see :ref:`mujoco-collision-pipeline`), while
 :class:`~solvers.SolverVBD` handles particle self-contact internally according
-to ``particle_collision_detection_interval``.
+to the self-contact slot of ``collision_frequency`` /
+``collision_frequency_type``.
+
+With ``rigid_soft_enable_dat=True``, :class:`~solvers.SolverVBD`
+additionally truncates rigid pose and particle updates against the division
+planes of the rigid-soft contacts its owned :class:`~CollisionPipeline`
+reports, using the rigid entries of ``collision_frequency`` and
+``collision_frequency_type`` as the detection cadence that anchors those
+planes. That slot may not be ``NONE``
+while the option is enabled, and when particle self-contact truncation is
+also active the rigid and self-contact slots must share an equivalent
+schedule.
 
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,
@@ -2005,8 +2027,8 @@ Contact reduction options for hydroelastic contacts are configured via :class:`~
 
 Hydroelastic memory can be tuned with ``buffer_fraction`` on
 :class:`~geometry.HydroelasticSDF.Config`. This scales broadphase, iso-refinement,
-and hydroelastic face-contact buffer allocations as a fraction of the worst-case
-size. Lower values reduce memory usage but also reduce overflow headroom.
+and hydroelastic face-contact buffer allocations from their default estimated
+capacities. Lower values reduce memory usage but also reduce overflow headroom.
 
 .. testcode:: hydro-buffer
 
@@ -2014,13 +2036,16 @@ size. Lower values reduce memory usage but also reduce overflow headroom.
 
     config = HydroelasticSDF.Config(
         reduce_contacts=True,
-        buffer_fraction=0.2,  # 20% of worst-case (default: 1.0)
+        buffer_fraction=0.2,  # 20% of default estimates (default: 1.0)
     )
 
-The default ``buffer_fraction`` is ``1.0`` (full worst-case allocation). Lowering it
-reduces GPU memory usage but may cause overflow in dense contact scenes.
+The default ``buffer_fraction`` is ``1.0``, which uses the default capacity
+estimates. Lowering it reduces GPU memory usage but may cause overflow in dense contact scenes.
 If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
 ``buffer_mult_*`` values) until warnings disappear in your target scenes.
+In deterministic mode, the final iso-voxel buffer has a hard fingerprint-safe
+capacity limit that these settings cannot raise. If that limit overflows, reduce
+the SDF resolution or disable deterministic mode.
 
 .. _Contact Material Properties:
 

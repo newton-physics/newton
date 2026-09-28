@@ -149,9 +149,7 @@ def _collide(model, *, legacy=False, speculative=False, packed=None, midphase=No
         reduce_contacts=False,
         rigid_contact_max=2048,
         max_triangle_pairs=4096,
-        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(max_speculative_extension=0.5)
-        if speculative
-        else None,
+        speculative_contact_gap_max=0.5 if speculative else None,
     )
     if legacy:
         midphase = _unculled_heightfield_midphase

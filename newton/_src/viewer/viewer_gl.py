@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import collections
 import ctypes
+import enum
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -22,6 +22,8 @@ from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
+from .plot_logger import PlotLogger
+from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
@@ -47,6 +49,7 @@ _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 # ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
 # displays — see :meth:`ViewerGL._dpi_scale`.
 _SIDEBAR_WIDTH_PX: float = 300.0
+_TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
@@ -58,6 +61,13 @@ def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[w
 
 @wp.kernel
 def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
+    # Duplicate N values into 2N values (two caps per capsule).
+    tid = wp.tid()
+    out_values[tid] = in_values[tid // 2]
+
+
+@wp.kernel
+def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.array[wp.float32]):
     # Duplicate N values into 2N values (two caps per capsule).
     tid = wp.tid()
     out_values[tid] = in_values[tid // 2]
@@ -116,6 +126,10 @@ def _compute_shape_vbo_xforms(
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
     write_indices: wp.array[int],
+    shape_opacity: wp.array[wp.float32],
+    packed_shape_opacity: wp.array[wp.float32],
+    opacity_update_flags: wp.array[wp.int32],
+    opacity_check_enabled: int,
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
 ):
@@ -153,6 +167,15 @@ def _compute_shape_vbo_xforms(
         s = shape_scale[tid]
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
+
+    if opacity_check_enabled != 0:
+        opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
+        previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
+        opacity_delta = opacity - previous_opacity
+        if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
+            wp.atomic_max(opacity_update_flags, 0, 1)
+            if (opacity < OPAQUE_OPACITY_THRESHOLD) != (previous_opacity < OPAQUE_OPACITY_THRESHOLD):
+                wp.atomic_max(opacity_update_flags, 1, 1)
 
     out_vbo_xforms[out_idx] = wp.mat44(
         R[0, 0] * s[0],
@@ -194,6 +217,30 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    class CudaInterop(enum.IntFlag):
+        """Render-geometry categories eligible for CUDA-OpenGL interoperability."""
+
+        NONE = 0
+        """Disable CUDA-OpenGL interoperability for render geometry."""
+
+        DYNAMIC_MESH = enum.auto()
+        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+
+        STATIC_MESH = enum.auto()
+        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+
+        POINTS = enum.auto()
+        """Point instance-transform buffers."""
+
+        INSTANCES = enum.auto()
+        """General and model-shape instance-transform buffers."""
+
+        LINES = enum.auto()
+        """Line and arrow vertex buffers."""
+
+        ALL = DYNAMIC_MESH | STATIC_MESH | POINTS | INSTANCES | LINES
+        """All supported render-geometry buffers."""
+
     def __init__(
         self,
         width: int = 1920,
@@ -203,6 +250,8 @@ class ViewerGL(ViewerBase):
         paused: bool = False,
         plot_history_size: int = 250,
         num_frames: int | None = None,
+        *,
+        enable_cuda_interop: ViewerGL.CudaInterop = CudaInterop.DYNAMIC_MESH,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -219,29 +268,21 @@ class ViewerGL(ViewerBase):
                 :meth:`is_running` returns False. If None, headless rendering
                 is unbounded; if 0, no frames are rendered. Ignored in
                 windowed mode.
+            enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
+                interoperability. Combine :class:`CudaInterop` flags with ``|``.
+                Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
         """
-        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
-            raise TypeError("plot_history_size must be an integer")
-        if plot_history_size <= 0:
-            raise ValueError("plot_history_size must be > 0")
+        self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self.renderer.window)
         if num_frames is not None:
             if not isinstance(num_frames, int) or isinstance(num_frames, bool):
                 raise TypeError("num_frames must be an integer or None")
             if num_frames < 0:
                 raise ValueError("num_frames must be >= 0")
-
-        # Rolling buffers for log_scalar() time-series plots.
-        self._scalar_buffers: dict[str, collections.deque] = {}
-        self._scalar_arrays: dict[str, np.ndarray | None] = {}
-        self._scalar_accumulators: dict[str, list[float]] = {}
-        self._scalar_smoothing: dict[str, int] = {}
-        self._array_buffers: dict[str, np.ndarray] = {}
-        self._array_dirty: set[str] = set()
-        self._array_textures: dict[str, dict[str, Any]] = {}
-        self._heatmap_min_cell_pixels = 3.0
-        self._heatmap_nan_rgba = np.array([51, 51, 51, 255], dtype=np.uint8)
-        self._heatmap_color_lut = self._build_heatmap_color_lut()
-        self._plot_history_size = plot_history_size
+        if not isinstance(enable_cuda_interop, ViewerGL.CudaInterop):
+            raise TypeError("enable_cuda_interop must be a ViewerGL.CudaInterop value")
+        if int(enable_cuda_interop) & ~int(ViewerGL.CudaInterop.ALL):
+            raise ValueError("enable_cuda_interop contains unsupported flags")
+        self._enable_cuda_interop = enable_cuda_interop
 
         # Initialized below once self.device is available; declared here so
         # close() can safely run if __init__ raises before that point.
@@ -318,6 +359,9 @@ class ViewerGL(ViewerBase):
         self._wp_pbo = None
         self._pbo_host_buffer = None
 
+    def _cuda_interop_enabled(self, category: CudaInterop) -> bool:
+        return bool(self._enable_cuda_interop & category)
+
     @override
     def _init_extra_layer_state(self, layer):
         super()._init_extra_layer_state(layer)
@@ -355,35 +399,6 @@ class ViewerGL(ViewerBase):
             pbo_id = (gl.GLuint * 1)(self._pbo)
             gl.glDeleteBuffers(1, pbo_id)
             self._pbo = None
-
-    def _delete_array_texture(self, name: str):
-        texture_state = self._array_textures.pop(name, None)
-        if texture_state is None:
-            return
-        gl = getattr(RendererGL, "gl", None)
-        texture_id = texture_state.get("texture_id")
-        if gl is None or texture_id is None:
-            return
-        texture_ids = (gl.GLuint * 1)(texture_id)
-        gl.glDeleteTextures(1, texture_ids)
-
-    def _clear_array_textures(self):
-        if not self._array_textures:
-            return
-        gl = getattr(RendererGL, "gl", None)
-        if gl is None:
-            self._array_textures.clear()
-            return
-        texture_ids = [state["texture_id"] for state in self._array_textures.values() if state.get("texture_id")]
-        if texture_ids:
-            gl_ids = (gl.GLuint * len(texture_ids))(*texture_ids)
-            gl.glDeleteTextures(len(texture_ids), gl_ids)
-        self._array_textures.clear()
-
-    def _clear_owned_array_textures(self, owns):
-        for name in list(self._array_textures.keys()):
-            if owns(name):
-                self._delete_array_texture(name)
 
     def register_ui_callback(
         self,
@@ -433,7 +448,12 @@ class ViewerGL(ViewerBase):
         Create a low-resolution sphere mesh for point rendering.
         """
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
-        self._point_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        self._point_mesh = MeshGL(
+            len(mesh.vertices),
+            len(mesh.indices),
+            self.device,
+            enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.STATIC_MESH),
+        )
 
         points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
         normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
@@ -573,23 +593,12 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
+        self._shape_opacity_update_flags = None
+        self._shape_opacity_update_flags_host = None
 
         # Scalar, array, and image names are layer-qualified just like
         # geometry names; clear only the active layer's entries.
-        for name in list(self._scalar_buffers.keys()):
-            if owns(name):
-                self._scalar_buffers.pop(name, None)
-                self._scalar_arrays.pop(name, None)
-                self._scalar_accumulators.pop(name, None)
-                self._scalar_smoothing.pop(name, None)
-        for name in list(self._scalar_arrays.keys()):
-            if owns(name):
-                self._scalar_arrays.pop(name, None)
-        for name in list(self._array_buffers.keys()):
-            if owns(name):
-                self._array_buffers.pop(name, None)
-                self._array_dirty.discard(name)
-        self._clear_owned_array_textures(owns)
+        self._plot_logger.clear_matching(owns)
 
         if getattr(self, "_image_logger", None) is not None:
             self._image_logger.clear_matching(owns)
@@ -717,6 +726,8 @@ class ViewerGL(ViewerBase):
 
         if self.model is None:
             self._packed_groups = []
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         shape_count = self.model.shape_count
@@ -739,6 +750,8 @@ class ViewerGL(ViewerBase):
         self._packed_groups = groups
 
         if total == 0:
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
@@ -756,7 +769,11 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(
+                            max(n, 1),
+                            self.objects[shapes.mesh],
+                            enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+                        )
                         # Planes (e.g. the ground) opt out of the wireframe edge
                         # overlay. Keyed on geometry type, not the checker material
                         # bit, so checker-shaded non-planes still get edges (#2808).
@@ -767,6 +784,8 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=device.is_cuda)
+        self._shape_opacity_update_flags = wp.zeros(2, dtype=wp.int32, device=device)
+        self._shape_opacity_update_flags_host = wp.empty(2, dtype=wp.int32, device="cpu", pinned=device.is_cuda)
 
     def _rebuild_gl_shape_caches(self):
         """Rebuild GL-specific caches after shape instances change.
@@ -823,6 +842,52 @@ class ViewerGL(ViewerBase):
 
         self._build_packed_vbo_arrays()
 
+    def _shape_opacity_groups_changed(self) -> bool:
+        """Return True if any rendered shape crossed the opaque/transparent threshold."""
+        if (
+            self.model is None
+            or self.model.shape_opacity is None
+            or self._shape_transparent_mask is None
+            or self._shape_to_slot is None
+        ):
+            return False
+
+        opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
+        current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
+        rendered_shapes = self._shape_to_slot >= 0
+        current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
+        return bool(np.any(current_mask != self._shape_transparent_mask))
+
+    def _rebuild_shape_batches_for_opacity_groups(self):
+        """Rebuild shape batches after opacity changes move shapes between render passes."""
+        from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
+
+        shape_prefix = self._qualify("/model/shapes/")
+        stale_shape_objects = [
+            key
+            for key, value in self.objects.items()
+            if isinstance(value, MeshInstancerGL) and key.startswith(shape_prefix)
+        ]
+        for k in stale_shape_objects:
+            obj = self.objects.pop(k)
+            del obj
+
+        self._shape_instances = {}
+        self._gaussian_instances = []
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_shape_color = None
+        self.model_shape_opacity = None
+        self._shape_to_slot = None
+        self._slot_to_shape = None
+        self._slot_to_shape_wp = None
+        self._shape_to_batch = None
+        self._shape_transparent_mask = None
+
+        self._populate_shapes()
+        self._rebuild_gl_shape_caches()
+        self.model_changed = True
+
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
         super().set_visible_worlds(worlds)
@@ -843,18 +908,20 @@ class ViewerGL(ViewerBase):
             self.picking.world_offsets = self.world_offsets
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """
         Set the camera position, pitch, and yaw.
 
         Args:
-            pos: The camera position.
-            pitch: The camera pitch.
-            yaw: The camera yaw.
+            pos: The camera position [m].
+            pitch: The camera pitch [deg]. If None, the current pitch is kept.
+            yaw: The camera yaw [deg]. If None, the current yaw is kept.
         """
         self.camera.pos = self.camera._as_vec3(pos)
-        self.camera.pitch = max(min(pitch, 89.0), -89.0)
-        self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
+        if pitch is not None:
+            self.camera.pitch = max(min(pitch, 89.0), -89.0)
+        if yaw is not None:
+            self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
         self.camera.sync_pivot_to_view()
 
     @override
@@ -871,6 +938,8 @@ class ViewerGL(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -890,6 +959,8 @@ class ViewerGL(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -898,13 +969,51 @@ class ViewerGL(ViewerBase):
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
+        existing = self.objects.get(name)
+        replace = existing is None
+        if existing is not None:
+            replace = dynamic != existing.dynamic
+            if dynamic and existing.dynamic:
+                replace = replace or len(points) > existing.max_points or len(indices) > existing.max_indices
+            else:
+                replace = replace or len(points) != existing.num_points or len(indices) != existing.num_indices
 
-        if name not in self.objects:
-            self.objects[name] = MeshGL(
-                len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
+        updated = False
+        if replace:
+            point_capacity = len(points)
+            index_capacity = len(indices)
+            if existing is not None and existing.dynamic and dynamic:
+                point_capacity = max(point_capacity, 1, 2 * existing.max_points)
+                index_capacity = max(index_capacity, 1, 2 * existing.max_indices)
+            replacement = MeshGL(
+                point_capacity,
+                index_capacity,
+                self.device,
+                hidden=hidden,
+                backface_culling=backface_culling,
+                dynamic=dynamic,
+                enable_cuda_interop=self._cuda_interop_enabled(
+                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
+                ),
             )
+            if existing is not None:
+                replacement.color = existing.color
+                replacement.material = existing.material
+            try:
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+            except Exception:
+                replacement.destroy()
+                raise
+            self.objects[name] = replacement
+            updated = True
+            if existing is not None:
+                for obj in self.objects.values():
+                    if isinstance(obj, MeshInstancerGL) and obj.mesh is existing:
+                        obj.set_mesh(replacement)
+                existing.destroy()
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        if not updated:
+            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
@@ -919,6 +1028,59 @@ class ViewerGL(ViewerBase):
                 m = float(metallic)
             self.objects[name].material = (r, m, c, t)
 
+    def _update_mesh_instancer(
+        self,
+        name: str,
+        mesh: MeshGL,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
+        opacities: wp.array[wp.float32] | None,
+        hidden: bool,
+    ) -> None:
+        """Create or update one homogeneous GL instance batch."""
+        instancer = self.objects.get(name, None)
+        transform_count = len(xforms) if xforms is not None else 0
+        resized = False
+
+        if instancer is None:
+            capacity = max(transform_count, 1)
+            instancer = MeshInstancerGL(
+                capacity,
+                mesh,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+            )
+            self.objects[name] = instancer
+            resized = True
+        elif transform_count > instancer.num_instances:
+            new_capacity = max(transform_count, instancer.num_instances * 2)
+            old = instancer
+            instancer = MeshInstancerGL(
+                new_capacity,
+                mesh,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+            )
+            self.objects[name] = instancer
+            del old
+            resized = True
+
+        if resized or not hidden:
+            instancer.update_from_transforms(xforms, scales, colors, materials, opacities)
+
+        instancer.hidden = hidden
+
+    @staticmethod
+    def _select_instance_subset(
+        values: wp.array[Any] | None, indices: np.ndarray, count: int, label: str
+    ) -> wp.array[Any] | None:
+        """Copy selected instance values to a compact array on the source device."""
+        if values is None:
+            return None
+        if len(values) != count:
+            raise ValueError(f"Number of {label} must match number of transforms")
+        return wp.array(values.numpy()[indices], dtype=values.dtype, device=values.device)
+
     @override
     def log_instances(
         self,
@@ -929,6 +1091,7 @@ class ViewerGL(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log a batch of mesh instances for rendering.
@@ -941,6 +1104,7 @@ class ViewerGL(ViewerBase):
             colors: Array of colors.
             materials: Array of materials.
             hidden: Whether the instances are hidden.
+            opacities: Array of display opacities.
         """
         # Route user-supplied names through the active layer (idempotent).
         # ``mesh`` is the path of a previously registered mesh; qualify it
@@ -956,28 +1120,55 @@ class ViewerGL(ViewerBase):
         if not isinstance(self.objects[mesh], MeshGL):
             raise RuntimeError(f"Path {mesh} is not a Mesh object")
 
-        instancer = self.objects.get(name, None)
         transform_count = len(xforms) if xforms is not None else 0
-        resized = False
+        transparent_name = f"{name}{_TRANSPARENT_INSTANCER_SUFFIX}"
+        transparent_instancer = self.objects.get(transparent_name)
 
-        if instancer is None:
-            capacity = max(transform_count, 1)
-            instancer = MeshInstancerGL(capacity, self.objects[mesh])
-            self.objects[name] = instancer
-            resized = True
-        elif transform_count > instancer.num_instances:
-            new_capacity = max(transform_count, instancer.num_instances * 2)
-            old = instancer
-            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
-            self.objects[name] = instancer
-            del old
-            resized = True
+        if not hidden and transform_count > 0 and opacities is not None:
+            if len(opacities) != transform_count:
+                raise ValueError("Number of opacities must match number of transforms")
 
-        needs_update = resized or not hidden
-        if needs_update:
-            self.objects[name].update_from_transforms(xforms, scales, colors, materials)
+            host_opacities = np.clip(opacities.numpy().reshape(-1), 0.0, 1.0)
+            transparent_mask = host_opacities < OPAQUE_OPACITY_THRESHOLD
+            if np.any(transparent_mask) and not np.all(transparent_mask):
+                opaque_indices = np.flatnonzero(~transparent_mask)
+                transparent_indices = np.flatnonzero(transparent_mask)
 
-        self.objects[name].hidden = hidden
+                opaque_values = [
+                    self._select_instance_subset(values, opaque_indices, transform_count, label)
+                    for values, label in (
+                        (xforms, "transforms"),
+                        (scales, "scales"),
+                        (colors, "colors"),
+                        (materials, "materials"),
+                        (opacities, "opacities"),
+                    )
+                ]
+                transparent_values = [
+                    self._select_instance_subset(values, transparent_indices, transform_count, label)
+                    for values, label in (
+                        (xforms, "transforms"),
+                        (scales, "scales"),
+                        (colors, "colors"),
+                        (materials, "materials"),
+                        (opacities, "opacities"),
+                    )
+                ]
+
+                self._update_mesh_instancer(name, self.objects[mesh], *opaque_values, hidden=False)
+                self._update_mesh_instancer(
+                    transparent_name,
+                    self.objects[mesh],
+                    *transparent_values,
+                    hidden=False,
+                )
+                return
+
+        self._update_mesh_instancer(
+            name, self.objects[mesh], xforms, scales, colors, materials, opacities, hidden=hidden
+        )
+        if isinstance(transparent_instancer, MeshInstancerGL):
+            transparent_instancer.hidden = True
 
     @override
     def log_capsules(
@@ -989,6 +1180,7 @@ class ViewerGL(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Render capsules using instanced cylinder bodies + instanced sphere end caps.
@@ -1004,6 +1196,7 @@ class ViewerGL(ViewerBase):
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
             hidden: Whether the instances are hidden.
+            opacities: Capsule display opacities (wp.float32), length N or None (no update).
         """
         # Route the user-supplied capsule batch name through the active
         # layer so two layers calling ``log_capsules`` with the same path
@@ -1032,7 +1225,9 @@ class ViewerGL(ViewerBase):
             self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
             return
 
-        self.log_instances(cyl_name, cylinder_mesh, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(
+            cyl_name, cylinder_mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden
+        )
 
         # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
         n = len(xforms) if xforms is not None else 0
@@ -1077,7 +1272,28 @@ class ViewerGL(ViewerBase):
                 record_tape=False,
             )
 
-        self.log_instances(cap_name, sphere_mesh, cap_xforms, cap_scales, cap_colors, cap_materials, hidden=hidden)
+        cap_opacities = None
+        if opacities is not None:
+            cap_opacities = wp.empty(cap_count, dtype=wp.float32, device=self.device)
+            wp.launch(
+                _capsule_duplicate_float,
+                dim=cap_count,
+                inputs=[opacities],
+                outputs=[cap_opacities],
+                device=self.device,
+                record_tape=False,
+            )
+
+        self.log_instances(
+            cap_name,
+            sphere_mesh,
+            cap_xforms,
+            cap_scales,
+            cap_colors,
+            cap_materials,
+            opacities=cap_opacities,
+            hidden=hidden,
+        )
 
     @override
     def log_lines(
@@ -1138,12 +1354,22 @@ class ViewerGL(ViewerBase):
         if name not in self.lines:
             # Start with reasonable default size, will expand as needed
             max_lines = max(num_lines, 1000)  # Reasonable default
-            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
+            self.lines[name] = LinesGL(
+                max_lines,
+                self.device,
+                hidden=hidden,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.LINES),
+            )
         elif num_lines > self.lines[name].max_lines:
             # Need to recreate with larger capacity
             self.lines[name].destroy()
             max_lines = max(num_lines, self.lines[name].max_lines * 2)
-            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
+            self.lines[name] = LinesGL(
+                max_lines,
+                self.device,
+                hidden=hidden,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.LINES),
+            )
 
         self.lines[name].update(starts, ends, colors)
         self.lines[name].hidden = hidden
@@ -1200,11 +1426,21 @@ class ViewerGL(ViewerBase):
 
         if name not in self.arrows:
             max_arrows = max(num_arrows, 1000)
-            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+            self.arrows[name] = LinesGL(
+                max_arrows,
+                self.device,
+                hidden=hidden,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.LINES),
+            )
         elif num_arrows > self.arrows[name].max_lines:
             self.arrows[name].destroy()
             max_arrows = max(num_arrows, self.arrows[name].max_lines * 2)
-            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+            self.arrows[name] = LinesGL(
+                max_arrows,
+                self.device,
+                hidden=hidden,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.LINES),
+            )
 
         self.arrows[name].update(starts, ends, colors)
         self.arrows[name].hidden = hidden
@@ -1257,6 +1493,41 @@ class ViewerGL(ViewerBase):
         for owner in getattr(self, "_wireframe_vbo_owners", {}).values():
             owner.destroy()
 
+    def _destroy_render_geometry(self):
+        """Destroy all render geometry while the OpenGL context is current."""
+        objects = getattr(self, "objects", {})
+        destroyed_ids: set[int] = set()
+
+        def destroy_once(obj):
+            if id(obj) not in destroyed_ids:
+                obj.destroy()
+                destroyed_ids.add(id(obj))
+
+        # Instancer VAOs reference prototype mesh buffers, so release them first.
+        for obj in objects.values():
+            if isinstance(obj, MeshInstancerGL):
+                destroy_once(obj)
+        for obj in objects.values():
+            if not isinstance(obj, MeshInstancerGL) and hasattr(obj, "destroy"):
+                destroy_once(obj)
+        objects.clear()
+
+        for collection_name in ("lines", "arrows"):
+            collection = getattr(self, collection_name, {})
+            for obj in collection.values():
+                destroy_once(obj)
+            collection.clear()
+
+        self._destroy_all_wireframes()
+        getattr(self, "wireframe_shapes", {}).clear()
+        getattr(self, "_wireframe_vbo_owners", {}).clear()
+
+        for mesh_name in ("_point_mesh", "_gaussian_mesh"):
+            mesh = getattr(self, mesh_name, None)
+            if mesh is not None:
+                destroy_once(mesh)
+                setattr(self, mesh_name, None)
+
     @override
     def clear_wireframe_vbo_cache(self):
         for obj in self.wireframe_shapes.values():
@@ -1265,6 +1536,13 @@ class ViewerGL(ViewerBase):
         for owner in self._wireframe_vbo_owners.values():
             owner.destroy()
         self._wireframe_vbo_owners.clear()
+
+    @override
+    def _log_particles(self, state: nt.State):
+        if not self.show_particles or self._layer_force_hidden():
+            self.log_points(self._qualify("/model/particles"), points=None, hidden=True)
+            return
+        super()._log_particles(state)
 
     @override
     def log_points(
@@ -1301,12 +1579,20 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             # Start with a reasonable default.
             initial_capacity = max(num_points, 256)
-            self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+            self.objects[name] = MeshInstancerGL(
+                initial_capacity,
+                self._point_mesh,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.POINTS),
+            )
             object_recreated = True
         elif num_points > self.objects[name].num_instances:
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
-            self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            self.objects[name] = MeshInstancerGL(
+                new_capacity,
+                self._point_mesh,
+                enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.POINTS),
+            )
             del old
             object_recreated = True
 
@@ -1328,7 +1614,12 @@ class ViewerGL(ViewerBase):
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
-        self._gaussian_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        self._gaussian_mesh = MeshGL(
+            len(mesh.vertices),
+            len(mesh.indices),
+            self.device,
+            enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.STATIC_MESH),
+        )
         points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
         normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
         uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
@@ -1413,12 +1704,18 @@ class ViewerGL(ViewerBase):
 
         recreated = False
         if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(max(n, 256), self._gaussian_mesh)
+            self.objects[name] = MeshInstancerGL(
+                max(n, 256),
+                self._gaussian_mesh,
+            )
             self.objects[name].cast_shadow = False
             recreated = True
         elif n > self.objects[name].num_instances:
             old = self.objects[name]
-            self.objects[name] = MeshInstancerGL(max(n, old.num_instances * 2), self._gaussian_mesh)
+            self.objects[name] = MeshInstancerGL(
+                max(n, old.num_instances * 2),
+                self._gaussian_mesh,
+            )
             self.objects[name].cast_shadow = False
             del old
             recreated = True
@@ -1476,34 +1773,17 @@ class ViewerGL(ViewerBase):
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray | None):
         """
-        Log a numeric array for visualization.
+        Log a numeric array as a live heatmap.
+
+        Scalars appear as a single cell, 1-D arrays as a single row, and
+        2-D arrays as a grid. Higher-dimensional arrays are not supported.
 
         Args:
             name: Unique path/name for the array signal.
             array: Array data to visualize, or ``None`` to remove a previously
                 logged array.
         """
-        # Route user-supplied names through the active layer (idempotent).
-        name = self._qualify(name)
-
-        if array is None:
-            self._array_buffers.pop(name, None)
-            self._array_dirty.discard(name)
-            self._delete_array_texture(name)
-            return
-
-        array_np = array.numpy() if isinstance(array, wp.array) else np.asarray(array)
-        array_np = np.asarray(array_np, dtype=np.float32)
-
-        if array_np.ndim == 0:
-            array_np = array_np.reshape(1, 1)
-        elif array_np.ndim == 1:
-            array_np = array_np.reshape(1, -1)
-        elif array_np.ndim != 2:
-            raise ValueError("ViewerGL.log_array only supports scalar, 1-D, or 2-D arrays.")
-
-        self._array_buffers[name] = np.ascontiguousarray(array_np)
-        self._array_dirty.add(name)
+        self._plot_logger.log_array(self._qualify(name), array)
 
     @override
     def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
@@ -1539,41 +1819,16 @@ class ViewerGL(ViewerBase):
             smoothing: Number of raw samples to average before committing
                 a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
-        if smoothing < 1:
-            raise ValueError("smoothing must be >= 1")
-        # Route user-supplied names through the active layer (idempotent).
-        name = self._qualify(name)
-        val = float(value.item() if hasattr(value, "item") else value)
-        buf = self._scalar_buffers.get(name)
-        if buf is None:
-            buf = collections.deque(maxlen=self._plot_history_size)
-            self._scalar_buffers[name] = buf
-        elif clear:
-            buf.clear()
-            self._scalar_accumulators.pop(name, None)
-
-        self._scalar_smoothing[name] = smoothing
-        if smoothing <= 1:
-            buf.append(val)
-        else:
-            acc = self._scalar_accumulators.get(name)
-            if acc is None:
-                acc = []
-                self._scalar_accumulators[name] = acc
-            acc.append(val)
-            if len(acc) >= smoothing:
-                buf.append(sum(acc) / len(acc))
-                acc.clear()
-
-        self._scalar_arrays[name] = None
+        self._plot_logger.log_scalar(self._qualify(name), value, clear=clear, smoothing=smoothing)
 
     @override
     def log_state(self, state: nt.State):
         """
         Log the current simulation state for rendering.
 
-        For shape instances on CUDA, uses a batched path: 2 kernel launches +
-        1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
+        For shape instances on CUDA, the batched path computes transforms and
+        copies them to shared pinned memory. Opacity dirty tracking also copies
+        two flags and conditionally launches the opacity repack kernel.
         Everything else (capsules, SDF, particles, joints, …) uses the standard path.
 
         Args:
@@ -1586,7 +1841,32 @@ class ViewerGL(ViewerBase):
 
         self._sync_shape_colors_from_model()
 
-        if self._packed_vbo_xforms is not None and self.device.is_cuda:
+        use_packed_cuda = (
+            self._packed_vbo_xforms is not None
+            and self.device.is_cuda
+            and self.model.shape_opacity is not None
+            and self.model_shape_opacity is not None
+            and self._shape_opacity_update_flags is not None
+            and self._shape_opacity_update_flags_host is not None
+        )
+
+        if self.model_changed:
+            if self._shape_batches_have_transparency:
+                if self._shape_opacity_groups_changed():
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                self._sync_shape_opacities_from_model()
+        elif not use_packed_cuda:
+            if self._shape_opacity_groups_changed():
+                self._rebuild_shape_batches_for_opacity_groups()
+                return self.log_state(state)
+            self._sync_shape_opacities_from_model()
+
+        if use_packed_cuda:
+            opacity_check_enabled = 0 if self.model_changed and not self._shape_batches_have_transparency else 1
+            if opacity_check_enabled:
+                self._shape_opacity_update_flags.zero_()
+
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
             wp.launch(
                 _compute_shape_vbo_xforms,
@@ -1601,13 +1881,27 @@ class ViewerGL(ViewerBase):
                     self.world_offsets,
                     self.layer.xform,
                     self._packed_write_indices,
+                    self.model.shape_opacity,
+                    self.model_shape_opacity,
+                    self._shape_opacity_update_flags,
+                    opacity_check_enabled,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
                 record_tape=False,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
+            if opacity_check_enabled:
+                wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
             wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
+
+            if opacity_check_enabled:
+                opacity_flags = self._shape_opacity_update_flags_host.numpy()
+                if int(opacity_flags[1]) != 0:
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                if int(opacity_flags[0]) != 0:
+                    self._sync_shape_opacities_from_model()
 
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
@@ -1616,6 +1910,11 @@ class ViewerGL(ViewerBase):
             for key, shapes, offset, count in self._packed_groups:
                 visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+                opacities = (
+                    shapes.opacities
+                    if shapes.transparent and (self.model_changed or shapes.opacities_changed)
+                    else None
+                )
                 materials = shapes.materials if self.model_changed else None
 
                 if key in self._capsule_keys:
@@ -1626,6 +1925,7 @@ class ViewerGL(ViewerBase):
                         shapes.scales,
                         colors,
                         materials,
+                        opacities=opacities,
                         hidden=not visible,
                     )
                 else:
@@ -1637,9 +1937,11 @@ class ViewerGL(ViewerBase):
                             count,
                             colors,
                             materials,
+                            opacities,
                         )
 
                 shapes.colors_changed = False
+                shapes.opacities_changed = False
 
             # ---- Gaussians and non-shape rendering use standard synchronous paths ----
             self._log_gaussian_shapes(state)
@@ -1929,10 +2231,11 @@ class ViewerGL(ViewerBase):
         """
         Close the viewer and clean up resources.
         """
-        self._clear_array_textures()
+        self._plot_logger.clear()
         self._invalidate_pbo()
         if self._image_logger is not None:
             self._image_logger.clear()
+        self._destroy_render_geometry()
         self.renderer.close()
 
     @property
@@ -2276,178 +2579,3 @@ class ViewerGL(ViewerBase):
                 changed, new_visible = imgui.checkbox(f"Show '{lyr.layer_id}'", lyr.visible)
                 if changed:
                     self.set_layer_visible(lyr.layer_id, new_visible)
-
-    @staticmethod
-    def _build_heatmap_color_lut() -> np.ndarray:
-        inferno_stops = (
-            (0.0, (0.001, 0.000, 0.014)),
-            (0.2, (0.169, 0.042, 0.341)),
-            (0.4, (0.416, 0.090, 0.433)),
-            (0.6, (0.698, 0.165, 0.388)),
-            (0.8, (0.944, 0.403, 0.121)),
-            (1.0, (0.988, 0.998, 0.645)),
-        )
-        lut = np.empty((256, 4), dtype=np.uint8)
-        for index, value in enumerate(np.linspace(0.0, 1.0, 256, dtype=np.float32)):
-            for stop_index in range(len(inferno_stops) - 1):
-                t0, c0 = inferno_stops[stop_index]
-                t1, c1 = inferno_stops[stop_index + 1]
-                if value <= t1:
-                    alpha = 0.0 if t1 <= t0 else (float(value) - t0) / (t1 - t0)
-                    rgb = [round(255.0 * ((1.0 - alpha) * c0[channel] + alpha * c1[channel])) for channel in range(3)]
-                    lut[index, :3] = rgb
-                    lut[index, 3] = 255
-                    break
-            else:
-                lut[index, :3] = [round(255.0 * channel) for channel in inferno_stops[-1][1]]
-                lut[index, 3] = 255
-        return lut
-
-    @staticmethod
-    def _downsample_heatmap(array: np.ndarray, target_rows: int, target_cols: int) -> np.ndarray:
-        rows, cols = array.shape
-        if rows <= target_rows and cols <= target_cols:
-            return array
-
-        row_factor = max(1, (rows + target_rows - 1) // target_rows)
-        col_factor = max(1, (cols + target_cols - 1) // target_cols)
-        new_rows = max(1, rows // row_factor)
-        new_cols = max(1, cols // col_factor)
-        if new_rows == rows and new_cols == cols:
-            return array
-
-        trimmed = array[: new_rows * row_factor, : new_cols * col_factor]
-        finite_mask = np.isfinite(trimmed)
-        safe_values = np.where(finite_mask, trimmed, 0.0)
-        reshaped_shape = (new_rows, row_factor, new_cols, col_factor)
-        value_sum = safe_values.reshape(reshaped_shape).sum(axis=(1, 3), dtype=np.float64)
-        value_count = finite_mask.reshape(reshaped_shape).sum(axis=(1, 3))
-        downsampled = np.full((new_rows, new_cols), np.nan, dtype=np.float32)
-        np.divide(value_sum, value_count, out=downsampled, where=value_count > 0)
-        return downsampled
-
-    def _colorize_heatmap(self, array: np.ndarray) -> tuple[np.ndarray, float, float]:
-        finite_mask = np.isfinite(array)
-        if not np.any(finite_mask):
-            rgba = np.empty((*array.shape, 4), dtype=np.uint8)
-            rgba[...] = self._heatmap_nan_rgba
-            return np.ascontiguousarray(rgba), float("nan"), float("nan")
-
-        finite_values = array[finite_mask]
-        value_min = float(np.min(finite_values))
-        value_max = float(np.max(finite_values))
-        denom = max(value_max - value_min, 1.0e-8)
-
-        normalized = np.zeros(array.shape, dtype=np.float32)
-        np.subtract(array, value_min, out=normalized, where=finite_mask)
-        np.divide(normalized, denom, out=normalized, where=finite_mask)
-        np.clip(normalized, 0.0, 1.0, out=normalized)
-
-        lut_indices = np.rint(normalized * 255.0).astype(np.uint8)
-        rgba = self._heatmap_color_lut[lut_indices].copy()
-        rgba[~finite_mask] = self._heatmap_nan_rgba
-        return np.ascontiguousarray(rgba), value_min, value_max
-
-    def _ensure_array_texture(self, name: str, width: int, height: int) -> dict[str, Any]:
-        texture_state = self._array_textures.get(name)
-        if texture_state is not None and texture_state["size"] == (width, height):
-            return texture_state
-
-        if texture_state is not None:
-            self._delete_array_texture(name)
-
-        gl = RendererGL.gl
-        texture_id = (gl.GLuint * 1)()
-        gl.glGenTextures(1, texture_id)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id[0])
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
-        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGBA8,
-            width,
-            height,
-            0,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            None,
-        )
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-        texture_state = {
-            "texture_id": texture_id[0],
-            "size": (width, height),
-            "source_shape": None,
-            "display_shape": None,
-            "value_min": 0.0,
-            "value_max": 0.0,
-        }
-        self._array_textures[name] = texture_state
-        return texture_state
-
-    def _update_array_texture(self, texture_id: int, rgba: np.ndarray):
-        gl = RendererGL.gl
-        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
-        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-        gl.glTexSubImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            0,
-            0,
-            rgba.shape[1],
-            rgba.shape[0],
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            rgba.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-        )
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float, dpi_scale: float = 1.0):
-        imgui = self.ui.imgui
-        s = max(1.0, float(dpi_scale))
-
-        rows, cols = array.shape
-        heatmap_width = max(120.0 * s, width)
-        heatmap_height = float(np.clip(heatmap_width * rows / max(cols, 1), 80.0 * s, 220.0 * s))
-        min_cell_px = max(1.0, self._heatmap_min_cell_pixels * s)
-        target_cols = max(1, min(cols, int(heatmap_width / min_cell_px)))
-        target_rows = max(1, min(rows, int(heatmap_height / min_cell_px)))
-        display_array = self._downsample_heatmap(array, target_rows, target_cols)
-        display_rows, display_cols = display_array.shape
-        texture_state = self._ensure_array_texture(name, display_cols, display_rows)
-
-        if (
-            name in self._array_dirty
-            or texture_state["source_shape"] != array.shape
-            or texture_state["display_shape"] != display_array.shape
-        ):
-            rgba, value_min, value_max = self._colorize_heatmap(display_array)
-            self._update_array_texture(texture_state["texture_id"], rgba)
-            texture_state["source_shape"] = array.shape
-            texture_state["display_shape"] = display_array.shape
-            texture_state["value_min"] = value_min
-            texture_state["value_max"] = value_max
-            self._array_dirty.discard(name)
-
-        draw_list = imgui.get_window_draw_list()
-        origin = imgui.get_cursor_screen_pos()
-        imgui.image(imgui.ImTextureRef(texture_state["texture_id"]), imgui.ImVec2(heatmap_width, heatmap_height))
-
-        border_color = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 1.0, 1.0, 0.25))
-        draw_list.add_rect(
-            imgui.ImVec2(origin.x, origin.y),
-            imgui.ImVec2(origin.x + heatmap_width, origin.y + heatmap_height),
-            border_color,
-        )
-        shape_text = f"shape {rows}x{cols}"
-        if (display_rows, display_cols) != (rows, cols):
-            shape_text += f"  shown {display_rows}x{display_cols}"
-        if np.isfinite(texture_state["value_min"]) and np.isfinite(texture_state["value_max"]):
-            range_text = f"min {texture_state['value_min']:.4g}  max {texture_state['value_max']:.4g}"
-        else:
-            range_text = "min --  max --"
-        imgui.text(f"{shape_text}  {range_text}")

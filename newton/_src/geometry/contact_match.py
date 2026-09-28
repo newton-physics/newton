@@ -246,9 +246,11 @@ class _MatchData:
     # Per-new candidate prev index (final value resolved in pass 2).
     match_index: wp.array[wp.int32]
 
-    # Thresholds
+    # Thresholds and packed-key layout
     pos_threshold_sq: float
     normal_dot_threshold: float
+    pair_sub_key_mask: wp.int64
+    pair_key_stride: wp.int64
 
 
 @wp.kernel(enable_backward=False)
@@ -305,8 +307,8 @@ def _match_contacts_kernel(data: _MatchData):
     # exact key would spuriously break stable contacts.  Pair counts are
     # small (<= a few manifold points), so a linear scan inside the
     # range is cheap.
-    pair_prefix = target_key & wp.int64(~0x7FFFFF)
-    pair_end = pair_prefix + wp.int64(0x800000)  # 1 << 23
+    pair_prefix = target_key & ~data.pair_sub_key_mask
+    pair_end = pair_prefix + data.pair_key_stride
     range_lo = _lower_bound_int64(0, n_old, pair_prefix, data.prev_keys)
     range_hi = _lower_bound_int64(range_lo, n_old, pair_end, data.prev_keys)
 
@@ -569,6 +571,8 @@ def _collect_contact_report_kernel(
     prev_was_matched: wp.array[wp.int32],
     prev_keys: wp.array[wp.int64],
     prev_count: wp.array[wp.int32],
+    shape_index_bits: int,
+    sub_key_bits: int,
     shape_world: wp.array[wp.int32],
     reset_world_mask: wp.array[wp.bool],
     world_count: int,
@@ -583,8 +587,9 @@ def _collect_contact_report_kernel(
 
     if i < prev_count[0]:
         key = prev_keys[i]
-        shape0 = wp.int32((key >> wp.int64(43)) & wp.int64(0xFFFFF))
-        shape1 = wp.int32((key >> wp.int64(23)) & wp.int64(0xFFFFF))
+        shape_mask = (wp.int64(1) << wp.int64(shape_index_bits)) - wp.int64(1)
+        shape0 = wp.int32((key >> wp.int64(sub_key_bits + shape_index_bits)) & shape_mask)
+        shape1 = wp.int32((key >> wp.int64(sub_key_bits)) & shape_mask)
         reset_selected = reset_world_selected(
             shape_world[shape0], reset_world_mask, world_count
         ) or reset_world_selected(shape_world[shape1], reset_world_mask, world_count)
@@ -626,6 +631,8 @@ class ContactMatcher:
         sorter: The :class:`ContactSorter` producing the sorted contact stream.
         shape_world: Per-shape world ids, with ``-1`` for global shapes.
         world_count: Number of local worlds.
+        shape_index_bits: Number of sort-key bits reserved for each shape index.
+        sub_key_bits: Number of low sort-key bits reserved for the per-pair contact sub-key.
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
@@ -647,6 +654,8 @@ class ContactMatcher:
         sorter: ContactSorter,
         shape_world: wp.array[wp.int32],
         world_count: int,
+        shape_index_bits: int,
+        sub_key_bits: int,
         pos_threshold: float = 0.0005,
         normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
@@ -660,6 +669,10 @@ class ContactMatcher:
             self._sorter = sorter
             self._shape_world = shape_world
             self._world_count = int(world_count)
+            self._shape_index_bits = int(shape_index_bits)
+            self._sub_key_bits = int(sub_key_bits)
+            self._pair_sub_key_mask = wp.int64((1 << sub_key_bits) - 1)
+            self._pair_key_stride = wp.int64(1 << sub_key_bits)
             self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
 
             # Own sorted keys because current sorting overwrites key scratch.
@@ -808,6 +821,8 @@ class ContactMatcher:
         data.prev_claim = self._prev_claim
         data.pos_threshold_sq = self._pos_threshold_sq
         data.normal_dot_threshold = self._normal_dot_threshold
+        data.pair_sub_key_mask = self._pair_sub_key_mask
+        data.pair_key_stride = self._pair_key_stride
 
         wp.launch(_match_contacts_kernel, dim=self._capacity, inputs=[data], device=device)
         wp.launch(
@@ -1025,6 +1040,8 @@ class ContactMatcher:
                 self._prev_was_matched,
                 self._prev_sorted_keys,
                 self._prev_count,
+                self._shape_index_bits,
+                self._sub_key_bits,
                 self._shape_world,
                 self._reset_world_mask,
                 self._world_count,

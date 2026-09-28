@@ -63,14 +63,19 @@ class GeoTypeEx(enum.IntEnum):
 
 @wp.struct
 class SupportMapDataProvider:
-    """
-    Placeholder for data access needed by support mapping (e.g., mesh buffers).
-    Extend with fields as required by your shapes.
-    Not needed for Newton but can be helpful for projects like MuJoCo Warp where
-    the convex hull data is stored in warp arrays that would bloat the GenericShapeData struct.
-    """
+    """Optional external data provider for support mapping."""
 
     pass
+
+
+@wp.struct
+class AcceleratedSupportMapDataProvider:
+    """Model-owned directional support-map acceleration data."""
+
+    shape_support_data: wp.array[wp.vec4i]
+    support_lut: wp.array[int]
+    support_vertex_offsets: wp.array[int]
+    support_neighbors: wp.array[int]
 
 
 @wp.func
@@ -118,6 +123,87 @@ class GenericShapeData:
     scale: wp.vec3
     auxiliary: wp.vec3
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+    shape_index: int  # Index for optional model-owned support-map acceleration data.
+
+
+@wp.func
+def _octahedral_support_seed(direction: wp.vec3, resolution: int, lut_start: int, lut: wp.array[int]) -> int:
+    """Return a directional seed vertex from an octahedral lookup table."""
+    length = wp.abs(direction[0]) + wp.abs(direction[1]) + wp.abs(direction[2])
+    if length <= 1.0e-20:
+        return lut[lut_start]
+    p = wp.vec2(direction[0] / length, direction[1] / length)
+    if direction[2] < 0.0:
+        old = p
+        sx = 1.0 if old[0] >= 0.0 else -1.0
+        sy = 1.0 if old[1] >= 0.0 else -1.0
+        p = wp.vec2((1.0 - wp.abs(old[1])) * sx, (1.0 - wp.abs(old[0])) * sy)
+    x = int(wp.round(wp.clamp(0.5 * p[0] + 0.5, 0.0, 1.0) * float(resolution - 1)))
+    y = int(wp.round(wp.clamp(0.5 * p[1] + 0.5, 0.0, 1.0) * float(resolution - 1)))
+    return lut[lut_start + y * resolution + x]
+
+
+@wp.func
+def _support_map_convex_mesh(
+    geom: GenericShapeData, direction: wp.vec3, data_provider: AcceleratedSupportMapDataProvider
+) -> wp.vec3:
+    """Return convex-mesh support, using an edge walk when acceleration data is available."""
+    mesh = wp.mesh_get(unpack_mesh_ptr(geom.auxiliary))
+    scaled_dir = wp.cw_mul(direction, geom.scale)
+    best_idx = int(0)
+
+    accelerated = geom.shape_index >= 0 and data_provider.shape_support_data.shape[0] > geom.shape_index
+    if accelerated:
+        support_data = data_provider.shape_support_data[geom.shape_index]
+        resolution = support_data[3]
+        accelerated = resolution > 0
+        if accelerated:
+            best_idx = _octahedral_support_seed(scaled_dir, resolution, support_data[0], data_provider.support_lut)
+            best_dot = wp.dot(mesh.points[best_idx], scaled_dir)
+            improved = int(1)
+            iteration = int(0)
+            while improved != 0 and iteration < mesh.points.shape[0]:
+                improved = 0
+                candidate_idx = best_idx
+                candidate_dot = best_dot
+                begin = data_provider.support_vertex_offsets[support_data[1] + best_idx]
+                end = data_provider.support_vertex_offsets[support_data[1] + best_idx + 1]
+                for slot in range(begin, end):
+                    vertex = data_provider.support_neighbors[support_data[2] + slot]
+                    value = wp.dot(mesh.points[vertex], scaled_dir)
+                    if value > candidate_dot or (value == candidate_dot and vertex < candidate_idx):
+                        candidate_dot = value
+                        candidate_idx = vertex
+                if candidate_idx != best_idx:
+                    best_idx = candidate_idx
+                    best_dot = candidate_dot
+                    improved = 1
+                iteration += 1
+
+    if not accelerated:
+        max_dot = float(-1.0e10)
+        for i in range(mesh.points.shape[0]):
+            dot_val = wp.dot(mesh.points[i], scaled_dir)
+            if dot_val > max_dot:
+                max_dot = dot_val
+                best_idx = i
+
+    return wp.cw_mul(mesh.points[best_idx], geom.scale)
+
+
+@wp.func
+def _support_map_convex_mesh_exhaustive(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
+    """Return convex-mesh support by scanning all vertices."""
+    mesh = wp.mesh_get(unpack_mesh_ptr(geom.auxiliary))
+    scaled_dir = wp.cw_mul(direction, geom.scale)
+    best_idx = int(0)
+    max_dot = float(-1.0e10)
+    for i in range(mesh.points.shape[0]):
+        dot_val = wp.dot(mesh.points[i], scaled_dir)
+        if dot_val > max_dot:
+            max_dot = dot_val
+            best_idx = i
+    return wp.cw_mul(mesh.points[best_idx], geom.scale)
 
 
 @wp.func
@@ -132,7 +218,7 @@ def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: SupportMapDataProvider) -> wp.vec3:
+def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
     """
     Return the support point of a primitive in its local frame.
 
@@ -153,25 +239,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     result = wp.vec3(0.0, 0.0, 0.0)
 
     if geom.shape_type == GeoType.CONVEX_MESH:
-        # Convex hull support: find the furthest point in the direction
-        mesh_ptr = unpack_mesh_ptr(geom.auxiliary)
-        mesh = wp.mesh_get(mesh_ptr)
-
-        mesh_scale = geom.scale
-        num_verts = mesh.points.shape[0]
-
-        # Pre-scale direction: dot(scale*v, d) == dot(v, scale*d)
-        # This moves the per-vertex cw_mul out of the loop (only 1 at the end)
-        scaled_dir = wp.cw_mul(direction, mesh_scale)
-
-        max_dot = float(-1.0e10)
-        best_idx = int(0)
-        for i in range(num_verts):
-            dot_val = wp.dot(mesh.points[i], scaled_dir)
-            if dot_val > max_dot:
-                max_dot = dot_val
-                best_idx = i
-        result = wp.cw_mul(mesh.points[best_idx], mesh_scale)
+        result = _support_map_convex_mesh_exhaustive(geom, direction)
 
     elif geom.shape_type == GeoTypeEx.TRIANGLE or geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
         # Triangle vertices: a at origin, b at scale, c at auxiliary
@@ -354,7 +422,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
 
 
 @wp.func
-def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: SupportMapDataProvider) -> wp.vec3:
+def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
     """
     Lean support function for common shape types only: CONVEX_MESH, BOX, SPHERE.
 
@@ -365,17 +433,7 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
     result = wp.vec3(0.0, 0.0, 0.0)
 
     if geom.shape_type == GeoType.CONVEX_MESH:
-        mesh_ptr = unpack_mesh_ptr(geom.auxiliary)
-        mesh = wp.mesh_get(mesh_ptr)
-        scaled_dir = wp.cw_mul(direction, geom.scale)
-        max_dot = float(-1.0e10)
-        best_idx = int(0)
-        for i in range(mesh.points.shape[0]):
-            dot_val = wp.dot(mesh.points[i], scaled_dir)
-            if dot_val > max_dot:
-                max_dot = dot_val
-                best_idx = i
-        result = wp.cw_mul(mesh.points[best_idx], geom.scale)
+        result = _support_map_convex_mesh_exhaustive(geom, direction)
 
     elif geom.shape_type == GeoType.BOX:
         result = _support_map_box(geom, direction)
@@ -392,9 +450,30 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
     return result
 
 
+@wp.func
+def support_map_accelerated(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+    """Support mapping with directional acceleration for eligible convex meshes."""
+    if geom.shape_type == GeoType.CONVEX_MESH:
+        return _support_map_convex_mesh(geom, direction, data_provider)
+    return support_map(geom, direction, data_provider)
+
+
+@wp.func
+def support_map_lean_accelerated(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+    """Lean support mapping with directional acceleration for eligible convex meshes."""
+    if geom.shape_type == GeoType.CONVEX_MESH:
+        return _support_map_convex_mesh(geom, direction, data_provider)
+    return support_map_lean(geom, direction, data_provider)
+
+
 def create_shape_support_function(support_func: Any, center_ties: bool = False):
     """Create a support function with built-in shape policies."""
-    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+    fuse_builtin_box_support = support_func in (
+        support_map,
+        support_map_accelerated,
+        support_map_lean,
+        support_map_lean_accelerated,
+    )
 
     if center_ties:
 
@@ -725,6 +804,7 @@ def extract_shape_data(
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
     result.center = wp.vec3(0.0, 0.0, 0.0)
+    result.shape_index = shape_idx
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
     if shape_types[shape_idx] == GeoType.CONVEX_MESH:

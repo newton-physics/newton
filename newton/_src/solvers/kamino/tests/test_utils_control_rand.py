@@ -8,11 +8,12 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
+from newton import ModelBuilder
+from newton._src.solvers.kamino._src import ModelKamino
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control.rand import RandomJointController
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.utils.basics import build_boxes_fourbar
 
 ###
 # Tests
@@ -54,8 +55,8 @@ class TestRandomController(unittest.TestCase):
 
     def test_01_make_for_single_fourbar(self):
         # Define a model builder for the boxes_fourbar problem with 1 world
-        builder = make_homogeneous_builder(num_worlds=1, build_fn=build_boxes_fourbar)
-        model = builder.finalize(device=self.default_device)
+        builder = build_boxes_fourbar()
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
         control = model.control()
 
@@ -84,8 +85,9 @@ class TestRandomController(unittest.TestCase):
 
     def test_02_make_for_multiple_fourbar(self):
         # Define a model builder for the boxes_fourbar problem with 4 worlds
-        builder = make_homogeneous_builder(num_worlds=4, build_fn=build_boxes_fourbar)
-        model = builder.finalize(device=self.default_device)
+        builder = ModelBuilder()
+        builder.replicate(builder=build_boxes_fourbar(), world_count=4)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
         control = model.control()
 

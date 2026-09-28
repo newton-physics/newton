@@ -1,0 +1,1 @@
+Store MJCF `springref` in `Model.joint_spring_ref` relative to the joint `ref`, matching the ref-relative Newton joint coordinates, and resolve USD `mjc:springref` angle units through the same `mjc:compiler:angle` rule as `SolverMuJoCo`.

@@ -129,6 +129,12 @@ class StateKamino:
     Shape of ``(sum_of_num_friction_joint_cts,)``.
     """
 
+    lambda_tau_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint effort limited actuator constraint forces [N or N·m].
+    Shape of ``(sum_of_num_effort_joint_cts,)``.
+    """
+
     ###
     # Operations
     ###
@@ -171,6 +177,7 @@ class StateKamino:
         wp.copy(self.lambda_kin_j, other.lambda_kin_j)
         wp.copy(self.lambda_dyn_j, other.lambda_dyn_j)
         wp.copy(self.lambda_f_j, other.lambda_f_j)
+        wp.copy(self.lambda_tau_j, other.lambda_tau_j)
 
     def convert_to_body_com_state(
         self,
@@ -324,6 +331,17 @@ class StateKamino:
             lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
             state.joint_lambdas_f = lambda_f_j
 
+        # Retrieve or allocate multipliers for effort-limit implicit-PD constraints
+        if (
+            hasattr(state, "joint_lambdas_tau")
+            and state.joint_lambdas_tau is not None
+            and state.joint_lambdas_tau.shape == (size.sum_of_num_effort_joint_cts,)
+        ):
+            lambda_tau_j = state.joint_lambdas_tau
+        else:
+            lambda_tau_j = wp.zeros(shape=(size.sum_of_num_effort_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas_tau = lambda_tau_j
+
         # Optionally initialize the `joint_q_prev` array to match the current `joint_q`
         if initialize_state_prev:
             wp.copy(joint_q_prev, state.joint_q)
@@ -340,6 +358,7 @@ class StateKamino:
             lambda_kin_j=lambda_kin_j,
             lambda_dyn_j=lambda_dyn_j,
             lambda_f_j=lambda_f_j,
+            lambda_tau_j=lambda_tau_j,
         )
 
         # Optionally convert body poses to CoM frame
@@ -397,6 +416,7 @@ class StateKamino:
         state_newton.joint_lambdas = state.lambda_kin_j
         state_newton.joint_lambdas_dyn = state.lambda_dyn_j
         state_newton.joint_lambdas_f = state.lambda_f_j
+        state_newton.joint_lambdas_tau = state.lambda_tau_j
 
         # Return the new newton.State object
         return state_newton

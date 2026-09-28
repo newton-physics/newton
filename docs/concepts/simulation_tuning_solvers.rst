@@ -39,7 +39,7 @@ before reaching for solver-specific keyword arguments:
   ``default_shape_cfg.mu``, ``ShapeConfig`` material arguments,
   ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``, contact
   ``margin`` and ``gap``, and collision pipeline options such as
-  ``broad_phase``, ``soft_contact_margin``, ``reduce_contacts``, and
+  ``broad_phase``, ``soft_contact_gap``, ``reduce_contacts``, and
   ``contact_matching``.
 - Drives and articulated models: ``joint_target_ke``, ``joint_target_kd``,
   ``joint_armature``, and ``joint_effort_limit`` where the active solver
@@ -151,6 +151,7 @@ repository examples spend tuning effort, not a shared solver API.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
      - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+       ``dat_conservative_bound_relaxation``,
        ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
@@ -163,12 +164,14 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_joint_linear_k_start``, ``rigid_joint_angular_k_start``,
        ``rigid_joint_linear_kd``, ``rigid_joint_angular_kd``,
        ``integrate_with_external_rigid_solver``,
-       ``particle_enable_self_contact``, ``particle_self_contact_radius``,
-       ``particle_self_contact_margin``,
-       ``particle_conservative_bound_relaxation``,
+       ``particle_enable_self_contact``, ``particle_self_contact_margin``,
+       ``particle_self_contact_gap``,
        ``particle_vertex_contact_buffer_size``,
        ``particle_edge_contact_buffer_size``,
-       ``particle_collision_detection_interval``,
+       ``collision_frequency``, ``collision_frequency_type``,
+       ``rigid_soft_enable_dat``,
+       ``rigid_soft_dat_use_interval_arithmetic``,
+       ``rigid_soft_contact_use_log_barrier``,
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
@@ -201,13 +204,24 @@ repository examples spend tuning effort, not a shared solver API.
        pool requires that they also be pre-allocated. Buffer sizes that are
        too small can drop contacts; sizes that are too large cost memory and
        performance. Examples commonly tune
-       ``iterations``, particle self-contact radius and margin, particle
-       contact buffers and filters, ``particle_collision_detection_interval``,
+       ``iterations``, particle self-contact margin and gap, particle
+       contact buffers and filters, ``collision_frequency`` / ``collision_frequency_type``,
        ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, and
        ``rigid_contact_history``. On the legacy path, examples also tune
        ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
        under compliant ALM as an advanced stabilization override.
+
+       ``rigid_soft_enable_dat=True`` requires a solver-owned
+       :class:`~newton.CollisionPipeline` with a positive minimum rigid-soft
+       query radius and is not supported with
+       ``integrate_with_external_rigid_solver=True``; the ``RIGID`` collision
+       slot may not be ``NONE``. ``dat_conservative_bound_relaxation`` (shared with
+       soft self-contact) must lie in ``(0, 1)`` and scales the per-detection
+       motion budget.
+       ``rigid_soft_dat_use_interval_arithmetic`` (Stage-2 prefix certification)
+       is experimental; the default path already relies on the module's interval
+       derivative bound.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.

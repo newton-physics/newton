@@ -184,9 +184,10 @@ def _run(
     position_target: np.ndarray | None = None,
     velocity_target: np.ndarray | None = None,
     steps: int = 1,
+    record_trajectory: bool = True,
     **fixture_kwargs,
 ) -> _Probe:
-    """Run a D6 rollout and retain the raw D6 coordinate trajectory."""
+    """Run a D6 rollout and optionally retain each coordinate sample."""
     fixture = _build_fixture(fixed_base, axes, device, **fixture_kwargs)
     model = fixture.model
     state_in, state_out, control = model.state(), model.state(), model.control()
@@ -213,14 +214,20 @@ def _run(
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
     solver = _make_solver(backend, model)
     contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=model.device) if backend == "mjwarp" else None
-    positions = [state_in.joint_q.numpy()[fixture.q_start : fixture.q_start + 3].copy()]
-    velocities = [state_in.joint_qd.numpy()[fixture.qd_start : fixture.qd_start + 3].copy()]
+    q_slice = slice(fixture.q_start, fixture.q_start + 3)
+    qd_slice = slice(fixture.qd_start, fixture.qd_start + 3)
+    positions = [state_in.joint_q.numpy()[q_slice].copy()] if record_trajectory else []
+    velocities = [state_in.joint_qd.numpy()[qd_slice].copy()] if record_trajectory else []
     for _ in range(steps):
         state_in.clear_forces()
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
         state_in, state_out = state_out, state_in
-        positions.append(state_in.joint_q.numpy()[fixture.q_start : fixture.q_start + 3].copy())
-        velocities.append(state_in.joint_qd.numpy()[fixture.qd_start : fixture.qd_start + 3].copy())
+        if record_trajectory:
+            positions.append(state_in.joint_q.numpy()[q_slice].copy())
+            velocities.append(state_in.joint_qd.numpy()[qd_slice].copy())
+    if not record_trajectory:
+        positions.append(state_in.joint_q.numpy()[q_slice].copy())
+        velocities.append(state_in.joint_qd.numpy()[qd_slice].copy())
     return _Probe(
         np.stack(positions),
         np.stack(velocities),
@@ -453,6 +460,7 @@ class TestGimbal(unittest.TestCase):
                         lower=lower,
                         upper=upper,
                         steps=50,
+                        record_trajectory=False,
                     )
                     np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
 

@@ -206,7 +206,7 @@ def test_box_box_sat_speculative_approach(test: unittest.TestCase, device):
             deterministic=True,
             contact_matching="latest",
             box_box_sat=True,
-            speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+            speculative_contact_gap_max=0.1,
         )
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="matrix_free", pgs_iterations=8, mf_warmstart=True)
@@ -315,6 +315,44 @@ def test_box_box_aligned_manifold_distinct_corners(test: unittest.TestCase, devi
             test.assertEqual(len(quads), 4, f"{label}: manifold does not span four corners: {sorted(quads)}")
 
 
+def test_box_box_sat_feature_keys_survive_convex_key_width(test: unittest.TestCase, device):
+    """Keep all four SAT feature ids distinct in convex-only scenes, whose default
+    contact sub-key is only a few bits wide, so each contact matches itself next frame."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.003
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=0.7)
+        a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
+        builder.add_shape_box(a, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)
+        b = builder.add_body(xform=wp.transform(wp.vec3(0.01, 0.0, 0.129), rot))
+        builder.add_shape_box(b, hx=0.03, hy=0.03, hz=0.03, cfg=cfg)
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(
+            model,
+            reduce_contacts=True,
+            rigid_contact_max=64,
+            broad_phase="nxn",
+            deterministic=True,
+            contact_matching="latest",
+            box_box_sat=True,
+        )
+        contacts = pipeline.contacts()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline.collide(state, contacts)
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(count, 4)
+        match = contacts.rigid_contact_match_index.numpy()[:count]
+        test.assertEqual(sorted(match.tolist()), list(range(count)))
+        # The sort key must carry the full generation-time feature id (a Z-face axis code is >= 2).
+        bits = pipeline._contact_sort_sub_key_bits
+        sub_keys = pipeline._contact_sorter.sorted_keys_view.numpy()[:count] & ((1 << bits) - 1)
+        test.assertEqual(len(set(sub_keys.tolist())), count)
+        test.assertTrue(np.all(sub_keys >= 64), f"feature ids truncated to {bits} bits: {sub_keys.tolist()}")
+
+
 class TestBoxBoxSAT(unittest.TestCase):
     pass
 
@@ -347,6 +385,12 @@ add_function_test(
     TestBoxBoxSAT,
     "test_box_box_sat_honors_shape_margin",
     test_box_box_sat_honors_shape_margin,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestBoxBoxSAT,
+    "test_box_box_sat_feature_keys_survive_convex_key_width",
+    test_box_box_sat_feature_keys_survive_convex_key_width,
     devices=get_test_devices(),
 )
 add_function_test(
