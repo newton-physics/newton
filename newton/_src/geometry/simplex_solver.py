@@ -350,7 +350,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 ``0.0`` (default) disables the cutoff and computes the exact
                 closest distance.
             MAX_ITER: Maximum number of GJK iterations (default: 30)
-            COLLIDE_EPSILON: Convergence threshold for distance computation (default: 1e-4)
+            COLLIDE_EPSILON: Relative duality-gap tolerance and near-contact distance [m] (default: 1e-4)
 
         Returns:
             Tuple of:
@@ -385,7 +385,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
 
         while iter_count > 0:
             iter_count -= 1
-            convergence_epsilon = COLLIDE_EPSILON
+            duplicate_epsilon = COLLIDE_EPSILON
 
             if dist_sq < COLLIDE_EPSILON * COLLIDE_EPSILON:
                 # A small simplex distance is not proof of overlap. Preserve
@@ -413,7 +413,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                     return False, point_a, point_b, wp.vec3(0.0), 0.0
                 # The simplex is close but its direction has not certified
                 # separation. Refine rather than declaring an overlap.
-                convergence_epsilon = EPSILON
+                duplicate_epsilon = EPSILON
 
             search_dir = -v
             # Track last search direction for robust normal fallback
@@ -433,8 +433,10 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # distance-vs-threshold test consistent.
             if max_dist > 0.0 and wp.dot(v, w_v) > max_dist * wp.sqrt(dist_sq):
                 break
+            # Relative duality gap; an absolute cutoff is too loose at millimeter gaps.
+            # Before the first vertex, v is the center offset and the witnesses would be empty.
             delta_dist = wp.dot(v, v - w_v)
-            if delta_dist <= 0.0 or delta_dist * delta_dist < (convergence_epsilon * convergence_epsilon * dist_sq):
+            if simplex_usage_mask != wp.uint32(0) and (delta_dist <= 0.0 or delta_dist < COLLIDE_EPSILON * dist_sq):
                 break
 
             # Check for duplicate vertex (numerical stalling)
@@ -442,7 +444,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             for i in range(4):
                 if (simplex_usage_mask & (wp.uint32(1) << wp.uint32(i))) != wp.uint32(0):
                     # Compare BtoA vectors directly
-                    if wp.length_sq(simplex_v[2 * i + 1] - w_v) < convergence_epsilon * convergence_epsilon:
+                    if wp.length_sq(simplex_v[2 * i + 1] - w_v) < duplicate_epsilon * duplicate_epsilon:
                         is_duplicate = bool(True)
                         break
             if is_duplicate:

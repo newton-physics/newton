@@ -77,6 +77,74 @@ class TestGJKNearContact(unittest.TestCase):
             # branch and retains the pre-existing witness-difference normal.
             np.testing.assert_allclose(actual[900:, 3:6], np.tile([0.0, 0.0, 1.0], (100, 1)), atol=2e-3)
 
+    def test_millimeter_gap_converges_relative_to_distance(self):
+        """Converge millimeter gaps to the relative tolerance, not an absolute 0.1 mm."""
+        radius, half = 0.01, np.array([0.02, 0.015, 0.01])
+        rng = np.random.default_rng(3)
+        directions = rng.normal(size=(500, 3))
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        centers, expected = [], []
+        for direction, gap in zip(directions, 10.0 ** rng.uniform(-4.0, -2.5, 500), strict=True):
+            lo, hi = 0.0, 1.0
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                offset = direction * mid - np.clip(direction * mid, -half, half)
+                lo, hi = (mid, hi) if np.linalg.norm(offset) < radius + gap else (lo, mid)
+            offset = direction * hi - np.clip(direction * hi, -half, half)
+            centers.append(direction * hi)
+            expected.append([np.linalg.norm(offset) - radius, *(offset / np.linalg.norm(offset))])
+        expected = np.array(expected)
+        for device in wp.get_devices():
+            with self.subTest(device=str(device)):
+                output = wp.zeros((500, 4), dtype=float, device=device)
+                wp.launch(
+                    _query_sphere_near_box,
+                    dim=500,
+                    inputs=[wp.array(np.array(centers), dtype=wp.vec3, device=device)],
+                    outputs=[output],
+                    device=device,
+                )
+                actual = output.numpy()
+                np.testing.assert_allclose(actual[:, 0], expected[:, 0], atol=2e-6, rtol=0.0)
+                cosine = np.clip(np.sum(actual[:, 1:] * expected[:, 1:], axis=1), -1.0, 1.0)
+                self.assertLess(np.degrees(np.arccos(cosine)).max(), 1.0)
+
+    def test_distant_small_shapes_return_witnesses_on_both_shapes(self):
+        """Populate the simplex before accepting convergence, so far-apart witnesses lie on the shapes."""
+        radius, center_b = 0.001, np.array([100.0, 0.0, 0.0])
+        for device in wp.get_devices():
+            with self.subTest(device=str(device)):
+                output = wp.zeros(7, dtype=float, device=device)
+                wp.launch(
+                    _query_distant_spheres,
+                    dim=1,
+                    inputs=[radius, wp.vec3(*center_b)],
+                    outputs=[output],
+                    device=device,
+                )
+                actual = output.numpy()
+                self.assertAlmostEqual(float(actual[0]), 100.0 - 2.0 * radius, delta=2e-5)
+                self.assertAlmostEqual(float(np.linalg.norm(actual[1:4])), radius, delta=1e-5)
+                self.assertAlmostEqual(float(np.linalg.norm(actual[4:7] - center_b)), radius, delta=1e-5)
+
+
+@wp.kernel
+def _query_distant_spheres(radius: float, center_b: wp.vec3, output: wp.array[float]):
+    """Query two small spheres far enough apart that the center offset alone satisfies the relative gap."""
+    a = GenericShapeData()
+    a.shape_type = int(GeoType.SPHERE)
+    a.scale = wp.vec3(radius, 0.0, 0.0)
+    b = GenericShapeData()
+    b.shape_type = int(GeoType.SPHERE)
+    b.scale = wp.vec3(radius, 0.0, 0.0)
+    _separated, point_a, point_b, _normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
+        a, b, wp.quat_identity(), center_b, 0.0, SupportMapDataProvider()
+    )
+    output[0] = distance
+    for axis in range(3):
+        output[1 + axis] = point_a[axis]
+        output[4 + axis] = point_b[axis]
+
 
 @wp.kernel
 def _query_rotated_box(output: wp.array2d[float]):
@@ -103,6 +171,24 @@ def _query_rotated_box(output: wp.array2d[float]):
     output[i, 2] = gap
     for axis in range(3):
         output[i, 3 + axis] = normal[axis]
+
+
+@wp.kernel
+def _query_sphere_near_box(center: wp.array[wp.vec3], output: wp.array2d[float]):
+    """Query a sphere whose closest box feature is a face, edge, or corner."""
+    i = wp.tid()
+    a = GenericShapeData()
+    a.shape_type = int(GeoType.BOX)
+    a.scale = wp.vec3(0.02, 0.015, 0.01)
+    b = GenericShapeData()
+    b.shape_type = int(GeoType.SPHERE)
+    b.scale = wp.vec3(0.01, 0.0, 0.0)
+    _separated, _point_a, _point_b, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
+        a, b, wp.quat_identity(), center[i], 0.0, SupportMapDataProvider()
+    )
+    output[i, 0] = distance
+    for axis in range(3):
+        output[i, 1 + axis] = normal[axis]
 
 
 if __name__ == "__main__":
