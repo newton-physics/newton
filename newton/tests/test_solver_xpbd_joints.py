@@ -150,15 +150,15 @@ def _pendulum_response(device, gravity, torque, **solver_kw):
 
 
 def test_joint_relaxation_transmits_torque_and_gravity(test, device):
-    """A pendulum responds to a joint torque and to gravity as the analytic hinge, at the default and at unequal
-    relaxation factors (each row applies one consistent impulse)."""
+    """Verify that a pendulum responds to joint torque and gravity as the analytic hinge at default and unequal
+    relaxation factors."""
     for kw in ({}, {"joint_linear_relaxation": 0.7, "joint_angular_relaxation": 0.4, "iterations": 8}):
         test.assertAlmostEqual(_pendulum_response(device, 0.0, 1.0, **kw), 1.0, delta=0.01)
         test.assertAlmostEqual(_pendulum_response(device, -9.81, 0.0, **kw), 1.0, delta=0.01)
 
 
 def test_joint_legacy_relaxation_switch(test, device):
-    """joint_legacy_relaxation restores the former scaling (moment of a positional impulse by the angular factor)."""
+    """Verify that joint_legacy_relaxation restores the former scaling of a positional impulse's moment."""
     kw = {"joint_linear_relaxation": 0.7, "joint_angular_relaxation": 0.4, "joint_legacy_relaxation": True}
     test.assertGreater(_pendulum_response(device, 0.0, 1.0, **kw), 1.3)
     test.assertLess(_pendulum_response(device, -9.81, 0.0, **kw), 0.85)
