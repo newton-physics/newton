@@ -1333,6 +1333,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         Joint-owned mimic references and coefficients use
         :attr:`~newton.ModelFlags.JOINT_PROPERTIES` in VBD. This flag refreshes
         their array bindings and clears their multipliers.
+
+        Args:
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits
+                indicating which model properties changed.
         """
         self._apply_module_options()
         refresh_structural_k = (
