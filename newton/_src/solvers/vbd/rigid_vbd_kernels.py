@@ -1732,7 +1732,7 @@ def evaluate_rod_stretch_shear_force_hessian(
 @wp.struct
 class RigidForceElementAdjacencyInfo:
     r"""
-    Stores adjacency information for rigid bodies and their connected joints using CSR (Compressed Sparse Row) format.
+    Stores adjacency information for rigid bodies and their non-FREE joints using CSR (Compressed Sparse Row) format.
 
     - body_adj_joints: Flattened array of joint IDs. Size is sum over all bodies of N_i, where N_i is the
       number of joints connected to body i.
@@ -3786,49 +3786,24 @@ def reset_rigid_state(
 
 
 @wp.kernel
-def _count_num_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    num_body_adjacent_joints: wp.array[wp.int32],
+def _build_body_joint_adjacency(
+    body_ids: wp.array[wp.int32],
+    joint_ids: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    adjacent_joints: wp.array[wp.int32],
 ):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Skip world joints (parent/child == -1)
-        if parent_id >= 0:
-            num_body_adjacent_joints[parent_id] = num_body_adjacent_joints[parent_id] + 1
-        if child_id >= 0:
-            num_body_adjacent_joints[child_id] = num_body_adjacent_joints[child_id] + 1
-
-
-@wp.kernel
-def _fill_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_adjacent_joints_offsets: wp.array[wp.int32],
-    body_adjacent_joints_fill_count: wp.array[wp.int32],
-    body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Add joint to parent body's adjacency list
-        if parent_id >= 0:
-            fill_count_parent = body_adjacent_joints_fill_count[parent_id]
-            buffer_offset_parent = body_adjacent_joints_offsets[parent_id]
-            body_adjacent_joints[buffer_offset_parent + fill_count_parent] = joint_id
-            body_adjacent_joints_fill_count[parent_id] = fill_count_parent + 1
-
-        # Add joint to child body's adjacency list
-        if child_id >= 0:
-            fill_count_child = body_adjacent_joints_fill_count[child_id]
-            buffer_offset_child = body_adjacent_joints_offsets[child_id]
-            body_adjacent_joints[buffer_offset_child + fill_count_child] = joint_id
-            body_adjacent_joints_fill_count[child_id] = fill_count_child + 1
+    # Build once on CPU to preserve joint order without atomics or sorting.
+    for edge in range(body_ids.shape[0]):
+        body = body_ids[edge]
+        counts[body] = counts[body] + 1
+    for body in range(counts.shape[0]):
+        offsets[body + 1] = offsets[body] + counts[body]
+        counts[body] = 0
+    for edge in range(body_ids.shape[0]):
+        body = body_ids[edge]
+        adjacent_joints[offsets[body] + counts[body]] = joint_ids[edge]
+        counts[body] = counts[body] + 1
 
 
 @wp.kernel
@@ -5178,11 +5153,11 @@ def accumulate_body_body_contacts_per_body(
     body_contact_buffer_pre_alloc: int,
     body_contact_counts: wp.array[wp.int32],
     body_contact_indices: wp.array[wp.int32],
-    body_forces: wp.array[wp.vec3],
-    body_torques: wp.array[wp.vec3],
-    body_hessian_ll: wp.array[wp.mat33],
-    body_hessian_al: wp.array[wp.mat33],
-    body_hessian_aa: wp.array[wp.mat33],
+    body_forces: wp.array2d[wp.vec3],
+    body_torques: wp.array2d[wp.vec3],
+    body_hessian_ll: wp.array2d[wp.mat33],
+    body_hessian_al: wp.array2d[wp.mat33],
+    body_hessian_aa: wp.array2d[wp.mat33],
 ):
     """
     Per-body contact force/Hessian accumulation (compliant ALM or legacy penalty)
@@ -5202,6 +5177,8 @@ def accumulate_body_body_contacts_per_body(
     num_contacts = body_contact_counts[body_id]
     if num_contacts > body_contact_buffer_pre_alloc:
         num_contacts = body_contact_buffer_pre_alloc
+    if thread_id_within_body >= num_contacts:
+        return
 
     contact_count = rigid_contact_count[0]
 
@@ -5325,11 +5302,14 @@ def accumulate_body_body_contacts_per_body(
 
         i += _NUM_CONTACT_THREADS_PER_BODY
 
-    wp.atomic_add(body_forces, body_id, force_acc)
-    wp.atomic_add(body_torques, body_id, torque_acc)
-    wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
-    wp.atomic_add(body_hessian_al, body_id, h_al_acc)
-    wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+    # One thread owns each (body, lane) slot per launch, so a non-atomic update is safe.
+    # Add to preserve the other contact family's contribution; Warp lowers array += to an atomic.
+    lane = thread_id_within_body
+    body_forces[body_id, lane] = body_forces[body_id, lane] + force_acc
+    body_torques[body_id, lane] = body_torques[body_id, lane] + torque_acc
+    body_hessian_ll[body_id, lane] = body_hessian_ll[body_id, lane] + h_ll_acc
+    body_hessian_al[body_id, lane] = body_hessian_al[body_id, lane] + h_al_acc
+    body_hessian_aa[body_id, lane] = body_hessian_aa[body_id, lane] + h_aa_acc
 
 
 @wp.kernel
@@ -5522,11 +5502,11 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
     # Outputs
-    body_forces: wp.array[wp.vec3],
-    body_torques: wp.array[wp.vec3],
-    body_hessian_ll: wp.array[wp.mat33],
-    body_hessian_al: wp.array[wp.mat33],
-    body_hessian_aa: wp.array[wp.mat33],
+    body_forces: wp.array2d[wp.vec3],
+    body_torques: wp.array2d[wp.vec3],
+    body_hessian_ll: wp.array2d[wp.mat33],
+    body_hessian_al: wp.array2d[wp.mat33],
+    body_hessian_aa: wp.array2d[wp.mat33],
 ):
     """
     Per-body accumulation of body-particle soft contact forces and Hessians on rigid bodies.
@@ -5557,6 +5537,8 @@ def accumulate_body_particle_contacts_per_body(
     num_contacts = body_particle_contact_counts[body_id]
     if num_contacts > body_particle_contact_buffer_pre_alloc:
         num_contacts = body_particle_contact_buffer_pre_alloc
+    if thread_id_within_body >= num_contacts:
+        return
 
     max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
@@ -5661,11 +5643,14 @@ def accumulate_body_particle_contacts_per_body(
         h_al_acc += -r_skew_T_K
         h_aa_acc += r_skew_T_K * r_skew
 
-    wp.atomic_add(body_forces, body_id, force_acc)
-    wp.atomic_add(body_torques, body_id, torque_acc)
-    wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
-    wp.atomic_add(body_hessian_al, body_id, h_al_acc)
-    wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+    # One thread owns each (body, lane) slot per launch, so a non-atomic update is safe.
+    # Add to preserve the other contact family's contribution; Warp lowers array += to an atomic.
+    lane = thread_id_within_body
+    body_forces[body_id, lane] = body_forces[body_id, lane] + force_acc
+    body_torques[body_id, lane] = body_torques[body_id, lane] + torque_acc
+    body_hessian_ll[body_id, lane] = body_hessian_ll[body_id, lane] + h_ll_acc
+    body_hessian_al[body_id, lane] = body_hessian_al[body_id, lane] + h_al_acc
+    body_hessian_aa[body_id, lane] = body_hessian_aa[body_id, lane] + h_aa_acc
 
 
 @wp.kernel
@@ -5724,12 +5709,12 @@ def solve_rigid_body(
     joint_compliant_alm: int,
     joint_dof_dim: wp.array2d[int],
     joint_rest_angle: wp.array[float],
-    external_forces: wp.array[wp.vec3],
-    external_torques: wp.array[wp.vec3],
+    external_forces: wp.array2d[wp.vec3],
+    external_torques: wp.array2d[wp.vec3],
     # Preaccumulated rigid-contact Hessian contributions
-    external_hessian_ll: wp.array[wp.mat33],
-    external_hessian_al: wp.array[wp.mat33],
-    external_hessian_aa: wp.array[wp.mat33],
+    external_hessian_ll: wp.array2d[wp.mat33],
+    external_hessian_al: wp.array2d[wp.mat33],
+    external_hessian_aa: wp.array2d[wp.mat33],
     # Output
     body_q_new: wp.array[wp.transform],
 ):
@@ -5824,13 +5809,18 @@ def solve_rigid_body(
     I_world = R_cur * I_body * wp.transpose(R_cur)
     angular_hessian = dt_sqr_reciprocal * I_world
 
-    # Accumulate external forces (rigid contacts)
-    # Read external contributions
-    ext_torque = external_torques[body_index]
-    ext_force = external_forces[body_index]
-    ext_h_aa = external_hessian_aa[body_index]
-    ext_h_al = external_hessian_al[body_index]
-    ext_h_ll = external_hessian_ll[body_index]
+    # Combine the per-lane contact contributions in a fixed lane order.
+    ext_torque = external_torques[body_index, 0]
+    ext_force = external_forces[body_index, 0]
+    ext_h_aa = external_hessian_aa[body_index, 0]
+    ext_h_al = external_hessian_al[body_index, 0]
+    ext_h_ll = external_hessian_ll[body_index, 0]
+    for lane in range(1, _NUM_CONTACT_THREADS_PER_BODY):
+        ext_torque += external_torques[body_index, lane]
+        ext_force += external_forces[body_index, lane]
+        ext_h_aa += external_hessian_aa[body_index, lane]
+        ext_h_al += external_hessian_al[body_index, lane]
+        ext_h_ll += external_hessian_ll[body_index, lane]
 
     f_torque = tau_world + ext_torque
     f_force = f_lin + ext_force

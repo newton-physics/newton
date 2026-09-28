@@ -7,6 +7,7 @@ import gc
 import math
 import unittest
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -31,6 +32,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     make_solve_elasticity_tile,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _NUM_CONTACT_THREADS_PER_BODY,
     RigidContactHistory,
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
@@ -58,7 +60,11 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
 )
-from newton._src.solvers.vbd.solver_vbd import _PARTICLE_CONTACT_GATHER_BLOCK_DIM, _is_tet_only_elasticity_model
+from newton._src.solvers.vbd.solver_vbd import (
+    _PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+    _is_tet_only_elasticity_model,
+    _select_rigid_block_dim,
+)
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -4863,9 +4869,116 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     )
 
 
-class TestSolverVBD(unittest.TestCase):
-    pass
+def _rigid_constraint_adjacency(test, device):
+    """Exclude FREE joints while retaining disabled constraints and applied forces."""
+    with wp.ScopedDevice(device):
+        for constrained in (False, True):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(4)]
+            joints = [builder.add_joint_free(bodies[0]), builder.add_joint_free(bodies[1], parent=bodies[0])]
+            joints.append(
+                builder.add_joint_fixed(bodies[1], bodies[2], enabled=False)
+                if constrained
+                else builder.add_joint_free(bodies[2])
+            )
+            joints.append(
+                builder.add_joint_fixed(bodies[2], bodies[3]) if constrained else builder.add_joint_free(bodies[3])
+            )
+            builder.add_articulation(joints)
+            builder.color()
+            model = builder.finalize(device=device)
+            control = model.control()
+            empty_contacts = newton.CollisionPipeline(model).contacts()
+            forces = np.zeros(model.joint_dof_count, dtype=np.float32)
+            forces[model.joint_qd_start.numpy()[joints[1]]] = 1.0
+            control.joint_f.assign(forces)
+            for compliant in (False, True):
+                solver = newton.solvers.SolverVBD(model, iterations=3, rigid_compliant_alm=compliant)
+                with test.subTest(constrained=constrained, compliant=compliant):
+                    adjacency = solver.rigid_adjacency
+                    np.testing.assert_array_equal(
+                        adjacency.body_adj_joints.numpy(), [2, 2, 3, 3] if constrained else []
+                    )
+                    np.testing.assert_array_equal(
+                        adjacency.body_adj_joints_offsets.numpy(), [0, 0, 1, 3, 4] if constrained else [0, 0, 0, 0, 0]
+                    )
+                    dt = 1.0 / 600.0
+                    for contacts in (None, empty_contacts):
+                        state_in, state_out = model.state(), model.state()
+                        solver.reset(state_in)
+                        solver.step(state_in, state_out, control, contacts, dt)
+                        np.testing.assert_allclose(state_out.body_qd.numpy()[:, 0], [-dt, dt, 0.0, 0.0], rtol=1.0e-6)
 
+
+def _rigid_contact_scratch_clears_across_replays(test, device):
+    """Ignore stale scratch as contact counts change between solver replays."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        for index in range(9):
+            body = builder.add_body(xform=wp.transform(wp.vec3(2.0 * index, 0.0, 0.49), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+            builder.add_particle(pos=wp.vec3(2.0 * index, 0.0, 1.0), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
+        builder.add_ground_plane()
+        builder.color()
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        contacts = pipeline.contacts()
+        control = model.control()
+        solver = newton.solvers.SolverVBD(model, iterations=3, rigid_compliant_alm=True, rigid_contact_history=False)
+        state_in, state_out = model.state(), model.state()
+        pipeline.collide(state_in, contacts)
+        active_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreaterEqual(active_count, 8)
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+        test.assertGreaterEqual(soft_count, 8)
+        dt = 1.0 / 600.0
+        solver.step(state_in, state_out, control, contacts, dt)
+        graph = None
+        if device.is_cuda:
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state_in, state_out, control, contacts, dt)
+            graph = capture.graph
+
+        fields = ("body_forces", "body_torques", "body_hessian_ll", "body_hessian_al", "body_hessian_aa")
+        for index, name in enumerate(fields):
+            getattr(solver, name).fill_(float(index + 1))
+        for index, name in enumerate(fields):
+            test.assertEqual(getattr(solver, name).shape, (model.body_count, _NUM_CONTACT_THREADS_PER_BODY))
+            test.assertTrue(np.all(getattr(solver, name).numpy() == float(index + 1)))
+        counts = [(0, 0), (0, soft_count), (active_count, 0), (active_count, soft_count)]
+        counts += [(count, count) for count in (1, 2, 3, 4, 5, 8, 0)]
+        for rigid_count, particle_count in counts:
+            contacts.rigid_contact_count.fill_(rigid_count)
+            contacts.soft_contact_count.fill_(particle_count)
+            solver.reset(state_in)
+            solver._body_contact_scratch.fill_(float("nan"))
+            if graph is None:
+                solver.step(state_in, state_out, control, contacts, dt)
+            else:
+                wp.capture_launch(graph)
+            with test.subTest(rigid_contacts=rigid_count, particle_contacts=particle_count):
+                for field in ("body_q", "body_qd", "particle_q", "particle_qd"):
+                    test.assertTrue(np.isfinite(getattr(state_out, field).numpy()).all())
+                test.assertTrue(np.isfinite(solver._body_contact_scratch.numpy()).all())
+
+
+class TestSolverVBD(unittest.TestCase):
+    def test_rigid_block_dim(self):
+        """Pin the rigid block ladder and CPU fallback."""
+        device = SimpleNamespace(is_cuda=True, sm_count=81)
+        sizes = (0, 640, 641, 1281, 2561, 5121, 10241, 20481, 1000000)
+        self.assertEqual([_select_rigid_block_dim(n, device) for n in sizes], [4, 4, 8, 16, 32, 64, 128, 256, 256])
+        device.is_cuda = False
+        self.assertEqual(_select_rigid_block_dim(1, device), 256)
+
+
+add_function_test(TestSolverVBD, "test_rigid_constraint_adjacency", _rigid_constraint_adjacency, devices=devices)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_contact_scratch_clears_across_replays",
+    _rigid_contact_scratch_clears_across_replays,
+    devices=devices,
+)
 
 add_function_test(
     TestSolverVBD,
