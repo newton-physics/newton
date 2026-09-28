@@ -50,7 +50,6 @@ def _create_helix_points(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 
@@ -88,11 +87,10 @@ class Example:
             radius=helix_radius,
             turns=helix_turns,
         )
-        left_rod = newton.Rod(left_initial_points, radius=cable_radius)
         # Keep the helical initial geometry but author zero intrinsic bend and twist.
+        left_rod = newton.Rod(left_initial_points, radius=cable_radius, rest_straight=True)
         left_bodies, _ = builder.add_rod(
             rod=left_rod,
-            rest_straight=True,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,
@@ -117,12 +115,12 @@ class Example:
             length=num_segments * segment_length,
             segment_count=num_segments,
             radius=cable_radius,
+            rest_points=right_rest.points,
+            rest_quaternions=right_rest.quaternions,
         )
         # Keep the straight initial geometry but author an explicit helical rest shape.
         right_bodies, _ = builder.add_rod(
             rod=right_rod,
-            rest_positions=right_rest.points,
-            rest_quaternions=right_rest.quaternions,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,

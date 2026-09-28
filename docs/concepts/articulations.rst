@@ -53,7 +53,7 @@ Rod joints
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
 joints or modeled with another formulation. :class:`newton.Rod` stores
-prepared centerline geometry, segment frames, topology, and optional rod
+initial and structural-rest geometry, segment frames, topology, and optional rod
 constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
 simulation representation. Pass prepared data with
 ``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
@@ -86,76 +86,51 @@ segment incidence alone does not determine unique parent-child joint pairings,
 and different star or spanning-tree choices can produce different discrete
 energies. Supply explicit per-joint builder stiffnesses instead.
 
-.. experimental::
-
-   :attr:`newton.JointType.ROD`, :meth:`newton.ModelBuilder.add_joint_rod`,
-   and its ``rest_rotation`` parameter may change without prior notice.
-   The ``rest_positions``, ``rest_quaternions``, and ``rest_straight``
-   parameters of :meth:`newton.ModelBuilder.add_rod`, and the
-   ``rest_node_positions`` and ``rest_quaternions`` parameters of
-   :meth:`newton.ModelBuilder.add_rod_graph`, are also experimental.
-   ``JointType.CABLE`` and ``add_joint_cable()`` are deprecated compatibility
-   aliases through Newton 1.6.
-
 :attr:`newton.JointType.ROD` uses the same kinematic state layout as a
-:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
-pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
-relative twist. :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between
-this joint state and body state. :class:`newton.solvers.SolverVBD` is currently
-the only solver that evaluates the rod's constitutive response.
+:attr:`~newton.JointType.FREE` joint: seven ``joint_q`` coordinates for relative
+position and orientation, and six ``joint_qd`` entries for relative twist.
+:func:`newton.eval_fk` and :func:`newton.eval_ik` convert between joint and body
+state. :class:`newton.solvers.SolverVBD` is currently the only solver that
+evaluates the rod's constitutive response.
 
-For the preferred prepared-object workflow, :class:`newton.Rod` points and
-material frames define the initial centerline and segment orientations. Pass
-``rest_positions`` and/or ``rest_quaternions`` to
-:meth:`newton.ModelBuilder.add_rod` to define a structural-rest shape with the
-same topology. Rest edge lengths determine capsule geometry, mass properties,
-anchor offsets, and rigidity discretization; the initial centerline and frames
-determine the initial segment centers and orientations. If rest positions are
-omitted, the initial centerline also supplies the rest lengths. If rest frames
-are omitted, the initial material roll is transported to the rest tangents.
+In :class:`newton.Rod`, ``points`` and ``quaternions`` define the initial
+centerline and segment orientations. Optional ``rest_points`` and
+``rest_quaternions`` define the structural-rest shape with the same topology.
+Rest edge lengths determine capsule geometry, mass properties, anchor offsets,
+and rigidity discretization; initial points and frames determine initial
+segment centers and orientations. Omitted rest points use the initial
+centerline; omitted rest frames transport initial material roll to the rest
+tangents. See :class:`newton.Rod` for the full authoring conventions.
 
-At rod structural rest, the transformed parent and child anchor points
-coincide. Accordingly, the three translation entries in the rod's
-:attr:`newton.Model.joint_target_q` are zero; live anchor separation is
-stretch/shear strain. Rest lengths are encoded by capsule geometry and anchor
-offsets rather than nonzero target translations. Rotation defines
-structural-rest bend and twist using a unitless quaternion in coordinate layout
-or extrinsic ZYX angles [rad] in legacy layout. If
-:meth:`newton.ModelBuilder.add_joint_rod` omits ``rest_rotation``, the builder
-copies the initial relative anchor rotation; :meth:`newton.ModelBuilder.add_rod`
-instead derives each rest rotation from the supplied or inferred rest frames.
+Set ``rest_straight=True`` on :class:`newton.Rod` to remove intrinsic bend and
+twist without changing initial poses, anchor geometry, or segment lengths.
+This option requires an ordered chain with at least two segments and cannot be
+combined with explicit rest points or frames.
 
-:meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets rod rest
-rotations to identity, removing intrinsic bend and twist without changing
-initial poses, anchor geometry, or segment lengths. This convenience is for
-ordered chains and cannot be combined with explicit rest positions or frames.
+Closed ordered chains require coincident structural-rest endpoints: repeat the
+first point at the end of ``rest_points``, or ``points`` if rest points are
+omitted. The final consecutive point pair defines the closing segment. With
+explicit rest points, the initial endpoints may differ.
 
-A closed ordered chain represents its closing span as an explicit segment. In
-the preferred API, repeat the first point at the end when constructing
-``newton.Rod(..., closed=True)``; explicit rest positions must close in the same
-way. The deprecated ``add_rod(positions=..., closed=True)`` form can instead use
-noncoincident initial endpoints together with closed ``rest_positions`` to
-represent an initially open or prestrained seam.
+At structural rest, parent and child anchor points coincide. The rod's
+:attr:`newton.Model.joint_target_q` therefore has zero translation and stores
+the relative rest rotation as a quaternion in coordinate layout or extrinsic
+ZYX angles [rad] in legacy layout. For individual joints, specify
+``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
+the initial relative anchor rotation.
 
-Rod material properties use the six per-axis
-:attr:`newton.Model.joint_target_ke` and
-:attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
-order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis
-uses :attr:`~newton.JointTargetMode.NONE`. Each anchor's local ``+Z`` is the
-material tangent. X/Y shear and X/Y bend entries must match because the
-transverse responses are isotropic about that tangent.
-:meth:`newton.ModelBuilder.add_joint_rod` creates the canonical axis layout
-automatically; generic :meth:`newton.ModelBuilder.add_joint` construction uses
-zero linear ``target_pos`` values and its three angular ``target_pos`` values as
-structural rest.
+Rod stiffness and damping use :attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd` in canonical XYZ linear/angular order:
+``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's local
+``+Z`` is the material tangent; X/Y shear and X/Y bend coefficients must match.
+Every material axis uses :attr:`~newton.JointTargetMode.NONE`.
 
-Rod structural rest is Model-owned. Because every material axis uses
-:attr:`~newton.JointTargetMode.NONE`, :attr:`newton.Control.joint_target_q` and
-:attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its rest
-state. After editing the rod rotations in :attr:`newton.Model.joint_target_q`,
-call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
-:attr:`newton.ModelFlags.JOINT_PROPERTIES` to refresh the solver's derived rest
-invariants.
+:attr:`newton.Control.joint_target_q` and
+:attr:`newton.Control.joint_target_qd` neither actuate a rod nor change its
+structural rest. After editing rest rotations in
+:attr:`newton.Model.joint_target_q`, call
+:meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_PROPERTIES`.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

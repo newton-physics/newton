@@ -84,7 +84,6 @@ def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool):
                     joint = level_joints[level_joint_begin + scheduled_joint]
                     type = joint_type[joint]
                     child = joint_child[joint]
-                    write_child = bool(False)
                     parent = joint_parent[joint]
                     parent_pos = level_parent_pos[level_joint_begin + scheduled_joint]
 

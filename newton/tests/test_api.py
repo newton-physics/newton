@@ -167,13 +167,11 @@ class TestApi(unittest.TestCase):
         import newton  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
-        child = builder.add_link()
         model = builder.finalize()
 
         calls = (
             lambda: builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3),
             lambda: builder.add_body(wp.transform()),
-            lambda: builder.add_joint_free(child, wp.transform(), wp.transform()),
             lambda: newton.ModelBuilder.ShapeConfig(12.0, 34.0),
             lambda: newton.ModelBuilder.JointDofConfig(newton.Axis.Y),
             lambda: newton.solvers.SolverSemiImplicit(model, 0.123),

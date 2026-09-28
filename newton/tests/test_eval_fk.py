@@ -299,7 +299,8 @@ def test_body_flag_filter(test, device):
     assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
-def test_cable_pose_preserved(test, device):
+def test_rod_serial_tiled_fk_parity(test, device):
+    """Compare serial and tiled FK for a Rod with a revolute child."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     rod_body = builder.add_link(
         xform=wp.transform(wp.vec3(0.4, -0.3, 0.2), wp.quat_identity()),
@@ -310,9 +311,9 @@ def test_cable_pose_preserved(test, device):
     rod_joint = builder.add_joint_rod(parent=-1, child=rod_body)
     child_joint = builder.add_joint_revolute(parent=rod_body, child=child, axis=newton.Axis.Z)
     builder.add_articulation([rod_joint, child_joint])
+    builder.joint_q[builder.joint_q_start[child_joint]] = 0.6
+    builder.joint_qd[builder.joint_qd_start[child_joint]] = -0.2
     model = builder.finalize(device=device)
-    model.joint_q.assign(np.array([0.6], dtype=np.float32))
-    model.joint_qd.assign(np.array([0.0, 0.0, -0.2], dtype=np.float32))
 
     state_reference = model.state()
     state_parallel = model.state()
@@ -455,7 +456,7 @@ add_function_test(
     get_test_devices(),
 )
 add_function_test(TestEvalFK, "test_body_flag_filter", test_body_flag_filter, get_test_devices())
-add_function_test(TestEvalFK, "test_cable_pose_preserved", test_cable_pose_preserved, get_test_devices())
+add_function_test(TestEvalFK, "test_rod_serial_tiled_fk_parity", test_rod_serial_tiled_fk_parity, get_test_devices())
 add_function_test(TestEvalFK, "test_loop_closing_joint", test_loop_closing_joint, get_test_devices())
 add_function_test(
     TestEvalFK,

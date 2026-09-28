@@ -1248,7 +1248,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
-        if flags & ModelFlags.JOINT_PROPERTIES:
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._refresh_rod_rest_bend_twist_cache()
 
     @override
@@ -1575,6 +1575,8 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     def _validate_rod_material_axes(self) -> None:
         """Require the duplicated transverse ROD material axes to remain isotropic."""
+        if not self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            return
         joint_type = self._to_numpy(self.model.joint_type, dtype=int)
         if not np.any(joint_type == JointType.ROD):
             return
@@ -1638,6 +1640,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         if not self._integrates_rigid_bodies or self.model.joint_count == 0:
             return
 
+        if not self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            return
         joint_type_np = self._to_numpy(self.model.joint_type, dtype=np.int32)
         if not np.any(joint_type_np == int(JointType.ROD)):
             return
@@ -1854,20 +1858,20 @@ class SolverVBD(SolverBase, CouplingInterface):
                     bend_dof = angular_dof
                     twist_dof = angular_dof + 2
 
-                    stretch_ke = jtarget_ke[stretch_dof]
-                    shear_ke = jtarget_ke[shear_dof]
-                    bend_ke = jtarget_ke[bend_dof]
-                    twist_ke = jtarget_ke[twist_dof]
+                    ke_stretch = jtarget_ke[stretch_dof]
+                    ke_shear = jtarget_ke[shear_dof]
+                    ke_bend = jtarget_ke[bend_dof]
+                    ke_twist = jtarget_ke[twist_dof]
 
-                    joint_material_k_np[stretch_slot] = stretch_ke
-                    joint_material_k_np[shear_slot] = shear_ke
-                    joint_material_k_np[bend_slot] = bend_ke
-                    joint_material_k_np[twist_slot] = twist_ke
+                    joint_material_k_np[stretch_slot] = ke_stretch
+                    joint_material_k_np[shear_slot] = ke_shear
+                    joint_material_k_np[bend_slot] = ke_bend
+                    joint_material_k_np[twist_slot] = ke_twist
 
-                    joint_k_init_np[stretch_slot] = _penalty_k_init(stretch_ke, legacy_lin_k_start)
-                    joint_k_init_np[shear_slot] = _penalty_k_init(shear_ke, legacy_lin_k_start)
-                    joint_k_init_np[bend_slot] = _penalty_k_init(bend_ke, legacy_ang_k_start)
-                    joint_k_init_np[twist_slot] = _penalty_k_init(twist_ke, legacy_ang_k_start)
+                    joint_k_init_np[stretch_slot] = _penalty_k_init(ke_stretch, legacy_lin_k_start)
+                    joint_k_init_np[shear_slot] = _penalty_k_init(ke_shear, legacy_lin_k_start)
+                    joint_k_init_np[bend_slot] = _penalty_k_init(ke_bend, legacy_ang_k_start)
+                    joint_k_init_np[twist_slot] = _penalty_k_init(ke_twist, legacy_ang_k_start)
 
                     joint_kd_np[stretch_slot] = jtarget_kd[stretch_dof]
                     joint_kd_np[shear_slot] = jtarget_kd[shear_dof]

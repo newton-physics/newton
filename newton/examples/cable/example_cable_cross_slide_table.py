@@ -663,7 +663,7 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_rod = newton.Rod(cable_points, radius=cable_radius)
+        cable_rod = newton.Rod(cable_points, radius=cable_radius, rest_straight=True)
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0
@@ -671,7 +671,6 @@ class Example:
 
         self.cable_bodies, cable_joints = builder.add_rod(
             rod=cable_rod,
-            rest_straight=True,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,

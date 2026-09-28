@@ -2459,7 +2459,7 @@ class TestModelJoints(unittest.TestCase):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
-        quaternion via :meth:`ModelBuilder._quat_from_axis_targets`, matching
+        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
         kamino's DOF→coord conversion. FREE linear targets fill the position
         slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)

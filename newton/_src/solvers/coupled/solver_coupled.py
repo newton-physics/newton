@@ -2971,7 +2971,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency == model_frequency.BODY:
                 return True
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD):
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name == "joint_target_q":
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
             if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":

@@ -1090,10 +1090,6 @@ def jcalc_motion_subspace(
         :func:`compute_2d_rotational_dofs` / :func:`compute_3d_rotational_dofs` in
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
-
-        ROD shares the FREE/DISTANCE subspace because its material response
-        does not impose a kinematic constraint. The Featherstone path remains
-        unchanged because inverse dynamics rejects ROD models.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1587,7 +1583,7 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.ROD` joints are not yet supported by the
+    :attr:`~newton.JointType.ROD` joints are not supported by the
     inverse-dynamics pipeline.
 
     .. experimental::

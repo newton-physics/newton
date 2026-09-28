@@ -89,6 +89,14 @@ stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
 ``(f_world, tau_com_world)``.
 
+Rod joints now use seven ``joint_q`` coordinates for relative position and
+orientation and six ``joint_qd`` entries for relative linear and angular
+velocity. Their material-axis order is ``[shear_x, shear_y, stretch_z,
+bend_x, bend_y, twist_z]``. Migrate old ``[stretch, shear, bend, twist]``
+offsets ``[0, 1, 2, 3]`` to ``[2, (0, 1), (3, 4), 5]``, and use
+:attr:`newton.Model.joint_q_start` and
+:attr:`newton.Model.joint_qd_start` to locate each Rod slice.
+
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | **warp.sim**                                                     | **Newton**                                                                                                            |
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+

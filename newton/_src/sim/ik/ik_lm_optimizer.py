@@ -151,7 +151,7 @@ class IKOptimizerLM:
 
     Raises:
         ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
-            joint, which is not yet supported by this optimizer.
+            joint, which is not supported by this optimizer.
     """
 
     TILE_N_DOFS = None
