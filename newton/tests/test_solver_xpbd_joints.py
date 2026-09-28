@@ -43,7 +43,7 @@ def _hinge_inertia(model):
 
 
 def test_revolute_limit_beyond_pi_does_not_gain_energy(test, device):
-    """A hinge spun into an upper limit beyond pi stops there instead of wrapping to -pi and exploding."""
+    """Verify that a hinge spun into an upper limit beyond pi stops there instead of wrapping to -pi."""
     dt, w0 = 1.25e-3, 3.0
     for upper in (3.1, 3.4):
         model = _hinge_link(device, -0.5, upper, qd0=w0)
@@ -67,7 +67,7 @@ def test_revolute_limit_beyond_pi_does_not_gain_energy(test, device):
 
 
 def test_revolute_eval_ik_angle_beyond_pi(test, device):
-    """eval_ik returns an angle beyond pi within the limit range, whatever the quaternion sign of the child body."""
+    """Verify that eval_ik returns an angle beyond pi within the limit range for either quaternion sign."""
     model = _hinge_link(device, -0.227, 3.421, q0=3.3)
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -83,7 +83,7 @@ def test_revolute_eval_ik_angle_beyond_pi(test, device):
 
 
 def test_revolute_hold_beyond_pi(test, device):
-    """A hinge resting beyond pi (inside its range) stays there; the solver must not read it as a limit violation."""
+    """Verify that a hinge resting beyond pi inside its range is not treated as violating its limit."""
     model = _hinge_link(device, -0.227, 3.421, q0=3.3)
     solver = newton.solvers.SolverXPBD(model, iterations=4, joint_linear_relaxation=0.4, joint_angular_relaxation=0.4)
     s0, s1, control = model.state(), model.state(), model.control()
@@ -99,18 +99,25 @@ def test_revolute_hold_beyond_pi(test, device):
 
 
 def test_revolute_unlimited_drive_takes_short_way(test, device):
-    """An unlimited hinge driven to a target measures its error within pi of the target (no 2 pi detour)."""
-    model = _hinge_link(device, -newton.MAXVAL, newton.MAXVAL, q0=3.0, ke=100.0, kd=5.0, target=-3.0)
+    """Verify that an unlimited hinge driven across pi turns the short way to its target, without a 2 pi detour."""
+    q0, target = 3.0, -3.0
+    model = _hinge_link(device, -newton.MAXVAL, newton.MAXVAL, q0=q0, ke=100.0, kd=5.0, target=target)
     solver = newton.solvers.SolverXPBD(model, iterations=4, joint_linear_relaxation=0.4, joint_angular_relaxation=0.4)
     s0, s1, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, s0)
+    angles = []
     for _ in range(800):
         solver.step(s0, s1, control, None, 1.25e-3)
         s0, s1 = s1, s0
-    rel = s0.body_q.numpy()[0, 3:]
-    angle = 2.0 * np.arctan2(rel[1], rel[3])  # rotation about y
-    err = (angle - (-3.0) + np.pi) % (2.0 * np.pi) - np.pi
-    test.assertLess(abs(err), 0.05)
+        rel = s0.body_q.numpy()[0, 3:]
+        angles.append(2.0 * np.arctan2(rel[1], rel[3]))  # rotation about y
+    # the final orientation alone cannot tell the short way from a full turn, so check the path
+    travel = np.unwrap(np.array(angles)) - angles[0]
+    short_way = (target - q0) % (2.0 * np.pi)  # +0.283 rad, through +pi
+    test.assertGreater(float(travel[10]), 0.0)
+    test.assertGreater(float(travel.min()), -0.05)
+    test.assertLess(float(travel.max()), short_way + 0.3)
+    test.assertAlmostEqual(float(travel[-1]), short_way, delta=0.05)
 
 
 def _pendulum_response(device, gravity, torque, **solver_kw):
