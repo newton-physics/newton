@@ -11,7 +11,7 @@ import math
 import os
 import re
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -507,6 +507,7 @@ def parse_usd(
     require_newton_usd_schemas(Usd)
 
     from ..usd import _joints  # noqa: PLC0415
+    from ..usd._colliders import _parse_colliders  # noqa: PLC0415
     from ..usd._collision_filters import (  # noqa: PLC0415
         _apply_collision_groups,
         _apply_filtered_pairs,
@@ -532,20 +533,6 @@ def parse_usd(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
-
-    # mapping from physics:approximation attribute (lower case) to remeshing method
-    approximation_to_remeshing_method = {
-        "convexdecomposition": "coacd",
-        "convexhull": "convex_hull",
-        "boundingsphere": "bounding_sphere",
-        "boundingcube": "bounding_box",
-        "meshsimplification": "quadratic",
-    }
-    # mapping from remeshing method to a list of shape indices
-    remeshing_queue = {}
-    # Approximated colliders whose prim is viewport geometry, and which therefore keep
-    # their authored topology as a visual shape. See the approximation pass below.
-    approximated_viewport_shapes: set[int] = set()
 
     if ignore_paths is None:
         ignore_paths = []
@@ -1195,6 +1182,8 @@ def parse_usd(
         incoming_xform: wp.transform | None = None,
         add_body_to_builder: bool = True,
         articulation_root_xform: wp.transform | None = None,
+        *,
+        origin: wp.transform | None = None,
     ) -> int | dict[str, Any]:
         """Parses a rigid body description.
         If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
@@ -1205,10 +1194,11 @@ def parse_usd(
         if not rigid_body_desc.rigidBodyEnabled and only_load_enabled_rigid_bodies:
             return -1
 
-        rot = rigid_body_desc.rotation
-        origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
-        if incoming_xform is not None:
-            origin = wp.mul(incoming_xform, origin)
+        if origin is None:
+            rot = rigid_body_desc.rotation
+            origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
+            if incoming_xform is not None:
+                origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
         _warn_mirrored_body_transform(prim, path, xform_cache)
 
@@ -1845,7 +1835,6 @@ def parse_usd(
 
                 if key in body_specs:
                     body_desc = body_specs[key]
-                    desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     if override_root_xform:
                         # Strip the articulation root's world-space pose and rebase at the user-specified xform.
@@ -1853,25 +1842,24 @@ def parse_usd(
                         desired_world = incoming_world_xform * body_in_root_frame
                     else:
                         desired_world = incoming_world_xform * body_world
-                    body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     art_root_for_visuals = articulation_root_xform if override_root_xform else None
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
                             body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
                             articulation_root_xform=art_root_for_visuals,
+                            origin=desired_world,
                         )
                     else:
                         # look up description and add body to builder
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
                             articulation_root_xform=art_root_for_visuals,
+                            origin=desired_world,
                         )
                         if bid >= 0:
                             art_bodies.append(bid)
@@ -1947,7 +1935,7 @@ def parse_usd(
                             # Use incoming_world_xform as the base parent-relative offset
                             parent_xform = incoming_world_xform
                             # If the USD body has a non-identity local transform, compose it with incoming_xform
-                            # Note: incoming_world_xform already includes the child's USD local transform via body_incoming_xform
+                            # Note: body_data[i]["xform"] already includes the child's USD transform.
                             # So we can use body_data[i]["xform"] directly for the intended position
                             # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
                             # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.
@@ -2342,401 +2330,40 @@ def parse_usd(
     # still disable collisions with zero or a shared negative group.
     imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
 
-    for key, value in ret_dict.items():
-        if key in {
-            UsdPhysics.ObjectType.CubeShape,
-            UsdPhysics.ObjectType.SphereShape,
-            UsdPhysics.ObjectType.CapsuleShape,
-            UsdPhysics.ObjectType.CylinderShape,
-            UsdPhysics.ObjectType.ConeShape,
-            UsdPhysics.ObjectType.MeshShape,
-            UsdPhysics.ObjectType.PlaneShape,
-        }:
-            paths, shape_specs = value
-            for xpath, shape_spec in zip(paths, shape_specs, strict=False):
-                if warn_invalid_desc(xpath, shape_spec):
-                    continue
-                path = str(xpath)
-                if any(re.match(p, path) for p in ignore_paths):
-                    continue
-                prim = stage.GetPrimAtPath(xpath)
-                collider_is_enabled = _is_enabled_collider(prim)
-                # Deformable-owned meshes never reach this loop: the scout excludes them
-                # from the native parse. A sim-API mesh seen here was deliberately left
-                # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
-                shape_already_added = path in path_shape_map
-                body_path = str(shape_spec.rigidBody)
-                if verbose:
-                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
-                body_id = path_body_map.get(body_path, -1)
-                scale = usd.get_scale(prim, local=False)
-                collision_group = builder.default_shape_cfg.collision_group
-                collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
-                material = material_specs[""]
-                material_path = ""
-                has_shape_material = len(shape_spec.materials) >= 1
-                if has_shape_material:
-                    if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material_path = str(shape_spec.materials[0])
-                    material = material_specs[material_path]
-                    if verbose:
-                        print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamic_friction},\ttorsional friction: {material.torsional_friction},\trolling friction: {material.rolling_friction},\trestitution: {material.restitution},\tdensity: {material.density}"
-                        )
-                elif verbose:
-                    print(f"No material found for shape at '{path}'.")
-
-                # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
-                # Use per-shape physics material density when present; otherwise use default density.
-                if not collider_is_enabled:
-                    # Retain the disabled shape, but exclude it from builder mass aggregation.
-                    shape_density = 0.0
-                elif has_shape_material:
-                    shape_density = material.density
-                else:
-                    shape_density = default_shape_density
-                local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
-                if body_id == -1:
-                    shape_xform = incoming_world_xform * local_xform
-                else:
-                    shape_xform = local_xform
-                # Extract custom attributes for this shape
-                shape_custom_attrs = usd.get_custom_attribute_values(
-                    prim, builder_custom_attr_shape, context={"builder": builder}
-                )
-                if collect_schema_attrs:
-                    resolver_manager.collect_prim_attrs(prim)
-
-                legacy_mjc_gap: list[float] = []
-
-                def _get_legacy_mjc_gap(prim=prim, cache=legacy_mjc_gap):
-                    if not cache:
-                        value = usd.get_attribute(prim, "mjc:gap")
-                        cache.append(0.0 if value is None else float(value))
-                    return cache[0]
-
-                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
-                material_props = visuals.get_material_props_cached(prim)
-
-                # Explicit hide_collision_shapes overrides drawability:
-                # if the body already has visual shapes, hide its colliders unconditionally.
-                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
-                # A collider is drawn when USD says it is drawn: ``purpose`` resolving to
-                # ``default``/``proxy`` and the prim not being invisible. Not because a
-                # render material happens to be bound, and not because nothing else in the
-                # scene is visible -- an asset whose geometry is all ``guide`` has no render
-                # geometry, and an empty viewport is the honest result of that. Reach for
-                # ``force_show_colliders`` to inspect such a scene.
-                collider_is_visible = (
-                    force_show_colliders or visuals.is_viewport_drawn(prim)
-                ) and not hide_collider_for_body
-                # Approximating a viewport-drawn collider splits off its authored topology
-                # as a visual shape (see the approximation pass below). That copy is subject
-                # to ``hide_collision_shapes`` as well, so that the flag does not turn into a
-                # no-op for exactly those colliders that carry ``physics:approximation``.
-                splits_off_visual_copy = (
-                    load_visual_shapes and visuals.is_viewport_drawn(prim) and not hide_collider_for_body
-                )
-
-                # Contact response precedence:
-                #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
-                shape_contact = resolution.resolve_contact_response(
-                    prim,
-                    material,
-                    builder.default_shape_cfg,
-                    has_mjc_solref=usd.get_attribute(prim, "mjc:solref") is not None,
-                )
-                shape_ke = shape_contact.ke
-                shape_kd = shape_contact.kd
-                shape_kf = shape_contact.kf
-                shape_ka = shape_contact.ka
-
-                shape_color = material_props.get("color")
-                carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
-                if shape_color is None and not carries_texture and collider_is_visible:
-                    shape_color = _UNMATERIALED_VISUAL_COLOR
-
-                # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
-                # signal that SDF generation is configured for this shape.
-                has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
-                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
-                # collision representations and should not be co-applied. SDF wins
-                # when both are present.
-                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
-                    warnings.warn(
-                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
-                        f"independent collision representations and should not be co-applied; "
-                        f"SDF configuration will be used.",
-                        stacklevel=2,
-                    )
-
-                shape_properties = resolution.resolve_shape(
-                    prim,
-                    prim_path=path,
-                    defaults=builder.default_shape_cfg,
-                    has_sdf_api=has_sdf_api,
-                    is_mesh=key == UsdPhysics.ObjectType.MeshShape,
-                    is_plane=key == UsdPhysics.ObjectType.PlaneShape,
-                    collider_is_enabled=collider_is_enabled,
-                    rigid_gap=builder.rigid_gap,
-                    legacy_margin_gap=legacy_margin_gap,
-                    read_legacy_mjc_gap=_get_legacy_mjc_gap,
-                )
-                margin_val = shape_properties.margin
-                gap_val = shape_properties.gap
-                sdf_max_resolution = shape_properties.sdf_max_resolution
-                sdf_narrow_band_range = shape_properties.sdf_narrow_band_range
-                sdf_target_voxel_size = shape_properties.sdf_target_voxel_size
-                sdf_texture_format = shape_properties.sdf_texture_format
-                sdf_padding = shape_properties.sdf_padding
-                is_hydroelastic = shape_properties.is_hydroelastic
-                kh = shape_properties.kh
-                shape_is_solid = shape_properties.is_solid
-                shell_thickness_val = shape_properties.shell_thickness
-                inertia_margin = shape_properties.inertia_margin
-
-                if shape_already_added:
-                    builder.shape_collision_group[path_shape_map[path]] = collision_group
-                    imported_rigid_collider_groups[path] = collision_groups
-                    mass_properties.record_collider(
-                        path,
-                        prim,
-                        shape_spec,
-                        key,
-                        density=shape_density,
-                        is_solid=shape_is_solid,
-                        thickness=inertia_margin,
-                    )
-                    if verbose:
-                        print(f"Shape at {path} already added; skipping duplicate geometry.")
-                    continue
-
-                shape_params = {
-                    "body": body_id,
-                    "xform": shape_xform,
-                    "cfg": ModelBuilder.ShapeConfig(
-                        ke=shape_ke,
-                        kd=shape_kd,
-                        kf=shape_kf,
-                        ka=shape_ka,
-                        margin=inertia_margin,
-                        gap=gap_val,
-                        mu=material.dynamic_friction,
-                        restitution=material.restitution,
-                        mu_torsional=material.torsional_friction,
-                        mu_rolling=material.rolling_friction,
-                        density=shape_density,
-                        collision_group=collision_group,
-                        is_visible=collider_is_visible,
-                        has_shape_collision=collider_is_enabled,
-                        has_particle_collision=collider_is_enabled,
-                        sdf_max_resolution=sdf_max_resolution,
-                        sdf_narrow_band_range=sdf_narrow_band_range,
-                        sdf_target_voxel_size=sdf_target_voxel_size,
-                        sdf_texture_format=sdf_texture_format,
-                        sdf_padding=sdf_padding,
-                        is_hydroelastic=is_hydroelastic,
-                        kh=kh,
-                        is_solid=shape_is_solid,
-                    ),
-                    "label": path,
-                    "custom_attributes": shape_custom_attrs,
-                    "color": shape_color,
-                }
-                if collider_is_visible:
-                    if material_props.get("color") is not None and material_props.get("texture") is None:
-                        shape_params["color"] = material_props["color"]
-                    if material_props.get("opacity") is not None:
-                        shape_params["opacity"] = material_props["opacity"]
-                # print(path, shape_params)
-                if key == UsdPhysics.ObjectType.CubeShape:
-                    hx, hy, hz = shape_spec.halfExtents
-                    shape_id = builder.add_shape_box(
-                        **shape_params,
-                        hx=hx,
-                        hy=hy,
-                        hz=hz,
-                    )
-                elif key == UsdPhysics.ObjectType.SphereShape:
-                    if not _is_uniform_scale(scale):
-                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
-                    radius = shape_spec.radius
-                    shape_id = builder.add_shape_sphere(
-                        **shape_params,
-                        radius=radius,
-                    )
-                elif key == UsdPhysics.ObjectType.CapsuleShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_capsule(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.CylinderShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_cylinder(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.ConeShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_cone(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.MeshShape:
-                    # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    # The mesh needs its render material when anything will draw it: either
-                    # the collider itself is visible, or it is viewport geometry whose
-                    # authored topology is about to be split off as a visual shape.
-                    if collider_is_visible or splits_off_visual_copy:
-                        # Drawn colliders should render with the same visual material metadata
-                        # as visual-only mesh imports.
-                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path)
-                    else:
-                        # Not viewport-drawn, but the viewer still draws these under show_collision /
-                        # show_static. Mutating the shared cache entry is safe: both caches key on the
-                        # prim path, so every consumer resolves the same values.
-                        mesh = visuals.get_mesh_cached(prim)
-                        visuals.apply_visual_material(mesh, material_props)
-                    mesh.maxhullvert = resolution.resolve_max_hull_vertices(
-                        prim,
-                        default=max_hull_vertices_default,
-                        override=max_hull_vertices_override,
-                    )
-                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
-                    # write the SDF intent to the builder lists, deferring the build to finalize().
-                    mesh_shape_params = dict(shape_params)
-                    mesh_shape_params["cfg"] = replace(
-                        shape_params["cfg"],
-                        sdf_max_resolution=None,
-                        sdf_target_voxel_size=None,
-                        sdf_narrow_band_range=(-0.1, 0.1),
-                        sdf_texture_format="uint16",
-                        sdf_padding=None,
-                        is_hydroelastic=False,
-                    )
-                    shape_id = builder.add_shape_mesh(
-                        scale=wp.vec3(*shape_spec.meshScale),
-                        mesh=mesh,
-                        **mesh_shape_params,
-                    )
-                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
-                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
-                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
-                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
-                    builder.shape_sdf_padding[shape_id] = sdf_padding
-                    # kh is a material param; persist regardless of hydro state.
-                    builder.shape_material_kh[shape_id] = kh
-                    if is_hydroelastic:
-                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                    if collider_is_enabled and not skip_mesh_approximation:
-                        approximation = usd.get_attribute(prim, "physics:approximation", None)
-                        if approximation is not None:
-                            if has_sdf_api and approximation.lower() != "none":
-                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
-                                # it has no meaning on a NewtonSDFCollisionAPI prim.
-                                warnings.warn(
-                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
-                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
-                                    stacklevel=2,
-                                )
-                            else:
-                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                                if remeshing_method is None:
-                                    if verbose:
-                                        print(
-                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                        )
-                                else:
-                                    if remeshing_method not in remeshing_queue:
-                                        remeshing_queue[remeshing_method] = []
-                                    remeshing_queue[remeshing_method].append(shape_id)
-                                    if splits_off_visual_copy:
-                                        approximated_viewport_shapes.add(shape_id)
-
-                elif key == UsdPhysics.ObjectType.PlaneShape:
-                    # Warp uses +Z convention for planes
-                    if shape_spec.axis != UsdPhysics.Axis.Z:
-                        xform = shape_params["xform"]
-                        axis_q = quat_between_axes(Axis.Z, usd_axis_to_axis[shape_spec.axis])
-                        shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
-                    shape_id = builder.add_shape_plane(
-                        **shape_params,
-                        width=0.0,
-                        length=0.0,
-                    )
-                else:
-                    raise NotImplementedError(f"Shape type {key} not supported yet")
-
-                path_shape_map[path] = shape_id
-                path_shape_scale[path] = scale
-                imported_rigid_collider_groups[path] = collision_groups
-
-                # Restore the real collision margin when shell thickness was substituted.
-                # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
-                # so inertia thickness and collision margin don't share the same slot.
-                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
-                    builder.shape_margin[shape_id] = margin_val
-
-                mass_properties.record_collider(
-                    path,
-                    prim,
-                    shape_spec,
-                    key,
-                    density=shape_density,
-                    is_solid=shape_is_solid,
-                    thickness=inertia_margin,
-                    mesh_source=mesh if key == UsdPhysics.ObjectType.MeshShape else None,
-                )
-
-                _collect_filtered_pairs(prim, authored_filtered_path_pairs)
-
-    # Approximate meshes. ``physics:approximation`` belongs to
-    # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
-    # collide against, not which to draw. Approximating a prim that is viewport
-    # geometry therefore splits it in two -- an approximated collider and a visual
-    # carrying the authored topology -- rather than replacing what is drawn.
-    #
-    # Viewport geometry is decided by USD purpose and visibility alone. A prim whose
-    # purpose resolves to ``default`` is drawable whether that value was authored or
-    # inherited from the fallback, and whether or not a material is bound; the
-    # collider display policy that governs pure colliders does not apply to a prim
-    # that is also render geometry. ``approximate_meshes`` copies shapes carrying
-    # VISIBLE, so mark these before handing them over.
-    for remeshing_method, shape_ids in remeshing_queue.items():
-        drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
-        for shape_id in drawn:
-            builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
-        if drawn:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True)
-        # Colliders that are not render geometry keep no visual: there is nothing
-        # authored to preserve. If one is on screen it is because the collider
-        # display policy put it there, and what it should show is the collider.
-        rest = [s for s in shape_ids if s not in set(drawn)]
-        if rest:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=rest, keep_visual_shapes=False)
+    _parse_colliders(
+        builder=builder,
+        stage=stage,
+        xform_cache=xform_cache,
+        ret_dict=ret_dict,
+        resolver_manager=resolver_manager,
+        resolution=resolution,
+        visuals=visuals,
+        mass_properties=mass_properties,
+        material_specs=material_specs,
+        default_shape_density=default_shape_density,
+        path_body_map=path_body_map,
+        path_shape_map=path_shape_map,
+        path_shape_scale=path_shape_scale,
+        builder_custom_attr_shape=builder_custom_attr_shape,
+        bodies_with_visual_shapes=bodies_with_visual_shapes,
+        incoming_world_xform=incoming_world_xform,
+        usd_axis_to_axis=usd_axis_to_axis,
+        imported_rigid_collider_groups=imported_rigid_collider_groups,
+        ignore_paths=ignore_paths,
+        load_visual_shapes=load_visual_shapes,
+        hide_collision_shapes=hide_collision_shapes,
+        force_show_colliders=force_show_colliders,
+        max_hull_vertices_default=max_hull_vertices_default,
+        max_hull_vertices_override=max_hull_vertices_override,
+        skip_mesh_approximation=skip_mesh_approximation,
+        collect_schema_attrs=collect_schema_attrs,
+        legacy_margin_gap=legacy_margin_gap,
+        verbose=verbose,
+        warn_invalid_desc=warn_invalid_desc,
+        authored_filtered_path_pairs=authored_filtered_path_pairs,
+        _is_uniform_scale=_is_uniform_scale,
+        _UNMATERIALED_VISUAL_COLOR=_UNMATERIALED_VISUAL_COLOR,
+    )
 
     # Filtered pairs are applied after the deformable passes below, once every endpoint's
     # Newton shapes exist.
