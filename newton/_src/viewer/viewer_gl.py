@@ -927,7 +927,7 @@ class ViewerGL(ViewerBase):
         self.camera.sync_pivot_to_view()
 
     @override
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None):
         """Set the camera position, orbit target, and optional field of view.
 
         Args:

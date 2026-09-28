@@ -73,8 +73,8 @@ class _FakeHandle:
         for callback in self.update_callbacks:
             callback(event)
 
-    def emit_drag_start(self):
-        event = SimpleNamespace(target=self)
+    def emit_drag_start(self, client_id=None):
+        event = SimpleNamespace(target=self, client_id=client_id)
         for callback in self.drag_start_callbacks:
             callback(event)
 
@@ -83,8 +83,8 @@ class _FakeHandle:
         for callback in self.drag_end_callbacks:
             callback(event)
 
-    def emit_click(self, ray_origin, ray_direction):
-        event = SimpleNamespace(ray_origin=ray_origin, ray_direction=ray_direction, target=self)
+    def emit_click(self, ray_origin, ray_direction, client_id=None):
+        event = SimpleNamespace(ray_origin=ray_origin, ray_direction=ray_direction, target=self, client_id=client_id)
         for callback in self.click_callbacks:
             callback(event)
 
@@ -937,6 +937,90 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer.begin_frame(0.2)
         self.assertFalse(picking.is_picking())
         self.assertTrue(control.removed)
+
+    def test_client_disconnect_releases_owned_pick(self):
+        """Release a pick when the browser client that started it disconnects."""
+        picking = _FakePicking()
+        self.viewer.picking = picking
+        self.viewer._last_state = object()
+        scene_handle = _FakeHandle()
+        self.viewer._attach_picking_callback(scene_handle, self.viewer.layer.layer_id)
+
+        scene_handle.emit_click((0.0, 0.0, -2.0), (0.0, 0.0, 1.0), client_id=3)
+        self.viewer.begin_frame(0.0)
+        self.assertTrue(picking.is_picking())
+        control = self.viewer._picking_controls[self.viewer.layer.layer_id]
+
+        self.viewer._handle_client_disconnect(_FakeClient(4))
+        self.viewer.begin_frame(0.1)
+        self.assertTrue(picking.is_picking())
+        self.assertFalse(control.removed)
+
+        self.viewer._handle_client_disconnect(_FakeClient(3))
+        self.viewer.begin_frame(0.2)
+        self.assertFalse(picking.is_picking())
+        self.assertTrue(control.removed)
+        self.assertNotIn(self.viewer.layer.layer_id, self.viewer._picking_controls)
+
+    def test_stale_picking_events_do_not_affect_replacement_handles(self):
+        """Ignore queued picking events from handles removed before processing."""
+        picking = _FakePicking()
+        self.viewer.picking = picking
+        self.viewer._last_state = object()
+        layer_id = self.viewer.layer.layer_id
+
+        stale_scene_handle = _FakeHandle()
+        self.viewer._attach_picking_callback(stale_scene_handle, layer_id)
+        stale_scene_handle.emit_click((0.0, 0.0, -2.0), (0.0, 0.0, 1.0))
+        self.viewer._detach_picking_callback(stale_scene_handle)
+        self.viewer.begin_frame(0.0)
+        self.assertFalse(picking.is_picking())
+
+        self.viewer._start_picking(layer_id, (0.0, 0.0, -2.0), (0.0, 0.0, 1.0))
+        stale_control = self.viewer._picking_controls[layer_id]
+        stale_control.emit_update((5.0, 5.0, 5.0))
+        stale_control.emit_drag_end()
+        self.viewer._start_picking(layer_id, (0.0, 0.0, -2.0), (0.0, 0.0, 1.0))
+        control = self.viewer._picking_controls[layer_id]
+        self.assertIsNot(control, stale_control)
+
+        self.viewer.begin_frame(0.1)
+        self.assertTrue(picking.is_picking())
+        self.assertFalse(control.removed)
+        np.testing.assert_allclose(picking.pick_state.numpy()[0]["picking_target_world"], (0.0, 0.0, 0.0))
+
+    def test_stale_gizmo_events_and_disconnect_end_drag(self):
+        """Ignore events from replaced gizmo handles and end drags on disconnect."""
+        transform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
+        snap_to = wp.transform(wp.vec3(4.0, 5.0, 6.0), wp.quat_identity())
+
+        self.viewer.begin_frame(0.0)
+        self.viewer.log_gizmo("target", transform, snap_to=snap_to)
+        stale_translate = self.viewer._gizmo_handles["target"]["handles"]["translate"]
+        stale_translate.emit_update((7.0, 8.0, 9.0))
+        self.viewer._remove_gizmo("target")
+        self.viewer.log_gizmo("target", transform, snap_to=snap_to)
+        self.viewer.end_frame()
+
+        self.viewer.begin_frame(0.1)
+        np.testing.assert_allclose(tuple(transform.p), (1.0, 2.0, 3.0))
+
+        translate = self.viewer._gizmo_handles["target"]["handles"]["translate"]
+        translate.emit_drag_start(client_id=5)
+        translate.emit_update((7.0, 8.0, 9.0))
+        self.viewer.log_gizmo("target", transform, snap_to=snap_to)
+        self.viewer.end_frame()
+        self.viewer.begin_frame(0.2)
+        self.assertTrue(self.viewer.gizmo_is_using)
+        np.testing.assert_allclose(tuple(transform.p), (7.0, 8.0, 9.0))
+
+        self.viewer._handle_client_disconnect(_FakeClient(5))
+        self.viewer.log_gizmo("target", transform, snap_to=snap_to)
+        self.viewer.end_frame()
+        self.viewer.begin_frame(0.3)
+        self.assertFalse(self.viewer.gizmo_is_using)
+        np.testing.assert_allclose(tuple(transform.p), (4.0, 5.0, 6.0))
+        self.viewer.end_frame()
 
     def test_picking_force_uses_owning_layer_after_activation_changes(self):
         """Keep applying a pick through the layer that received the click."""

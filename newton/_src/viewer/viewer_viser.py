@@ -424,8 +424,10 @@ class ViewerViser(ViewerBase):
         self._gizmo_handles: dict[str, dict[str, Any]] = {}
         self._gizmo_seen: set[str] = set()
         self._active_gizmos: set[str] = set()
+        self._gizmo_drag_clients: dict[str, int | None] = {}
         self.gizmo_is_using = False
         self._picking_controls: dict[str, Any] = {}
+        self._picking_control_clients: dict[str, int | None] = {}
         self._picking_click_callbacks: dict[int, tuple[Any, Any]] = {}
         self._active_picking_layer_id: str | None = None
         self._interaction_events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
@@ -913,7 +915,11 @@ class ViewerViser(ViewerBase):
         self._example_browser_handles = {"dropdown": dropdown, "load": load}
 
     def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
-        """Register the callback invoked by the native Reset button."""
+        """Register a callback invoked when the user clicks the native Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
         self._reset_callback = callback
         self._sync_gui_controls()
 
@@ -1038,6 +1044,22 @@ class ViewerViser(ViewerBase):
                 except Exception:
                     pass
         self._active_gizmos.discard(name)
+        self._gizmo_drag_clients.pop(name, None)
+        self.gizmo_is_using = bool(self._active_gizmos)
+
+    def _is_current_gizmo(self, name: str, handles: dict[str, Any]) -> bool:
+        """Return whether callbacks from ``handles`` still belong to gizmo ``name``."""
+        entry = self._gizmo_handles.get(name)
+        return entry is not None and entry["handles"] is handles
+
+    def _end_gizmo_drag(self, name: str) -> None:
+        """Finish a gizmo drag, snapping the transform when requested."""
+        entry = self._gizmo_handles.get(name)
+        if entry is not None and entry["snap_to"] is not None:
+            entry["transform"][:] = entry["snap_to"]
+            self._sync_gizmo_handles(entry)
+        self._active_gizmos.discard(name)
+        self._gizmo_drag_clients.pop(name, None)
         self.gizmo_is_using = bool(self._active_gizmos)
 
     def _create_gizmo(
@@ -1071,22 +1093,26 @@ class ViewerViser(ViewerBase):
                     (
                         "gizmo_update",
                         gizmo_name,
+                        handles,
                         tuple(float(v) for v in event.target.position),
                         tuple(float(v) for v in event.target.wxyz),
                     )
                 )
 
             @handle.on_drag_start
-            def _on_drag_start(_event, gizmo_name=name):
-                # Mark active immediately so the simulation thread cannot push
-                # its previous transform over an in-flight browser drag.
-                self._active_gizmos.add(gizmo_name)
-                self.gizmo_is_using = True
-                self._interaction_events.put(("gizmo_drag_start", gizmo_name))
+            def _on_drag_start(event, gizmo_name=name):
+                if self._is_current_gizmo(gizmo_name, handles):
+                    # Mark active immediately so the simulation thread cannot push
+                    # its previous transform over an in-flight browser drag.
+                    self._active_gizmos.add(gizmo_name)
+                    self.gizmo_is_using = True
+                self._interaction_events.put(
+                    ("gizmo_drag_start", gizmo_name, handles, getattr(event, "client_id", None))
+                )
 
             @handle.on_drag_end
             def _on_drag_end(_event, gizmo_name=name):
-                self._interaction_events.put(("gizmo_drag_end", gizmo_name))
+                self._interaction_events.put(("gizmo_drag_end", gizmo_name, handles))
 
             handles[kind] = handle
 
@@ -1118,8 +1144,10 @@ class ViewerViser(ViewerBase):
                 (
                     "picking_click",
                     clicked_layer_id,
+                    handle,
                     tuple(float(v) for v in event.ray_origin),
                     tuple(float(v) for v in event.ray_direction),
+                    getattr(event, "client_id", None),
                 )
             )
 
@@ -1196,6 +1224,7 @@ class ViewerViser(ViewerBase):
     def _remove_picking_control(self, layer_id: str, *, release: bool) -> None:
         """Remove one layer's picking handle and optionally release its body."""
         handle = self._picking_controls.pop(layer_id, None)
+        self._picking_control_clients.pop(layer_id, None)
         if handle is not None:
             try:
                 handle.remove()
@@ -1208,8 +1237,14 @@ class ViewerViser(ViewerBase):
         if release and self._active_picking_layer_id == layer_id:
             self._active_picking_layer_id = None
 
-    def _create_picking_control(self, layer_id: str) -> None:
-        """Create a translation-only handle at the current picking target."""
+    def _create_picking_control(self, layer_id: str, client_id: int | None = None) -> None:
+        """Create a translation-only handle at the current picking target.
+
+        Args:
+            layer_id: Layer that owns the active pick.
+            client_id: Viser client that started the pick, if known. The pick
+                is released when this client disconnects.
+        """
         layer = self._layers[layer_id]
         picking = layer.picking
         pick_state = picking.pick_state.numpy()
@@ -1230,17 +1265,19 @@ class ViewerViser(ViewerBase):
                 (
                     "picking_target",
                     picked_layer_id,
+                    handle,
                     tuple(float(v) for v in event.target.position),
                 )
             )
 
         @handle.on_drag_end
         def _on_drag_end(_event, picked_layer_id=layer_id):
-            self._interaction_events.put(("picking_release", picked_layer_id))
+            self._interaction_events.put(("picking_release", picked_layer_id, handle))
 
         self._picking_controls[layer_id] = handle
+        self._picking_control_clients[layer_id] = client_id
 
-    def _start_picking(self, layer_id: str, ray_origin, ray_direction) -> None:
+    def _start_picking(self, layer_id: str, ray_origin, ray_direction, client_id: int | None = None) -> None:
         """Raycast a click and show a Viser handle for a successful pick."""
         layer = self._layers.get(layer_id)
         if layer is None or layer.picking is None or layer._last_state is None:
@@ -1252,7 +1289,7 @@ class ViewerViser(ViewerBase):
         layer.picking.pick(layer._last_state, origin, direction)
         if layer.picking.is_picking():
             self._active_picking_layer_id = layer_id
-            self._create_picking_control(layer_id)
+            self._create_picking_control(layer_id, client_id)
 
     def _set_picking_target(self, layer_id: str, visual_target) -> None:
         """Update a picking spring target from a Viser control position."""
@@ -1279,34 +1316,46 @@ class ViewerViser(ViewerBase):
                 break
 
             event_type = event[0]
+            # Interaction events carry the handle that produced them so events
+            # still queued from removed handles (for example, after switching
+            # examples) cannot affect replacement gizmos or picks.
             if event_type == "gizmo_update":
-                _, name, position, wxyz = event
-                entry = self._gizmo_handles.get(name)
-                if entry is not None:
+                _, name, handles, position, wxyz = event
+                if self._is_current_gizmo(name, handles):
+                    entry = self._gizmo_handles[name]
                     self._assign_transform(entry["transform"], position, wxyz)
                     self._sync_gizmo_handles(entry)
             elif event_type == "gizmo_drag_start":
-                name = event[1]
-                if name in self._gizmo_handles:
+                _, name, handles, client_id = event
+                if self._is_current_gizmo(name, handles):
                     self._active_gizmos.add(name)
+                    self._gizmo_drag_clients[name] = client_id
                     self.gizmo_is_using = True
             elif event_type == "gizmo_drag_end":
-                name = event[1]
-                entry = self._gizmo_handles.get(name)
-                if entry is not None and entry["snap_to"] is not None:
-                    entry["transform"][:] = entry["snap_to"]
-                    self._sync_gizmo_handles(entry)
-                self._active_gizmos.discard(name)
-                self.gizmo_is_using = bool(self._active_gizmos)
+                _, name, handles = event
+                if self._is_current_gizmo(name, handles):
+                    self._end_gizmo_drag(name)
             elif event_type == "picking_click":
-                _, layer_id, ray_origin, ray_direction = event
-                if self.picking_enabled:
-                    self._start_picking(layer_id, ray_origin, ray_direction)
+                _, layer_id, handle, ray_origin, ray_direction, client_id = event
+                registered = self._picking_click_callbacks.get(id(handle))
+                if self.picking_enabled and registered is not None and registered[0] is handle:
+                    self._start_picking(layer_id, ray_origin, ray_direction, client_id)
             elif event_type == "picking_target":
-                _, layer_id, visual_target = event
-                self._set_picking_target(layer_id, visual_target)
+                _, layer_id, handle, visual_target = event
+                if self._picking_controls.get(layer_id) is handle:
+                    self._set_picking_target(layer_id, visual_target)
             elif event_type == "picking_release":
-                self._remove_picking_control(event[1], release=True)
+                _, layer_id, handle = event
+                if self._picking_controls.get(layer_id) is handle:
+                    self._remove_picking_control(layer_id, release=True)
+            elif event_type == "client_disconnect":
+                client_id = event[1]
+                for layer_id, owner in list(self._picking_control_clients.items()):
+                    if owner == client_id:
+                        self._remove_picking_control(layer_id, release=True)
+                for name, owner in list(self._gizmo_drag_clients.items()):
+                    if owner == client_id:
+                        self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
                 if attribute == "wireframe":
@@ -1529,6 +1578,8 @@ class ViewerViser(ViewerBase):
         client_id = int(client.client_id)
         self._pending_camera_clients.discard(client_id)
         self._loading_notification_handles.pop(client_id, None)
+        # Release interactions owned by this client on the simulation thread.
+        self._interaction_events.put(("client_disconnect", client_id))
 
     def _get_camera_up_axis(self) -> int:
         """Resolve the model up-axis as an integer index (0, 1, 2)."""
@@ -1687,7 +1738,7 @@ class ViewerViser(ViewerBase):
         self._set_camera_request(position, look_at, up_direction)
 
     @override
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None):
         """Set the camera position, orbit target, and optional field of view.
 
         Args:
@@ -1702,7 +1753,7 @@ class ViewerViser(ViewerBase):
         direction = look_at - position
         direction_norm = float(np.linalg.norm(direction))
         if direction_norm <= 1.0e-12:
-            super().set_camera_look_at(pos, target, fov)
+            super().set_camera_look_at(pos, target, fov=fov)
             return
 
         # Track the equivalent angles so later set_camera() calls that omit
@@ -2460,7 +2511,11 @@ class ViewerViser(ViewerBase):
 
     @override
     def is_paused(self) -> bool:
-        """Return whether simulation stepping is paused."""
+        """Check whether simulation stepping is paused.
+
+        Returns:
+            bool: True if paused, False otherwise.
+        """
         return self._paused
 
     @override

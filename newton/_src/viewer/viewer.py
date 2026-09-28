@@ -845,7 +845,7 @@ class ViewerBase(ABC):
         """
         return
 
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None):
         """Set the camera position and aim it at a world-space target.
 
         Backends that do not expose an orbit target fall back to equivalent
