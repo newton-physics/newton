@@ -56,7 +56,6 @@ def _parse_colliders(
     bodies_with_visual_shapes: set[int],
     incoming_world_xform: wp.transform,
     usd_axis_to_axis: dict[UsdPhysics.Axis, Axis],
-    no_collision_shapes: set[int],
     imported_rigid_collider_groups: dict[str, tuple[str, ...]],
     ignore_paths: list[str],
     load_visual_shapes: bool,
@@ -241,6 +240,8 @@ def _parse_colliders(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        has_shape_collision=collider_is_enabled,
+                        has_particle_collision=collider_is_enabled,
                         sdf_max_resolution=sdf_max_resolution,
                         sdf_narrow_band_range=sdf_narrow_band_range,
                         sdf_target_voxel_size=sdf_target_voxel_size,
@@ -424,10 +425,6 @@ def _parse_colliders(
                 )
 
                 _collect_filtered_pairs(prim, authored_filtered_path_pairs)
-
-                if not collider_is_enabled:
-                    no_collision_shapes.add(shape_id)
-                    builder.shape_flags[shape_id] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
 
     # Approximate meshes. ``physics:approximation`` belongs to
     # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
