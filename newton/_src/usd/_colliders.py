@@ -31,7 +31,7 @@ from ._resolution_policy import (
 from .schema_resolver import PrimType
 
 if TYPE_CHECKING:
-    from pxr import Usd, UsdPhysics
+    from pxr import Usd, UsdGeom, UsdPhysics
 
     from ._mass_properties import _UsdMassProperties
     from ._resolution_policy import _PhysicsMaterial
@@ -43,6 +43,7 @@ def _parse_colliders(
     *,
     builder: ModelBuilder,
     stage: Usd.Stage,
+    xform_cache: UsdGeom.XformCache,
     ret_dict: dict[Any, Any],
     R: SchemaResolverManager,
     visuals: _UsdVisuals,
@@ -115,7 +116,7 @@ def _parse_colliders(
                 if verbose:
                     print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
                 body_id = path_body_map.get(body_path, -1)
-                scale = usd.get_scale(prim, local=False)
+                scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
                 collision_group = builder.default_shape_cfg.collision_group
                 collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]
