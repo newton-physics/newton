@@ -3174,7 +3174,6 @@ class CollisionPipeline:
         # cannot carry a stale marker (see
         # SolverBase.supports_body_pair_reduced_contacts).
         contacts.rigid_contacts_body_pair_reduced = self._body_pair_reducer is not None
-        contacts.rigid_contacts_pair_sorted = bool(self.deterministic)
         if self._body_pair_reducer is not None:
             self._body_pair_reducer.reduce(
                 model,

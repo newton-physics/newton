@@ -68,8 +68,11 @@ def _run_four_bar(steps: int = 720, crank_target: float = 0.6, pgs_iterations: i
 def _build_overcapacity_mixed_bilateral_model():
     """Build one articulation with three connect rows and six mimic rows."""
     builder = _build_four_bar()
-    for index in range(6):
-        builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0, label=f"mimic_{index}")
+    # Six rows on one follower need the deprecated sparse API; joint-owned mimics allow one per joint.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for index in range(6):
+            builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0, label=f"mimic_{index}")
     return builder.finalize()
 
 
@@ -78,7 +81,7 @@ class TestFeatherPGSPreelimination(unittest.TestCase):
     def test_default_preserves_all_bilateral_trajectory(self):
         """Match the implicit default to explicit all-bilateral elimination."""
         builder = _build_four_bar()
-        builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0)
+        builder.set_joint_mimic(1, 0)
         model = builder.finalize()
         solvers = [
             newton.solvers.SolverFeatherPGS(

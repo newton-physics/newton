@@ -319,7 +319,7 @@ class TestHeightfieldCellReject(unittest.TestCase):
         builder = newton.ModelBuilder()
         terrain = newton.Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.4, hy=0.4)
         builder.add_shape_heightfield(heightfield=terrain)
-        plane_body = builder.add_body(mass=1.0)
+        plane_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_plane(
             body=plane_body,
             xform=wp.transform((0.0, 0.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2)),

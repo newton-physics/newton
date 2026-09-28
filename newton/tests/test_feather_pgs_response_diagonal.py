@@ -111,7 +111,7 @@ def _build_mixed_response_model(
         )
         parent = child
     builder.add_articulation(joints)
-    builder.add_constraint_mimic(joint0=joints[1], joint1=joints[0], coef0=0.0, coef1=1.0)
+    builder.set_joint_mimic(joints[1], joints[0])
 
     if not free_body_first:
         add_free_body()

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -196,6 +197,15 @@ def _build_heterogeneous_world_model():
 
 
 class TestFeatherPGSLaunchConfig(unittest.TestCase):
+    def setUp(self):
+        # Launch validation selects point-contact solvers without choosing a friction law.
+        filters = warnings.catch_warnings()
+        filters.__enter__()
+        self.addCleanup(filters.__exit__, None, None, None)
+        warnings.filterwarnings(
+            "ignore", message=r"The selected point-contact solver uses velocity-only friction", category=UserWarning
+        )
+
     def test_launch_geometry_kernels_use_dedicated_modules(self):
         """Keep custom-block-dimension kernels out of the general module."""
         expected_modules = {

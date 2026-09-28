@@ -2862,6 +2862,7 @@ def prepare_articulation_augmented_drives(
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
     joint_target_vel: wp.array[float],
     joint_effort_limit: wp.array[float],
     max_dofs: int,
@@ -2910,7 +2911,8 @@ def prepare_articulation_augmented_drives(
 
             q = joint_q[coord_start + axis]
             qd = joint_qd[dof_index]
-            u0 = -(ke * (q - joint_target_pos[dof_index] + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
+            target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
+            u0 = -(ke * (q - target_pos + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
             effort_limit = joint_effort_limit[dof_index]
             if effort_limit > 0.0:
                 u0 = wp.clamp(u0, -effort_limit, effort_limit)
@@ -2957,6 +2959,7 @@ def eval_rigid_tau_and_augmented_drives(
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
     joint_target_vel: wp.array[float],
     joint_effort_limit: wp.array[float],
     max_dofs: int,
@@ -3012,6 +3015,7 @@ def eval_rigid_tau_and_augmented_drives(
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
+        joint_target_q_start,
         joint_target_vel,
         joint_effort_limit,
         max_dofs,
@@ -3037,6 +3041,7 @@ def prepare_augmented_joint_drives(
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
     joint_target_vel: wp.array[float],
     joint_effort_limit: wp.array[float],
     max_dofs: int,
@@ -3061,6 +3066,7 @@ def prepare_augmented_joint_drives(
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
+        joint_target_q_start,
         joint_target_vel,
         joint_effort_limit,
         max_dofs,
@@ -3168,6 +3174,7 @@ def populate_physx_drive_J_for_size(
     joint_effort_limit: wp.array[float],
     joint_q: wp.array[float],
     joint_target_pos: wp.array[float],
+    joint_target_q_start: wp.array[int],
     joint_target_vel: wp.array[float],
     joint_velocity_limit: wp.array[float],
     fuse_vel_limits: int,
@@ -3230,7 +3237,7 @@ def populate_physx_drive_J_for_size(
 
             stiffness = joint_target_ke[dof]
             damping = joint_target_kd[dof]
-            target_pos = joint_target_pos[dof]
+            target_pos = joint_target_pos[joint_target_q_start[j] + axis]
             target_vel = joint_target_vel[dof]
             q = joint_q[q_start + axis]
 
@@ -3421,7 +3428,8 @@ def build_joint_limit_rows_for_size(
 # Mimic (Joint Coupling) Constraint Kernels
 # =============================================================================
 # Bilateral equality rows enforcing ``q_follower = coef0 + coef1 * q_leader``
-# between two 1-DoF joints of the same articulation, sourced from
+# between two DOFs of the same articulation, sourced from joint-owned
+# ``Model.joint_mimic_*`` (one row per coordinate) or the deprecated
 # ``Model.constraint_mimic_*``. This is the FeatherPGS analogue of PhysX's
 # ``PxArticulationMimicJoint`` (``qA + gearRatio*qB + offset = 0`` with
 # ``gearRatio = -coef1``, ``offset = -coef0``): a joint-space row with two
@@ -3438,6 +3446,7 @@ def build_joint_limit_rows_for_size(
 @wp.kernel
 def allocate_mimic_slots(
     mimic_valid: wp.array[int],
+    mimic_legacy: wp.array[int],
     mimic_enabled: wp.array[wp.bool],
     mimic_world: wp.array[int],
     max_constraints: int,
@@ -3447,14 +3456,15 @@ def allocate_mimic_slots(
 ):
     """Allocate one dense constraint slot per enabled, valid mimic constraint.
 
-    Launched with ``dim = constraint_mimic_count``. Disabled or invalid mimics
-    get ``mimic_slot = -1`` and consume no slot.
+    Launched with one thread per mimic row. Disabled or invalid rows get
+    ``mimic_slot = -1`` and consume no slot; joint-owned rows are always enabled.
     """
     k = wp.tid()
     mimic_slot[k] = -1
     if mimic_valid[k] == 0:
         return
-    if not mimic_enabled[k]:
+    legacy = mimic_legacy[k]
+    if legacy >= 0 and not mimic_enabled[legacy]:
         return
     slot = wp.atomic_add(world_slot_counter, mimic_world[k], 1)
     if slot < max_constraints:
@@ -3473,8 +3483,11 @@ def populate_mimic_J_for_size(
     mimic_dof1: wp.array[int],
     mimic_q0: wp.array[int],
     mimic_q1: wp.array[int],
+    mimic_legacy: wp.array[int],
+    mimic_owner: wp.array[int],
     mimic_coef0: wp.array[float],
     mimic_coef1: wp.array[float],
+    joint_mimic_coeffs: wp.array[wp.vec2],
     joint_q: wp.array[float],
     pgs_beta: float,
     pgs_cfm: float,
@@ -3508,8 +3521,14 @@ def populate_mimic_J_for_size(
         if slot < 0:
             continue
 
-        c0 = mimic_coef0[k]
-        c1 = mimic_coef1[k]
+        legacy = mimic_legacy[k]
+        if legacy >= 0:
+            c0 = mimic_coef0[legacy]
+            c1 = mimic_coef1[legacy]
+        else:
+            coeffs = joint_mimic_coeffs[mimic_owner[k]]
+            c0 = coeffs[0]
+            c1 = coeffs[1]
 
         # Jacobian: +1 on the follower DOF, -coef1 on the leader DOF. The two
         # DOFs are guaranteed distinct by the host-side validity mask.

@@ -538,12 +538,6 @@ class Contacts:
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
 
-        self.rigid_contacts_pair_sorted = False
-        """Provenance: whether the pipeline that last wrote this buffer sorts
-        contacts into contiguous same-shape-pair runs (deterministic sort or
-        any contact-matching mode). Consumers whose kernels assume pair-run
-        contiguity (e.g. FeatherPGS friction anchors) must check this."""
-
         self.rigid_contacts_body_pair_reduced = False
         """Provenance: whether the pipeline that last wrote this buffer runs
         body-pair contact reduction.  Assigned on every

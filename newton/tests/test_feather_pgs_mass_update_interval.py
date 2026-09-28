@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import subprocess
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -107,15 +110,17 @@ def _make_floating_state(model):
     return state
 
 
-def _run_floating_trajectory(model, solver, num_steps, *, reset_each_step):
+def _run_floating_trajectory(model, solver, num_steps, *, invalidate_fk_id_each_step):
     state_0 = _make_floating_state(model)
     state_1 = model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     history = {name: [] for name in ("joint_q", "joint_qd", "body_q", "body_qd")}
     for _ in range(num_steps):
-        if reset_each_step:
-            solver.reset(state_0)
+        if invalidate_fk_id_each_step:
+            # Reset also forces a mass refresh, changing the comparison's cadence.
+            solver.notify_state_changed()
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
         for name, values in history.items():
@@ -135,27 +140,30 @@ def _make_initial_state(model):
 def _run_trajectory(model, solver, num_steps):
     state_0 = _make_initial_state(model)
     state_1 = model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     joint_q_history = []
     for _ in range(num_steps):
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
         joint_q_history.append(state_0.joint_q.numpy().copy())
     return np.stack(joint_q_history)
 
 
-def _run_state_trajectory(model, solver, num_steps, *, reset_each_step):
+def _run_state_trajectory(model, solver, num_steps, *, invalidate_fk_id_each_step):
     state_0 = _make_initial_state(model)
     state_1 = model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     history = {name: [] for name in ("joint_q", "joint_qd", "body_q", "body_qd")}
     for _ in range(num_steps):
-        if reset_each_step:
-            solver.reset(state_0)
-        model.collide(state_0, contacts)
+        if invalidate_fk_id_each_step:
+            # Isolate FK/ID reuse while preserving mass factors and warm starts.
+            solver.notify_state_changed()
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
         for name, values in history.items():
@@ -213,10 +221,14 @@ class TestFeatherPGSMassUpdateInterval(unittest.TestCase):
     def test_cached_fk_id_matches_forced_recomputation(self):
         """Match forced recomputation across cached fixed-base steps."""
         trajectories = []
-        for reset_each_step in (False, True):
+        for invalidate_fk_id_each_step in (False, True):
             model = _build_model("cuda:0", ground=False)
             solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
-            trajectories.append(_run_state_trajectory(model, solver, num_steps=20, reset_each_step=reset_each_step))
+            trajectories.append(
+                _run_state_trajectory(
+                    model, solver, num_steps=20, invalidate_fk_id_each_step=invalidate_fk_id_each_step
+                )
+            )
 
         for name in trajectories[0]:
             np.testing.assert_allclose(
@@ -227,10 +239,14 @@ class TestFeatherPGSMassUpdateInterval(unittest.TestCase):
     def test_cached_fk_id_matches_forced_recomputation_for_floating_base(self):
         """Match forced recomputation across cached floating-base steps."""
         trajectories = []
-        for reset_each_step in (False, True):
+        for invalidate_fk_id_each_step in (False, True):
             model = _build_floating_model("cuda:0")
             solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
-            trajectories.append(_run_floating_trajectory(model, solver, num_steps=20, reset_each_step=reset_each_step))
+            trajectories.append(
+                _run_floating_trajectory(
+                    model, solver, num_steps=20, invalidate_fk_id_each_step=invalidate_fk_id_each_step
+                )
+            )
 
         for name in trajectories[0]:
             np.testing.assert_allclose(
@@ -369,12 +385,13 @@ class TestFeatherPGSMassUpdateInterval(unittest.TestCase):
         solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
         state_0 = _make_initial_state(model)
         state_1 = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         control = model.control()
 
         expected_masks = ([1, 1], [0, 0], [1, 1], [0, 0])
         for step_index, expected in enumerate(expected_masks):
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, DT)
             state_0, state_1 = state_1, state_0
             self.assertEqual(
@@ -384,22 +401,24 @@ class TestFeatherPGSMassUpdateInterval(unittest.TestCase):
             )
 
     def test_model_change_request_refreshes_a_reuse_step(self):
+        """Refresh every articulation after notification and consume each request."""
         model = _build_model(wp.get_device(), ground=False)
         solver = SolverFeatherPGS(model, update_mass_matrix_interval=2)
         state_0 = _make_initial_state(model)
         state_1 = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         control = model.control()
 
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
 
         self.assertEqual(solver.mass_update_mask.numpy().tolist(), [1, 1])
-        self.assertEqual(solver._mass_update_requested.numpy().tolist(), [0])
+        self.assertEqual(solver._mass_update_requested.numpy().tolist(), [0] * model.articulation_count)
 
     def test_teardown_waits_once_for_each_owned_stream(self):
         """Synchronize current stream owners and tolerate CUDA shutdown."""
@@ -436,6 +455,61 @@ class TestFeatherPGSMassUpdateInterval(unittest.TestCase):
         solver._articulation_dynamics_stream = None
         solver._memset_stream = None
         solver._size_streams = {}
+
+    def test_teardown_waits_once_for_finalized_stream_device(self):
+        """Synchronize each finalized-stream device while retaining live-stream waits."""
+        device = wp.get_device()
+        first = SimpleNamespace(device=device)
+        second = SimpleNamespace(device=device)
+        live = object()
+        solver = object.__new__(SolverFeatherPGS)
+        solver._local_internal_stream = first
+        solver._local_residual_stream = second
+        solver._local_pair_stream = live
+        solver._size_streams = {3: first}
+        try:
+            with (
+                mock.patch("gc.is_finalized", side_effect=lambda stream: stream is not live),
+                mock.patch.object(wp, "synchronize_device") as synchronize_device,
+                mock.patch.object(wp, "synchronize_stream") as synchronize_stream,
+            ):
+                solver.__del__()
+            synchronize_device.assert_called_once_with(device)
+            synchronize_stream.assert_called_once_with(live)
+        finally:
+            solver._local_internal_stream = None
+            solver._local_residual_stream = None
+            solver._local_pair_stream = None
+            solver._size_streams = {}
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA stream cleanup requires a GPU")
+    def test_teardown_handles_already_finalized_stream_in_cycle(self):
+        """Cyclic GC can finalize a stream before its solver without crashing cleanup."""
+        # Isolate the native crash so a failure cannot abort the enclosing suite.
+        code = """
+import gc
+import sys
+import weakref
+import warp as wp
+from newton.solvers import SolverFeatherPGS
+wp.init()
+unraisable = []
+sys.unraisablehook = unraisable.append
+stream = wp.Stream("cuda:0")
+solver = object.__new__(SolverFeatherPGS)
+solver._local_internal_stream = stream
+stream.solver_owner = solver
+reference = weakref.ref(solver)
+del stream, solver
+gc.collect()
+assert not unraisable, [str(error.exc_value) for error in unraisable]
+assert reference() is None
+print("CYCLE_CLEANUP_COMPLETE", flush=True)
+"""
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("CYCLE_CLEANUP_COMPLETE", result.stdout)
+        self.assertNotIn("Warp CUDA error", result.stderr)
 
     def test_mass_refresh_has_no_obsolete_limit_count_state(self):
         solver = SolverFeatherPGS(_build_model(wp.get_device(), ground=False))

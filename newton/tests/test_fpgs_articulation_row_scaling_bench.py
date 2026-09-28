@@ -44,7 +44,7 @@ def _require_cuda(reason: str):
 
 
 def _build_d6_articulated_free_contact_model(device: str):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     cfg = newton.ModelBuilder.JointDofConfig
 
     link = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=1.0)
@@ -106,8 +106,9 @@ class TestFpgsArticulationRowScalingBench(unittest.TestCase):
 
         initial = model.state()
         newton.eval_fk(model, initial.joint_q, initial.joint_qd, initial)
-        contacts = model.contacts()
-        model.collide(initial, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(initial, contacts)
         wp.synchronize()
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 

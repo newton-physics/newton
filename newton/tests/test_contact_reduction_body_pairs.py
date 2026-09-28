@@ -557,6 +557,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, -0.0005), wp.quat_identity()),
             mass=1.0,
+            inertia=wp.mat33(np.eye(3) * 1.0e-3),
         )
         # Twelve-by-twelve is deliberately denser than the producer's per-pair
         # voxel and normal-slot budget, so the first reduction is observable.
@@ -2467,11 +2468,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         self.assertIsNotNone(capture.graph)
 
     def test_requires_grad_diff_augmentation(self):
-        """Populate the differentiable contact arrays from the compacted set.
-
-        The reduction runs before the augmentation kernel, so the diff arrays
-        must exist, cover exactly the reduced count, and be finite.
-        """
+        """Evaluate finite differentiable contact distances on the compacted set."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         _cylinder_foot(builder, (5.13, 5.07, 0.0149))
         builder.add_ground_plane()
@@ -2488,10 +2485,9 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         pipeline.collide(state, contacts)
         n = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(n, 0)
-        # requires_grad buffers always allocate the diff arrays; a None here
-        # means the augmentation was silently skipped
-        self.assertIsNotNone(contacts.rigid_contact_diff_distance)
-        d = contacts.rigid_contact_diff_distance.numpy()[:n]
+        distance = wp.zeros(contacts.rigid_contact_max, dtype=float, device=model.device, requires_grad=True)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+        d = distance.numpy()[:n]
         self.assertTrue(np.isfinite(d).all())
 
     def test_multi_world_independence(self):

@@ -42,7 +42,7 @@ def _build_arm_and_box_model(device) -> newton.Model:
     contact impulse into the arm tip is the only thing fighting the velocity
     limit — fully deterministic.
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 1000.0
     builder.default_shape_cfg.ke = 1.0e5
     builder.default_shape_cfg.kd = 1.0e3
@@ -112,11 +112,13 @@ class TestFeatherPGSFusedVelocityLimitOrdering(unittest.TestCase):
         state_0.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+
+        contacts = collision_pipeline.contacts()
         max_arm_speed = 0.0
         for _ in range(20):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
             state_0, state_1 = state_1, state_0
             max_arm_speed = max(max_arm_speed, float(abs(state_0.joint_qd.numpy()[0])))

@@ -100,7 +100,7 @@ def _unit_impulses(model: newton.Model, solver: SolverFeatherPGS, contacts: newt
 
 
 def _assert_mixed_topology(test: unittest.TestCase, solver: SolverFeatherPGS, contacts: newton.Contacts) -> None:
-    """Assert two staged units and two overflow units form the complete ordering."""
+    """Keep all four mixed-length units in the first color and preserve their rows."""
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertEqual(count, CONTACT_COUNT)
     paths = solver.contact_path.numpy()[:count]
@@ -113,10 +113,12 @@ def _assert_mixed_topology(test: unittest.TestCase, solver: SolverFeatherPGS, co
     offsets = solver.color_world_offsets.numpy().reshape(solver.world_count, -1)[0]
     bucket_counts = np.diff(offsets)
     test.assertEqual(int(offsets[-1]), CONTACT_COUNT)
-    test.assertEqual(int(offsets[-2]), 2)
-    test.assertEqual(int(bucket_counts[0]), 2)
+    # Coloring now stages up to the row capacity, rather than row_capacity // 3.
+    # All four disjoint units fit even though three only have a normal row.
+    test.assertEqual(int(offsets[-2]), CONTACT_COUNT)
+    test.assertEqual(int(bucket_counts[0]), CONTACT_COUNT)
     np.testing.assert_array_equal(bucket_counts[1:-1], np.zeros_like(bucket_counts[1:-1]))
-    test.assertEqual(int(bucket_counts[-1]), 2)
+    test.assertEqual(int(bucket_counts[-1]), 0)
 
     ordered = solver.color_unit_sorted.numpy()[:CONTACT_COUNT]
     test.assertEqual(sorted(ordered.tolist()), list(range(CONTACT_COUNT)))
@@ -125,7 +127,7 @@ def _assert_mixed_topology(test: unittest.TestCase, solver: SolverFeatherPGS, co
 @unittest.skipUnless(wp.is_cuda_available(), "propagation-colored requires CUDA")
 class TestFeatherPGSColoredUnitCapacity(unittest.TestCase):
     def test_mixed_gap_matches_serial_propagation(self):
-        """Match impulses, body velocity, and a short trajectory with overflow units."""
+        """Match impulses, body velocity, and a short trajectory with mixed-length units."""
         device = "cuda:0"
         model = _build_mixed_gap_model(device)
         colored = _make_solver(model, "propagation-colored")

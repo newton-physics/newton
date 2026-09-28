@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import unittest
+import weakref
 
 import numpy as np
 import warp as wp
@@ -46,11 +48,12 @@ def _run_trajectory(model, solver, num_steps):
     state_0 = model.state()
     state_1 = model.state()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     joint_q_history = []
     for _ in range(num_steps):
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, DT)
         state_0, state_1 = state_1, state_0
         joint_q_history.append(state_0.joint_q.numpy().copy())
@@ -58,6 +61,21 @@ def _run_trajectory(model, solver, num_steps):
 
 
 class TestFeatherPGSNotifyInertial(unittest.TestCase):
+    def test_stepped_solver_releases_resources_without_cyclic_gc(self):
+        """Release a stepped solver before cyclic GC can finalize its streams first."""
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            model = _build_model(wp.get_device())
+            solver = SolverFeatherPGS(model)
+            reference = weakref.ref(solver)
+            solver.step(model.state(), model.state(), model.control(), None, DT)
+            del solver
+            self.assertIsNone(reference(), "Stepping must not create a solver ownership cycle")
+        finally:
+            if gc_enabled:
+                gc.enable()
+
     def test_step_refreshes_body_pose_after_generalized_coordinate_update(self):
         """A direct ``joint_q`` update must not require a caller-side FK pass.
 

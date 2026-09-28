@@ -299,17 +299,22 @@ def _build_carried_load(*, enabled: bool = True, world_parent: bool = False):
     load = b.add_body(xform=wp.transform(wp.vec3(*(carrier_p + _REL_P)), wp.quat_identity()))
     b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04, cfg=newton.ModelBuilder.ShapeConfig(density=500.0))
     joints = []
-    for c in _CHILD_ANCHORS:
-        p = (_REL_P if not world_parent else carrier_p + _REL_P) + np.array(c)
-        joints.append(
-            b.add_joint_ball(
-                parent=carrier,
-                child=load,
-                parent_xform=wp.transform(wp.vec3(*p), wp.quat_identity()),
-                child_xform=wp.transform(wp.vec3(*c), wp.quat_identity()),
-                enabled=enabled,
-            )
+    # The closures intentionally parallel the load's free joint and each other.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*another joint already connects these bodies", category=UserWarning
         )
+        for c in _CHILD_ANCHORS:
+            p = (_REL_P if not world_parent else carrier_p + _REL_P) + np.array(c)
+            joints.append(
+                b.add_joint_ball(
+                    parent=carrier,
+                    child=load,
+                    parent_xform=wp.transform(wp.vec3(*p), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(*c), wp.quat_identity()),
+                    enabled=enabled,
+                )
+            )
     return b, carrier, load, joints
 
 

@@ -192,7 +192,7 @@ def _configure_shape_defaults(builder: newton.ModelBuilder) -> None:
 
 
 def _build_free_free_builder(case: BenchCase) -> tuple[newton.ModelBuilder, tuple[float, float, float]]:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_shape_defaults(builder)
 
     hx = hy = hz = 0.05
@@ -216,7 +216,7 @@ def _replicate_or_finalize(
 ) -> newton.Model:
     if world_count <= 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.replicate(template, world_count, spacing=spacing)
     return builder.finalize(device=device)
 
@@ -227,7 +227,7 @@ def _build_free_free_model(case: BenchCase, device: str) -> newton.Model:
 
 
 def _build_articulated_free_builder(case: BenchCase) -> tuple[newton.ModelBuilder, tuple[float, float, float]]:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_shape_defaults(builder)
 
     cube_h = 0.04
@@ -525,8 +525,9 @@ def _prepare_case_run(case: BenchCase, device: str) -> tuple[newton.Model, dict[
     newton.eval_fk(model, initial_state.joint_q, initial_state.joint_qd, initial_state)
     initial_state.clear_forces()
     initial = _snapshot_state(initial_state)
-    contacts = model.contacts()
-    model.collide(initial_state, contacts)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(initial_state, contacts)
     wp.synchronize()
     return model, initial, contacts
 

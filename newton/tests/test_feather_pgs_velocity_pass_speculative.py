@@ -16,6 +16,7 @@ No restitution is involved anywhere here: this is ordinary free fall with
 """
 
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -112,15 +113,12 @@ def _drop(
     pipeline = (
         newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
         if pgs_warmstart or mf_warmstart
-        else None
+        else newton.CollisionPipeline(model)
     )
-    contacts = pipeline.contacts() if pipeline is not None else None
+    contacts = pipeline.contacts()
     for _ in range(steps):
-        if pipeline is None:
-            contacts = model.collide(state_0)
-        else:
-            contacts.clear()
-            pipeline.collide(state_0, contacts)
+        contacts.clear()
+        pipeline.collide(state_0, contacts)
         state_0.clear_forces()
         solver.step(state_0, state_1, control, contacts, SIM_DT)
         state_0, state_1 = state_1, state_0
@@ -157,10 +155,17 @@ def _single_step(device, gap, approach_speed, velocity_iterations=4, mass=1.0):
     # density=0 so the body's mass is exactly the requested value: the point of
     # the light-body case is that the position impulse scales with it.
     cfg = newton.ModelBuilder.ShapeConfig(mu=0.0, density=0.0)
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, RADIUS + gap), wp.quat_identity()), mass=mass)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, RADIUS + gap), wp.quat_identity()),
+        mass=mass,
+        inertia=wp.mat33(np.eye(3) * 0.4 * mass * RADIUS**2),
+    )
     builder.add_shape_sphere(body, radius=RADIUS, cfg=cfg)
     builder.add_ground_plane(cfg=cfg)
-    model = builder.finalize(device=device)
+    # The light-body case sits below the inertia floor on purpose.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Inertia validation corrected", category=UserWarning)
+        model = builder.finalize(device=device)
     with mock.patch.dict("os.environ", {"IL_NEWTON_FPGS_MF_WARMSTART": "0"}):
         solver = newton.solvers.SolverFeatherPGS(
             model,
@@ -177,7 +182,9 @@ def _single_step(device, gap, approach_speed, velocity_iterations=4, mass=1.0):
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     before = float(state_0.body_qd.numpy()[body][2])
-    contacts = model.collide(state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
     state_0.clear_forces()
     solver.step(state_0, state_1, model.control(), contacts, SIM_DT)
     n = int(contacts.rigid_contact_count.numpy()[0])
@@ -424,7 +431,9 @@ def test_multiworld_end_gap_uses_each_world_position_velocity(test, device):
     joint_qd[1, 2] = -5.0 * gap / SIM_DT
     state_0.joint_qd.assign(joint_qd.reshape(-1))
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    contacts = model.collide(state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
     state_0.clear_forces()
     solver.step(state_0, state_1, model.control(), contacts, SIM_DT)
     after = state_1.body_qd.numpy()[:, 2]

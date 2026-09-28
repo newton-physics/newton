@@ -559,7 +559,7 @@ def test_kinematic_free_base_drives_dense_articulation(
 ):
     model, _kinematic_body, _probe_body, kinematic_joint, probe_joint = _build_free_root_to_prismatic_scene(device)
     solver = solver_fn(model)
-    _collision_pipeline, contacts = _create_contacts(model, solver)
+    collision_pipeline, contacts = _create_contacts(model, solver)
     state_0, state_1 = model.state(), model.state()
     q_start = int(model.joint_q_start.numpy()[kinematic_joint])
     qd_start = int(model.joint_qd_start.numpy()[kinematic_joint])
@@ -578,7 +578,7 @@ def test_kinematic_free_base_drives_dense_articulation(
         state_0.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0, body_flag_filter=newton.BodyFlags.KINEMATIC)
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
         max_probe_velocity = max(max_probe_velocity, float(state_0.joint_qd.numpy()[probe_qd_start]))

@@ -1,6 +1,7 @@
 """Tests for FeatherPGS positional friction anchors (``friction_anchor_beta``)."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -59,7 +60,7 @@ def _build_v_jaws(tilt_deg: float, geometry: str = "box"):
         )
         jaws.append(body)
     b.add_articulation([root, *joints], label="gripper")
-    b.add_constraint_mimic(joints[1], joints[0], coef0=0.0, coef1=-1.0)
+    b.set_joint_mimic(joints[1], joints[0], coeffs=(0.0, -1.0))
     for dof in range(len(b.joint_effort_limit)):
         b.joint_effort_limit[dof] = 10.0
     box = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), label="box")
@@ -174,6 +175,21 @@ def _run_incline(steps: int, dt: float, **solver_kwargs):
 
 @unittest.skipUnless(wp.get_device().is_cuda, "SolverFeatherPGS matrix-free mode requires CUDA")
 class TestFeatherPGSFrictionAnchors(unittest.TestCase):
+    def setUp(self):
+        # The shared-anchor squeeze fixture intentionally combines contact_shared_anchor with patch friction.
+        filters = warnings.catch_warnings()
+        filters.__enter__()
+        self.addCleanup(filters.__exit__, None, None, None)
+        warnings.filterwarnings(
+            "ignore", message=r"Patch friction selects its own friction locations", category=UserWarning
+        )
+        # The per-route row-builder check runs propagation routes with the default pre-elimination.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"SolverFeatherPGS: bilateral pre-elimination does not support propagation",
+            category=UserWarning,
+        )
+
     def test_explicit_opt_out_keeps_friction_rows_velocity_only(self):
         """Preserve velocity-only rows and omit anchor state with ``friction_anchor_beta=0``."""
         model, _jaws, _box = _build_v_jaws(5.0)
@@ -505,11 +521,11 @@ def _rhs_for_family(family: str, *, phi, row_beta, pgs_beta, dt, bias_scale, dev
 
 
 def _build_two_world_free_model(device):
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joint = template.add_joint_free(parent=-1, child=body)
     template.add_articulation([joint])
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.replicate(template, 2)
     return builder.finalize(device=device)
 

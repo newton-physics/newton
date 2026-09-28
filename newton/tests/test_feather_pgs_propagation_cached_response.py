@@ -264,7 +264,8 @@ def _run_lockstep(test_case, model, response, n_steps, *, cache_max_bodies: int 
     control = model.control()
     state_in.joint_qd.assign(_seed_joint_qd(model))
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     stats = _LockstepStats()
     for _ in range(n_steps):
@@ -272,11 +273,11 @@ def _run_lockstep(test_case, model, response, n_steps, *, cache_max_bodies: int 
         # A fresh collide before each solver isolates them from any contact
         # buffer bookkeeping a step might do; collide is deterministic in
         # state, so all three consume identical contact sets.
-        model.collide(state_in, contacts)
+        collision_pipeline.collide(state_in, contacts)
         test.step(state_in, test_out, control, contacts, DT)
-        model.collide(state_in, contacts)
+        collision_pipeline.collide(state_in, contacts)
         ref2.step(state_in, ref2_out, control, contacts, DT)
-        model.collide(state_in, contacts)
+        collision_pipeline.collide(state_in, contacts)
         ref.step(state_in, ref_out, control, contacts, DT)
         wp.synchronize()
 
@@ -478,10 +479,11 @@ class TestPropagationCachedResponse(unittest.TestCase):
         control = model.control()
         state_in.joint_qd.assign(_seed_joint_qd(model))
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         for _ in range(20):
             state_in.clear_forces()
-            model.collide(state_in, contacts)
+            collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, DT)
             state_in, state_out = state_out, state_in
         wp.synchronize()
@@ -543,10 +545,11 @@ class TestPropagationCachedResponse(unittest.TestCase):
         control = model.control()
         state_in.joint_qd.assign(_seed_joint_qd(model))
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         for _ in range(10):
             state_in.clear_forces()
-            model.collide(state_in, contacts)
+            collision_pipeline.collide(state_in, contacts)
             solver.step(state_in, state_out, control, contacts, DT)
             state_in, state_out = state_out, state_in
         wp.synchronize()

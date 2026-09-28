@@ -701,8 +701,12 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
             # effectively no positional correction. The separate tessellation
             # matrix compares default patches against full point friction.
             reference_beta = 1.0e-8 if geometry in ("mesh", "convex_hull") else 0.0
+            # At 240 Hz the 64-facet wheel advances almost one facet per step.
+            # Resolve facet crossings for this strict persistence comparison;
+            # the tessellation matrix below retains the coarse-timestep cases.
+            hz = 1920 if geometry in ("mesh", "convex_hull") else 240
             for kwargs in ({"friction_anchor_beta": reference_beta}, {}):
-                result = _run_rolling(geometry, device, deterministic=True, **kwargs)
+                result = _run_rolling(geometry, device, hz=hz, deterministic=True, **kwargs)
                 self.assertTrue(all(np.isfinite(value).all() for value in result))
                 results.append(result)
             with self.subTest(geometry=geometry):
@@ -1075,7 +1079,7 @@ class TestFeatherPGSFrictionPatches(unittest.TestCase):
     def test_propagation_variants_preserve_a_warmstarted_patch(self):
         """Retain a sticking articulated grasp across cached, fused, and colored propagation."""
         for response in ("propagation", "propagation-fused", "propagation-colored"):
-            with self.subTest(response=response):
+            with self.subTest(response=response), self.assertWarnsRegex(UserWarning, "Patch friction selects"):
                 drift, solver, state = _run_squeeze(
                     5.0,
                     220,

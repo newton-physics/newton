@@ -105,6 +105,33 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
         return builder.finalize(device="cpu")
 
+    def test_max_distance_can_be_measured_from_camera_origin(self):
+        """Preserve the far bound for shifted rays while retaining the default ray-origin mode."""
+        for device in wp.get_devices():
+            builder = newton.ModelBuilder()
+            builder.add_shape_sphere(-1, radius=0.75, xform=wp.transform(wp.vec3(0.0, 0.0, -2.0), wp.quat_identity()))
+            model = builder.finalize(device=device)
+            sensor = SensorTiledCamera(model)
+            sensor.default_render_config.max_distance = 1.0
+            transforms = wp.array([[wp.transform_identity()]], dtype=wp.transform, device=device)
+            depth = wp.zeros((1, 1, 1, 1), dtype=float, device=device)
+            indices = wp.zeros((1, 1, 1, 1), dtype=wp.uint32, device=device)
+            # On-bound outward and outside-bound inward rays must both be rejected.
+            for origin_z, direction_z, expected_depth in ((-1.0, -1.0, 0.25), (-3.0, 1.0, 0.25)):
+                rays = wp.array(
+                    [[[[wp.vec3(0.0, 0.0, origin_z), wp.vec3(0.0, 0.0, direction_z)]]]], dtype=wp.vec3, device=device
+                )
+                for from_camera in (False, True):
+                    with self.subTest(device=str(device), from_camera=from_camera, origin_z=origin_z):
+                        sensor.default_render_config.max_distance_from_camera_origin = from_camera
+                        sensor.update(model.state(), transforms, rays, depth_image=depth, shape_index_image=indices)
+                        if from_camera:
+                            self.assertEqual(float(depth.numpy().item()), 0.0)
+                            self.assertEqual(int(indices.numpy().item()), 0xFFFFFFFF)
+                        else:
+                            self.assertAlmostEqual(float(depth.numpy().item()), expected_depth, delta=1e-6)
+                            self.assertEqual(int(indices.numpy().item()), 0)
+
     @staticmethod
     def _build_mixed_cloth_particle_scene() -> newton.Model:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)

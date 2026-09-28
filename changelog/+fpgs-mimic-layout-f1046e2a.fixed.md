@@ -1,0 +1,1 @@
+Reject quaternion-layout joint-owned mimic endpoints during `SolverFeatherPGS` construction instead of assembling scalar mimic rows for BALL, FREE, or DISTANCE joints; preserve componentwise REVOLUTE, PRISMATIC, and D6 mimics and legacy-constraint precedence.

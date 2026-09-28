@@ -4,6 +4,7 @@
 """Tests for SAT box-box manifolds and their feature-based contact identity."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -286,7 +287,10 @@ def test_box_box_aligned_manifold_distinct_corners(test: unittest.TestCase, devi
             builder.add_shape_box(a, hx=hx, hy=hx, hz=hx, cfg=cfg)
             b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 2.98 * hx), wp.quat_identity()))
             builder.add_shape_box(b, hx=hx, hy=hx, hz=hx, cfg=cfg)
-            model = builder.finalize()
+            # Millimeter cubes fall below the inertia floor; this test only checks contact geometry.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Inertia validation corrected", category=UserWarning)
+                model = builder.finalize()
             pipeline = newton.CollisionPipeline(
                 model,
                 reduce_contacts=True,

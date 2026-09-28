@@ -80,7 +80,7 @@ def _make_phase_layout_run(
     enable_joint_velocity_limits=True,
 ):
     """Build a deterministic scene containing every phase-bounded row family."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverFeatherPGS.register_custom_attributes(builder)
     builder.default_shape_cfg.density = 1000.0
     builder.default_shape_cfg.mu = 0.5
@@ -137,14 +137,15 @@ def _make_phase_layout_run(
     joint_qd[free_dof + 3] = 1.5
     state_0.joint_qd.assign(joint_qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    return model, solver, state_0, state_1, model.control(), model.contacts()
+    pipeline = newton.CollisionPipeline(model)
+    return model, solver, state_0, state_1, model.control(), pipeline, pipeline.contacts()
 
 
 def _step_once(run):
     """Build all constraint rows for one deterministic step."""
-    model, solver, state_0, state_1, control, contacts = run
+    _model, solver, state_0, state_1, control, pipeline, contacts = run
     state_0.clear_forces()
-    model.collide(state_0, contacts)
+    pipeline.collide(state_0, contacts)
     solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
     return solver
 
@@ -198,7 +199,7 @@ def _assert_mf_phase_layout(test_case: unittest.TestCase, solver: SolverFeatherP
 
 def _run_joint_limit_trajectory(use_warp_builder: bool):
     """Run a short PhysX-grasp propagation trajectory with one row builder."""
-    model, solver, state_in, state_out, control, contacts = _make_phase_layout_run(
+    _model, solver, state_in, state_out, control, pipeline, contacts = _make_phase_layout_run(
         "cuda:0",
         "matrix_free",
         pgs_iterations=8,
@@ -211,7 +212,7 @@ def _run_joint_limit_trajectory(use_warp_builder: bool):
     samples = []
     for _ in range(4):
         state_in.clear_forces()
-        model.collide(state_in, contacts)
+        pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
         dense_count = int(solver.constraint_count.numpy()[0])
         mf_count = int(solver.mf_constraint_count.numpy()[0])

@@ -13,12 +13,12 @@ from newton.solvers import SolverFeatherPGS
 
 
 def _build_two_world_free_model(device):
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joint = template.add_joint_free(parent=-1, child=body)
     template.add_articulation([joint])
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.replicate(template, 2)
     return builder.finalize(device=device)
 

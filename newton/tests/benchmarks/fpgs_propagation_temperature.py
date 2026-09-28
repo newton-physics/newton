@@ -108,12 +108,12 @@ def _build_model(case: TempCase, world_count: int, device: str, gravity: float) 
     # links instead of the deep spawn overlap ejecting them.
     spawn_penetration = 0.0005 if gravity != 0.0 else 0.012
     template, spacing = _build_articulated_free_builder(_bench_case(case, world_count, spawn_penetration))
+    gravity_vector = (0.0, 0.0, gravity)
     if gravity != 0.0:
-        # ModelBuilder gravity is a scalar z-acceleration.
-        template.gravity = gravity
+        template.gravity = gravity_vector
     if world_count <= 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=gravity)
+    builder = newton.ModelBuilder(gravity=gravity_vector)
     _configure_shape_defaults(builder)
     builder.replicate(template, world_count, spacing=spacing)
     return builder.finalize(device=device)
@@ -190,11 +190,12 @@ def _settle_loop(model, solver, *, steps: int, dt: float, tail: int):
     state_out = model.state()
     control = model.control()
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     peak_tail = 0.0
     for step in range(steps):
         state_in.clear_forces()
-        model.collide(state_in, contacts)
+        collision_pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, control, contacts, dt)
         if step >= steps - tail:
             peak_tail = max(peak_tail, _articulated_contact_penetration_m(solver))
@@ -221,8 +222,9 @@ def run_point(
         initial_state = model.state()
         newton.eval_fk(model, initial_state.joint_q, initial_state.joint_qd, initial_state)
         initial_state.clear_forces()
-        contacts = model.contacts()
-        model.collide(initial_state, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(initial_state, contacts)
         wp.synchronize()
         timing_model_cache[case.label] = (model, _snapshot_state(initial_state), contacts)
     model, initial, contacts = timing_model_cache[case.label]
@@ -315,8 +317,9 @@ def _profile_kernels(case: TempCase, mode: str, *, device: str, dt: float, pgs_i
     initial_state = model.state()
     newton.eval_fk(model, initial_state.joint_q, initial_state.joint_qd, initial_state)
     initial_state.clear_forces()
-    contacts = model.contacts()
-    model.collide(initial_state, contacts)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(initial_state, contacts)
     initial = _snapshot_state(initial_state)
     solver = _make_solver(model, case, mode, pgs_iterations)
     # Warm every kernel before recording.

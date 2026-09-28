@@ -13942,6 +13942,81 @@ class TestImportUsdMimicJoint(unittest.TestCase):
     """Tests for PhysxMimicJointAPI parsing during USD import."""
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reciprocal_mimic_schemas_preserve_one_relation(self):
+        """Deduplicate equivalent reciprocal declarations and reject conflicting cycles."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        for schemas in (("Newton", "Physx"), ("Physx", "Newton"), ("Newton", "Newton"), ("Physx", "Physx")):
+            for offset, multiplier in ((0.0, 1.0), (0.125, -2.0)):
+                for conflicting in (False, True):
+                    with self.subTest(schemas=schemas, offset=offset, multiplier=multiplier, conflicting=conflicting):
+                        stage = Usd.Stage.CreateInMemory()
+                        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                        UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+                        root = stage.DefinePrim("/Robot", "Xform")
+                        stage.SetDefaultPrim(root)
+                        UsdPhysics.ArticulationRootAPI.Apply(root)
+                        for name in ("base", "left", "right"):
+                            body = stage.DefinePrim(f"/Robot/{name}", "Cube")
+                            UsdPhysics.RigidBodyAPI.Apply(body)
+                            mass = UsdPhysics.MassAPI.Apply(body)
+                            mass.CreateMassAttr(1.0)
+                            mass.CreateDiagonalInertiaAttr((0.1, 0.1, 0.1))
+                        fixed = UsdPhysics.FixedJoint.Define(stage, "/Robot/fixed")
+                        fixed.CreateBody1Rel().SetTargets(["/Robot/base"])
+                        joints = []
+                        for name in ("left", "right"):
+                            joint = UsdPhysics.PrismaticJoint.Define(stage, f"/Robot/{name}_joint")
+                            joint.CreateAxisAttr("X")
+                            joint.CreateBody0Rel().SetTargets(["/Robot/base"])
+                            joint.CreateBody1Rel().SetTargets([f"/Robot/{name}"])
+                            joints.append(joint.GetPrim())
+                        reverse_offset = -offset / multiplier + (0.01 if conflicting else 0.0)
+                        for i, (schema, coefficients) in enumerate(
+                            zip(schemas, ((reverse_offset, 1.0 / multiplier), (offset, multiplier)), strict=True)
+                        ):
+                            follower, leader = joints[i], joints[1 - i]
+                            coef0, coef1 = coefficients
+                            if schema == "Newton":
+                                follower.ApplyAPI("NewtonMimicAPI")
+                                follower.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPath()])
+                                follower.GetAttribute("newton:mimicCoef0").Set(coef0)
+                                follower.GetAttribute("newton:mimicCoef1").Set(coef1)
+                            else:
+                                follower.SetMetadata(
+                                    "apiSchemas", Sdf.TokenListOp.Create(prependedItems=["PhysxMimicJointAPI:transX"])
+                                )
+                                follower.CreateRelationship("physxMimicJoint:transX:referenceJoint").SetTargets(
+                                    [leader.GetPath()]
+                                )
+                                follower.CreateAttribute("physxMimicJoint:transX:offset", Sdf.ValueTypeNames.Float).Set(
+                                    -coef0
+                                )
+                                follower.CreateAttribute(
+                                    "physxMimicJoint:transX:gearing", Sdf.ValueTypeNames.Float
+                                ).Set(-coef1)
+                        builder = newton.ModelBuilder()
+                        if conflicting:
+                            with self.assertRaisesRegex(ValueError, "already a mimic joint"):
+                                builder.add_usd(stage)
+                            continue
+                        result = builder.add_usd(stage)
+                        left, right = (result["path_joint_map"][str(joint.GetPath())] for joint in joints)
+                        followers = [i for i, reference in enumerate(builder.joint_mimic_joint) if reference >= 0]
+                        self.assertEqual(len(followers), 1)
+                        follower = followers[0]
+                        leader = builder.joint_mimic_joint[follower]
+                        self.assertEqual({follower, leader}, {left, right})
+                        self.assertEqual(builder.joint_mimic_joint[leader], -1)
+                        expected = (
+                            (offset, multiplier) if follower == right else (-offset / multiplier, 1.0 / multiplier)
+                        )
+                        np.testing.assert_allclose(
+                            builder.joint_mimic_coeffs[follower], expected, rtol=0.0, atol=1.0e-7
+                        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_mimic_joint_basic(self):
         """Verify PhysxMimicJointAPI creates joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
