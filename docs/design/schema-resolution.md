@@ -19,7 +19,7 @@ identify ownership and conversion. The source adapter supplies registered
 schema fallbacks: the PXR adapter reads them from `Usd.SchemaRegistry`, while a
 PXR-free adapter provides the equivalent versioned schema metadata explicitly.
 Property interpretation and multi-input assembly live in the private
-`_usd_resolution_policy.py` module. Each source-neutral result reports its
+`_resolution_policy.py` module. Each source-neutral result reports its
 value, source category, resolver, schema ownership, and source attributes.
 Batched resolution, Warp functions, dynamic schema discovery, and direct
 ModelBuilder buffer population are deliberately deferred.

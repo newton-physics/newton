@@ -209,18 +209,17 @@ class Example:
             off_y, off_z = bundle_positions[i]
             cable_start = wp.vec3(start_x, start_y + off_y, start_z + off_z)
 
-            points, quats = newton.utils.rod_straight_points_and_quaternions(
+            rod = newton.Rod.create_straight(
                 start=cable_start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=float(self.cable_length),
-                num_segments=int(self.num_elements),
+                segment_count=int(self.num_elements),
                 twist_total=0.0,
+                radius=self.cable_radius,
             )
 
             rod_bodies, _rod_joints = builder.add_rod(
-                positions=points,
-                quaternions=quats,
-                radius=self.cable_radius,
+                rod=rod,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",

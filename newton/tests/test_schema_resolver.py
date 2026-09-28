@@ -3420,6 +3420,46 @@ class TestSchemaResolver(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "cannot be supplied"):
                         ModelBuilder().add_usd(stage, schema_resolution=resolution, **{name: value})
 
+    def test_shared_resolution_keeps_joint_import_state_separate(self):
+        """Reuse joint resolution without carrying collected values or audit warnings between imports."""
+        for registered in (False, True):
+            resolution = SchemaResolution(
+                [SchemaResolverNewton()],
+                use_registered_schema_fallbacks=registered,
+                audit_registered_schema_fallbacks=not registered,
+            )
+            for armature in (None, 2.0):
+                with self.subTest(registered=registered, armature=armature):
+                    stage = Usd.Stage.CreateInMemory()
+                    root = UsdGeom.Xform.Define(stage, "/World")
+                    UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                    body = UsdGeom.Cube.Define(stage, "/World/Body")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+                    joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                    joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                    joint.GetPrim().ApplyAPI("NewtonJointAPI")
+                    if armature is not None:
+                        joint.GetPrim().GetAttribute("newton:armature").Set(armature)
+
+                    builder = ModelBuilder()
+                    builder.default_joint_cfg.armature = 1.0
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(stage, schema_resolution=resolution, load_visual_shapes=False)
+
+                    joint_index = result["path_joint_map"]["/World/Joint"]
+                    dof = builder.joint_qd_start[joint_index]
+                    expected = armature if armature is not None else (0.0 if registered else 1.0)
+                    self.assertEqual(builder.joint_armature[dof], expected)
+                    migration_warnings = [item for item in caught if "USD property precedence" in str(item.message)]
+                    self.assertEqual(len(migration_warnings), int(not registered and armature is None))
+                    collected = result["schema_attrs"]["newton"]["/World/Joint"]
+                    if armature is None:
+                        self.assertNotIn("newton:armature", collected)
+                    else:
+                        self.assertEqual(collected["newton:armature"], armature)
+
     def test_max_solver_iterations(self):
         """
         Test maxSolverIterations priority.

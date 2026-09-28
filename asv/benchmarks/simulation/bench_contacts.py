@@ -26,6 +26,9 @@ ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 IRREGULAR_ROCK_VERTEX_COUNTS = (10, 14, 18, 26)
 CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191))
+# Large enough that the split GJK/MPR path is active and its launch is the
+# limit, which the cases above are an order of magnitude too small to reach.
+SPLIT_CONVEX_COLLISION_CASES = (("hulls_split", 4096),)
 BROAD_PHASE_COLLISION_CASES = (("sap", 10_000), ("nxn", 1_000), ("explicit", 10_000))
 COMPLEX_CONTACT_CASES = ("mesh_convex", "mesh_sdf")
 MIXED_CONVEX_PAIR_TYPES = (
@@ -317,6 +320,67 @@ class FastExampleContactHydroWorkingDefaults:
         wp.synchronize_device()
 
 
+class _ExampleCollideBenchmark:
+    """Collision-only timing of an example scene sized so contact generation dominates.
+
+    The ``*Defaults`` benchmarks time whole simulation frames, where the solver
+    hides most of the collision cost. This base class builds the same example
+    with more worlds, captures ``CollisionPipeline.collide`` alone into a CUDA
+    graph, and replays it, so contact-generation changes show up directly while
+    the setup cost stays close to the defaults benchmarks.
+    """
+
+    module_names: ClassVar[list[str]] = []
+    world_count = 200
+    launch_count = 20
+    repeat = pr_gate_repeat(5)
+    number = 1
+
+    def setup_cache(self):
+        _download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_NUT_BOLT_FOLDER)
+
+    def setup(self):
+        device = wp.get_device()
+        if not device.is_cuda:
+            raise SkipNotImplemented
+        example_cls = _import_example_class(self.module_names)
+        args = newton.examples.default_args(example_cls.create_parser())
+        args.world_count = self.world_count
+        args.num_per_world = 1
+        self.example = example_cls(ViewerNull(num_frames=1), args)
+        self.pipeline = self.example.collision_pipeline
+        self.state = self.example.state_0
+        self.contacts = self.example.contacts
+
+        for _ in range(3):
+            self.pipeline.collide(self.state, self.contacts)
+        wp.synchronize_device()
+        if int(self.contacts.rigid_contact_count.numpy()[0]) == 0:
+            raise RuntimeError("collide benchmark scene produced no contacts")
+
+        with wp.ScopedCapture(device=device) as capture:
+            self.pipeline.collide(self.state, self.contacts)
+        self.graph = capture.graph
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_collide(self):
+        for _ in range(self.launch_count):
+            wp.capture_launch(self.graph)
+        wp.synchronize_device()
+
+
+class FastExampleContactSdfCollide(_ExampleCollideBenchmark):
+    """Collision-only benchmark of the mesh-SDF nut-bolt scene at 200 worlds."""
+
+    module_names: ClassVar[list[str]] = ["newton.examples.contacts.example_nut_bolt_sdf"]
+
+
+class FastExampleContactHydroCollide(_ExampleCollideBenchmark):
+    """Collision-only benchmark of the hydroelastic nut-bolt scene at 200 worlds."""
+
+    module_names: ClassVar[list[str]] = ["newton.examples.contacts.example_nut_bolt_hydro"]
+
+
 class FastExampleContactPyramidDefaults:
     """Benchmark the box pyramid example with default configuration."""
 
@@ -382,6 +446,55 @@ class FastConvexCollision:
             verify_buffers=False,
         )
         self.contacts = self.collision_pipeline.contacts()
+
+        for _ in range(5):
+            self.collision_pipeline.collide(self.state, self.contacts)
+        if int(self.collision_pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0]) == 0:
+            raise RuntimeError("convex benchmark scene produced no GJK candidate pairs")
+
+        with wp.ScopedCapture(device=device) as capture:
+            self.collision_pipeline.collide(self.state, self.contacts)
+        self.graph = capture.graph
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_collide(self, case):
+        for _ in range(self.launch_count):
+            wp.capture_launch(self.graph)
+        wp.synchronize_device()
+
+
+class SplitConvexCollision:
+    """Benchmark the split GJK/MPR convex path used by large replicated scenes."""
+
+    params = (SPLIT_CONVEX_COLLISION_CASES,)
+    param_names: ClassVar[list[str]] = ["case"]
+    repeat = pr_gate_repeat(5)
+    number = 1
+
+    def setup(self, case):
+        device = wp.get_device()
+        if not device.is_cuda or not wp.is_mempool_enabled(device):
+            raise SkipNotImplemented
+
+        self.launch_count = 20
+        _scene, world_count = case
+        pair_types = (("hull", "hull"),) * len(MIXED_CONVEX_PAIR_TYPES)
+        self.model = _build_convex_scene(world_count, pair_types)
+        self.state = self.model.state()
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase="sap",
+            rigid_contact_max=self.model.shape_count * 8,
+            verify_buffers=False,
+        )
+        self.contacts = self.collision_pipeline.contacts()
+
+        # This benchmark exists to cover the split path. If the scene stops
+        # crossing the activation threshold it would silently start timing the
+        # monolithic kernel instead, so fail loudly rather than drift.
+        if not self.collision_pipeline.narrow_phase.split_gjk_mpr:
+            raise RuntimeError("split convex benchmark scene did not activate the split GJK/MPR path")
 
         for _ in range(5):
             self.collision_pipeline.collide(self.state, self.contacts)
@@ -528,6 +641,8 @@ if __name__ == "__main__":
     benchmark_list = {
         "FastExampleContactSdfDefaults": FastExampleContactSdfDefaults,
         "FastExampleContactHydroWorkingDefaults": FastExampleContactHydroWorkingDefaults,
+        "FastExampleContactSdfCollide": FastExampleContactSdfCollide,
+        "FastExampleContactHydroCollide": FastExampleContactHydroCollide,
         "FastExampleContactPyramidDefaults": FastExampleContactPyramidDefaults,
         "FastConvexCollision": FastConvexCollision,
         "BroadPhaseCollision": BroadPhaseCollision,

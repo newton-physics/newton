@@ -16,14 +16,14 @@ import newton.actuators as actuators
 class TestActuatorDriveAPI(unittest.TestCase):
     """Verify canonical actuator names and deprecated compatibility aliases."""
 
-    def test_response_oracle_public_method_type_hints(self):
-        """Keep ResponseOracle's public methods fully annotated."""
+    def test_joint_space_response_public_method_type_hints(self):
+        """Keep JointSpaceResponse's public methods fully annotated."""
         self.assertEqual(
-            typing.get_type_hints(actuators.ResponseOracle.__init__),
+            typing.get_type_hints(actuators.JointSpaceResponse.__init__),
             {"model": newton.Model, "return": type(None)},
         )
         self.assertEqual(
-            typing.get_type_hints(actuators.ResponseOracle.refresh),
+            typing.get_type_hints(actuators.JointSpaceResponse.refresh),
             {"state": newton.State, "return": type(None)},
         )
 

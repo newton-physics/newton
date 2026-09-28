@@ -1,1 +1,0 @@
-Apply logged mesh color, roughness, metallic, backface culling, and opacity consistently in USD-based viewers; preserve distinct mesh color and opacity in ViewerFile recordings; and render mixed opaque/translucent ViewerGL instance batches in the correct depth, shadow, and transparency passes.
