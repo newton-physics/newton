@@ -34,12 +34,13 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_face_sdf,
 )
 from newton._src.sim.collide import (
+    _GENERIC_CONVEX_PAIR_LOOKUP,
     _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
     _build_soft_particle_rigid_contact_pairs,
-    _compute_generic_convex_pair_work_estimate,
+    _compute_generic_convex_pair_stats,
     _compute_per_world_mask_pair_max,
     _compute_per_world_shape_pairs_max,
     _count_soft_particle_rigid_contact_pairs,
@@ -1318,6 +1319,37 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         test.assertEqual(n, 0, f"Expected 0 rigid contacts when only pair is excluded (got {n})")
 
 
+def test_same_body_filter_is_inherent(test, device):
+    """Reject same-body pairs without storing explicit collision filters.
+
+    Args:
+        test: The test case instance.
+        device: Warp device to run on.
+    """
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = 0.01
+        body = builder.add_body()
+        shape_a = builder.add_shape_sphere(body=body, radius=0.5)
+        shape_b = builder.add_shape_sphere(body=body, radius=0.5)
+        other_body = builder.add_body()
+        shape_c = builder.add_shape_sphere(body=other_body, radius=0.5)
+
+        model = builder.finalize(device=device)
+        test.assertEqual(model.shape_collision_filter_pairs, set())
+        expected_pairs = {(shape_a, shape_c), (shape_b, shape_c)}
+
+        for broad_phase in ("explicit", "nxn", "sap"):
+            pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            shape0 = contacts.rigid_contact_shape0.numpy()
+            shape1 = contacts.rigid_contact_shape1.numpy()
+            pairs = {(min(int(shape0[i]), int(shape1[i])), max(int(shape0[i]), int(shape1[i]))) for i in range(count)}
+            test.assertEqual(pairs, expected_pairs, broad_phase)
+
+
 add_function_test(
     TestCollisionPipelineFilterPairs,
     "test_shape_collision_filter_pairs_nxn",
@@ -1331,6 +1363,12 @@ add_function_test(
     test_shape_collision_filter_pairs,
     devices=devices,
     broad_phase="sap",
+)
+add_function_test(
+    TestCollisionPipelineFilterPairs,
+    "test_same_body_filter_is_inherent",
+    test_same_body_filter_is_inherent,
+    devices=devices,
 )
 
 
@@ -2118,6 +2156,12 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         model.shape_flags = wp.array(flags, dtype=wp.int32)
         return model
 
+    def test_generic_convex_pair_lookup_matches_geo_type_layout(self):
+        """Keep the generic convex pair lookup indexable by raw shape type and order-independent."""
+        self.assertEqual([int(shape_type) for shape_type in GeoType], list(range(len(GeoType))))
+        # The explicit-pair gather passes unsorted (type_a, type_b) straight to the table.
+        np.testing.assert_array_equal(_GENERIC_CONVEX_PAIR_LOOKUP, _GENERIC_CONVEX_PAIR_LOOKUP.T)
+
     def test_mask_pair_bounds_respect_world_segments(self):
         """Count selected pair categories across local and global world segments."""
         model = self._make_model(num_worlds=2, shapes_per_world=2, num_global=2)
@@ -2136,13 +2180,14 @@ class TestShapePairsMaxScaling(unittest.TestCase):
             dtype=wp.int32,
         )
 
-        estimate = _compute_generic_convex_pair_work_estimate(
+        has_generic_convex_pairs, estimate = _compute_generic_convex_pair_stats(
             model,
             broad_phase_mode="sap",
             shape_pairs_filtered=None,
             candidate_pair_work_estimate=12,
         )
 
+        self.assertTrue(has_generic_convex_pairs)
         # Each world contributes one hull-hull and four hull-sphere pairs;
         # sphere-sphere collision uses the analytic path.
         self.assertEqual(estimate, 10)
@@ -2152,13 +2197,14 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         model = self._make_model(num_worlds=56, shapes_per_world=32)
         model.shape_type = wp.full(model.shape_count, int(GeoType.CONVEX_MESH), dtype=wp.int32)
 
-        estimate = _compute_generic_convex_pair_work_estimate(
+        has_generic_convex_pairs, estimate = _compute_generic_convex_pair_stats(
             model,
             broad_phase_mode="sap",
             shape_pairs_filtered=None,
             candidate_pair_work_estimate=100_000,
         )
 
+        self.assertTrue(has_generic_convex_pairs)
         self.assertEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
 
     def test_explicit_generic_convex_work_estimate_uses_routed_pairs(self):
@@ -2168,16 +2214,63 @@ class TestShapePairsMaxScaling(unittest.TestCase):
             [int(GeoType.CONVEX_MESH), int(GeoType.BOX), int(GeoType.SPHERE), int(GeoType.SPHERE)],
             dtype=wp.int32,
         )
-        shape_pairs = wp.array(np.array([[0, 1], [1, 2], [2, 3]], dtype=np.int32), dtype=wp.vec2i)
-
-        estimate = _compute_generic_convex_pair_work_estimate(
-            model,
-            broad_phase_mode="explicit",
-            shape_pairs_filtered=shape_pairs,
-            candidate_pair_work_estimate=3,
+        cases = (
+            ("hull-box route", [[0, 1], [1, 2], [2, 3]], True, 1),
+            ("analytic only", [[1, 2], [2, 3]], False, 0),
+            ("no pairs", [], False, 0),
         )
 
-        self.assertEqual(estimate, 1)
+        for name, pairs, expected_has_pairs, expected_estimate in cases:
+            with self.subTest(name):
+                pairs_np = np.array(pairs, dtype=np.int32).reshape(-1, 2)
+                has_generic_convex_pairs, estimate = _compute_generic_convex_pair_stats(
+                    model,
+                    broad_phase_mode="explicit",
+                    shape_pairs_filtered=wp.array(pairs_np, dtype=wp.vec2i),
+                    candidate_pair_work_estimate=3,
+                )
+
+                self.assertEqual(has_generic_convex_pairs, expected_has_pairs)
+                self.assertEqual(estimate, expected_estimate)
+
+    def test_explicit_generic_convex_work_estimate_vectorizes_pair_classification(self):
+        """Classify explicit generic convex pairs without a Python pair loop."""
+        model = self._make_model(num_worlds=1, shapes_per_world=7)
+        shape_types = np.array(
+            [
+                int(GeoType.CONVEX_MESH),
+                int(GeoType.BOX),
+                int(GeoType.SPHERE),
+                int(GeoType.SPHERE),
+                int(GeoType.MESH),
+                int(GeoType.PLANE),
+                int(GeoType.CAPSULE),
+            ],
+            dtype=np.int32,
+        )
+        model.shape_type = wp.array(shape_types, dtype=wp.int32)
+        shape_pairs_np = np.array([[0, 1], [1, 6], [2, 3], [4, 0], [5, 6]], dtype=np.int32)
+        shape_pairs = wp.array(shape_pairs_np, dtype=wp.vec2i)
+        pair_types = shape_types[shape_pairs_np]
+
+        np.testing.assert_array_equal(
+            _GENERIC_CONVEX_PAIR_LOOKUP[pair_types[:, 0], pair_types[:, 1]],
+            [True, True, False, False, False],
+        )
+
+        with mock.patch(
+            "newton._src.sim.collide._pair_requires_generic_convex_narrow_phase",
+            side_effect=AssertionError("explicit pair classification must be vectorized"),
+        ):
+            has_generic_convex_pairs, estimate = _compute_generic_convex_pair_stats(
+                model,
+                broad_phase_mode="explicit",
+                shape_pairs_filtered=shape_pairs,
+                candidate_pair_work_estimate=len(shape_pairs_np),
+            )
+
+        self.assertTrue(has_generic_convex_pairs)
+        self.assertEqual(estimate, 2)
 
     def test_mesh_work_buffers_use_category_bounds(self):
         """Size mesh work buffers from exact routed shape categories."""
@@ -2247,7 +2340,7 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        world.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+        world.add_shape_mesh(body=world.add_body(), mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_world(world)
         builder.add_world(world)
@@ -2272,12 +2365,15 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         """Generate contacts for two intersecting finite planes."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_shape_plane(body=-1, width=1.0, length=1.0)
-        builder.add_shape_plane(
-            body=-1,
+        kinematic_body = builder.add_body(
             xform=wp.transform(
                 wp.vec3(0.0, 0.0, 0.0),
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0),
             ),
+            is_kinematic=True,
+        )
+        builder.add_shape_plane(
+            body=kinematic_body,
             width=1.0,
             length=1.0,
         )

@@ -10,7 +10,8 @@ import warp as wp
 from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
 from ...geometry.keying import build_pair_key2, uint64_sentinel_value
-from .kernels import _FUSED_BILATERAL_BLOCK, _FUSED_INEQUALITY_BLOCK, _sync_threads
+from ...linalg.factorize.llt_blocked_rcm import get_float32_array_offset_ptr
+from .kernels import _FUSED_BILATERAL_BLOCK, _FUSED_INEQUALITY_BLOCK, _compact_schur_fits, _sync_threads
 from .projections import (
     contact_friction_normal_load as _contact_friction_normal_load,
 )
@@ -769,57 +770,59 @@ def _assemble_sparse_bilateral_unilateral_coupling(
     response_stride: wp.array[int32],
     coupling: wp.array[float32],
 ):
-    wid, row, unilateral = wp.tid()
+    wid, worker = wp.tid()
     njc = problem_njc[wid]
-    col = njc + unilateral
-    if row >= njc or col >= problem_dim[wid]:
-        return
+    nu = problem_dim[wid] - njc
+    for entry_index in range(worker, njc * nu, int32(1024)):
+        row = entry_index / nu
+        unilateral = entry_index % nu
+        col = njc + unilateral
 
-    matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
-    col_block_0 = int32(-1)
-    col_block_1 = int32(-1)
-    nbc = problem_nbc[wid]
-    nl = problem_nl[wid]
-    if unilateral < nbc:
-        offsets = friction_nzb_offsets[problem_bcio[wid] + unilateral]
-        col_block_0 = offsets[0]
-        col_block_1 = offsets[1]
-    elif unilateral < nbc + nl:
-        mapped_limit = limit_indices[problem_lio[wid] + unilateral - nbc]
-        if mapped_limit >= int32(0):
-            col_block_0 = limit_nzb_offsets[mapped_limit]
-            candidate = col_block_0 + int32(1)
-            if candidate < matrix_end and bsm_nzb_coords[candidate, 0] == col:
-                col_block_1 = candidate
-    else:
-        contact_component = unilateral - nbc - nl
-        cid = contact_component / int32(3)
-        if cid < problem_nc[wid]:
-            component = contact_component - int32(3) * cid
-            mapped_contact = contact_indices[problem_cio[wid] + cid]
-            if mapped_contact >= int32(0):
-                col_block_0 = contact_nzb_offsets[mapped_contact] + component
-                candidate = col_block_0 + int32(3)
+        matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
+        col_block_0 = int32(-1)
+        col_block_1 = int32(-1)
+        nbc = problem_nbc[wid]
+        nl = problem_nl[wid]
+        if unilateral < nbc:
+            offsets = friction_nzb_offsets[problem_bcio[wid] + unilateral]
+            col_block_0 = offsets[0]
+            col_block_1 = offsets[1]
+        elif unilateral < nbc + nl:
+            mapped_limit = limit_indices[problem_lio[wid] + unilateral - nbc]
+            if mapped_limit >= int32(0):
+                col_block_0 = limit_nzb_offsets[mapped_limit]
+                candidate = col_block_0 + int32(1)
                 if candidate < matrix_end and bsm_nzb_coords[candidate, 0] == col:
                     col_block_1 = candidate
+        else:
+            contact_component = unilateral - nbc - nl
+            cid = contact_component / int32(3)
+            if cid < problem_nc[wid]:
+                component = contact_component - int32(3) * cid
+                mapped_contact = contact_indices[problem_cio[wid] + cid]
+                if mapped_contact >= int32(0):
+                    col_block_0 = contact_nzb_offsets[mapped_contact] + component
+                    candidate = col_block_0 + int32(3)
+                    if candidate < matrix_end and bsm_nzb_coords[candidate, 0] == col:
+                        col_block_1 = candidate
 
-    value = float32(0.0)
-    cached_row = bilateral_world_row_offsets[wid] + row
-    for entry in range(bilateral_row_starts[cached_row], bilateral_row_starts[cached_row + int32(1)]):
-        row_block = bilateral_row_nzb_indices[entry]
-        row_body = bsm_nzb_coords[row_block, 1]
-        mass_weighted = mass_weighted_nzb_values[row_block]
-        if col_block_0 >= int32(0) and bsm_nzb_coords[col_block_0, 1] == row_body:
-            jacobian = jacobian_nzb_values[col_block_0]
-            for component in range(6):
-                value += mass_weighted[component] * jacobian[component]
-        if col_block_1 >= int32(0) and bsm_nzb_coords[col_block_1, 1] == row_body:
-            jacobian = jacobian_nzb_values[col_block_1]
-            for component in range(6):
-                value += mass_weighted[component] * jacobian[component]
-    value *= problem_P[problem_vio[wid] + col]
-    offset = response_mio[wid]
-    coupling[offset + row * response_stride[wid] + unilateral] = value
+        value = float32(0.0)
+        cached_row = bilateral_world_row_offsets[wid] + row
+        for entry in range(bilateral_row_starts[cached_row], bilateral_row_starts[cached_row + int32(1)]):
+            row_block = bilateral_row_nzb_indices[entry]
+            row_body = bsm_nzb_coords[row_block, 1]
+            mass_weighted = mass_weighted_nzb_values[row_block]
+            if col_block_0 >= int32(0) and bsm_nzb_coords[col_block_0, 1] == row_body:
+                jacobian = jacobian_nzb_values[col_block_0]
+                for component in range(6):
+                    value += mass_weighted[component] * jacobian[component]
+            if col_block_1 >= int32(0) and bsm_nzb_coords[col_block_1, 1] == row_body:
+                jacobian = jacobian_nzb_values[col_block_1]
+                for component in range(6):
+                    value += mass_weighted[component] * jacobian[component]
+        value *= problem_P[problem_vio[wid] + col]
+        offset = response_mio[wid]
+        coupling[offset + row * response_stride[wid] + unilateral] = value
 
 
 @wp.kernel
@@ -856,6 +859,8 @@ def _cache_sparse_projected_diagonal(
     solution_lambdas: wp.array[float32],
     initial_unilateral_lambdas: wp.array[float32],
     projected_diag: wp.array[float32],
+    compact_schur: wp.array[float32],
+    use_forward_schur: bool,
 ):
     """Cache the Schur diagonal and snapshot the warm-started unilateral iterate."""
     wid, unilateral_row = wp.tid()
@@ -870,9 +875,13 @@ def _cache_sparse_projected_diagonal(
     if enable_bilateral_response:
         offset = response_mio[wid]
         stride = response_stride[wid]
-        for bilateral_row in range(njc):
-            index = offset + bilateral_row * stride + unilateral_row
-            value -= bilateral_coupling[index] * bilateral_response[index]
+        nu = problem_dim[wid] - njc
+        if use_forward_schur and _compact_schur_fits(njc, nu, stride):
+            value -= compact_schur[offset + unilateral_row * nu + unilateral_row]
+        else:
+            for bilateral_row in range(njc):
+                index = offset + bilateral_row * stride + unilateral_row
+                value -= bilateral_coupling[index] * bilateral_response[index]
     projected_diag[vec_idx] = value
     initial_unilateral_lambdas[vec_idx] = solution_lambdas[vec_idx]
 
@@ -1677,6 +1686,46 @@ def _sync_warp_32(): ...
 
 
 @wp.func
+def _unilateral_nzb_offsets(
+    unilateral: int32,
+    njc: int32,
+    nbc: int32,
+    scalar_count: int32,
+    bcio: int32,
+    lio: int32,
+    cio: int32,
+    matrix_end: int32,
+    bsm_nzb_coords: wp.array2d[int32],
+    limit_indices: wp.array[int32],
+    contact_indices: wp.array[int32],
+    bounded_nzb_offsets: wp.array[wp.vec2i],
+    limit_nzb_offsets: wp.array[int32],
+    contact_nzb_offsets: wp.array[int32],
+) -> wp.vec2i:
+    """Find the body blocks belonging to an active unilateral row."""
+    row = njc + unilateral
+    offsets = wp.vec2i(-1)
+    if unilateral < nbc:
+        offsets = bounded_nzb_offsets[bcio + unilateral]
+    elif unilateral < scalar_count:
+        mapped = limit_indices[lio + unilateral - nbc]
+        if mapped >= int32(0):
+            offsets[0] = limit_nzb_offsets[mapped]
+            candidate = offsets[0] + int32(1)
+            if candidate < matrix_end and bsm_nzb_coords[candidate, 0] == row:
+                offsets[1] = candidate
+    else:
+        component_row = unilateral - scalar_count
+        mapped = contact_indices[cio + component_row / int32(3)]
+        if mapped >= int32(0):
+            offsets[0] = contact_nzb_offsets[mapped] + component_row % int32(3)
+            candidate = offsets[0] + int32(3)
+            if candidate < matrix_end and bsm_nzb_coords[candidate, 0] == row:
+                offsets[1] = candidate
+    return offsets
+
+
+@wp.func
 def _cooperative_unilateral_component(uid: int32, scalar_count: int32, phase: int32) -> int32:
     component = int32(0)
     if uid >= scalar_count and phase == int32(0):
@@ -1700,6 +1749,51 @@ def _compact_unilateral_correction(
     return correction
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def _assemble_compact_unilateral_schur_tiled(
+    problem_dim: wp.array[int32],
+    problem_njc: wp.array[int32],
+    problem_vio: wp.array[int32],
+    response_mio: wp.array[int32],
+    response_stride: wp.array[int32],
+    response: wp.array[float32],
+    compact_schur: wp.array[float32],
+    compact_q: wp.array[float32],
+):
+    """Form the whitened response Gram matrix using FP32 tiles."""
+    wid, group, lane = wp.tid()
+    njc = problem_njc[wid]
+    nu = problem_dim[wid] - njc
+    if not _compact_schur_fits(njc, nu, response_stride[wid]):
+        return
+    if group == 0:
+        for row in range(lane, nu, wp.block_dim()):
+            compact_q[problem_vio[wid] + njc + row] = 0.0
+    offset = response_mio[wid]
+    y = wp.array(ptr=get_float32_array_offset_ptr(response, offset), shape=(nu, njc), dtype=float32)
+    out = wp.array(
+        ptr=get_float32_array_offset_ptr(compact_schur, offset),
+        shape=(nu, nu),
+        dtype=float32,
+    )
+    tiles = (nu + 15) // 16
+    # Spread each world's tiles over a fixed number of independent blocks.
+    for tile in range(group, tiles * tiles, 16):
+        row = (tile // tiles) * 16
+        col = (tile % tiles) * 16
+        # Off-diagonal Gram blocks share the same dot products.
+        if row > col:
+            continue
+        accum = wp.tile_zeros(shape=(16, 16), dtype=float32, storage="shared")
+        for k in range(0, njc, 32):
+            a = wp.tile_load(y, shape=(16, 32), offset=(row, k))
+            b = wp.tile_load(y, shape=(16, 32), offset=(col, k))
+            wp.tile_matmul(a, wp.tile_transpose(b), accum)
+        wp.tile_store(out, accum, offset=(row, col))
+        if row != col:
+            wp.tile_store(out, wp.tile_transpose(accum), offset=(col, row))
+
+
 @wp.kernel
 def _assemble_compact_unilateral_schur(
     problem_dim: wp.array[int32],
@@ -1711,29 +1805,34 @@ def _assemble_compact_unilateral_schur(
     response: wp.array[float32],
     compact_schur: wp.array[float32],
     compact_q: wp.array[float32],
+    use_forward_schur: bool,
+    workers_per_world: int32,
 ):
-    """Assemble ``C.T * response`` for worlds with no more unilateral than bilateral rows."""
+    """Assemble the compact correction from full responses or whitened columns."""
     tid = wp.tid()
-    threads_per_world = int32(wp.block_dim())
-    lane = tid % threads_per_world
-    wid = tid / threads_per_world
+    # CPU launches report a block width of one, so keep logical grouping explicit.
+    lane = tid % workers_per_world
+    wid = tid / workers_per_world
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
     if nu > njc:
         return
     offset = response_mio[wid]
     stride = response_stride[wid]
-    for unilateral in range(lane, nu, threads_per_world):
+    for unilateral in range(lane, nu, workers_per_world):
         compact_q[problem_vio[wid] + njc + unilateral] = float32(0.0)
     # Store the Schur matrix transposed so a warp updating consecutive target
     # rows reads consecutive values for a fixed source constraint.
-    for entry in range(lane, nu * nu, threads_per_world):
+    for entry in range(lane, nu * nu, workers_per_world):
         column = entry / nu
         row = entry - column * nu
         value = float32(0.0)
         for bilateral in range(njc):
-            value += coupling[offset + bilateral * stride + row] * response[offset + bilateral * stride + column]
-        compact_schur[offset + column * stride + row] = value
+            if use_forward_schur:
+                value += response[offset + row * njc + bilateral] * response[offset + column * njc + bilateral]
+            else:
+                value += coupling[offset + bilateral * stride + row] * response[offset + bilateral * stride + column]
+        compact_schur[offset + column * nu + row] = value
 
 
 @wp.func
@@ -2083,12 +2182,97 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
     response_row_stride = response_stride[wid]
     scalar_count = nbc + nl
     num_unilateral_rows = scalar_count + int32(3) * nc
-    use_compact_schur = enable_compact_schur and num_unilateral_rows <= njc
+    use_compact_schur = enable_compact_schur and _compact_schur_fits(njc, num_unilateral_rows, response_row_stride)
     bvio = bilateral_vio[wid]
     row_start = bsm_row_start[wid]
     col_start = bsm_col_start[wid]
     matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
     sweep_count = cfg.inequality_sweeps_per_iteration
+    use_full_schur = use_compact_schur and num_unilateral_rows <= int32(128)
+    if use_full_schur:
+        # Form the full constraint-space operator once, avoiding sparse body
+        # gathers and updates in every projected sweep. Store its negative to
+        # retain the compact correction's subtractive update convention.
+        for unilateral in range(lane, num_unilateral_rows, int32(32)):
+            row = njc + unilateral
+            offsets = _unilateral_nzb_offsets(
+                unilateral,
+                njc,
+                nbc,
+                scalar_count,
+                bcio,
+                lio,
+                cio,
+                matrix_end,
+                bsm_nzb_coords,
+                limit_indices,
+                contact_indices,
+                bounded_nzb_offsets,
+                limit_nzb_offsets,
+                contact_nzb_offsets,
+            )
+            value = eta[row_start + row] * solution_lambdas[vio + row]
+            for k in range(2):
+                idx = offsets[k]
+                if idx >= int32(0):
+                    block = bsm_nzb_values[idx]
+                    body = col_start + bsm_nzb_coords[idx, 1]
+                    for component in range(6):
+                        value += block[component] * body_space[body + component]
+            compact_q[vio + row] = value + problem_v_f[vio + row]
+        _sync_warp_32()
+        for entry in range(lane, num_unilateral_rows * num_unilateral_rows, int32(32)):
+            column = entry / num_unilateral_rows
+            row = entry % num_unilateral_rows
+            row_blocks = _unilateral_nzb_offsets(
+                row,
+                njc,
+                nbc,
+                scalar_count,
+                bcio,
+                lio,
+                cio,
+                matrix_end,
+                bsm_nzb_coords,
+                limit_indices,
+                contact_indices,
+                bounded_nzb_offsets,
+                limit_nzb_offsets,
+                contact_nzb_offsets,
+            )
+            column_blocks = _unilateral_nzb_offsets(
+                column,
+                njc,
+                nbc,
+                scalar_count,
+                bcio,
+                lio,
+                cio,
+                matrix_end,
+                bsm_nzb_coords,
+                limit_indices,
+                contact_indices,
+                bounded_nzb_offsets,
+                limit_nzb_offsets,
+                contact_nzb_offsets,
+            )
+            value = float32(0.0)
+            for i in range(2):
+                row_block = row_blocks[i]
+                if row_block >= int32(0):
+                    for j in range(2):
+                        column_block = column_blocks[j]
+                        if column_block >= int32(0):
+                            if bsm_nzb_coords[row_block, 1] == bsm_nzb_coords[column_block, 1]:
+                                weighted = bsm_nzb_values[row_block]
+                                jacobian = jacobian_nzb_values[column_block]
+                                for component in range(6):
+                                    value += weighted[component] * jacobian[component]
+            value *= problem_P[vio + njc + column]
+            if row == column:
+                value += eta[row_start + njc + row]
+            compact_schur[response_offset + column * num_unilateral_rows + row] -= value
+        _sync_warp_32()
     first_tangent_sweep = int32(0)
     if block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
         tangent_sweep_count = sweep_count * cfg.max_alternating_iterations / int32(2)
@@ -2152,7 +2336,7 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
                                     if uid >= scalar_count and phase != int32(0):
                                         projected_cross = compact_schur[
                                             response_offset
-                                            + (unilateral_row + int32(1)) * response_row_stride
+                                            + (unilateral_row + int32(1)) * num_unilateral_rows
                                             + unilateral_row
                                         ]
                             else:
@@ -2180,7 +2364,7 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
                         delta_0 = float32(0.0)
                         delta_1 = float32(0.0)
                         if lane == int32(0):
-                            if mapped_id >= int32(0):
+                            if mapped_id >= int32(0) and not use_full_schur:
                                 if uid < nbc:
                                     if phase == int32(0):
                                         delta_0 = _cooperative_sparse_bounded_update(
@@ -2282,6 +2466,59 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
                                     )
                                     delta_0 = tangent_delta.x
                                     delta_1 = tangent_delta.y
+                            if mapped_id >= int32(0) and use_full_schur:
+                                component = _cooperative_unilateral_component(uid, scalar_count, phase)
+                                index = vec_idx + component
+                                old_lambda = solution_lambdas[index]
+                                new_lambda = old_lambda
+                                if uid < nbc:
+                                    new_lambda = _project_box_update(
+                                        old_lambda,
+                                        correction_0,
+                                        projected_diag[index],
+                                        cfg.regularization,
+                                        cfg.omega,
+                                        problem_bound_lower[mapped_id],
+                                        problem_bound_upper[mapped_id],
+                                    )
+                                elif uid < scalar_count:
+                                    diagonal = projected_diag[index]
+                                    if diagonal > FLOAT32_EPS:
+                                        new_lambda = wp.max(
+                                            float32(0.0),
+                                            old_lambda
+                                            - cfg.omega * correction_0 / (diagonal + cfg.regularization + FLOAT32_EPS),
+                                        )
+                                elif phase == int32(0):
+                                    new_lambda = _project_contact_normal_update(
+                                        old_lambda, correction_0, projected_diag[index], cfg.regularization, cfg.omega
+                                    )
+                                else:
+                                    old_tangent = wp.vec2f(old_lambda, solution_lambdas[index + int32(1)])
+                                    new_tangent = _project_contact_tangent_update(
+                                        old_tangent,
+                                        wp.vec2f(correction_0, correction_1),
+                                        wp.vec2f(projected_diag[index], projected_diag[index + int32(1)]),
+                                        -projected_cross,
+                                        cfg.regularization,
+                                        cfg.omega,
+                                        problem_mu[cio + uid - scalar_count]
+                                        * _contact_friction_normal_load(
+                                            solution_lambdas[index + int32(2)],
+                                            problem_v_b[index + int32(2)],
+                                            problem_P[index + int32(2)],
+                                            wp.abs(problem_diag[index + int32(2)])
+                                            * problem_P[index + int32(2)]
+                                            * problem_P[index + int32(2)],
+                                            cfg.regularization,
+                                            cfg.omega,
+                                        ),
+                                    )
+                                    new_lambda = new_tangent.x
+                                    delta_1 = new_tangent.y - old_tangent.y
+                                    solution_lambdas[index + int32(1)] = new_tangent.y
+                                delta_0 = new_lambda - old_lambda
+                                solution_lambdas[index] = new_lambda
                         delta_0 = _broadcast_lane_0_32(delta_0)
                         delta_1 = _broadcast_lane_0_32(delta_1)
                         if mapped_id >= int32(0) and (delta_0 != float32(0.0) or delta_1 != float32(0.0)):
@@ -2291,7 +2528,7 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
                                     value = (
                                         compact_schur[
                                             response_offset
-                                            + (unilateral_row + component) * response_row_stride
+                                            + (unilateral_row + component) * num_unilateral_rows
                                             + target
                                         ]
                                         * delta_0
@@ -2300,7 +2537,7 @@ def _solve_dvi_sparse_inequalities_pgs_cooperative(
                                         value += (
                                             compact_schur[
                                                 response_offset
-                                                + (unilateral_row + int32(1)) * response_row_stride
+                                                + (unilateral_row + int32(1)) * num_unilateral_rows
                                                 + target
                                             ]
                                             * delta_1

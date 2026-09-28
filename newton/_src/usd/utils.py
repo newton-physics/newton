@@ -781,6 +781,26 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
+def _fan_triangulation_corner_indices(counts: Sequence[int]) -> np.ndarray:
+    """Return polygon-corner indices for fan-triangulated faces."""
+    counts = np.asarray(counts, dtype=np.int32)
+    triangle_counts = counts - 2
+    num_tris = int(np.sum(triangle_counts))
+    if num_tris <= 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), triangle_counts)
+    tri_group_starts = np.cumsum(triangle_counts, dtype=np.int32) - triangle_counts
+    tri_local_ids = np.arange(num_tris, dtype=np.int32) - np.repeat(tri_group_starts, triangle_counts)
+    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
+
+    corners = np.empty((num_tris, 3), dtype=np.int32)
+    corners[:, 0] = face_bases[tri_face_ids]
+    corners[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
+    corners[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+    return corners
+
+
 def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Perform fan triangulation on polygonal faces.
@@ -792,33 +812,8 @@ def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray
     Returns:
         Array of shape (num_triangles, 3) containing triangle indices (dtype=np.int32)
     """
-    counts = np.asarray(counts, dtype=np.int32)
     indices = np.asarray(indices, dtype=np.int32)
-
-    num_tris = int(np.sum(counts - 2))
-
-    if num_tris == 0:
-        return np.zeros((0, 3), dtype=np.int32)
-
-    # Vectorized approach: build all triangle indices at once
-    # For each face with n vertices, we create (n-2) triangles
-    # Each triangle uses: [base, base+i+1, base+i+2] for i in range(n-2)
-
-    # Array to track which face each triangle belongs to
-    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), counts - 2)
-
-    # Array for triangle index within each face (0 to n-3)
-    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts])
-
-    # Base index for each face
-    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
-
-    out = np.empty((num_tris, 3), dtype=np.int32)
-    out[:, 0] = indices[face_bases[tri_face_ids]]  # First vertex (anchor)
-    out[:, 1] = indices[face_bases[tri_face_ids] + tri_local_ids + 1]  # Second vertex
-    out[:, 2] = indices[face_bases[tri_face_ids] + tri_local_ids + 2]  # Third vertex
-
-    return out
+    return indices[_fan_triangulation_corner_indices(counts)]
 
 
 def _expand_indexed_primvar(
@@ -1003,19 +998,7 @@ def _split_corners_into_vertices(
 
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
     """Return flattened corner indices for fan-triangulated face-varying data."""
-    counts_i32 = np.asarray(counts, dtype=np.int32)
-    num_tris = int(np.sum(counts_i32 - 2))
-    if num_tris <= 0:
-        return np.zeros((0,), dtype=np.int32)
-
-    tri_face_ids = np.repeat(np.arange(len(counts_i32), dtype=np.int32), counts_i32 - 2)
-    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts_i32])
-    face_bases = np.concatenate([[0], np.cumsum(counts_i32[:-1], dtype=np.int32)])
-
-    corner_faces = np.empty((num_tris, 3), dtype=np.int32)
-    corner_faces[:, 0] = face_bases[tri_face_ids]
-    corner_faces[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
-    corner_faces[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+    corner_faces = _fan_triangulation_corner_indices(counts)
     if flip_winding:
         corner_faces = corner_faces[:, ::-1]
     return corner_faces.reshape(-1)
@@ -1035,7 +1018,7 @@ def _open_usd_stage(source: str | os.PathLike[str]):
     if source_path.startswith("http://"):
         raise ValueError("HTTP USD URLs are not supported; use HTTPS or download the asset explicitly.")
     if _is_usd_url(source_path):
-        from ..utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+        from ._asset_download import resolve_usd_from_url  # noqa: PLC0415
 
         source_path = resolve_usd_from_url(source_path)
 
@@ -1444,6 +1427,14 @@ def get_mesh(
     ``UsdGeom.Mesh`` prims under ``root_path`` are merged into one
     :class:`newton.Mesh` with authored transforms applied relative to that root.
 
+    With ``load_normals=True``, shading is resolved to per-vertex normals on
+    the triangulated mesh. Missing normals are faceted for ``none`` and
+    ``bilinear`` subdivision schemes and smooth otherwise. Faceted shading
+    duplicates triangle vertices. Source subdivision control surfaces are
+    not evaluated or retained; viewers receive final triangles and normals.
+    Use ``load_normals=False`` for geometry-only loading without normal-driven
+    vertex splitting.
+
     Example:
 
         .. testcode::
@@ -1466,11 +1457,13 @@ def get_mesh(
     Args:
         source: USD mesh prim, stage, file path, or URL to load the mesh from.
         prim: Legacy keyword alias for ``source`` when loading a USD prim.
-        load_normals: Whether to load the normals.
+        load_normals: Whether to load authored normals or generate missing
+            normals and convert them to the per-vertex representation used by
+            :class:`Mesh`. This may split vertices to represent sharp shading.
         load_uvs: Whether to load the UVs.
         maxhullvert: The maximum number of vertices for the convex hull approximation.
         face_varying_normal_conversion:
-            This argument specifies how to convert "faceVarying" normals
+            This argument specifies how to convert authored "uniform" or "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
             If ``load_normals`` is False, this argument is ignored.
             The options are summarized below:
@@ -1488,11 +1481,12 @@ def get_mesh(
                 * - ``"vertex_splitting"``
                   - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
 
-        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
+        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on authored uniform or faceVarying normals when ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
         preserve_facevarying_uvs: If True, keep faceVarying UVs in their
             original corner layout and avoid UV-driven vertex splitting. The
-            returned mesh keeps its original topology. This is useful when the
+            returned mesh can still split vertices for normals when
+            ``load_normals=True``. This is useful when the
             caller needs the original UV indexing (e.g., panel-space cloth).
         return_uv_indices: If True, return a tuple ``(mesh, uv_indices)``
             where ``uv_indices`` is a flattened triangle index buffer for the
@@ -1570,6 +1564,8 @@ def get_mesh(
     points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
+    source_points = points
+    source_indices = indices
 
     uvs = None
     uvs_interpolation = None
@@ -1619,33 +1615,39 @@ def get_mesh(
                     normals_interpolation = mesh.GetNormalsInterpolation()
 
     if normals is not None:
+        prim_path = str(prim.GetPath())
         normals = np.array(normals, dtype=np.float64)
-        if normals_interpolation == UsdGeom.Tokens.uniform:
-            # One normal per face, commonly indexed so that flat-shaded geometry stores each
-            # distinct direction once. Resolve the indices and hand each face's normal to its
-            # own corners, which is the faceVarying form the rest of this function expects.
-            prim_path = str(prim.GetPath())
-            if normal_indices is not None and len(normal_indices) > 0:
-                normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
-                normal_indices = None
+        if normal_indices is not None and len(normal_indices) > 0:
+            normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
+
+        if normals_interpolation == UsdGeom.Tokens.constant:
+            if len(normals) != 1:
+                raise ValueError(f"Length of constant normals ({len(normals)}) must be 1 for mesh {prim_path}")
+            normals = np.repeat(normals, len(points), axis=0)
+        elif normals_interpolation == UsdGeom.Tokens.uniform:
             if len(normals) != len(counts):
                 raise ValueError(
-                    f"Length of uniform normals ({len(normals)}) does not match number of faces "
-                    f"({len(counts)}) for mesh {prim_path}"
+                    f"Length of uniform normals ({len(normals)}) does not match number of faces ({len(counts)}) "
+                    f"for mesh {prim_path}"
                 )
             normals = np.repeat(normals, np.asarray(counts, dtype=np.int32), axis=0)
             normals_interpolation = UsdGeom.Tokens.faceVarying
+        elif normals_interpolation in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying):
+            if len(normals) != len(points):
+                raise ValueError(
+                    f"Length of {normals_interpolation} normals ({len(normals)}) does not match number of points "
+                    f"({len(points)}) for mesh {prim_path}"
+                )
+        elif normals_interpolation != UsdGeom.Tokens.faceVarying:
+            raise ValueError(f"Unsupported normals interpolation '{normals_interpolation}' for mesh {prim_path}")
+
         if normals_interpolation == UsdGeom.Tokens.faceVarying:
-            prim_path = str(prim.GetPath())
-            if normal_indices is not None and len(normal_indices) > 0:
-                normals_fv = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
-            else:
-                # If faceVarying, values length must match number of corners
-                if len(normals) != len(indices):
-                    raise ValueError(
-                        f"Length of normals ({len(normals)}) does not match length of indices ({len(indices)}) for mesh {prim_path}"
-                    )
-                normals_fv = normals  # (C,3)
+            # Face-varying values must match the number of mesh corners.
+            if len(normals) != len(indices):
+                raise ValueError(
+                    f"Length of normals ({len(normals)}) does not match length of indices ({len(indices)}) for mesh {prim_path}"
+                )
+            normals_fv = normals  # (C,3)
 
             V = len(points)
             accum = np.zeros((V, 3), dtype=np.float64)
@@ -1720,16 +1722,23 @@ def get_mesh(
             else:
                 raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
 
-    faces = fan_triangulate_faces(counts, indices)
-
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
     if orientation_attr:
         handedness = orientation_attr.Get()
         if handedness and handedness.lower() == "lefthanded":
             flip_winding = True
-    if flip_winding:
-        faces = faces[:, ::-1]
+    corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
+    faces = indices[corner_flat].reshape(-1, 3)
+
+    generate_flat_normals = False
+    if load_normals and normals is None:
+        generate_flat_normals = mesh.GetSubdivisionSchemeAttr().Get() in (UsdGeom.Tokens.none, UsdGeom.Tokens.bilinear)
+        if not generate_flat_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            # Compute before UV expansion so texture seams do not become shading seams.
+            normals = compute_vertex_normals(points, faces)
 
     uv_indices = None
     if uvs is not None:
@@ -1746,7 +1755,6 @@ def get_mesh(
                 )
                 uvs = None
             else:
-                corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
                 if not preserve_facevarying_uvs:
                     points_original = points
                     points = points_original[indices[corner_flat]]
@@ -1767,18 +1775,42 @@ def get_mesh(
                 elif return_uv_indices:
                     uv_indices = corner_flat
 
+    if generate_flat_normals:
+        triangle_points = points[faces]
+        face_normals = np.cross(
+            triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
+        )
+        face_normals /= np.clip(np.linalg.norm(face_normals, axis=1, keepdims=True), 1e-20, None)
+        normals = np.repeat(face_normals, 3, axis=0)
+        vertex_indices = faces.reshape(-1)
+        points = points[vertex_indices]
+        if (
+            uvs is not None
+            and uv_indices is None
+            and not (preserve_facevarying_uvs and uvs_interpolation == UsdGeom.Tokens.faceVarying)
+        ):
+            uvs = uvs[vertex_indices]
+        faces = np.arange(len(vertex_indices), dtype=np.int32).reshape(-1, 3)
+
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
 
+    if normals is not None and len(normals) != len(points):
+        raise ValueError(
+            f"Canonicalized normals length ({len(normals)}) does not match vertex count ({len(points)}) "
+            f"for mesh {prim.GetPath()}"
+        )
+
     material_props = resolve_material_properties_for_prim(prim) if load_visual_materials else {}
 
+    visual_topology = points is not source_points
     mesh_out = Mesh(
         points,
         faces.flatten(),
         normals=normals,
         uvs=uvs,
         maxhullvert=maxhullvert,
-        compute_inertia=compute_inertia,
+        compute_inertia=compute_inertia and not visual_topology,
         color=material_props.get("color"),
         opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
@@ -1788,6 +1820,16 @@ def get_mesh(
         if material_props.get("texture_transform") is None
         else material_props["texture_transform"],
     )
+    if compute_inertia and visual_topology:
+        from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
+
+        mesh_out.mass, mesh_out.com, mesh_out.inertia, _ = compute_inertia_mesh(
+            1.0,
+            np.asarray(source_points, dtype=np.float32),
+            source_indices[corner_flat],
+            is_solid=mesh_out.is_solid,
+        )
+        mesh_out.has_inertia = True
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out

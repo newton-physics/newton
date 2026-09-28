@@ -1404,7 +1404,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
-                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                self.assertNotIn(tuple(sorted((shape, extra_shape))), filter_pairs)
                 parent_pair = tuple(sorted((parent_shape, extra_shape)))
                 self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
 
@@ -1613,6 +1613,70 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
+    def test_replicated_same_body_filters_are_inherent(self):
+        """Keep replicated same-body collision filters out of explicit pair storage."""
+
+        source = ModelBuilder()
+        body = source.add_body()
+        for _ in range(8):
+            source.add_shape_box(body)
+
+        builder = ModelBuilder()
+        builder.replicate(source, 16)
+
+        self.assertEqual(len(builder._shape_collision_filter_pairs), 0)  # pyright: ignore[reportPrivateUsage]
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.shape_collision_filter_pairs, set())
+        self.assertEqual(model.shape_contact_pair_count, 0)
+
+    def test_heterogeneous_world_contact_template_tracks_body_topology(self):
+        """Keep cached world contact pairs isolated by body attachment topology."""
+
+        same_body = ModelBuilder()
+        body = same_body.add_body()
+        same_body.add_shape_box(body=body)
+        same_body.add_shape_box(body=body)
+
+        different_bodies = ModelBuilder()
+        body_a = different_bodies.add_body()
+        body_b = different_bodies.add_body()
+        different_bodies.add_shape_box(body=body_a)
+        different_bodies.add_shape_box(body=body_b)
+
+        for worlds, expected_pairs in (
+            ((same_body, different_bodies), {(2, 3)}),
+            ((different_bodies, same_body), {(0, 1)}),
+        ):
+            with self.subTest(worlds=worlds):
+                builder = ModelBuilder()
+                for world in worlds:
+                    builder.add_world(world)
+
+                model = builder.finalize(device="cpu")
+                contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+                self.assertEqual(contact_pairs, expected_pairs)
+
+    def test_world_contact_pairs_with_out_of_world_body_attachment(self):
+        """Preserve contacts when a world's shape references a global body."""
+
+        builder = ModelBuilder()
+        global_body = builder.add_body()
+
+        builder.begin_world()
+        builder.add_shape_box(body=-1)
+        builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        builder.begin_world()
+        shape_a = builder.add_shape_box(body=global_body)
+        shape_b = builder.add_shape_box(body=-1)
+        builder.end_world()
+
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(shape_a, shape_b)})
 
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
         """Keep large replicated filters compact and read-only while preserving contacts."""
