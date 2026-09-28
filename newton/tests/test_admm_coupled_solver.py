@@ -515,7 +515,9 @@ def _make_admm_inclined_plane_particle_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=18,
-            rho=50.0,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=50.0 / 360.0,
+            gamma=0.0,
             baumgarte=0.1,
             contact_pairs=[
                 SolverCoupledADMM.ContactPair(
@@ -679,8 +681,9 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=30,
-            rho=5.0,
-            gamma=0.2,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=5.0 / 360.0,
+            gamma=72.0,
             baumgarte=0.03,
             rigid_contact_matching=rigid_contact_matching,
             contact_matching_pos_threshold=contact_matching_pos_threshold,
@@ -732,6 +735,21 @@ def _run_collision_inclined_plane_rigid_box(
 class TestAdmmSmoke(unittest.TestCase):
     """End-to-end: construct, run, verify state advances without NaNs."""
 
+    def test_rejects_invalid_timesteps(self):
+        """Reject nonpositive and non-finite timesteps before advancing state."""
+        model = _build_two_particle_scene()
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
+                SolverCoupled.Entry(name="b", solver=SolverSemiImplicit, particles=[1]),
+            ],
+            SolverCoupledADMM.Config(),
+        )
+        for dt in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(dt=dt), self.assertRaisesRegex(ValueError, "dt"):
+                solver.step(model.state(), model.state(), model.control(), contacts=None, dt=dt)
+
     def test_rejects_invalid_numerical_config(self):
         model = _build_two_particle_scene()
         entries = [
@@ -778,6 +796,38 @@ class TestAdmmSmoke(unittest.TestCase):
 
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
+
+    def test_default_proximal_stabilizes_stiff_attachment(self):
+        """Converge to a shared velocity for a nearly rigid attachment."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=1.0e12)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "body",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    bodies=[body],
+                ),
+                SolverCoupled.Entry(
+                    "particle",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=[particle],
+                ),
+            ],
+            SolverCoupledADMM.Config(iterations=40),
+        )
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), contacts=None, dt=1.0 / 120.0)
+
+        # Equal masses share the initial momentum in the hard-constraint limit.
+        np.testing.assert_allclose(state_out.body_qd.numpy()[body, :3], (0.5, 0.0, 0.0), atol=1.0e-4)
+        np.testing.assert_allclose(state_out.particle_qd.numpy()[particle], (0.5, 0.0, 0.0), atol=1.0e-4)
 
     def test_gamma_does_not_change_unconstrained_freefall(self):
         # Place the rigid body high so it stays in free-fall across the
@@ -1361,8 +1411,9 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=12,
-                rho=45.0,
-                gamma=0.05,
+                # Migrate the legacy tuning at the reference substep of 1/120 s.
+                rho=0.375,
+                gamma=6.0,
                 baumgarte=0.1,
                 contact_pairs=[
                     SolverCoupledADMM.ContactPair(
