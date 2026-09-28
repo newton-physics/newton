@@ -50,7 +50,7 @@ The implementation has three roles:
 | Module | Responsibility |
 | --- | --- |
 | `schema_resolver.py` | Select candidates, adapt PXR schema data, cache reads, and collect migration diagnostics. |
-| `_usd_resolution_policy.py` | Interpret importer properties and assemble values that depend on several USD inputs. |
+| `_resolution_policy.py` | Interpret importer properties and assemble values that depend on several USD inputs. |
 | `import_usd.py` | Traverse the stage, parse geometry, and mutate `ModelBuilder`. |
 
 `_SchemaResolutionPolicy` contains the source-neutral selection algorithm. It receives callbacks for reading values, checking schema applicability, and reading registered fallbacks. `SchemaResolverManager` supplies the PXR-backed callbacks and preserves custom-resolver compatibility.

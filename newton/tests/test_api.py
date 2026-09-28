@@ -91,6 +91,17 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_collision_pipeline_flattens_speculative_contact_config(self):
+        """Configure speculative contacts without a single-field wrapper."""
+        import newton  # noqa: PLC0415
+
+        parameters = inspect.signature(newton.CollisionPipeline).parameters
+
+        self.assertIn("speculative_contact_gap_max", parameters)
+        self.assertNotIn("max_speculative_extension", parameters)
+        self.assertNotIn("speculative_config", parameters)
+        self.assertFalse(hasattr(newton.CollisionPipeline, "SpeculativeContactConfig"))
+
     def test_geometry_match_constants_deprecated(self):
         import newton  # noqa: PLC0415
         from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND  # noqa: PLC0415

@@ -5,6 +5,7 @@
 KAMINO: Core Module
 """
 
+from .bodies import compute_body_acceleration, reset_body_acceleration
 from .control import ControlKamino
 from .data import DataKamino
 from .model import ModelKamino
@@ -14,4 +15,11 @@ from .state import StateKamino
 # Module interface
 ###
 
-__all__ = ["ControlKamino", "DataKamino", "ModelKamino", "StateKamino"]
+__all__ = [
+    "ControlKamino",
+    "DataKamino",
+    "ModelKamino",
+    "StateKamino",
+    "compute_body_acceleration",
+    "reset_body_acceleration",
+]

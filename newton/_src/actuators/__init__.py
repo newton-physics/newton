@@ -5,7 +5,7 @@ from .actuator import Actuator
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .response_oracle import ResponseOracle
+from .joint_space_response import JointSpaceResponse
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
 
 __all__ = [
@@ -22,7 +22,7 @@ __all__ = [
     "DriveNeuralMLP",
     "DrivePD",
     "DrivePID",
-    "ResponseOracle",
+    "JointSpaceResponse",
     "SchemaNames",
     "parse_actuator_prim",
     "register_actuator_component",
