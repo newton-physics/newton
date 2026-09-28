@@ -2456,14 +2456,8 @@ def solve_body_joints(
         q_p = wp.transform_get_rotation(X_wp)
         q_c = wp.transform_get_rotation(X_wc)
 
-        # The relative rotation fixes a hinge angle only modulo 2 pi and the decomposition below returns principal
-        # values in (-pi, pi]. For a single rotational DOF, measure the angle relative to a reference inside its
-        # range (the middle of a limit range narrower than 2 pi, else the drive target): rotate the child frame by
-        # -reference about the axis, decompose, and add the reference back. Without this, a hinge whose range
-        # extends beyond +-pi (or that overshoots a limit near pi) reads an angle ~2 pi away from the true one and
-        # receives a "limit correction" of that size.
-        # (static references of limited joints are baked into joint_X_c, the child frame this kernel receives, and
-        # joint_ref_err; a NaN marks an unlimited joint whose reference is its drive target)
+        # A hinge angle is only defined modulo 2 pi; measuring it near a reference inside the joint's range (see
+        # compute_joint_angle_references) keeps a hinge past +-pi from reading as a ~2 pi limit violation.
         ang_ref = wp.vec3(0.0)
         if ang_axis_count == 1:
             ref_err = joint_ref_err[tid]
