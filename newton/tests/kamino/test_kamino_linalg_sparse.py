@@ -8,6 +8,13 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.linalg.blas import (
+    block_sparse_ATA_inv_diagonal_2d,
+    block_sparse_gemv,
+    block_sparse_matvec,
+    block_sparse_transpose_gemv,
+    block_sparse_transpose_matvec,
+)
 from newton._src.solvers.kamino._src.linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from newton._src.solvers.kamino._src.linalg.sparse_operator import BlockSparseLinearOperators
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -742,6 +749,124 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
             # Run multiplication operator checks.
             self._matvec_product_check(ops)
+
+    def _build_logical_1x1_bsm(self, block_shape: tuple[int, ...]) -> tuple[BlockSparseMatrices, list[np.ndarray]]:
+        """Build the same logical scalar matrix for a scalar, vec1, or 1x1 block type."""
+        blocks_per_dim = np.array([[4, 3], [2, 5]], dtype=np.int32)
+        block_dims = (1, 1)
+        num_matrices = len(blocks_per_dim)
+        max_blocks_per_dim = blocks_per_dim.copy()
+        max_blocks_per_dim[0] += [1, 2]
+        max_blocks_per_dim[1] += [3, 1]
+        matrix_dims = [(int(s[0]), int(s[1])) for s in blocks_per_dim]
+        matrix_max_dims = [(int(s[0]), int(s[1])) for s in max_blocks_per_dim]
+        matrices = [self.rng.standard_normal((r, c)).astype(np.float32) for r, c in matrix_dims]
+        # Drop every third block so the pattern is actually sparse.
+        bsm = BlockSparseMatrices(num_matrices=num_matrices, nzb_dtype=BlockDType(shape=block_shape, dtype=wp.float32))
+        capacities = [int(r * c) for r, c in max_blocks_per_dim]
+        bsm.finalize(max_dims=matrix_max_dims, capacities=capacities, device=self.default_device)
+        nzb_start_np = bsm.nzb_start.numpy()
+        nzb_coords_np = np.zeros((bsm.sum_of_num_nzb, 2), dtype=np.int32)
+        nzb_values_np = np.zeros((bsm.sum_of_num_nzb,), dtype=np.float32)
+        num_nzb_np = np.zeros((num_matrices,), dtype=np.int32)
+        kept = [np.zeros_like(m) for m in matrices]
+        for mat_id in range(num_matrices):
+            slot = 0
+            rows, cols = blocks_per_dim[mat_id]
+            for r in range(rows):
+                for c in range(cols):
+                    if (r + c + mat_id) % 3 == 0:
+                        continue
+                    global_idx = int(nzb_start_np[mat_id]) + slot
+                    nzb_coords_np[global_idx] = (r, c)
+                    nzb_values_np[global_idx] = matrices[mat_id][r, c]
+                    kept[mat_id][r, c] = matrices[mat_id][r, c]
+                    slot += 1
+            num_nzb_np[mat_id] = slot
+        bsm.dims.assign(np.asarray(matrix_dims, dtype=np.int32))
+        bsm.num_nzb.assign(num_nzb_np)
+        bsm.nzb_coords.assign(nzb_coords_np)
+        bsm.nzb_values.view(dtype=wp.float32).assign(nzb_values_np)
+        return bsm, kept
+
+    def test_03_scalar_sparse_blocks_match_vec1_and_mat11(self):
+        """Scalar blocks must codegen and match logical vec1 and 1x1 blocks.
+
+        Covers forward and transpose matvec/gemv in flattened and per-matrix layouts,
+        plus the A^T A diagonal generator.
+        """
+        self.rng = np.random.default_rng(seed=self.seed)
+        reference = None
+        for block_shape in ((), (1,), (1, 1)):
+            self.rng = np.random.default_rng(seed=self.seed)
+            bsm, matrices = self._build_logical_1x1_bsm(block_shape)
+            ops = BlockSparseLinearOperators(bsm)
+            self._matvec_product_check(ops)
+
+            num_matrices = bsm.num_matrices
+            max_rows = int(bsm.max_of_max_dims[0])
+            max_cols = int(bsm.max_of_max_dims[1])
+            dims = bsm.dims.numpy()
+            x2 = np.zeros((num_matrices, max_cols), dtype=np.float32)
+            y2 = np.zeros((num_matrices, max_rows), dtype=np.float32)
+            for mat_id, matrix in enumerate(matrices):
+                x2[mat_id, : matrix.shape[1]] = self.rng.standard_normal(matrix.shape[1]).astype(np.float32)
+                y2[mat_id, : matrix.shape[0]] = self.rng.standard_normal(matrix.shape[0]).astype(np.float32)
+            alpha = np.float32(1.5)
+            beta = np.float32(-0.25)
+            mask = wp.array([True, False], dtype=wp.bool, device=self.default_device)
+            x = wp.array(x2, dtype=wp.float32, device=self.default_device)
+            y = wp.zeros((num_matrices, max_rows), dtype=wp.float32, device=self.default_device)
+            block_sparse_matvec(bsm, x, y, mask)
+            y_np = y.numpy()
+            y_ref = matrices[0] @ x2[0, : matrices[0].shape[1]]
+            self.assertLess(np.max(np.abs(y_np[0, : dims[0, 0]] - y_ref)), self.epsilon)
+            self.assertEqual(np.max(np.abs(y_np[1])), 0.0)
+
+            xt = wp.zeros((num_matrices, max_cols), dtype=wp.float32, device=self.default_device)
+            yt = wp.array(y2, dtype=wp.float32, device=self.default_device)
+            block_sparse_transpose_matvec(bsm, yt, xt, mask)
+            xt_np = xt.numpy()
+            xt_ref = matrices[0].T @ y2[0, : matrices[0].shape[0]]
+            self.assertLess(np.max(np.abs(xt_np[0, : dims[0, 1]] - xt_ref)), self.epsilon)
+            self.assertEqual(np.max(np.abs(xt_np[1])), 0.0)
+
+            y_gemv = wp.array(y2, dtype=wp.float32, device=self.default_device)
+            block_sparse_gemv(bsm, x, y_gemv, alpha, beta, mask)
+            gemv_np = y_gemv.numpy()
+            gemv_ref = alpha * y_ref + beta * y2[0, : matrices[0].shape[0]]
+            self.assertLess(np.max(np.abs(gemv_np[0, : dims[0, 0]] - gemv_ref)), self.epsilon)
+            self.assertLess(np.max(np.abs(gemv_np[1, : dims[1, 0]] - y2[1, : dims[1, 0]])), self.epsilon)
+
+            x_gemvt = wp.array(x2, dtype=wp.float32, device=self.default_device)
+            block_sparse_transpose_gemv(bsm, yt, x_gemvt, alpha, beta, mask)
+            gemvt_np = x_gemvt.numpy()
+            gemvt_ref = alpha * xt_ref + beta * x2[0, : matrices[0].shape[1]]
+            self.assertLess(np.max(np.abs(gemvt_np[0, : dims[0, 1]] - gemvt_ref)), self.epsilon)
+            self.assertLess(np.max(np.abs(gemvt_np[1, : dims[1, 1]] - x2[1, : dims[1, 1]])), self.epsilon)
+
+            inv_diag = wp.zeros((num_matrices, max_cols), dtype=wp.float32, device=self.default_device)
+            offset = np.float32(0.5)
+            block_sparse_ATA_inv_diagonal_2d(bsm, inv_diag, mask, diag_offset=offset)
+            ata_diag = np.sum(matrices[0] * matrices[0], axis=0)
+            inv_ref = 1.0 / (ata_diag + offset)
+            inv_np = inv_diag.numpy()
+            self.assertLess(np.max(np.abs(inv_np[0, : dims[0, 1]] - inv_ref)), self.epsilon)
+            # Masked matrices are zeroed and then skipped by the inverse, so they stay zero.
+            self.assertEqual(np.max(np.abs(inv_np[1])), 0.0)
+
+            signature = (
+                y_np[0, : dims[0, 0]].copy(),
+                xt_np[0, : dims[0, 1]].copy(),
+                gemv_np[0, : dims[0, 0]].copy(),
+                gemvt_np[0, : dims[0, 1]].copy(),
+                inv_np[0, : dims[0, 1]].copy(),
+            )
+            if reference is None:
+                reference = signature
+            else:
+                for got, exp in zip(signature, reference, strict=True):
+                    self.assertLess(np.max(np.abs(got - exp)), self.epsilon)
 
 
 ###
