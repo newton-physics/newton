@@ -31,7 +31,6 @@ from newton.solvers import SolverImplicitMPM
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance

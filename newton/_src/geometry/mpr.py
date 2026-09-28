@@ -36,16 +36,9 @@ from typing import Any
 import warp as wp
 
 from .support_function import (
-    GeoTypeEx,
-    _support_map_box,
-    closest_point_on_triangle,
-    support_map,
-    support_map_lean,
-    unpack_mesh_ptr,
+    create_shape_center_function,
+    create_shape_support_function,
 )
-from .types import GeoType
-
-MPR_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
 
 
 @wp.struct
@@ -81,19 +74,8 @@ def create_support_map_function(support_func: Any, use_precomputed_center: bool 
         - geometric_center: Computes geometric center of Minkowski difference
     """
 
-    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
-
-    @wp.func
-    def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
-        result = wp.vec3(0.0, 0.0, 0.0)
-        if wp.static(fuse_builtin_box_support):
-            if geom.shape_type == GeoType.BOX:
-                result = _support_map_box(geom, direction)
-            else:
-                result = support_func(geom, direction, data_provider)
-        else:
-            result = support_func(geom, direction, data_provider)
-        return result
+    shape_support = create_shape_support_function(support_func)
+    geometric_center = create_shape_center_function(use_precomputed_center)
 
     # Support mapping functions (these replace the MinkowskiDiff struct methods)
     @wp.func
@@ -174,139 +156,6 @@ def create_support_map_function(support_func: Any, use_precomputed_center: bool 
 
         return v
 
-    @wp.func
-    def geometric_center(
-        geom_a: Any,
-        geom_b: Any,
-        orientation_b: wp.quat,
-        position_b: wp.vec3,
-        data_provider: Any,
-    ) -> Vert:
-        """
-        Compute geometric center of Minkowski difference.
-
-        Used by MPR and GJK as the initial interior point ``v0`` of the
-        Minkowski difference.  A poor ``v0`` — far outside one of the
-        shapes — is a known cause of MPR portal degeneracy when the
-        partner is a thin/flat primitive (e.g. a single mesh triangle),
-        because the chosen ray direction can produce supports that all
-        collapse onto a single vertex of the partner.
-
-        For most primitives the local origin is already a sensible interior
-        point. For ``CONVEX_MESH``, the uncached mode computes the scaled hull
-        AABB and uses its center. When ``use_precomputed_center`` is enabled,
-        this scan is skipped and ``geom.center`` is used for both shapes.
-        Callers selecting that mode must populate each convex mesh center with
-        a valid interior-point approximation rather than relying on the default
-        zero vector.
-
-        For triangles (and triangle prisms) on shape A the center on
-        shape A is replaced by the closest point on the triangle to
-        shape B's center (using the freshly computed B center), giving
-        MPR and GJK a much better starting point when the triangle is
-        large relative to the convex.
-
-        Args:
-            geom_a: Shape A geometry data
-            geom_b: Shape B geometry data
-            orientation_b: Orientation of shape B
-            position_b: Position of shape B
-            data_provider: Support mapping data provider
-
-        Returns:
-            Vert containing geometric centers of both shapes.  ``B`` is
-            in world space; ``BtoA = center_a - center.B`` mixes A-local
-            with world space, which is the convention used by the
-            ``solve_mpr_core`` / ``solve_gjk_core`` callers.
-        """
-        center = Vert()
-
-        if wp.static(use_precomputed_center):
-            center_a = geom_a.center
-            center_b_local = geom_b.center
-        else:
-            center_a = wp.vec3(0.0, 0.0, 0.0)
-            center_b_local = wp.vec3(0.0, 0.0, 0.0)
-
-            if geom_a.shape_type == int(GeoType.CONVEX_MESH):
-                mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
-                mesh_a = wp.mesh_get(mesh_ptr_a)
-                scale_a = geom_a.scale
-                num_verts_a = mesh_a.points.shape[0]
-                v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
-                min_a = v0_a
-                max_a = v0_a
-                for i in range(1, num_verts_a):
-                    v_a = wp.cw_mul(mesh_a.points[i], scale_a)
-                    min_a = wp.min(min_a, v_a)
-                    max_a = wp.max(max_a, v_a)
-                center_a = 0.5 * (min_a + max_a)
-
-            if geom_b.shape_type == int(GeoType.CONVEX_MESH):
-                mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
-                mesh_b = wp.mesh_get(mesh_ptr_b)
-                scale_b = geom_b.scale
-                num_verts_b = mesh_b.points.shape[0]
-                v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
-                min_b = v0_b
-                max_b = v0_b
-                for i in range(1, num_verts_b):
-                    v_b = wp.cw_mul(mesh_b.points[i], scale_b)
-                    min_b = wp.min(min_b, v_b)
-                    max_b = wp.max(max_b, v_b)
-                center_b_local = 0.5 * (min_b + max_b)
-
-        center_b_world = position_b + wp.quat_rotate(orientation_b, center_b_local)
-        center_b_to_a = center_a - center_b_world
-
-        if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
-            # Start near the local contact region.  A small centroid bias keeps
-            # adjacent triangles' manifold witnesses distinct at a shared
-            # edge, but bound it by the normal center-to-plane distance so a
-            # large face cannot turn the initial MPR ray nearly tangential.
-            tri_a = wp.vec3(0.0, 0.0, 0.0)
-            tri_b = geom_a.scale
-            tri_c = geom_a.auxiliary
-            face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
-            face_normal_length_sq = wp.length_sq(face_normal)
-            proj = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
-
-            if face_normal_length_sq >= 1.0e-20:
-                face_normal_length = wp.sqrt(face_normal_length_sq)
-                face_normal_unit = face_normal / face_normal_length
-                signed_plane_distance = wp.dot(center_b_world - tri_a, face_normal_unit)
-                plane_proj = center_b_world - signed_plane_distance * face_normal_unit
-
-                # Reconstruct face-region offsets directly.  Subtracting two
-                # large, nearby positions can otherwise leave a spurious
-                # tangential component in the initial MPR ray.
-                inside_face = (
-                    wp.dot(wp.cross(tri_b - tri_a, plane_proj - tri_a), face_normal) >= 0.0
-                    and wp.dot(wp.cross(tri_c - tri_b, plane_proj - tri_b), face_normal) >= 0.0
-                    and wp.dot(wp.cross(tri_a - tri_c, plane_proj - tri_c), face_normal) >= 0.0
-                )
-                if inside_face:
-                    proj = plane_proj
-                    center_b_to_a = -signed_plane_distance * face_normal_unit
-                else:
-                    center_b_to_a = proj - center_b_world
-
-                centroid = (tri_a + tri_b + tri_c) / 3.0
-                to_centroid = centroid - proj
-                to_centroid -= wp.dot(to_centroid, face_normal_unit) * face_normal_unit
-                distance_to_centroid = wp.length(to_centroid)
-                if distance_to_centroid > 1.0e-12:
-                    nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
-                    center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
-
-            else:
-                center_b_to_a = proj - center_b_world
-
-        center.B = center_b_world
-        center.BtoA = center_b_to_a
-
-        return center
-
     return support_map_b, minkowski_support, geometric_center
 
 
@@ -332,43 +181,8 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     else:
         _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
 
-    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
-
-    @wp.func
-    def centered_box_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
-        result = wp.vec3(0.0, 0.0, 0.0)
-        if wp.static(fuse_builtin_box_support):
-            if geom.shape_type == GeoType.BOX:
-                # Reuse the absolute direction for the built-in box support and MPR's tie policy.
-                abs_direction = wp.vec3(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
-                result = _support_map_box(geom, direction)
-
-                contribution = wp.cw_mul(abs_direction, geom.scale)
-                threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
-                if contribution[0] <= threshold:
-                    result[0] = 0.0
-                if contribution[1] <= threshold:
-                    result[1] = 0.0
-                if contribution[2] <= threshold:
-                    result[2] = 0.0
-            else:
-                result = support_func(geom, direction, data_provider)
-        else:
-            result = support_func(geom, direction, data_provider)
-            if geom.shape_type == GeoType.BOX:
-                # A nearly tied box face has infinitely many valid support points. Its center
-                # avoids feeding solver-scale rotation noise into MPR's portal topology.
-                contribution = wp.cw_mul(wp.abs(direction), geom.scale)
-                threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
-                if contribution[0] <= threshold:
-                    result[0] = 0.0
-                if contribution[1] <= threshold:
-                    result[1] = 0.0
-                if contribution[2] <= threshold:
-                    result[2] = 0.0
-        return result
-
-    _, mpr_support, _ = create_support_map_function(centered_box_support)
+    shape_support = create_shape_support_function(support_func, center_ties=True)
+    _, mpr_support, _ = create_support_map_function(shape_support)
 
     @wp.func
     def solve_mpr_core(
@@ -420,32 +234,8 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
         normal = v0.BtoA
         if wp.length_sq(normal) < NUMERIC_EPSILON:
-            used_triangle_fallback = bool(False)
-            if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
-                tri_a = wp.vec3(0.0, 0.0, 0.0)
-                tri_b = geom_a.scale
-                tri_c = geom_a.auxiliary
-                face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
-                face_normal_length_sq = wp.length_sq(face_normal)
-                if face_normal_length_sq >= 1.0e-20:
-                    face_normal = face_normal / wp.sqrt(face_normal_length_sq)
-                    proj = closest_point_on_triangle(v0.B, tri_a, tri_b, tri_c)
-                    centroid = (tri_a + tri_b + tri_c) / 3.0
-                    to_centroid = centroid - proj
-                    to_centroid -= wp.dot(to_centroid, face_normal) * face_normal
-                    to_centroid_length_sq = wp.length_sq(to_centroid)
-
-                    # Use the face normal for coincident triangle/convex
-                    # centers, retaining a small triangle-specific bias.
-                    fallback_dir = -face_normal
-                    if wp.dot(v0.B - proj, face_normal) < 0.0:
-                        fallback_dir = face_normal
-                    if to_centroid_length_sq > 1.0e-20:
-                        fallback_dir += 0.01 * to_centroid / wp.sqrt(to_centroid_length_sq)
-                    v0.BtoA = wp.normalize(fallback_dir) * 1.0e-5
-                    used_triangle_fallback = True
-
-            if not used_triangle_fallback:
+            v0.BtoA = geometric_center.fallback(geom_a, v0.B)
+            if wp.length_sq(v0.BtoA) < NUMERIC_EPSILON:
                 # Probe three axes and use the direction with most support.
                 best_dot = float(-1.0e30)
                 best_dir = wp.vec3(1.0, 0.0, 0.0)

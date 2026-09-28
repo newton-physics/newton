@@ -1,14 +1,68 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import io
 import subprocess
 import sys
 import unittest
+import warnings
+from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
+from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult, _enable_strict_warnings
 
 NewtonTestCase = unittest_utils.NewtonTestCase
+
+
+class TestStrictWarnings(unittest.TestCase):
+    def test_top_level_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a top-level test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit("unexpected warning", UserWarning, "test_clean.py", 1, module="test_clean")
+
+    def test_nested_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a nested test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "unexpected warning", UserWarning, "test_clean.py", 1, module="kamino.test_clean"
+                )
+
+    def test_known_warning_debt_is_not_an_error(self):
+        """Keep a narrowly matched known warning visible without failing."""
+        with warnings.catch_warnings(record=True) as caught:
+            _enable_strict_warnings()
+
+            warnings.warn_explicit(
+                "Inertia validation corrected 1 bodies. "
+                "Set validate_inertia_detailed=True for detailed per-body warnings.",
+                UserWarning,
+                "test_custom_attributes.py",
+                1,
+                module="test_custom_attributes",
+            )
+
+        self.assertEqual(len(caught), 1)
+
+    def test_known_debt_module_does_not_allow_other_warnings(self):
+        """Escalate unrelated warnings attributed to a known-debt module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "different warning",
+                    UserWarning,
+                    "test_custom_attributes.py",
+                    1,
+                    module="test_custom_attributes",
+                )
 
 
 class TestNewtonTestCaseOutputContract(unittest.TestCase):
@@ -16,6 +70,30 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         result = unittest.TestResult()
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
+
+    def test_allowlisted_deprecation_is_replayed_after_validation(self):
+        """Accept and replay an allowlisted in-process deprecation warning."""
+        unittest_utils.wp.init()
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+
+        class EmitsAllowedDeprecation(NewtonTestCase):
+            def test_warning(self):
+                """Emit an allowlisted deprecation warning."""
+                warnings.warn(allowed_message, DeprecationWarning, stacklevel=1)
+
+        stderr = io.StringIO()
+        with (
+            warnings.catch_warnings(),
+            mock.patch.object(unittest_utils, "strict_warnings", True),
+            mock.patch.object(unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+            contextlib.redirect_stderr(stderr),
+        ):
+            _enable_strict_warnings((allowed_prefix,))
+            result = self._run_test_case(EmitsAllowedDeprecation)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+        self.assertIn(f"DeprecationWarning: {allowed_message}", stderr.getvalue())
 
     def test_unexpected_stdout_fails(self):
         class EmitsOutput(NewtonTestCase):
@@ -306,6 +384,67 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
+
+
+class TestSkippedTestCleanup(unittest.TestCase):
+    def _gc_calls(self, resultclass, test_case, *, cuda_devices=()):
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(test_case)
+        with (
+            mock.patch("gc.collect") as collect,
+            mock.patch.object(unittest_utils.wp, "get_cuda_devices", return_value=list(cuda_devices)),
+            mock.patch.object(unittest_utils.wp, "is_mempool_enabled", return_value=False),
+        ):
+            result = unittest.TextTestRunner(
+                stream=io.StringIO(),
+                resultclass=resultclass,
+            ).run(suite)
+        self.assertTrue(result.wasSuccessful())
+        return collect.call_count
+
+    def test_static_skips_avoid_cleanup(self):
+        class MethodSkip(unittest.TestCase):
+            @unittest.skip("static method skip")
+            def test_skip(self):
+                pass
+
+        @unittest.skip("static class skip")
+        class ClassSkip(unittest.TestCase):
+            def test_skip(self):
+                pass
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, skip="method"):
+                self.assertEqual(self._gc_calls(resultclass, MethodSkip), 0)
+            with self.subTest(resultclass=resultclass.__name__, skip="class"):
+                self.assertEqual(self._gc_calls(resultclass, ClassSkip), 0)
+
+    def test_runtime_skip_and_executed_test_keep_cleanup(self):
+        class RuntimeSkip(unittest.TestCase):
+            def test_skip(self):
+                self.skipTest("runtime skip")
+
+        class Executed(unittest.TestCase):
+            def test_pass(self):
+                pass
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, outcome="runtime skip"):
+                self.assertEqual(self._gc_calls(resultclass, RuntimeSkip), 1)
+            with self.subTest(resultclass=resultclass.__name__, outcome="executed"):
+                self.assertEqual(self._gc_calls(resultclass, Executed), 1)
+
+    def test_cpu_batches_cleanup_but_cuda_cleans_each_test(self):
+        methods = {f"test_{i}": lambda self: None for i in range(17)}
+        ManyExecuted = type("ManyExecuted", (unittest.TestCase,), methods)
+
+        resultclasses = (unittest_utils.ParallelJunitTestResult, ParallelTextTestResult)
+        for resultclass in resultclasses:
+            with self.subTest(resultclass=resultclass.__name__, device="cpu"):
+                self.assertEqual(self._gc_calls(resultclass, ManyExecuted), 3)
+            with self.subTest(resultclass=resultclass.__name__, device="cuda"):
+                self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 17)
 
 
 if __name__ == "__main__":

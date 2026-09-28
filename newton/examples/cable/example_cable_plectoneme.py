@@ -134,10 +134,9 @@ class Example:
             kd=self.CONTACT_DAMPING,
             gap=self.contact_gap,
         )
+        rod = newton.Rod(points, radius=self.cable_radius)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=None,
-            radius=self.cable_radius,
+            rod=rod,
             cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,

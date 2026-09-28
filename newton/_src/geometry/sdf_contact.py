@@ -17,7 +17,7 @@ from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
 from .contact_reduction_global import (
     GlobalContactReducerData,
-    export_and_reduce_contact_centered_two_spatial_depths,
+    _export_and_reduce_contact_centered_two_spatial_depths,
     export_and_reduce_predictive_contact,
 )
 from .flags import MeshSignMethod
@@ -49,8 +49,10 @@ _SDF_QUERY_RADIUS_SLACK = 1.01
 # ``mesh_sdf_collision_kernel`` and ``mesh_sdf_collision_global_reduce_kernel``.
 # Both kernels assume ``wp.block_dim() == MESH_SDF_BLOCK_DIM`` so that the
 # tile-stack capacity below correctly sizes the cooperative push overflow
-# margin.
-MESH_SDF_BLOCK_DIM = 256
+# margin. 128 threads (four resident blocks per SM at the 128-register cap)
+# measured about 8% faster than 256 threads with two blocks: the culling loop
+# barriers wait on four warps instead of eight at the same occupancy.
+MESH_SDF_BLOCK_DIM = 128
 
 # Capacity of the cooperative edge-selection tile stack. Sized to
 # ``2 * MESH_SDF_BLOCK_DIM`` so that the inner push loop can never
@@ -946,94 +948,90 @@ def compute_mesh_mesh_edge_counts(
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     edge_counts: wp.array[wp.int32],
+    total_edge_count: wp.array[wp.int32],
+    total_num_threads: int,
 ):
     """Compute per-pair edge counts for mesh-mesh (or heightfield-mesh) pairs.
 
     Sums the edge counts of both shapes in each pair — each shape may be
-    a triangle mesh or a heightfield. Each thread handles one slot in the
-    ``edge_counts`` array. Slots beyond ``pair_count`` are zeroed so that a
-    subsequent ``array_scan`` over the full array produces correct prefix sums.
+    a triangle mesh or a heightfield. Threads stride over the active pair
+    prefix and accumulate its total edge count.
     """
-    i = wp.tid()
     pair_count = wp.min(shape_pairs_mesh_mesh_count[0], shape_pairs_mesh_mesh.shape[0])
-    if i >= pair_count:
-        edge_counts[i] = 0
-        return
-
-    pair_encoded = shape_pairs_mesh_mesh[i]
-    has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-    pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
-    pair_edges = int(0)
-    for mode in range(2):
-        is_hfield = has_hfield and mode == 0
-        shape_idx = pair[mode]
-        if is_hfield:
-            hfd = heightfield_data[shape_heightfield_index[shape_idx]]
-            pair_edges += get_edge_count(GeoType.HFIELD, wp.vec2i(-1, 0), hfd)
-        else:
-            pair_edges += shape_edge_range[shape_idx][1]
-    edge_counts[i] = wp.int32(pair_edges)
+    for i in range(wp.tid(), pair_count, total_num_threads):
+        pair_encoded = shape_pairs_mesh_mesh[i]
+        has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
+        pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+        pair_edges = int(0)
+        for mode in range(2):
+            is_hfield = has_hfield and mode == 0
+            shape_idx = pair[mode]
+            if is_hfield:
+                hfd = heightfield_data[shape_heightfield_index[shape_idx]]
+                pair_edges += get_edge_count(GeoType.HFIELD, wp.vec2i(-1, 0), hfd)
+            else:
+                pair_edges += shape_edge_range[shape_idx][1]
+        edge_counts[i] = wp.int32(pair_edges)
+        wp.atomic_add(total_edge_count, 0, pair_edges)
 
 
 @wp.kernel(enable_backward=False)
 def compute_block_counts_from_weights(
-    weight_prefix_sums: wp.array[wp.int32],
+    total_weight_arr: wp.array[wp.int32],
     weights: wp.array[wp.int32],
     pair_count_arr: wp.array[int],
     max_pairs: int,
     target_blocks: int,
     block_counts: wp.array[wp.int32],
+    total_num_threads: int,
 ):
     """Convert per-pair weights to block counts using adaptive load balancing.
 
-    Reads the total weight from the inclusive prefix sum to compute the
-    adaptive ``weight_per_block`` threshold, then assigns each pair a
-    block count proportional to its weight. Slots beyond ``pair_count``
-    are zeroed for a subsequent exclusive ``array_scan``.
+    Reads the scalar total weight to compute the adaptive
+    ``weight_per_block`` threshold, then assigns each active pair a block
+    count proportional to its weight.
     """
-    i = wp.tid()
     pair_count = wp.min(pair_count_arr[0], max_pairs)
-    if i >= pair_count:
-        block_counts[i] = 0
-        return
+    for i in range(wp.tid(), pair_count, total_num_threads):
+        total_weight = total_weight_arr[0]
+        weight_per_block = int(total_weight)
+        if target_blocks > 0 and total_weight > 0:
+            weight_per_block = wp.max(256, total_weight // target_blocks)
 
-    total_weight = weight_prefix_sums[pair_count - 1]
-    weight_per_block = int(total_weight)
-    if target_blocks > 0 and total_weight > 0:
-        weight_per_block = wp.max(256, total_weight // target_blocks)
-
-    w = int(weights[i])
-    if weight_per_block > 0:
-        blocks = wp.max(1, (w + weight_per_block - 1) // weight_per_block)
-    else:
-        blocks = 1
-    block_counts[i] = wp.int32(blocks)
+        w = int(weights[i])
+        if weight_per_block > 0:
+            blocks = wp.max(1, (w + weight_per_block - 1) // weight_per_block)
+        else:
+            blocks = 1
+        block_counts[i] = wp.int32(blocks)
 
 
 def compute_mesh_mesh_block_offsets_scan(
-    shape_pairs_mesh_mesh: wp.array,
-    shape_pairs_mesh_mesh_count: wp.array,
-    shape_edge_range: wp.array,
-    shape_heightfield_index: wp.array,
-    heightfield_data: wp.array,
+    shape_pairs_mesh_mesh: wp.array[wp.vec2i],
+    shape_pairs_mesh_mesh_count: wp.array[int],
+    shape_edge_range: wp.array[wp.vec2i],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
     target_blocks: int,
-    block_offsets: wp.array,
-    block_counts: wp.array,
-    weight_prefix_sums: wp.array,
+    block_offsets: wp.array[wp.int32],
+    block_counts: wp.array[wp.int32],
+    total_edge_count: wp.array[wp.int32],
+    total_num_threads: int,
     device: str | None = None,
     record_tape: bool = True,
-):
+) -> None:
     """Compute mesh-mesh block offsets using parallel kernels and array_scan.
 
-    Runs a four-stage parallel pipeline: per-pair edge counts →
-    inclusive scan → adaptive block counts → exclusive scan into
+    Runs a three-stage parallel pipeline: per-pair edge counts and scalar
+    accumulation, adaptive block counts, then an exclusive scan into
     ``block_offsets``.
     """
     n = block_counts.shape[0]
+    launch_threads = min(n, total_num_threads)
     # Step 1: compute per-pair edge counts in parallel
     wp.launch(
         kernel=compute_mesh_mesh_edge_counts,
-        dim=n,
+        dim=launch_threads,
         inputs=[
             shape_pairs_mesh_mesh,
             shape_pairs_mesh_mesh_count,
@@ -1041,28 +1039,29 @@ def compute_mesh_mesh_block_offsets_scan(
             shape_heightfield_index,
             heightfield_data,
             block_counts,  # reuse as temp storage for edge counts
+            total_edge_count,
+            launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
-    # Step 2: inclusive scan to get total in last element
-    wp.utils.array_scan(block_counts, weight_prefix_sums, inclusive=True)
-    # Step 3: compute per-pair block counts using adaptive threshold
+    # Step 2: compute per-pair block counts using the scalar total.
     wp.launch(
         kernel=compute_block_counts_from_weights,
-        dim=n,
+        dim=launch_threads,
         inputs=[
-            weight_prefix_sums,
-            block_counts,  # still holds tri counts
+            total_edge_count,
+            block_counts,  # still holds per-pair edge counts, including heightfield edges
             shape_pairs_mesh_mesh_count,
             shape_pairs_mesh_mesh.shape[0],
             target_blocks,
             block_offsets,  # reuse as temp for block counts
+            launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
-    # Step 4: exclusive scan of block counts → block_offsets
+    # Step 3: exclusive scan of block counts → block_offsets
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
@@ -1074,9 +1073,16 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     use_precomputed_edge_data: bool = False,
     use_texture_sdf_only: bool = False,
     use_identity_sdf_scale: bool = False,
+    deterministic_reduction: bool = False,
 ):
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
+    # The reducer mode is tested inside fully unrolled directional loops. Keep
+    # one bounded specialization for reduced mesh-SDF kernels so those checks
+    # and their inactive packing path fold away; non-reduced kernels share the
+    # default variant because they never call the reducer.
+    deterministic_reduction = bool(reduce_contacts and deterministic_reduction)
+    reducer_deterministic = 1 if deterministic_reduction else 0
     do_edge_sdf_collision = _create_sdf_contact_funcs(
         enable_heightfields, use_texture_sdf_only, texture_sample_sdf_hw, _texture_sample_sdf_hw_pair
     )
@@ -1094,7 +1100,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # different floating-point results, breaking bit-exact reproducibility.
     _module = (
         f"sdf_contact_{writer_func.__name__}_{enable_heightfields}_{reduce_contacts}_"
-        f"{speculative}_{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}"
+        f"{speculative}_{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}_"
+        f"{deterministic_reduction}"
     )
 
     @wp.kernel(enable_backward=False, module=_module)
@@ -1141,19 +1148,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         # Strided loop over pairs
         for pair_idx in range(block_id, pair_count, total_num_blocks):
             pair_encoded = shape_pairs_mesh_mesh[pair_idx]
+            shape_a = pair_encoded[0]
+            shape_b = pair_encoded[1]
             if wp.static(enable_heightfields):
-                has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-                pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+                has_hfield = (shape_a & SHAPE_PAIR_HFIELD_BIT) != 0
+                shape_a = shape_a & SHAPE_PAIR_INDEX_MASK
             else:
                 has_hfield = False
-                pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
-            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
+            gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
+            base_gap_sum = shape_base_gap[shape_a] + shape_base_gap[shape_b]
 
             for mode in range(2):
-                tri_shape = pair[mode]
-                sdf_shape = pair[1 - mode]
+                tri_shape = shape_a if mode == 0 else shape_b
+                sdf_shape = shape_b if mode == 0 else shape_a
 
                 if wp.static(enable_heightfields):
                     tri_is_hfield = has_hfield and mode == 0
@@ -1492,8 +1500,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
-                                triangle_mesh_margin = shape_data[pair[0]][3]
-                                sdf_mesh_margin = shape_data[pair[1]][3]
+                                triangle_mesh_margin = shape_data[shape_a][3]
+                                sdf_mesh_margin = shape_data[shape_b][3]
 
                                 contact_data = ContactData()
                                 contact_data.contact_point_center = point_world
@@ -1503,8 +1511,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_data.radius_eff_b = 0.0
                                 contact_data.margin_a = triangle_mesh_margin
                                 contact_data.margin_b = sdf_mesh_margin
-                                contact_data.shape_a = pair[0]
-                                contact_data.shape_b = pair[1]
+                                contact_data.shape_a = shape_a
+                                contact_data.shape_b = shape_b
                                 if wp.static(speculative):
                                     contact_data.gap_sum = base_gap_sum
                                 else:
@@ -1533,7 +1541,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # but contacts are written directly to global buffer + hashtable.
     # =========================================================================
 
-    @wp.kernel(enable_backward=False, launch_bounds=(256, 2), module=_module)
+    # The tiled launch provides exactly ``total_num_blocks`` blocks and the
+    # kernel strides those blocks over all active combinations itself.
+    @wp.kernel(enable_backward=False, launch_bounds=(MESH_SDF_BLOCK_DIM, 4), grid_stride=False, module=_module)
     def mesh_sdf_collision_global_reduce_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1598,19 +1608,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             block_in_pair = combo_idx - pair_block_start
             blocks_for_pair = block_offsets[pair_idx + 1] - pair_block_start
             pair_encoded = shape_pairs_mesh_mesh[pair_idx]
+            shape_a = pair_encoded[0]
+            shape_b = pair_encoded[1]
             if wp.static(enable_heightfields):
-                has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-                pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+                has_hfield = (shape_a & SHAPE_PAIR_HFIELD_BIT) != 0
+                shape_a = shape_a & SHAPE_PAIR_INDEX_MASK
             else:
                 has_hfield = False
-                pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
-            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
+            gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
+            base_gap_sum = shape_base_gap[shape_a] + shape_base_gap[shape_b]
 
             for mode in range(2):
-                tri_shape = pair[mode]
-                sdf_shape = pair[1 - mode]
+                tri_shape = shape_a if mode == 0 else shape_b
+                sdf_shape = shape_b if mode == 0 else shape_a
 
                 if wp.static(enable_heightfields):
                     tri_is_hfield = has_hfield and mode == 0
@@ -1650,8 +1661,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 mesh_scale_tri = wp.vec3(scale_data_tri[0], scale_data_tri[1], scale_data_tri[2])
                 mesh_scale_sdf = wp.vec3(scale_data_sdf[0], scale_data_sdf[1], scale_data_sdf[2])
 
-                X_tri_ws = shape_transform[tri_shape]
-                X_sdf_ws = shape_transform[sdf_shape]
+                # Keep the search transforms distinct from the accepted-contact
+                # export transforms below so they do not stay live across the
+                # edge search and increase register spills.
+                X_tri_ws_search = shape_transform[tri_shape]
+                X_sdf_ws_search = shape_transform[sdf_shape]
 
                 texture_sdf = TextureSDFData()
                 if sdf_is_hfield:
@@ -1666,7 +1680,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
+                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws_search), X_tri_ws_search)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]
@@ -1915,6 +1929,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         dist_unscaled, direction_unscaled, sdf_scale, inv_sdf_scale, min_sdf_scale
                                     )
                                     point = wp.cw_mul(point_unscaled, sdf_scale)
+                                X_tri_ws = shape_transform[tri_shape]
+                                X_sdf_ws = shape_transform[sdf_shape]
                                 point_world = wp.transform_point(X_sdf_ws, point)
 
                                 direction_world = wp.transform_vector(X_sdf_ws, direction)
@@ -1949,9 +1965,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     # Keep velocity-expanded search candidates out of the regular
                                     # normal bins so the predictive pair manifold remains bounded.
                                     outer_spatial_depth = margin_sum + base_gap_sum
-                                contact_id = export_and_reduce_contact_centered_two_spatial_depths(
-                                    pair[0],
-                                    pair[1],
+                                contact_id = _export_and_reduce_contact_centered_two_spatial_depths(
+                                    shape_a,
+                                    shape_b,
                                     point_world,
                                     contact_normal,
                                     dist,
@@ -1964,12 +1980,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     aabb_upper_tri,
                                     voxel_res_tri,
                                     reducer_data,
+                                    wp.static(reducer_deterministic),
                                 )
                                 if wp.static(speculative):
                                     if dist >= inner_spatial_depth:
                                         export_and_reduce_predictive_contact(
-                                            pair[0],
-                                            pair[1],
+                                            shape_a,
+                                            shape_b,
                                             point_world,
                                             contact_normal,
                                             dist,

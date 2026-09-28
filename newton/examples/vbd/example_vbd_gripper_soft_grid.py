@@ -101,7 +101,7 @@ PARAMS = {
     # collision
     "rigid_body_contact_buffer_size": 512,
     "collision_broad_phase": "nxn",
-    "soft_contact_margin": 0.01,
+    "soft_contact_gap": 0.01,
     # cloth stiffness (soft enough that the corners drape over the grip)
     "grid_tri_ke": 5.0e2,
     "grid_tri_kd": 1.0e-1,
@@ -152,7 +152,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase=self.params["collision_broad_phase"],
-            soft_contact_margin=self.params["soft_contact_margin"],
+            soft_contact_gap=self.params["soft_contact_gap"],
             enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 
