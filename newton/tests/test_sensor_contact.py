@@ -120,6 +120,22 @@ class TestSensorContact(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contact-force"):
             sensor.update(None, contacts, solver_observables=observables.select({flags.BODY_PARENT_F}))
 
+    def test_observables_must_belong_to_sensor_model(self):
+        """Reject observables bound to another model's contacts before any sensor launch."""
+        model = _make_two_world_model(device="cpu")
+        foreign_model = _make_two_world_model(device="cpu")
+        newton.CollisionPipeline(foreign_model, rigid_contact_max=1, soft_contact_max=0)
+        solver = newton.solvers.SolverXPBD(foreign_model)
+        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        contacts = create_contacts("cpu", [(0, 1)], 1, forces=[2.0])
+        solver._validate_observables(observables, contacts)
+        sensor = SensorContact(model, sensing_bodies="*")
+        sensing_transforms = sensor.sensing_transforms.numpy().copy()
+        with self.assertRaisesRegex(ValueError, "model"):
+            sensor.update(model.state(), contacts, solver_observables=observables)
+        np.testing.assert_array_equal(sensor.sensing_transforms.numpy(), sensing_transforms)
+        np.testing.assert_array_equal(sensor.total_force.numpy(), np.zeros_like(sensor.total_force.numpy()))
+
     def test_net_force_aggregation(self):
         """Test net force aggregation across different contact subsets"""
         device = wp.get_device()

@@ -171,12 +171,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
-        results = self._observables(model, sensor)
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        results.body_qdd.zero_()
-        sensor.update(state, solver_observables=results)
+        observables.body_qdd.zero_()
+        sensor.update(state, solver_observables=observables)
 
         acc = sensor.accelerometer.numpy()
         gyro = sensor.gyroscope.numpy()
@@ -213,12 +213,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
-        results = self._observables(model, sensor)
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        results.body_qdd.zero_()
-        sensor.update(state, solver_observables=results)
+        observables.body_qdd.zero_()
+        sensor.update(state, solver_observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -234,11 +234,11 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[world_site], request_state_attributes=False)
-        results = self._observables(model, sensor)
+        observables = self._observables(model, sensor)
         state = model.state()
 
-        results.body_qdd.zero_()
-        sensor.update(state, solver_observables=results)
+        observables.body_qdd.zero_()
+        sensor.update(state, solver_observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
         gyro = sensor.gyroscope.numpy()[0]
@@ -265,11 +265,11 @@ class TestSensorIMU(unittest.TestCase):
 
         model = builder.finalize()
         sensor = SensorIMU(model, sites=[site_0, site_1, global_site, global_body_site], request_state_attributes=False)
-        results = self._observables(model, sensor)
+        observables = self._observables(model, sensor)
         state = model.state()
 
-        results.body_qdd.zero_()
-        sensor.update(state, solver_observables=results)
+        observables.body_qdd.zero_()
+        sensor.update(state, solver_observables=observables)
 
         np.testing.assert_allclose(
             sensor.accelerometer.numpy(),
@@ -287,12 +287,12 @@ class TestSensorIMU(unittest.TestCase):
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
-        results = self._observables(model, sensor)
+        observables = self._observables(model, sensor)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        results.body_qdd.zero_()
-        sensor.update(state, solver_observables=results)
+        observables.body_qdd.zero_()
+        sensor.update(state, solver_observables=observables)
 
         acc = sensor.accelerometer.numpy()[0]
 

@@ -1279,7 +1279,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         state: State | None,
         contact_f: wp.array[wp.spatial_vector] | None,
     ) -> None:
-        """Convert Kamino contact metadata and forces to Newton results.
+        """Convert Kamino contact metadata and forces to Newton contacts and observables.
 
         Args:
             contacts: The Newton Contacts object to populate.

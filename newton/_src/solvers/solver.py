@@ -604,6 +604,11 @@ class SolverBase:
         container from :class:`SolverObservables`, and override
         :meth:`_allocate_observables` for their custom arrays.
 
+        All requested arrays are allocated before this method returns; ``None``
+        always means unrequested. Contact arrays use the model's resolved rigid
+        and soft capacities, not the live contact count. Allocate before graph
+        capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
+
         Args:
             flags: Set or other iterable of standard and solver-specific observable
                 enum members.
@@ -621,11 +626,6 @@ class SolverBase:
                 or its container does not declare the observable's row frequency.
             RuntimeError: If contact-indexed observables are requested before
                 constructing :class:`~newton.CollisionPipeline` for the model.
-
-        All requested arrays are allocated before this method returns; ``None``
-        always means unrequested. Contact arrays use the model's resolved rigid
-        and soft capacities, not the live contact count. Allocate before graph
-        capture and pass matching :class:`~newton.Contacts` to :meth:`step`.
 
         .. experimental::
 

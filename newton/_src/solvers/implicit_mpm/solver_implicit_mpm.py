@@ -1921,6 +1921,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             control: Control input (unused; material parameters come from the model).
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
         self._validate_observables(observables, contacts)
         model = self.model

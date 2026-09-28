@@ -161,6 +161,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             contacts: The contact information.
                 Defaults to `None` which means no contacts are used.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
 
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation

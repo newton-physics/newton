@@ -54,7 +54,7 @@ class CustomContactSolver(ContactSolver):
 
 
 class TestSolverObservables(unittest.TestCase):
-    """Verify contact capacities are resolved before allocating results."""
+    """Verify contact capacities are resolved before allocating observables."""
 
     def setUp(self):
         """Build an independent CPU model for each capacity test."""

@@ -187,6 +187,9 @@ class SolverStyle3D(SolverBase):
             control: :class:`newton.Control` input (currently unused).
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
         self._validate_observables(observables, contacts)
         # Model masses and flags may change between solver steps.

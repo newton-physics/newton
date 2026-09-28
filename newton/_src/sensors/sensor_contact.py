@@ -628,9 +628,25 @@ class SensorContact:
                 If omitted, the deprecated ``contacts.force`` array is used when available.
 
         Raises:
-            ValueError: If no contact-force output is available or if it was sized for different contacts.
+            ValueError: If ``solver_observables`` belong to a different model, no contact-force
+                output is available, or the observables are bound to a different ``contacts`` instance.
             ValueError: If ``contacts.device`` does not match the sensor's device.
         """
+        if solver_observables is not None and solver_observables.model is not self._model:
+            raise ValueError("Solver observables must belong to the sensor's model.")
+        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
+        if contact_f is None:
+            raise ValueError(
+                "SensorContact requires contact-force solver observables. Request "
+                "SolverObservableFlags.CONTACT_F and pass the SolverObservables to update()."
+            )
+        if solver_observables is not None and solver_observables.contacts is not contacts:
+            raise ValueError(
+                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
+            )
+        if contacts.device != self.device:
+            raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
+
         # update sensing transforms
         n = len(self._sensing_indices)
         if n > 0 and state is not None and state.body_q is not None:
@@ -648,18 +664,6 @@ class SensorContact:
                 device=self.device,
             )
 
-        contact_f = solver_observables.contact_f if solver_observables is not None else contacts.force
-        if contact_f is None:
-            raise ValueError(
-                "SensorContact requires contact-force solver observables. Request "
-                "SolverObservableFlags.CONTACT_F and pass the SolverObservables to update()."
-            )
-        if solver_observables is not None and solver_observables.contacts is not contacts:
-            raise ValueError(
-                "Contact solver observables must be used with the Contacts instance passed to solver.step()."
-            )
-        if contacts.device != self.device:
-            raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
         self._eval_forces(state, contacts, contact_f)
 
     def _eval_forces(self, state: State | None, contacts: Contacts, contact_f: wp.array[wp.spatial_vector]):
