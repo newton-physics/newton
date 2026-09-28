@@ -249,6 +249,34 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
             [[1, -1], [1, -1], [1, 2], [1, -1], [1, 2]],
         )
 
+    def test_remap_mjcf_actuator_targets_when_merging_builders(self):
+        """Offset imported ctrl-direct actuator targets for each merged builder copy."""
+        mjcf = """
+        <mujoco>
+          <worldbody>
+            <body name="link">
+              <joint name="hinge" type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor joint="hinge"/>
+          </actuator>
+        </mujoco>
+        """
+        robot = newton.ModelBuilder()
+        robot.add_mjcf(mjcf, ctrl_direct=True)
+
+        scene = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(scene)
+        scene.add_builder(robot)
+        scene.add_builder(robot)
+        model = scene.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy()[:, 0], [0, 1])
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_array_equal(solver.mj_model.actuator_trnid[:, 0], [0, 1])
+
 
 class TestMuJoCoEntityAuthoring(unittest.TestCase):
     """Tests for non-actuator MuJoCo authoring helpers."""
