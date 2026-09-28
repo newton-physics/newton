@@ -393,8 +393,7 @@ Equality constraints
 --------------------
 
 Use :class:`~newton.solvers.SolverMuJoCo.EqType` for MuJoCo equality
-constraint types. The top-level :class:`newton.EqType` alias is deprecated
-in Newton 1.4.
+constraint types.
 
 Each row's ``data[...]`` reference below points into MuJoCo's
 `equality.data <https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality>`_

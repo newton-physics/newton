@@ -11,7 +11,6 @@ import shutil
 import tempfile
 import types
 import unittest
-import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -412,29 +411,6 @@ def _refresh_and_step(
     """Refresh the response at *state*, then step the actuator — the simulation order."""
     response.refresh(state)
     actuator.step(state, control, dt=dt)
-
-
-def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
-    """Tolerate torch's TorchScript-family deprecation notices for one test.
-
-    The neural-drive tests deliberately exercise the TorchScript checkpoint
-    path (``torch.jit.script``/``save``/``load``), which PyTorch now deprecates in
-    favor of ``torch.export``. Ignore just those advisories, scoped to the calling
-    test, so strict-warnings mode still surfaces everything else.
-    """
-    ctx = warnings.catch_warnings()
-    ctx.__enter__()
-    test_case.addCleanup(ctx.__exit__, None, None, None)
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*torch\.jit\..* is deprecated",
-        category=DeprecationWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Loading (TorchScript|dict) checkpoints .* is deprecated",
-        category=DeprecationWarning,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1081,7 +1057,7 @@ class TestDriveNeuralLSTM(unittest.TestCase):
 
 
 class _TorchCheckpointTestMixin:
-    """Shared helpers for saving pt2 / TorchScript / dict torch checkpoints."""
+    """Shared helpers for saving pt2 torch checkpoints."""
 
     def setUp(self):
         import torch
@@ -1090,24 +1066,11 @@ class _TorchCheckpointTestMixin:
         if self.device.is_cuda and not torch.cuda.is_available():
             self.skipTest("Torch not compiled with CUDA support")
         self.torch = torch
-        _ignore_torchscript_deprecation(self)
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def _save_torchscript(self, net: Any, filename: str = "model.pt", metadata: dict | None = None) -> str:
-        path = os.path.join(self._tmp_dir, filename)
-        scripted = self.torch.jit.script(net)
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
-        self.torch.jit.save(scripted, path, _extra_files=extra)
-        return path
-
-    def _save_dict(self, net: Any, filename: str = "model_dict.pt", metadata: dict | None = None) -> str:
-        path = os.path.join(self._tmp_dir, filename)
-        self.torch.save({"model": net, "metadata": metadata or {}}, path)
-        return path
 
     def _export_pt2(
         self,
@@ -1127,7 +1090,7 @@ class _TorchCheckpointTestMixin:
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
-    """DriveNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+    """DriveNeuralMLP loading from pt2 checkpoints."""
 
     def _make_mlp(self, bias: float = 0.0) -> Any:
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
@@ -1141,12 +1104,6 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         batch = self.torch.export.Dim("batch", min=1)
         return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
 
-    def test_dict_checkpoint(self):
-        """Load MLP from a dict checkpoint with metadata."""
-        path = self._save_dict(self._make_mlp(bias=5.0), metadata={"effort_scale": 4.0})
-        ctrl = DriveNeuralMLP(model_path=path)
-        self.assertAlmostEqual(ctrl.effort_scale, 4.0)
-
     def test_pt2_checkpoint(self):
         """Load MLP from a pt2 archive with metadata and run compute."""
         path = self._save_pt2(self._make_mlp(bias=7.0), metadata={"effort_scale": 2.0})
@@ -1154,7 +1111,9 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         ctrl = DriveNeuralMLP(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 2.0)
         ctrl.finalize(self.device, n)
+        self.assertFalse(ctrl.is_graphable())
         state_a = ctrl.state(n, self.device)
+        self.assertTrue(type(state_a.pos_error_history).__module__.startswith("torch"))
 
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
@@ -1175,36 +1134,12 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         )
         self.assertAlmostEqual(forces.numpy()[0], 14.0, places=3, msg="bias=7 * effort_scale=2 -> 14")
 
-    def test_legacy_formats_warn(self):
-        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
-        ts_path = self._save_torchscript(self._make_mlp())
-        dict_path = self._save_dict(self._make_mlp())
+    def test_load_metadata_reads_pt2_zip_entry(self):
+        """Metadata-only reads return the pt2 archive's metadata."""
+        path = self._save_pt2(self._make_mlp(), metadata={"effort_scale": 3.0})
+        self.assertEqual(load_metadata(path), {"effort_scale": 3.0})
 
-        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
-            DriveNeuralMLP(model_path=ts_path)
-        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
-            DriveNeuralMLP(model_path=dict_path)
-
-    def test_deprecation_warning_points_at_caller(self):
-        """The legacy-format warning is attributed to the calling code, not newton internals."""
-        path = self._save_torchscript(self._make_mlp())
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            DriveNeuralMLP(model_path=path)
-        hits = [w for w in caught if "TorchScript checkpoints" in str(w.message)]
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(hits[0].filename, __file__)
-
-    def test_load_metadata_reads_zip_entry_without_warning(self):
-        """Metadata-only reads do not deserialize the network or warn about legacy formats."""
-        path = self._save_torchscript(self._make_mlp(), metadata={"effort_scale": 3.0})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            metadata = load_metadata(path)
-        self.assertEqual(metadata, {"effort_scale": 3.0})
-        self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
-
-    def test_dict_checkpoint_uses_target_pos_indices(self):
+    def test_pt2_checkpoint_uses_target_pos_indices(self):
         """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
@@ -1218,7 +1153,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         """
         self.torch.manual_seed(0)
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0})
         ctrl = DriveNeuralMLP(model_path=path)
         n = 2
         ctrl.finalize(self.device, n)
@@ -1262,7 +1197,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
-    """DriveNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
+    """DriveNeuralLSTM loading from pt2 checkpoints."""
 
     def _make_lstm(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False) -> Any:
         return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
@@ -1313,13 +1248,6 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         self.assertFalse(self.torch.all(state_b.hidden == 0.0).item(), "hidden state should evolve")
         return forces.numpy()[0]
 
-    def test_dict_checkpoint(self):
-        """Load LSTM from a dict checkpoint with metadata."""
-        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"effort_scale": 5.0})
-        ctrl = DriveNeuralLSTM(model_path=path)
-        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
-        self._run_lstm_compute(ctrl)
-
     def test_pt2_checkpoint(self):
         """Load LSTM from a pt2 archive; layer config comes from metadata."""
         metadata = {"effort_scale": 5.0, "num_layers": 2, "hidden_size": 8}
@@ -1346,30 +1274,29 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         self.assertEqual(ctrl._num_layers, 2)
         self.assertEqual(ctrl._hidden_size, 8)
 
-    def test_metadata_config_mismatch_raises(self):
-        """Metadata that contradicts the network's actual LSTM fails at load."""
-        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"num_layers": 2, "hidden_size": 8})
-        with self.assertRaisesRegex(ValueError, "num_layers"):
-            DriveNeuralLSTM(model_path=path)
+    def test_implicit_rejected_for_torch_backend(self):
+        """Implicit actuation is refused for Torch checkpoints rather than degrading.
 
-    def test_invalid_lstm_not_masked_by_config_metadata(self):
-        """Structural validation still runs when metadata provides the LSTM config."""
-        net = self._make_lstm(hidden=8, layers=1, bidirectional=True)
-        path = self._save_dict(net, metadata={"num_layers": 1, "hidden_size": 8})
-        with self.assertRaisesRegex(ValueError, "bidirectional"):
-            DriveNeuralLSTM(model_path=path)
+        The Torch backend runs outside Warp's tape, so there is no input adjoint
+        to linearize the network with; the solve would silently fall back to the
+        explicit impulse while still paying for the Newton loop.
+        """
+        metadata = {"num_layers": 1, "hidden_size": 4}
+        path = self._save_pt2(self._make_lstm(hidden=4, layers=1), metadata=metadata)
 
-    def test_legacy_formats_warn(self):
-        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
-        ts_path = self._save_torchscript(self._make_lstm(hidden=8, layers=1))
-        dict_path = self._save_dict(self._make_lstm(hidden=8, layers=1))
+        model = _build_pendulum(self.device)
+        drive = DriveNeuralLSTM(model_path=path)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=self.device),
+            drive=drive,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        self.assertIsNone(drive.bind_params())
+        with self.assertRaises(NotImplementedError):
+            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
-        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
-            DriveNeuralLSTM(model_path=ts_path)
-        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
-            DriveNeuralLSTM(model_path=dict_path)
-
-    def test_dict_checkpoint_uses_target_pos_indices(self):
+    def test_pt2_checkpoint_uses_target_pos_indices(self):
         """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
@@ -1382,7 +1309,7 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         ``arange(n)``.
         """
         net = self._make_lstm(hidden=4, layers=1)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
         ctrl = DriveNeuralLSTM(model_path=path)
         n = 2
         ctrl.finalize(self.device, n)
@@ -1435,7 +1362,7 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         allowed``.
         """
         net = self._make_lstm(hidden=4, layers=1)
-        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
         ctrl = DriveNeuralLSTM(model_path=path)
         n = 3
         ctrl.finalize(self.device, n)
@@ -1485,187 +1412,6 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
                 self.assertTrue(
                     self.torch.equal(state_b.cell[:, b, :], cell_before[:, b, :]), f"actuator {b} not preserved"
                 )
-
-
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestDriveNeuralMLPLegacyTorchScript(unittest.TestCase):
-    """Regression tests for the supported .pt MLP checkpoint path."""
-
-    def setUp(self):
-        self.device = wp.get_device()
-        self._tmp_dir = tempfile.mkdtemp()
-        _ignore_torchscript_deprecation(self)
-
-    def tearDown(self):
-        shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def test_finalize_legacy_torchscript_checkpoint(self):
-        """.pt checkpoints keep the Torch backend and state interface."""
-        import torch
-
-        n = 1
-        in_features = 2
-
-        class _BiasOnlyMLP(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.fc = torch.nn.Linear(in_features, 1, bias=True)
-                with torch.no_grad():
-                    self.fc.weight.zero_()
-                    self.fc.bias.fill_(7.0)
-
-            def forward(self, x: torch.Tensor) -> torch.Tensor:
-                return self.fc(x)
-
-        model = _BiasOnlyMLP().eval()
-        scripted = torch.jit.script(model)
-        path = os.path.join(self._tmp_dir, "legacy_mlp.pt")
-        scripted.save(path, _extra_files={"metadata.json": json.dumps({"effort_scale": 1.0})})
-
-        ctrl = DriveNeuralMLP(model_path=path)
-        ctrl.finalize(self.device, n)
-
-        self.assertFalse(ctrl.is_graphable())
-        self.assertIsNotNone(ctrl.network)
-        self.assertIsNone(ctrl._network)
-
-        indices = wp.array([0], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        state_a = ctrl.state(n, self.device)
-        self.assertTrue(type(state_a.pos_error_history).__module__.startswith("torch"))
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        self.assertAlmostEqual(float(forces.numpy()[0]), 7.0, places=3)
-
-
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestDriveNeuralLSTMLegacyTorchScript(unittest.TestCase):
-    """Regression tests for the supported .pt LSTM checkpoint path."""
-
-    def setUp(self):
-        self.device = wp.get_device()
-        self._tmp_dir = tempfile.mkdtemp()
-        _ignore_torchscript_deprecation(self)
-
-    def tearDown(self):
-        shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def _build_legacy_lstm_checkpoint(self, path: str, hidden_size: int = 4, metadata: dict | None = None):
-        import torch
-
-        class _LegacyLSTM(torch.nn.Module):
-            def __init__(self, hidden_size: int):
-                super().__init__()
-                self.lstm = torch.nn.LSTM(
-                    input_size=2,
-                    hidden_size=hidden_size,
-                    num_layers=1,
-                    batch_first=True,
-                )
-                self.fc = torch.nn.Linear(hidden_size, 1, bias=True)
-                with torch.no_grad():
-                    self.fc.weight.fill_(0.5)
-                    self.fc.bias.fill_(0.0)
-
-            def forward(
-                self, x: torch.Tensor, hc: tuple[torch.Tensor, torch.Tensor]
-            ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-                y, hc_new = self.lstm(x, hc)
-                effort = self.fc(y[:, -1, :])
-                return effort, hc_new
-
-        model = _LegacyLSTM(hidden_size).eval()
-        scripted = torch.jit.script(model)
-        extra_files = {"metadata.json": json.dumps(metadata or {})}
-        scripted.save(path, _extra_files=extra_files)
-
-    def test_synthesizes_metadata_from_torch_module(self):
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        hidden = 6
-        self._build_legacy_lstm_checkpoint(path, hidden_size=hidden, metadata={"effort_scale": 2.5})
-
-        ctrl = DriveNeuralLSTM(model_path=path)
-
-        self.assertEqual(ctrl._num_layers, 1)
-        self.assertEqual(ctrl._hidden_size, hidden)
-        self.assertAlmostEqual(ctrl.effort_scale, 2.5)
-
-    def test_finalize_and_compute(self):
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        self._build_legacy_lstm_checkpoint(path, hidden_size=4)
-
-        ctrl = DriveNeuralLSTM(model_path=path)
-
-        n = 1
-        ctrl.finalize(self.device, n)
-        self.assertFalse(ctrl.is_graphable())
-
-        state_a = ctrl.state(n, self.device)
-        state_b = ctrl.state(n, self.device)
-        self.assertTrue(type(state_a.hidden).__module__.startswith("torch"))
-        np.testing.assert_array_equal(state_a.hidden.detach().cpu().numpy(), 0.0)
-
-        indices = wp.array([0], dtype=wp.uint32, device=self.device)
-        positions = wp.zeros(n, dtype=wp.float32, device=self.device)
-        velocities = wp.array([1.0], dtype=wp.float32, device=self.device)
-        target_pos = wp.array([1.0], dtype=wp.float32, device=self.device)
-        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-
-        ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        ctrl.update_state(state_a, state_b)
-
-        self.assertNotAlmostEqual(float(forces.numpy()[0]), 0.0, places=6)
-        self.assertTrue(np.any(state_b.hidden.detach().cpu().numpy() != 0.0))
-
-    def test_implicit_rejected_for_torch_backend(self):
-        """Implicit actuation is refused for .pt checkpoints rather than degrading.
-
-        The Torch backend runs outside Warp's tape, so there is no input adjoint
-        to linearize the network with; the solve would silently fall back to the
-        explicit impulse while still paying for the Newton loop.
-        """
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        self._build_legacy_lstm_checkpoint(path, hidden_size=4)
-
-        model = _build_pendulum(self.device)
-        drive = DriveNeuralLSTM(model_path=path)
-        actuator = Actuator(
-            indices=wp.array([0], dtype=wp.uint32, device=self.device),
-            drive=drive,
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        self.assertIsNone(drive.bind_params())
-        with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(response=JointSpaceResponse(model))
 
 
 # ---------------------------------------------------------------------------

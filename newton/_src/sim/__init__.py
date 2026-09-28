@@ -9,7 +9,6 @@ from .contacts import Contacts
 from .control import Control
 from .enums import (
     BodyFlags,
-    EqType,
     JointTargetMode,
     JointType,
     ModelFlags,
@@ -26,7 +25,6 @@ __all__ = [
     "CollisionPipeline",
     "Contacts",
     "Control",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "Model",

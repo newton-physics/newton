@@ -1,0 +1,1 @@
+Remove the deprecated `SensorContact` aliases `sensing_obj_idx`, `sensing_obj_type`, `sensing_obj_transforms`, and the `sensing_obj_bodies`/`sensing_obj_shapes` constructor arguments (deprecated in 1.4); use `sensing_indices`, `sensing_type`, `sensing_transforms`, `sensing_bodies`, and `sensing_shapes` instead.
