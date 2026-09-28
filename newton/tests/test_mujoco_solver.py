@@ -13427,8 +13427,12 @@ class TestActuatorTypes(unittest.TestCase):
     def test_supported_dcmotor_and_so3_types_parse(self):
         """Parse supported DC-motor and SO3 type names without warnings."""
         builder = newton.ModelBuilder()
-        builder.add_mjcf(self._mjcf(dyntype="dcmotor", gaintype="dcmotor", biastype="dcmotor"))
-        builder.add_mjcf(self._mjcf(gaintype="so3", biastype="so3"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_mjcf(self._mjcf(dyntype="dcmotor", gaintype="dcmotor", biastype="dcmotor"))
+            builder.add_mjcf(self._mjcf(gaintype="so3", biastype="so3"))
+        runtime_warnings = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+        self.assertEqual(runtime_warnings, [])
 
         self.assertEqual(builder.custom_attributes["mujoco:actuator_dyntype"].values[0], _ActuatorDynamicsType.DCMOTOR)
         self.assertEqual(builder.custom_attributes["mujoco:actuator_gaintype"].values[0], _ActuatorGainType.DCMOTOR)
