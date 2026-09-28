@@ -499,18 +499,18 @@ class TestViewerViserInteraction(unittest.TestCase):
 
     def test_vbd_camera_helper_aims_at_target_without_gl_camera(self):
         """Convert look-at targets to yaw and pitch for non-GL viewers."""
-        calls = []
-        viewer = SimpleNamespace(set_camera=lambda **kwargs: calls.append(kwargs))
+        viewer = newton.viewer.ViewerNull()
 
-        set_viewer_camera(
-            viewer,
-            pos=wp.vec3(0.0, -7.2, 2.35),
-            target=wp.vec3(0.0, 0.0, 0.60),
-        )
+        with patch.object(viewer, "set_camera") as set_camera:
+            set_viewer_camera(
+                viewer,
+                pos=wp.vec3(0.0, -7.2, 2.35),
+                target=wp.vec3(0.0, 0.0, 0.60),
+            )
 
-        self.assertEqual(len(calls), 1)
-        self.assertAlmostEqual(calls[0]["yaw"], 90.0)
-        self.assertAlmostEqual(calls[0]["pitch"], np.degrees(np.arctan2(-1.75, 7.2)), places=5)
+        set_camera.assert_called_once()
+        self.assertAlmostEqual(set_camera.call_args.kwargs["yaw"], 90.0)
+        self.assertAlmostEqual(set_camera.call_args.kwargs["pitch"], np.degrees(np.arctan2(-1.75, 7.2)), places=5)
 
     def test_set_camera_look_at_preserves_viser_orbit_target(self):
         """Use the requested look-at point as Viser's orbit pivot."""

@@ -238,7 +238,7 @@ class Example:
             pitch=-15.0,
             yaw=140.0,
         )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 70.0
 
         self.capture()
