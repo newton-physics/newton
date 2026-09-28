@@ -1212,6 +1212,30 @@ class TestSolverCoupledBasic(unittest.TestCase):
         coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
         np.testing.assert_array_equal(observables.body_parent_f.numpy()[:, 0], (11.0, 12.0))
 
+    def test_observables_skip_entries_without_requests(self):
+        """Step entries without requested observables through their legacy step() signature."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=0, radius=0.1)
+        builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model,
+            [
+                SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
+                SolverCoupled.Entry("particles", _StepCountingCopySolver, particles=[0]),
+            ],
+        )
+        flags = newton.solvers.SolverObservableFlags
+        observables = coupled.observables({flags.BODY_QDD})
+        self.assertEqual(observables.entry_observables["particles"].flags, frozenset())
+
+        state_in, state_out = model.state(), model.state()
+        coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
+
+        np.testing.assert_array_equal(observables.body_qdd.numpy()[:, 0], (1.0,))
+        self.assertEqual(coupled._entries["particles"].solver.step_count, 1)
+
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
             SolverCoupled(

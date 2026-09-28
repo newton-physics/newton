@@ -2751,6 +2751,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         entry_observables = None
         if self._active_observables is not None:
             entry_observables = self._active_observables.entry_observables[entry.name]
+            # Entries without requested observables keep the plain step() call so
+            # sub-solvers that predate the ``observables`` keyword remain usable.
+            if not entry_observables.flags:
+                entry_observables = None
 
         def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
             if entry_observables is None:
