@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import unittest
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
 import warp.fem as fem
+import warp.sparse as sp
 
 import newton
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
@@ -14,17 +17,615 @@ from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     collision_sdf,
     rasterize_collider_kernel,
 )
+from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
+    _DELASSUS_PROXIMAL_REG,
+    YieldParamVec,
+    _symmetric_part_op,
+    _symmetric_part_transposed_op,
+    apply_stress_gs,
+    compute_delassus_diagonal,
+    make_solve_local_stress,
+    mat55,
+    mat66,
+    vec6,
+)
 from newton._src.solvers.implicit_mpm.solve_rheology import (
     _ITERATIVE_LINEAR_SOLVERS,
+    _RHEOLOGY_SOLVERS,
     ArraySquaredNorm,
+    CollisionData,
+    MomentumData,
+    RheologyData,
     _compute_environment_l2_tolerance_scales,
+    _DelassusOperator,
     _linear_solver_result_norms,
     _nonlinear_solver_result_norms,
+    solve_rheology,
     update_batched_condition,
 )
 from newton.solvers import SolverImplicitMPM, SolverXPBD
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+
+@wp.kernel
+def _stress_virtual_work(
+    gradients: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    stresses: wp.array[wp.mat33],
+    work: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    b, u, sigma = gradients[i], velocities[i], stresses[i]
+    r = fem.SymmetricTensorMapper.value_to_dof_3d(sigma)
+    work[i] = wp.vec3(
+        wp.dot(_symmetric_part_op(b, u), r),
+        wp.dot(u, _symmetric_part_transposed_op(b, r)),
+        wp.dot(u, sigma @ b),
+    )
+
+
+def test_stress_virtual_work(test, device):
+    """Match forward and transpose work to the direct tensor contraction."""
+    tensors = []
+    for row, col in itertools.combinations_with_replacement(range(3), 2):
+        sigma = np.zeros((3, 3), dtype=np.float32)
+        sigma[row, col] = sigma[col, row] = 1.0
+        tensors.append(sigma)
+    tensors.extend([np.eye(3), [[2, -0.3, 0.7], [-0.3, -1, 0.4], [0.7, 0.4, 3]]])
+    axes = np.eye(3).tolist()
+    cases = itertools.product([*axes, [0.3, -0.7, 1.1]], [*axes, [-0.6, 0.8, 0.2]], tensors)
+    b, u, sigma = (np.asarray(values, dtype=np.float32) for values in zip(*cases, strict=True))
+    expected = np.einsum("ni,nij,nj->n", u.astype(float), sigma.astype(float), b.astype(float))
+    work = wp.empty(len(expected), dtype=wp.vec3, device=device)
+    wp.launch(
+        _stress_virtual_work,
+        dim=len(expected),
+        inputs=[
+            wp.array(b, dtype=wp.vec3, device=device),
+            wp.array(u, dtype=wp.vec3, device=device),
+            wp.array(sigma, dtype=wp.mat33, device=device),
+        ],
+        outputs=[work],
+        device=device,
+    )
+    test.assertEqual(len(expected), 128)
+    np.testing.assert_allclose(work.numpy(), np.repeat(expected[:, None], 3, axis=1), rtol=2e-6, atol=2e-6)
+
+
+def test_assembled_elastic_stiffness(test, device):
+    """Recover axial force and affine stiffness from an assembled elastic cell."""
+    with wp.ScopedDevice(device):
+        h, dt, rho, young, strain_amplitude = 0.02, 0.001, 1500.0, 100000.0, 0.001
+        volume = h**3
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        builder.add_particle_grid(
+            pos=wp.vec3(h / 4),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=h / 2,
+            cell_y=h / 2,
+            cell_z=h / 2,
+            mass=rho * volume / 8,
+            radius_mean=h / 4,
+            jitter=0.0,
+            custom_attributes={
+                "mpm:young_modulus": young,
+                "mpm:poisson_ratio": 0.0,
+                "mpm:yield_pressure": 1e15,
+                "mpm:yield_stress": 1e15,
+                "mpm:tensile_yield_ratio": 1.0,
+                "mpm:friction": 0.0,
+                "mpm:dilatancy": 0.0,
+                "mpm:hardening": 0.0,
+                "mpm:viscosity": 0.0,
+                "mpm:damping": 0.0,
+            },
+        )
+        model = builder.finalize(device=device)
+        solver = SolverImplicitMPM(
+            model,
+            SolverImplicitMPM.Config(
+                voxel_size=h,
+                grid_type="dense",
+                grid_padding=0,
+                velocity_basis="Q1",
+                strain_basis="P0",
+                collider_basis="Q1",
+                solver="gs",
+                warmstart_mode="none",
+                air_drag=0.0,
+                critical_fraction=0.0,
+                transfer_scheme="apic",
+                integration_scheme="pic",
+            ),
+        )
+        state = model.state()
+        test.assertEqual(model.particle_count, 8)
+        test.assertEqual(model.body_count, 0)
+        test.assertEqual(model.shape_count, 0)
+        positions = state.particle_q.numpy().copy()
+        np.testing.assert_array_equal(state.mpm.particle_elastic_strain.numpy(), np.tile(np.eye(3), (8, 1, 1)))
+        pic = solver._particles_to_cells(state.particle_q)
+        scratch = solver._rebuild_scratchpad(pic)
+        operator = None
+        try:
+            # Assemble the step's linearized operators without solving or advancing state.
+            solver._require_velocity_space_fields(scratch, True)
+            solver._compute_unconstrained_velocity(state, dt, pic, scratch, 1 / volume)
+            solver._require_strain_space_fields(scratch, solver._last_step_data)
+            solver._build_elasticity_system(state, dt, pic, scratch, 1 / volume)
+            solver._build_plasticity_system(state, dt, pic, scratch, 1 / volume)
+            scratch.stress_field.dof_values.zero_()
+            eigenvectors, rotated_volume = solver._build_strain_eigenbasis(pic, scratch, 1 / volume)
+            solver._apply_strain_eigenbasis(scratch, eigenvectors, rotated_volume)
+            test.assertEqual(scratch.domain.element_count(), 1)
+            test.assertEqual(scratch.strain_node_count, 1)
+            test.assertEqual(scratch.velocity_node_count, 8)
+            ids = scratch.velocity_field.space_partition.space_node_indices().numpy()
+            nodes = scratch.velocity_field.space.basis.node_positions().numpy()[ids].astype(float)
+            mass_bar = 1.0 / scratch.inv_mass_matrix.numpy().astype(float)
+            np.testing.assert_allclose(mass_bar, rho / 8, rtol=1e-6)
+            test.assertEqual(int(scratch.compliance_matrix.offsets.numpy()[1]), 1)
+            compliance = scratch.compliance_matrix.values.numpy()[0].astype(float)
+            operator = _DelassusOperator(
+                RheologyData(
+                    strain_mat=scratch.strain_matrix,
+                    transposed_strain_mat=scratch.transposed_strain_matrix,
+                    compliance_mat=scratch.compliance_matrix,
+                    strain_node_volume=scratch.strain_node_particle_volume,
+                    yield_params=scratch.strain_yield_parameters_field.dof_values,
+                    unilateral_strain_offset=scratch.unilateral_strain_offset,
+                    color_offsets=scratch.color_offsets,
+                    color_blocks=scratch.color_indices,
+                    elastic_strain_delta=scratch.elastic_strain_delta_field.dof_values,
+                    plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
+                    stress=scratch.stress_field.dof_values,
+                ),
+                MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                temporary_store=solver.temporary_store,
+            )
+            operator.require_strain_mat_transpose()
+            zero = wp.zeros(1, dtype=vec6, device=device)
+            strain = wp.empty_like(zero)
+            stress = wp.empty_like(zero)
+            velocity = wp.zeros(8, dtype=wp.vec3, device=device)
+            modes = np.zeros((6, 3, 3))
+            for axis in range(3):
+                modes[axis, axis, axis] = 1.0
+            for index, (row, col) in enumerate(((0, 1), (0, 2), (1, 2)), 3):
+                modes[index, row, col] = modes[index, col, row] = 1.0
+            displacements = np.stack([(nodes - h / 2) @ mode.T for mode in modes])
+            expected_stiffness = young * volume * np.einsum("aij,bij->ab", modes, modes)
+            for application in ("jacobi", "gs"):
+                with test.subTest(application=application):
+                    stiffness = np.empty((6, 6))
+                    axial_forces = np.empty(3)
+                    for column, displacement in enumerate(displacements):
+                        velocity.assign((-strain_amplitude / dt * displacement).astype(np.float32))
+                        operator.apply_velocity_delta(velocity, zero, strain, alpha=1.0, beta=0.0)
+                        # Incremental elasticity about F=I: C r = -B v.
+                        # Exclude the history RHS when measuring tangent stiffness.
+                        stress.assign(np.linalg.solve(compliance, -strain.numpy()[0])[None, :].astype(np.float32))
+                        velocity.zero_()
+                        if application == "jacobi":
+                            operator.apply_stress_delta(stress, velocity)
+                        else:
+                            for color in range(scratch.color_offsets.shape[0] - 1):
+                                wp.launch(
+                                    apply_stress_gs,
+                                    dim=1,
+                                    inputs=[
+                                        color,
+                                        1,
+                                        scratch.color_offsets,
+                                        scratch.color_indices,
+                                        scratch.strain_matrix.offsets,
+                                        scratch.strain_matrix.columns,
+                                        scratch.strain_matrix.values.view(dtype=wp.vec3),
+                                        scratch.inv_mass_matrix,
+                                        stress,
+                                        velocity,
+                                    ],
+                                    device=device,
+                                )
+                        # volume * mass_bar is the physical lumped nodal mass [kg].
+                        # Convert the stress-induced velocity increment to force.
+                        force = volume / dt * mass_bar[:, None] * velocity.numpy().astype(float)
+                        stiffness[:, column] = np.einsum("ani,ni->a", displacements, force) / strain_amplitude
+                        if column < 3:
+                            top = np.isclose(nodes[:, column], h, rtol=0, atol=h * 1e-6)
+                            test.assertEqual(np.count_nonzero(top), 4)
+                            axial_forces[column] = np.sum(force[top, column])
+                    # For nu=0, each axial compression gives E*strain*area = 0.04 N.
+                    np.testing.assert_allclose(axial_forces, young * strain_amplitude * h**2, rtol=3e-5)
+                    relative_error = np.linalg.norm(stiffness - expected_stiffness) / np.linalg.norm(expected_stiffness)
+                    test.assertLess(
+                        relative_error,
+                        3e-5,
+                        msg=(
+                            f"{application}: relative affine-stiffness error={relative_error:.3e}\n"
+                            f"actual:\n{stiffness}\nexpected:\n{expected_stiffness}"
+                        ),
+                    )
+        finally:
+            if operator is not None:
+                operator.release()
+            scratch.release_temporaries()
+        np.testing.assert_array_equal(state.particle_q.numpy(), positions)
+
+
+@contextmanager
+def _coupled_rheology(device):
+    with wp.ScopedDevice(device):
+        builder = _make_mpm_particle_builder(gravity=(0, 0, 0), dimensions=(4, 2, 2))
+        model = builder.finalize(device=device)
+        model.mpm.yield_pressure.fill_(1e6)
+        model.mpm.yield_stress.fill_(1e6)
+        model.mpm.tensile_yield_ratio.fill_(1.0)
+        config = SolverImplicitMPM.Config(
+            voxel_size=0.1,
+            grid_type="dense",
+            grid_padding=0,
+            velocity_basis="Q1",
+            strain_basis="P0",
+            collider_basis="Q1",
+            solver="gs",
+            warmstart_mode="none",
+            air_drag=0.0,
+            critical_fraction=0.0,
+        )
+        solver = SolverImplicitMPM(model, config)
+        state = model.state()
+        positions = state.particle_q.numpy()
+        positions[:, 2] = np.where(positions[:, 2] < 0.05, 0.02, 0.04)
+        state.particle_q.assign(positions)
+        pic = solver._particles_to_cells(state.particle_q)
+        scratch = solver._rebuild_scratchpad(pic)
+        operator = None
+        try:
+            solver._require_velocity_space_fields(scratch, True)
+            solver._compute_unconstrained_velocity(state, 0.01, pic, scratch, 1000.0)
+            solver._require_strain_space_fields(scratch, solver._last_step_data)
+            solver._build_elasticity_system(state, 0.01, pic, scratch, 1000.0)
+            solver._build_plasticity_system(state, 0.01, pic, scratch, 1000.0)
+            eigenvectors, volumes = solver._build_strain_eigenbasis(pic, scratch, 1000.0)
+            solver._apply_strain_eigenbasis(scratch, eigenvectors, volumes)
+            scratch.stress_field.dof_values.zero_()
+            rheology = RheologyData(
+                strain_mat=scratch.strain_matrix,
+                transposed_strain_mat=scratch.transposed_strain_matrix,
+                compliance_mat=scratch.compliance_matrix,
+                strain_node_volume=scratch.strain_node_particle_volume,
+                yield_params=scratch.strain_yield_parameters_field.dof_values,
+                unilateral_strain_offset=scratch.unilateral_strain_offset,
+                color_offsets=scratch.color_offsets,
+                color_blocks=scratch.color_indices,
+                elastic_strain_delta=scratch.elastic_strain_delta_field.dof_values,
+                plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
+                stress=scratch.stress_field.dof_values,
+            )
+            operator = _DelassusOperator(
+                rheology,
+                MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                temporary_store=solver.temporary_store,
+            )
+            yield operator, solver.temporary_store
+        finally:
+            if operator is not None:
+                operator.release()
+            scratch.release_temporaries()
+
+
+def _rheology_matrices(operator):
+    n, nv = operator.size, operator.momentum.velocity.shape[0]
+    velocity = wp.zeros(nv, dtype=wp.vec3)
+    strain = wp.zeros(n, dtype=vec6)
+    B = np.empty((6 * n, 3 * nv))
+    for k in range(3 * nv):
+        velocity.assign(np.eye(3 * nv, dtype=np.float32)[k].reshape(nv, 3))
+        operator.apply_velocity_delta(velocity, strain, strain, beta=0.0)
+        B[:, k] = strain.numpy().ravel()
+    matrix = operator.rheology.compliance_mat
+    offsets, columns, values = matrix.offsets.numpy(), matrix.columns.numpy(), matrix.values.numpy()
+    C = np.zeros((6 * n, 6 * n))
+    for i in range(n):
+        for k in range(offsets[i], offsets[i + 1]):
+            j = columns[k]
+            C[6 * i : 6 * i + 6, 6 * j : 6 * j + 6] = values[k]
+    return B, C, np.repeat(operator.momentum.inv_volume.numpy().astype(float), 3)
+
+
+@wp.kernel
+def _elastic_block_updates(
+    compliance: wp.array[mat66],
+    rhs: wp.array[vec6],
+    diagonal: wp.array[vec6],
+    rotation: wp.array[mat55],
+    yield_params: wp.array[YieldParamVec],
+    volume: wp.array[float],
+    stress: wp.array[vec6],
+):
+    i = wp.tid()
+    stress[i] = vec6(0.0)
+    for _k in range(4):
+        strain = compliance[i] @ stress[i] + rhs[i]
+        stress[i] += wp.static(make_solve_local_stress(False, False))(
+            i, strain, yield_params, volume, diagonal, rotation, stress
+        )
+
+
+def test_delassus_majorizer(test, device):
+    """Bound coupled blocks and preserve the unmajorized reconstruction pair."""
+    rng = np.random.default_rng(4279)
+    blocks = [np.eye(6), np.eye(6), np.diag([1, 1e-5, 2, 2, 2, 2])]
+    blocks[1][0, 1] = blocks[1][1, 0] = 0.01
+    blocks[2][0, 1] = blocks[2][1, 0] = 0.002
+    for _ in range(8):
+        L = rng.normal(size=(6, 6))
+        blocks.append(L @ L.T + np.eye(6))
+    skew = np.eye(6)
+    skew[1, 2], skew[2, 1] = 1e-6, -1e-6
+    blocks.append(skew)
+    scaled_start = len(blocks)
+    scaled = np.array(
+        [
+            np.diag([2**27, *([2**10] * 5)]),
+            np.diag([2**15, *([2**-10] * 5)]),
+            np.diag([2**15, *([2**-10] * 5)]),
+            np.diag([2**27, *([1.0] * 5)]),
+        ],
+        dtype=np.float32,
+    )
+    scaled[2, 1:3, 1:3] = [[3 * 2**-11, -(2**-11)], [-(2**-11), 3 * 2**-11]]
+    scaled[3, 1:3, 1:3] = [[512.5, -511.5], [-511.5, 512.5]]
+    blocks.extend(scaled)
+    sentinel = np.eye(6)
+    sentinel[0, 1] = sentinel[1, 0] = 2.0
+    sentinel[2, 2] = -0.1
+    blocks.append(sentinel)
+    large = np.eye(6)
+    large[0, 1] = large[1, 0] = 1e20
+    blocks.append(large)
+    blocks.extend([np.full((6, 6), np.nan), np.full((6, 6), 3e38)])
+    count = len(blocks)
+    with wp.ScopedDevice(device):
+        values = np.asarray(blocks, dtype=np.float32)
+        W = (values + np.float32(_DELASSUS_PROXIMAL_REG) * np.eye(6, dtype=np.float32)).astype(float)
+        rotation, diagonal = wp.empty(count, dtype=mat55), wp.empty(count, dtype=vec6)
+        saved_rotation, saved_diagonal = wp.empty_like(rotation), wp.empty_like(diagonal)
+        inputs = [
+            wp.zeros(count + 1, dtype=int),
+            wp.empty(0, dtype=int),
+            wp.empty(0, dtype=wp.vec3),
+            wp.empty(0, dtype=float),
+            wp.array(np.arange(count + 1), dtype=int),
+            wp.array(np.arange(count), dtype=int),
+            wp.array(values, dtype=mat66),
+            wp.empty(0, dtype=int),
+            wp.empty((0, 0), dtype=float),
+        ]
+        outputs = [rotation, diagonal, saved_rotation, saved_diagonal]
+        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, False], outputs=outputs)
+        original = (rotation.numpy().copy(), diagonal.numpy().copy())
+        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True], outputs=outputs)
+        np.testing.assert_array_equal(saved_rotation.numpy(), original[0])
+        np.testing.assert_array_equal(saved_diagonal.numpy(), original[1])
+        for i, (d, R) in enumerate(zip(diagonal.numpy()[:-2], rotation.numpy()[:-2], strict=True)):
+            with test.subTest(block=i):
+                test.assertTrue(np.isfinite(d).all() and (d > 0).all())
+                Q = np.eye(6)
+                Q[1:, 1:] = R.T
+                np.testing.assert_allclose(Q @ Q.T, np.eye(6), atol=3e-6)
+                test.assertLess(np.linalg.norm(W[i] - W[i].T) / np.linalg.norm(W[i]), 3e-6)
+                target = Q @ (0.5 * (W[i] + W[i].T)) @ Q.T
+                target /= np.sqrt(np.outer(d.astype(float), d.astype(float)))
+                test.assertLessEqual(np.linalg.eigvalsh(target)[-1], 1.0 + 3e-6)
+        np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + float(_DELASSUS_PROXIMAL_REG), rtol=1e-5)
+        np.testing.assert_allclose(diagonal.numpy()[-4], 3.0 + float(_DELASSUS_PROXIMAL_REG), rtol=3e-6)
+        test.assertTrue(np.isnan(diagonal.numpy()[-2:]).all())
+        target_stress = np.zeros((4, 6), dtype=np.float32)
+        target_stress[:, 1] = 1.0
+        target_stress[2:, 2] = 1.0
+        rhs = -np.einsum("nij,nj->ni", scaled, target_stress)
+        stress = wp.zeros(4, dtype=vec6)
+        wp.launch(
+            _elastic_block_updates,
+            4,
+            inputs=[
+                wp.array(scaled, dtype=mat66),
+                wp.array(rhs, dtype=vec6),
+                diagonal[scaled_start : scaled_start + 4],
+                rotation[scaled_start : scaled_start + 4],
+                wp.array(np.tile([1e6, 1e6, 1e6, 0, 0, 0], (4, 1)), dtype=YieldParamVec),
+                wp.ones(4),
+            ],
+            outputs=[stress],
+        )
+        np.testing.assert_allclose(stress.numpy(), target_stress, rtol=3e-5, atol=1e-7)
+
+
+def test_coupled_iteration_bound(test, device):
+    """Include the dropped coupling in the nonlinear iteration metric."""
+    with _coupled_rheology(device) as (operator, store):
+        B, C, inverse_mass = _rheology_matrices(operator)
+        W = (B * inverse_mass) @ B.T + C
+        solver = _RHEOLOGY_SOLVERS["gs"](operator, store)
+        try:
+            for i, (d, R) in enumerate(
+                zip(operator.delassus_diagonal.numpy(), operator.delassus_rotation.numpy(), strict=True)
+            ):
+                block = W[6 * i : 6 * i + 6, 6 * i : 6 * i + 6]
+                test.assertLess(np.linalg.norm(block - block.T) / np.linalg.norm(block), 3e-6)
+                block = 0.5 * (block + block.T)
+                test.assertGreater(np.linalg.norm(block[0, 1:]), 1e-5 * np.linalg.norm(block))
+                Q = np.eye(6)
+                Q[1:, 1:] = R.T
+                margin = np.linalg.eigvalsh(np.diag(d.astype(float)) - Q @ block @ Q.T)[0]
+                test.assertGreaterEqual(margin, -3e-6 * np.linalg.norm(block))
+        finally:
+            solver.release()
+
+
+def test_reconstruction_factors(test, device):
+    """Keep reconstruction unchanged when iteration majorization is toggled."""
+    with _coupled_rheology(device) as (operator, _store):
+        rheology = operator.rheology
+        n, nv = operator.size, operator.momentum.velocity.shape[0]
+        modes = [
+            {},
+            {"split_mass": True},
+            {"strain_batch": wp.zeros(n, dtype=int), "mass_multiplicity": wp.full((1, nv), 2.0)},
+        ]
+        for mode in modes:
+            for offset, dilatancy, viscosity in ((0, 0, 0), (0.1, 0, 0), (0.1, 0.3, 0.1)):
+                with test.subTest(mode=tuple(mode), offset=offset, dilatancy=dilatancy):
+                    rheology.unilateral_strain_offset.fill_(offset)
+                    rheology.yield_params.assign(np.tile([2, 0, 0.2, 0.6, dilatancy, viscosity], (n, 1)))
+                    rheology.stress.assign(np.tile([1.99, 0.4, -0.2, 0.1, 0, 0], (n, 1)))
+                    rhs = np.tile([-0.02, 0.01, 0, 0, 0, 0], (n, 1)).astype(np.float32)
+                    expected = None
+                    for majorize in (False, True, False):
+                        operator.compute_diagonal_factorization(**mode, majorize=majorize)
+                        rheology.elastic_strain_delta.assign(rhs)
+                        operator.postprocess_stress_and_strain()
+                        result = (
+                            rheology.elastic_strain_delta.numpy().copy(),
+                            rheology.plastic_strain_delta.numpy().copy(),
+                        )
+                        for values in result:
+                            test.assertTrue(np.isfinite(values).all())
+                        if expected is None:
+                            expected = result
+                        else:
+                            for actual, reference in zip(result, expected, strict=True):
+                                np.testing.assert_array_equal(actual, reference)
+                        if majorize:
+                            test.assertGreater(
+                                np.linalg.norm(
+                                    operator.delassus_diagonal.numpy() - operator.reconstruction_diagonal.numpy()
+                                ),
+                                0.0,
+                            )
+
+
+def test_majorized_rheology_solve(test, device, capture=False):
+    """Match the coupled elastic/contact solve to its dense equations."""
+    with _coupled_rheology(device) as (operator, store):
+        B, C, inverse_mass = _rheology_matrices(operator)
+        n, nv = operator.size, operator.momentum.velocity.shape[0]
+        q = np.linspace(-0.003, 0.002, 6 * n).astype(np.float32)
+        q_device = wp.array(q.reshape(n, 6), dtype=vec6)
+        free_velocity = np.zeros(3 * nv, dtype=np.float32)
+        free_velocity[2] = -0.02
+        free_device = wp.array(free_velocity.reshape(nv, 3), dtype=wp.vec3)
+        empty = sp.bsr_zeros(0, 0, block_type=float)
+        collision = CollisionData(
+            collider_mat=empty,
+            transposed_collider_mat=empty,
+            collider_friction=wp.full(nv, -1.0),
+            collider_adhesion=wp.zeros(nv),
+            collider_normals=wp.zeros(nv, dtype=wp.vec3),
+            collider_velocities=wp.zeros(nv, dtype=wp.vec3),
+            rigidity_operator=None,
+            collider_impulse=wp.zeros(nv, dtype=wp.vec3),
+        )
+        W = (B * inverse_mass) @ B.T + C
+        modes = ("gs", "gs-soa", "gs-batched", "jacobi", ("cg", "gs"), ("cg", "jacobi", "gs-batched"))
+        for contact, mode in itertools.product((False, True), modes):
+            with test.subTest(contact=contact, solver=mode, capture=capture):
+                friction = np.full(nv, -1.0, dtype=np.float32)
+                normals = np.zeros((nv, 3), dtype=np.float32)
+                if contact:
+                    friction[0], normals[0, 2] = 0.0, 1.0
+                collision.collider_friction.assign(friction)
+                collision.collider_normals.assign(normals)
+                collision.has_colliders = contact
+
+                def solve(mode=mode):
+                    wp.copy(operator.rheology.elastic_strain_delta, q_device)
+                    wp.copy(operator.momentum.velocity, free_device)
+                    operator.rheology.stress.zero_()
+                    collision.collider_impulse.zero_()
+                    solve_rheology(
+                        mode,
+                        500,
+                        1e-8,
+                        operator.momentum,
+                        operator.rheology,
+                        collision,
+                        temporary_store=store,
+                        use_graph=capture,
+                        verbose=False,
+                    )
+
+                solve()
+                if capture:
+                    with wp.ScopedCapture(device=device) as captured:
+                        solve()
+                for scale in (0.5, 2.0):
+                    q_device.assign((q * scale).reshape(n, 6))
+                    if capture:
+                        wp.capture_launch(captured.graph)
+                    else:
+                        solve()
+                    rhs = q * scale + B @ free_velocity
+                    expected = np.linalg.solve(W, -rhs)
+                    impulse = np.zeros(3 * nv)
+                    if contact:
+                        test.assertLess(free_velocity[2] + inverse_mass[2] * (B.T @ expected)[2], 0.0)
+                        coupling = B[:, 2] * inverse_mass[2]
+                        system = np.block([[W, coupling[:, None]], [coupling[None, :], inverse_mass[2:3, None]]])
+                        solution = np.linalg.solve(system, -np.append(rhs, free_velocity[2]))
+                        expected, impulse[2] = solution[:-1], solution[-1]
+                        test.assertGreater(impulse[2], 0.0)
+                    r = operator.rheology.stress.numpy().ravel().astype(float)
+                    v = operator.momentum.velocity.numpy().ravel().astype(float)
+                    measured_impulse = collision.collider_impulse.numpy().ravel().astype(float)
+                    np.testing.assert_allclose(r, expected, rtol=3e-4, atol=3e-5)
+                    np.testing.assert_allclose(measured_impulse, impulse, rtol=3e-5, atol=1e-7)
+                    test.assertLess(np.linalg.norm(q * scale + B @ v + C @ r) / np.linalg.norm(rhs), 3e-5)
+                    np.testing.assert_allclose(
+                        v, free_velocity + inverse_mass * (B.T @ r + measured_impulse), rtol=3e-5, atol=1e-7
+                    )
+                    if contact:
+                        test.assertLess(abs(v[2]), 1e-7)
+
+
+def test_majorizer_capture(test, device):
+    """Refresh both factor pairs when a captured factorization replays."""
+    with _coupled_rheology(device) as (operator, _store):
+        matrix = operator.rheology.compliance_mat
+        original = matrix.values.numpy().copy()
+
+        def factorize():
+            operator.compute_diagonal_factorization(majorize=False)
+            operator.compute_diagonal_factorization(majorize=True)
+
+        factorize()
+        with wp.ScopedCapture(device=device) as capture:
+            factorize()
+        for scale in (0.5, 2.0):
+            matrix.values.assign(original * scale)
+            factorize()
+            fields = (
+                operator.delassus_diagonal,
+                operator.delassus_rotation,
+                operator.reconstruction_diagonal,
+                operator.reconstruction_rotation,
+            )
+            expected = [field.numpy().copy() for field in fields]
+            for values in expected:
+                test.assertTrue(np.isfinite(values).all())
+            for field in fields:
+                field.fill_(float("nan"))
+            wp.capture_launch(capture.graph)
+            for field, reference in zip(fields, expected, strict=True):
+                np.testing.assert_allclose(field.numpy(), reference, rtol=3e-6, atol=1e-9, equal_nan=False)
 
 
 def _make_mpm_particle_builder(
@@ -1467,6 +2068,27 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 class TestImplicitMPM(unittest.TestCase):
     pass
+
+
+add_function_test(TestImplicitMPM, "test_stress_virtual_work", test_stress_virtual_work, devices=devices)
+add_function_test(TestImplicitMPM, "test_delassus_majorizer", test_delassus_majorizer, devices=devices)
+add_function_test(TestImplicitMPM, "test_coupled_iteration_bound", test_coupled_iteration_bound, devices=devices)
+add_function_test(TestImplicitMPM, "test_reconstruction_factors", test_reconstruction_factors, devices=devices)
+add_function_test(TestImplicitMPM, "test_majorized_rheology_solve", test_majorized_rheology_solve, devices=devices)
+add_function_test(TestImplicitMPM, "test_majorizer_capture", test_majorizer_capture, devices=get_cuda_test_devices())
+add_function_test(
+    TestImplicitMPM,
+    "test_majorized_rheology_capture",
+    test_majorized_rheology_solve,
+    devices=get_cuda_test_devices(),
+    capture=True,
+)
+add_function_test(
+    TestImplicitMPM,
+    "test_assembled_elastic_stiffness",
+    test_assembled_elastic_stiffness,
+    devices=devices,
+)
 
 
 add_function_test(
