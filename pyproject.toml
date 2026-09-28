@@ -87,8 +87,8 @@ examples = [
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
     "Pillow>=11.3.0",
-    "matplotlib>=3.10.0",   # for plotting utilities and diagnostics
-    "networkx>=3.4",        # for articulation and graph coloring plots
+    "matplotlib>=3.5.0",    # for plotting utilities and diagnostics
+    "networkx>=2.6",        # for articulation and graph coloring plots
 ]
 
 # OVRTX real-time ray tracing viewer
