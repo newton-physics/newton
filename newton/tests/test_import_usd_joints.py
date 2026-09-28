@@ -1124,10 +1124,15 @@ def Xform "Articulation" (
         joint1.CreateLocalRot1Attr().Set(joint1_rot1)
         joint1.CreateAxisAttr().Set("Z")
 
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as exc_info:
-            builder.add_usd(stage)
-        self.assertIn("/World/Articulation/Joint1", str(exc_info.exception))
+        for bodies_follow_joint_ordering in (True, False):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                builder = newton.ModelBuilder()
+                with self.assertRaises(ValueError) as exc_info:
+                    builder.add_usd(stage, bodies_follow_joint_ordering=bodies_follow_joint_ordering)
+                self.assertIn("/World/Articulation/Joint1", str(exc_info.exception))
+                # Graph validation happens before deferred bodies, but after eagerly added bodies.
+                self.assertEqual(builder.body_count, 0 if bodies_follow_joint_ordering else 3)
+                self.assertEqual(builder.joint_count, 0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_fixed_root_joint_to_world_is_allowed(self):
