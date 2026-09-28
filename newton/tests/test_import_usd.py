@@ -1277,6 +1277,53 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_filter_pairs_reference_only_colliding_shapes(self):
+        """Generate USD collision filters only for colliding shapes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        bodies = []
+        for body_name in ("Body0", "Body1"):
+            body = UsdGeom.Xform.Define(stage, f"/World/{body_name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            bodies.append(body)
+            for shape_name, collision_enabled in (("Collider", True), ("Visual", False)):
+                shape = UsdGeom.Cube.Define(stage, f"/World/{body_name}/{shape_name}")
+                collision = UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
+                collision.GetCollisionEnabledAttr().Set(collision_enabled)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            enable_self_collisions=False,
+            load_visual_shapes=False,
+        )
+
+        expected_colliding = {
+            builder.shape_label.index("/World/Body0/Collider"),
+            builder.shape_label.index("/World/Body1/Collider"),
+        }
+        colliding = {
+            shape for shape in range(builder.shape_count) if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES
+        }
+        self.assertEqual(colliding, expected_colliding)
+        particle_colliding = {
+            shape for shape in range(builder.shape_count) if builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES
+        }
+        self.assertEqual(particle_colliding, expected_colliding)
+        filter_pairs = set(builder.shape_collision_filter_pairs)
+        self.assertEqual(filter_pairs, {tuple(sorted(colliding))})
+        for pair in filter_pairs:
+            self.assertLessEqual(set(pair), colliding)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_does_not_filter_collisions(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -1309,7 +1356,7 @@ class TestImportUsdJoints(unittest.TestCase):
         """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
         from pxr import Usd
 
-        from newton._src.usd._usd_resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
+        from newton._src.usd._resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
 
         deg2rad = math.pi / 180.0
 

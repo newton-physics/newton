@@ -472,6 +472,7 @@ class ViewerUSD(ViewerBase):
         opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        emissive_color: tuple[float, float, float] | np.ndarray | None = None,
     ):
         """Return a cached UsdPreviewSurface material for the requested appearance."""
         from pxr import Sdf as _Sdf
@@ -483,6 +484,7 @@ class ViewerUSD(ViewerBase):
         opacity_value = self._preview_surface_opacity_value(requested_opacity_value)
         roughness_value = self._material_float(roughness, 0.5)
         metallic_value = self._material_float(metallic, 0.0)
+        emissive_value = self._material_color(emissive_color) if emissive_color is not None else None
         ior_value = self._preview_surface_ior_value(requested_opacity_value)
 
         key = (
@@ -492,6 +494,7 @@ class ViewerUSD(ViewerBase):
             self._material_key_value(opacity_value),
             self._material_key_value(roughness_value),
             self._material_key_value(metallic_value),
+            tuple(self._material_key_value(v) for v in emissive_value) if emissive_value is not None else None,
             self._material_key_value(ior_value) if ior_value is not None else None,
         )
         if key in self._preview_materials:
@@ -510,6 +513,8 @@ class ViewerUSD(ViewerBase):
         surface.CreateInput("opacity", _Sdf.ValueTypeNames.Float).Set(opacity_value)
         surface.CreateInput("opacityMode", _Sdf.ValueTypeNames.Token).Set("transparent")
         surface.CreateInput("opacityThreshold", _Sdf.ValueTypeNames.Float).Set(0.0)
+        if emissive_value is not None:
+            surface.CreateInput("emissiveColor", _Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*emissive_value))
         if ior_value is not None:
             surface.CreateInput("ior", _Sdf.ValueTypeNames.Float).Set(ior_value)
         material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")

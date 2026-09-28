@@ -927,13 +927,13 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.body_com.assign([wp.vec3f(0.1, -0.2, 0.15)])
         solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
-        fk_joint = int(np.flatnonzero(fk.joints_source_id.numpy() == 0)[0])
+        fk_joint = int(np.flatnonzero(fk.data.joints.source_id.numpy() == 0)[0])
         joints = solver._model_kamino.joints
         for fk_values, model_values in (
-            (fk.joints_B_r_Bj, joints.B_r_Bj),
-            (fk.joints_F_r_Fj, joints.F_r_Fj),
-            (fk.joints_X_Bj, joints.X_Bj),
-            (fk.joints_X_Fj, joints.X_Fj),
+            (fk.data.joints.B_r_Bj, joints.B_r_Bj),
+            (fk.data.joints.F_r_Fj, joints.F_r_Fj),
+            (fk.data.joints.X_Bj, joints.X_Bj),
+            (fk.data.joints.X_Fj, joints.X_Fj),
         ):
             np.testing.assert_allclose(fk_values.numpy()[fk_joint], model_values.numpy()[0], atol=1e-6)
 
@@ -954,7 +954,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
         np.testing.assert_allclose(
-            fk.base_q_default.numpy()[0],
+            fk.data.problem.base_q_default.numpy()[0],
             solver._model_kamino.bodies.q_i_0.numpy()[0],
             atol=1e-6,
         )
@@ -976,7 +976,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
 
         np.testing.assert_allclose(
-            fk.base_q_default.numpy()[0],
+            fk.data.problem.base_q_default.numpy()[0],
             np.asarray(new_pose),
             atol=1e-6,
         )
@@ -1012,7 +1012,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
                 solver.notify_model_changed(flag)
 
-                self.assertEqual(fk.joints_act_type.numpy()[0], solver._kamino.JointActuationType.FORCE)
+                self.assertEqual(fk.data.joints.act_type.numpy()[0], solver._kamino.JointActuationType.FORCE)
 
     def test_equivalent_fk_actuation_override_change_is_allowed(self):
         """Raw FK override changes are allowed when effective actuation is unchanged."""
@@ -1029,9 +1029,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
-        fk_joint = int(np.flatnonzero(fk.joints_source_id.numpy() == 0)[0])
+        fk_joint = int(np.flatnonzero(fk.data.joints.source_id.numpy() == 0)[0])
         self.assertNotEqual(
-            fk.joints_act_type.numpy()[fk_joint],
+            fk.data.joints.act_type.numpy()[fk_joint],
             solver._kamino.JointActuationType.PASSIVE,
         )
 
