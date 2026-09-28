@@ -223,7 +223,7 @@ def sdf_box(point: wp.vec3, hx: float, hy: float, hz: float):
     Returns:
         Signed distance [m], negative inside, zero on surface, positive outside.
     """
-    # adapted from https://www.iquilezles.org/www/articles/distfunctions/distfunctions.htm
+    # adapted from https://iquilezles.org/articles/distfunctions/
     qx = abs(point[0]) - hx
     qy = abs(point[1]) - hy
     qz = abs(point[2]) - hz

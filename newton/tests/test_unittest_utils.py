@@ -1,16 +1,68 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import io
 import subprocess
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
-from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult
+from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult, _enable_strict_warnings
 
 NewtonTestCase = unittest_utils.NewtonTestCase
+
+
+class TestStrictWarnings(unittest.TestCase):
+    def test_top_level_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a top-level test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit("unexpected warning", UserWarning, "test_clean.py", 1, module="test_clean")
+
+    def test_nested_test_module_warning_is_an_error(self):
+        """Escalate a warning attributed to a nested test module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "unexpected warning", UserWarning, "test_clean.py", 1, module="kamino.test_clean"
+                )
+
+    def test_known_warning_debt_is_not_an_error(self):
+        """Keep a narrowly matched known warning visible without failing."""
+        with warnings.catch_warnings(record=True) as caught:
+            _enable_strict_warnings()
+
+            warnings.warn_explicit(
+                "Inertia validation corrected 1 bodies. "
+                "Set validate_inertia_detailed=True for detailed per-body warnings.",
+                UserWarning,
+                "test_custom_attributes.py",
+                1,
+                module="test_custom_attributes",
+            )
+
+        self.assertEqual(len(caught), 1)
+
+    def test_known_debt_module_does_not_allow_other_warnings(self):
+        """Escalate unrelated warnings attributed to a known-debt module."""
+        with warnings.catch_warnings():
+            _enable_strict_warnings()
+
+            with self.assertRaises(UserWarning):
+                warnings.warn_explicit(
+                    "different warning",
+                    UserWarning,
+                    "test_custom_attributes.py",
+                    1,
+                    module="test_custom_attributes",
+                )
 
 
 class TestNewtonTestCaseOutputContract(unittest.TestCase):
@@ -18,6 +70,30 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         result = unittest.TestResult()
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
+
+    def test_allowlisted_deprecation_is_replayed_after_validation(self):
+        """Accept and replay an allowlisted in-process deprecation warning."""
+        unittest_utils.wp.init()
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+
+        class EmitsAllowedDeprecation(NewtonTestCase):
+            def test_warning(self):
+                """Emit an allowlisted deprecation warning."""
+                warnings.warn(allowed_message, DeprecationWarning, stacklevel=1)
+
+        stderr = io.StringIO()
+        with (
+            warnings.catch_warnings(),
+            mock.patch.object(unittest_utils, "strict_warnings", True),
+            mock.patch.object(unittest_utils, "allowed_deprecation_warnings", (allowed_prefix,)),
+            contextlib.redirect_stderr(stderr),
+        ):
+            _enable_strict_warnings((allowed_prefix,))
+            result = self._run_test_case(EmitsAllowedDeprecation)
+
+        self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+        self.assertIn(f"DeprecationWarning: {allowed_message}", stderr.getvalue())
 
     def test_unexpected_stdout_fails(self):
         class EmitsOutput(NewtonTestCase):

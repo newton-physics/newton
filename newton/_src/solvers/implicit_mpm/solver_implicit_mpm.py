@@ -3079,7 +3079,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                     temporary_store=self.temporary_store,
+                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
+
+    def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
+        """Prefer row compression for validated CUDA contact-map layouts."""
+        # Compact maps with many inactive partition rows can still favor triplets,
+        # even when Warp packs active-row candidate capacity.
+        return (
+            self.model.device.is_cuda
+            and self.velocity_basis == "Q1"
+            and self.collider_basis in ("S2", "S3")
+            and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()
+        )
 
     def _build_collider_rigidity_operator(
         self,
@@ -4001,9 +4014,9 @@ def _harvest_mpm_proxy_particle_forces_kernel(
     dst_k = collider.collider_particle_ids[vertex_offset + local_k]
 
     f = collider_impulses[i] / dt
-    w_j = query.u
-    w_k = query.v
-    w_i = 1.0 - w_j - w_k
+    w_i = query.u
+    w_j = query.v
+    w_k = 1.0 - w_i - w_j
 
     if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
         proxy_global_i = particle_local_to_proxy_global[dst_i]

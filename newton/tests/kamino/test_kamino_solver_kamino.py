@@ -5,6 +5,8 @@
 
 import time
 import unittest
+from typing import Literal
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -631,6 +633,63 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)
+
+
+class TestSolverKaminoScratchStateReset(unittest.TestCase):
+    """Check the assumption that every solver iteration reinitializes the scratch state."""
+
+    def setUp(self):
+        """Configure the default Warp device for scratch-state tests."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _assert_step_resets_scratch_state(
+        self,
+        dynamics_solver: Literal["padmm", "dvi"],
+        warmstart_mode: Literal["none", "internal", "containers"],
+    ) -> None:
+        """Assert that a single step resets the dynamics solver scratch state before solving."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        basics.build_sphere_on_plane(builder=builder, z_offset=BASE_HEIGHT)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        config = SolverKamino.Config(dynamics_solver=dynamics_solver)
+        if dynamics_solver == "padmm":
+            config.padmm.warmstart_mode = warmstart_mode
+        else:
+            config.dvi.warmstart_mode = warmstart_mode
+        solver = SolverKamino(model, config=config)
+
+        solver_fd = solver._solver_kamino.solver_fd
+        state = solver_fd.data.state
+        recorder = mock.Mock()
+        with (
+            mock.patch.object(state, "reset", wraps=state.reset) as reset_spy,
+            mock.patch.object(solver_fd, "solve", wraps=solver_fd.solve) as solve_spy,
+        ):
+            recorder.attach_mock(reset_spy, "reset")
+            recorder.attach_mock(solve_spy, "solve")
+            solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+
+        # Require the calls to pair up as (reset, solve), so that a reset that goes missing or
+        # drifts after the solve is caught regardless of how many solves a step performs.
+        call_order = [name for name, _, _ in recorder.mock_calls]
+        self.assertTrue(call_order, "the step performed no dynamics solve")
+        self.assertEqual(call_order, ["reset", "solve"] * (len(call_order) // 2))
+
+    def test_padmm_step_resets_scratch_state(self):
+        """Verify PADMM reinitializes its scratch state on both the cold- and warm-start paths."""
+        for warmstart_mode in ("none", "internal"):
+            with self.subTest(warmstart_mode=warmstart_mode):
+                self._assert_step_resets_scratch_state("padmm", warmstart_mode)
+
+    def test_dvi_step_resets_scratch_state(self):
+        """Verify DVI reinitializes its scratch state on both the cold- and warm-start paths."""
+        for warmstart_mode in ("none", "internal"):
+            with self.subTest(warmstart_mode=warmstart_mode):
+                self._assert_step_resets_scratch_state("dvi", warmstart_mode)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):

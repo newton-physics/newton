@@ -495,10 +495,7 @@ class TestDelassusOperator(unittest.TestCase):
             self.assertTrue(is_D_close)
 
     def test_08_delassus_operator_factorize_and_solve_with_sequential_cholesky(self):
-        """
-        Tests the factorization of a Delassus matrix and solving linear
-        systems with randomly generated right-hand-side vectors.
-        """
+        """Factorize a Delassus matrix and solve systems with reproducible right-hand sides."""
         # Model constants
         max_world_contacts = 12
 
@@ -551,12 +548,12 @@ class TestDelassusOperator(unittest.TestCase):
         # Extract Delassus data as numpy arrays
         D_np = extract_delassus(delassus, only_active_dims=True)
 
-        # For each world, generate a random right-hand side vector
+        # For each world, generate a reproducible right-hand side vector
         num_worlds = delassus.num_worlds
         vio_np = delassus.info.vio.numpy()
         v_f_np = np.zeros(shape=(delassus._model_maxdims,), dtype=np.float32)
         for w in range(num_worlds):
-            v_f_w = random_rhs_for_matrix(D_np[w])
+            v_f_w = random_rhs_for_matrix(D_np[w], seed=42 + w)
             v_f_np[vio_np[w] : vio_np[w] + v_f_w.size] = v_f_w
 
         # Construct a warp array for the free-velocity and solution vectors
