@@ -7773,6 +7773,8 @@ def Xform "Articulation" (
 
         # Check friction (mu is dynamicFriction)
         self.assertAlmostEqual(model.shape_material_mu.numpy()[shape_idx], 0.5, places=4)
+        # staticFriction above dynamicFriction is kept as the static coefficient
+        self.assertAlmostEqual(model.shape_material_mu_static.numpy()[shape_idx], 0.6, places=4)
 
         # Check restitution
         self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape_idx], 0.3, places=4)

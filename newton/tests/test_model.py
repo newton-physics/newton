@@ -2222,6 +2222,28 @@ class TestShapeConfigValidation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
+    def test_shape_config_rejects_invalid_mu_static(self):
+        """Reject a static friction coefficient below mu or non-finite."""
+        for mu_static in (0.3, float("nan"), float("inf")):
+            with self.subTest(mu_static=mu_static):
+                cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=mu_static)
+
+                with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= mu"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_material_mu_static_defaults_to_same_as_mu(self):
+        """Unset mu_static is stored as the "same as mu" sentinel and survives replication."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4))
+        builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(mu=0.4, mu_static=0.9))
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, world_count=2)
+        model = scene.finalize()
+
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [0.4, 0.4, 0.4, 0.4])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [-1.0, 0.9, -1.0, 0.9])
+
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
         """Reject non-positive and non-finite target voxel sizes."""
         for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
