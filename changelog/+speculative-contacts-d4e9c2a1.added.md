@@ -1,1 +1,0 @@
-Add opt-in speculative rigid contacts through the `CollisionPipeline(speculative_contact_gap_max=...)` constructor argument and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction, and reject unsupported hydroelastic combinations.

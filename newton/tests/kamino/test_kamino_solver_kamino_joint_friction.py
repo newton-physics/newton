@@ -4,12 +4,15 @@
 """Focused tests for Coulomb joint friction in SolverKamino."""
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton._src.solvers.kamino.config as kamino_config
+from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
+from newton._src.solvers.kamino._src.solvers.dvi.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
@@ -252,6 +255,128 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         self.assertTrue(any("Ignoring joint friction on FREE joint" in record.getMessage() for record in logs.records))
         self.assertEqual(solver._model_kamino.size.sum_of_num_friction_joint_cts, 0)
         self.assertEqual(solver._model_kamino.size.sum_of_num_bounded_joint_cts, 0)
+
+    @mock.patch(
+        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        wraps=make_response_kernel,
+    )
+    def test_compact_schur_friction_spin_down(self, response_kernel):
+        """Preserve analytical friction through compact Schur spin-down and reversals."""
+        self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8)
+
+    @mock.patch(
+        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        wraps=make_response_kernel,
+    )
+    def test_compact_schur_friction_stationarity(self, response_kernel):
+        """Stop relaxed sticking solves at tolerance without weakening friction."""
+        self._check_compact_schur_friction(response_kernel, omega=0.5, max_iterations=32)
+
+    @mock.patch(
+        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_llt_blocked_rcm_solve_kernel",
+        wraps=make_llt_blocked_rcm_solve_kernel,
+    )
+    @mock.patch(
+        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        wraps=make_response_kernel,
+    )
+    def test_compact_schur_reuse_forward(self, response_kernel, solve_kernel):
+        """Preserve analytical friction when reusing a forward-solved RHS."""
+        self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8, joint_counts=(137,))
+        if wp.get_device(test_context.device).is_cuda:
+            self.assertIn(mock.call(32, False), solve_kernel.call_args_list)
+            self.assertIn(mock.call(32, True, False), solve_kernel.call_args_list)
+
+    def _check_compact_schur_friction(self, response_kernel, omega, max_iterations, joint_counts=(137, 9)):
+        """Preserve spin-down, sticking, and reversals across ragged friction strengths."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        joint_count = sum(joint_counts)
+        frictions = np.resize(np.array([0.02, 0.2, 2.0, 20.0]), joint_count)
+        joint_index = 0
+        for count in joint_counts:
+            builder.begin_world()
+            for _ in range(count):
+                body = builder.add_link(
+                    mass=_BODY_MASS,
+                    inertia=np.eye(3).ravel().tolist(),
+                    com=wp.vec3f(_BODY_COM_X, 0.0, 0.0),
+                    lock_inertia=True,
+                )
+                joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Y, friction=float(frictions[joint_index]))
+                joint_index += 1
+                builder.add_articulation([joint])
+            builder.end_world()
+        model = builder.finalize(device=test_context.device)
+        if len(joint_counts) == 1:
+            model.rigid_contact_max = 1
+        model.set_gravity((0.0, 0.0, 0.0))
+        config = SolverKamino.Config(
+            dynamics_solver="dvi",
+            sparse_dynamics=True,
+            sparse_jacobian=True,
+            use_collision_detector=False,
+            use_fk_solver=False,
+            dvi=kamino_config.DVISolverConfig(
+                tolerance=1.0e-6 if omega < 1.0 else 1.0e-5,
+                use_schur_complement=True,
+                bilateral_solver_type="LLTBRCM",
+                max_alternating_iterations=max_iterations,
+                bilateral_solve_interval=max_iterations,
+                inequality_sweeps_per_iteration=2,
+                omega=omega,
+            ),
+        )
+        solver = SolverKamino(model, config)
+        initial = np.resize(np.array([-0.04, 0.008, 0.0, -0.008, 0.04], dtype=np.float32), joint_count)
+        initial *= frictions / 2.0
+        model.joint_qd.assign(initial)
+        state, next_state = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        decrement = DT * frictions / _EFFECTIVE_JOINT_INERTIA
+        for step in range(1, 6):
+            solver.step(state, next_state, control=None, contacts=None, dt=DT)
+            state, next_state = next_state, state
+            expected = np.sign(initial) * np.maximum(np.abs(initial) - step * decrement, 0.0)
+            np.testing.assert_allclose(state.joint_qd.numpy(), expected, atol=3.0e-5, rtol=0.0)
+        np.testing.assert_allclose(state.joint_qd.numpy(), 0.0, atol=1.0e-6)
+
+        control = model.control()
+        expected = np.zeros(joint_count)
+        force_ratios = np.resize(np.array([0.5, 0.9999, 1.0001, 1.5, -1.5]), joint_count)
+        for direction in (1.0, 1.0, -1.0, -1.0, 0.0, 0.0):
+            forces = direction * force_ratios * frictions
+            control.joint_f.assign(forces.astype(np.float32))
+            free_velocity = expected + DT * forces / _EFFECTIVE_JOINT_INERTIA
+            expected = np.sign(free_velocity) * np.maximum(np.abs(free_velocity) - decrement, 0.0)
+            solver.step(state, next_state, control=control, contacts=None, dt=DT)
+            state, next_state = next_state, state
+            np.testing.assert_allclose(state.joint_qd.numpy(), expected, atol=3.0e-5, rtol=0.0)
+            torque = (expected - free_velocity) * _EFFECTIVE_JOINT_INERTIA / DT
+            np.testing.assert_allclose(
+                solver._solver_kamino.data.joints.lambda_f_j.numpy(), torque, atol=1.0e-3, rtol=0.0
+            )
+
+        if wp.get_device(test_context.device).is_cuda:
+            self.assertTrue(response_kernel.called, "Analytical friction checks must exercise tiled responses")
+            iterations = solver._solver_kamino.solver_status.numpy()["iterations"]
+            self.assertTrue(np.all(iterations > 0))
+            self.assertTrue(np.all(iterations < (24 if omega < 1.0 else 16)), msg=str(iterations))
+
+        # Tiny friction bounds must still produce their full sliding torque.
+        model.joint_friction.fill_(1.0e-5)
+        model.joint_qd.fill_(1.0e-3)
+        state, next_state = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        control.joint_f.zero_()
+        for step in range(1, 21):
+            solver.step(state, next_state, control=control, contacts=None, dt=DT)
+            state, next_state = next_state, state
+            expected_velocity = 1.0e-3 - step * DT * 1.0e-5 / _EFFECTIVE_JOINT_INERTIA
+            np.testing.assert_allclose(state.joint_qd.numpy(), expected_velocity, atol=2.0e-8, rtol=0.0)
+            np.testing.assert_allclose(
+                solver._solver_kamino.data.joints.lambda_f_j.numpy(), -1.0e-5, atol=1.0e-8, rtol=0.0
+            )
 
     def test_multiworld_sparse_friction_offsets(self):
         """Place sparse friction rows in their owning world's bounded group."""
