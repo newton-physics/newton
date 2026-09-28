@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,17 +90,30 @@ class TestGenerateApiCopyright(unittest.TestCase):
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
     def test_deprecated_symbols_render_without_values(self):
+        mod_name = "newton_fake_deprecated_api"
+        fake_module = ModuleType(mod_name)
+        fake_module.__all__ = ["PUBLIC_VALUE"]
+        fake_module.PUBLIC_VALUE = 3
+        fake_module.OLD_VALUE_A = -1
+        fake_module.OLD_VALUE_B = -2
+        fake_module.__deprecated_symbols__ = {
+            "OLD_VALUE_A": "Do not rely on this value.",
+            "OLD_VALUE_B": "Do not rely on this value.",
+        }
+
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             with (
+                mock.patch.dict(sys.modules, {mod_name: fake_module}),
                 mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
                 mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
             ):
-                generate_api.write_module_page("newton.geometry", api_toctree_modules=set())
+                generate_api.write_module_page(mod_name, api_toctree_modules=set())
 
-            page = (output_dir / "newton_geometry.rst").read_text(encoding="utf-8")
-            self.assertIn("MATCH_BROKEN", page)
-            self.assertIn("MATCH_NOT_FOUND", page)
+            page = (output_dir / f"{mod_name}.rst").read_text(encoding="utf-8")
+            self.assertIn("PUBLIC_VALUE", page)
+            self.assertIn("OLD_VALUE_A", page)
+            self.assertIn("OLD_VALUE_B", page)
             self.assertIn("Do not rely on this value", page)
             self.assertNotIn("``-1``", page)
             self.assertNotIn("``-2``", page)
