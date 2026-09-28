@@ -5,9 +5,10 @@
 
 Currently, this script mainly checks that the examples can run. When the test
 runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
-treat deprecation warnings as failures so examples do not regress onto deprecated
-APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
-``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
+treat non-allowlisted deprecation warnings as failures so examples do not regress
+onto deprecated APIs; otherwise deprecations are non-fatal. (The broader newton.*
+escalation of ``--strict-warnings`` applies to the in-process tests, not example
+subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -15,19 +16,25 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import call, create_autospec
+from unittest import mock
+from unittest.mock import call, create_autospec, patch
 
+import numpy as np
 import warp as wp
 
 import newton.tests.unittest_utils
+from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     NewtonTestCase,
@@ -36,6 +43,7 @@ from newton.tests.unittest_utils import (
     get_test_devices,
     sanitize_identifier,
 )
+from newton.viewer import ViewerNull
 
 _HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.util.find_spec("warp_nn") is not None
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
@@ -90,6 +98,10 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"^.*\n"
     r")+"
     r"^\d+ warnings? generated\.\n?"
+)
+_KAMINO_NON_FLOATING_ROOT_WARNING_RE = (
+    r"(?m)^.*Model has articulations whose root is not a free joint attached to the world, "
+    r"disabling floating base resets for those worlds\..*\n?"
 )
 _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
     r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
@@ -191,13 +203,9 @@ def add_example_test(
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
         # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
         # environment cannot turn a lenient run strict; govern the policy solely
-        # through the -W flag below.
+        # through the -W flags below.
         env_vars.pop("PYTHONWARNINGS", None)
-
-        # Escalate deprecations from interpreter startup for strict runs.
-        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
-        # so this governs instead of the helper's lenient "default" filter.
-        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
+        warning_args = newton.tests.unittest_utils.get_strict_warning_args() if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -259,7 +267,10 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
-            _register_example_allow_output_regexes(test, is_cuda=is_cuda)
+            _register_example_allow_output_regexes(
+                test,
+                is_cuda=is_cuda,
+            )
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -298,13 +309,102 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
-def _register_example_allow_output_regexes(test: NewtonTestCase, *, is_cuda: bool) -> None:
+def _register_example_allow_output_regexes(
+    test: NewtonTestCase,
+    *,
+    is_cuda: bool,
+) -> None:
     _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
     if not is_cuda:
         test.allowOutputRegex(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, stream="stderr")
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def _run_example_with_stderr(self, stderr: str, allowed_prefix: str) -> unittest.TestResult:
+        process_result = subprocess.CompletedProcess(
+            args=[sys.executable, "-m", "newton.examples.basic.example_basic_pendulum"],
+            returncode=0,
+            stdout="",
+            stderr=stderr,
+        )
+
+        class ExampleWithAllowedDeprecation(NewtonTestCase):
+            pass
+
+        add_example_test(
+            ExampleWithAllowedDeprecation,
+            name="basic.example_basic_pendulum",
+            use_viewer=True,
+        )
+
+        with (
+            mock.patch.object(subprocess, "run", return_value=process_result),
+            mock.patch.object(newton.tests.unittest_utils, "strict_warnings", True),
+            mock.patch.object(
+                newton.tests.unittest_utils,
+                "allowed_deprecation_warnings",
+                (allowed_prefix,),
+            ),
+        ):
+            result = unittest.TestResult()
+            unittest.defaultTestLoader.loadTestsFromTestCase(ExampleWithAllowedDeprecation).run(result)
+
+        return result
+
+    def test_allowlisted_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted by an example subprocess."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        allowed_message = f"{allowed_prefix}; use dependency.new_api instead"
+        stderr = (
+            f"{__file__}:1: DeprecationWarning: {allowed_message}\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+        )
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
+    def test_allowlisted_warp_deprecation_from_example_subprocess_is_allowed(self):
+        """Allow an acknowledged deprecation emitted in Warp's log format."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = f"Warp DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+        self.assertEqual(output.getvalue(), stderr)
+
+    def test_allowlisted_deprecation_does_not_hide_other_example_stderr(self):
+        """Reject unrelated stderr following an acknowledged deprecation."""
+        allowed_prefix = "dependency.old_api is deprecated"
+        stderr = (
+            f"{__file__}:1: DeprecationWarning: {allowed_prefix}; use dependency.new_api instead\n"
+            "  # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n"
+            "unexpected stderr\n"
+        )
+
+        result = self._run_example_with_stderr(stderr, allowed_prefix)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("Unexpected stderr:\nunexpected stderr", result.failures[0][1])
+        self.assertNotIn(allowed_prefix, result.failures[0][1])
+
+    def test_unlisted_example_deprecations_remain_failures(self):
+        """Reject a deprecation record whose message does not match the allowlist."""
+        stderr = "<string>:1: DeprecationWarning: unexpected deprecation\n"
+        result = self._run_example_with_stderr(stderr, "dependency.old_api is deprecated")
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn(f"Unexpected stderr:\n{stderr.rstrip()}", result.failures[0][1])
+
     def test_warp_cuda_unavailable_output_is_registered_only_for_cpu(self):
         """Register CUDA driver initialization diagnostics only for CPU examples."""
         cpu_test = create_autospec(NewtonTestCase, instance=True)
@@ -371,6 +471,14 @@ def add_basic_example_test(**kwargs):
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+add_basic_example_test(
+    name="basic.example_basic_pendulum",
+    devices=cuda_test_devices,
+    test_options={"solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+)
 
 add_basic_example_test(
     name="basic.example_recording",
@@ -413,6 +521,21 @@ add_basic_example_test(
     test_options={"solver": "vbd"},
     test_suffix="vbd",
 )
+add_basic_example_test(
+    name="basic.example_basic_urdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200, "solver": "kamino", "world-count": 4},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_basic_example_test(
+    name="basic.example_basic_joints",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
+)
 
 for mimic_solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd"):
     add_basic_example_test(
@@ -430,6 +553,22 @@ add_basic_example_test(
     test_options={"num-frames": 150, "solver": "xpbd"},
     test_suffix="xpbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "kamino"},
+    test_suffix="kamino",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+
+add_basic_example_test(
+    name="basic.example_basic_heightfield",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino"},
+    test_suffix="kamino",
 )
 add_basic_example_test(
     name="basic.example_basic_shapes",
@@ -498,6 +637,7 @@ add_basic_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 50},
+    allow_output_regexes=[(_KAMINO_NON_FLOATING_ROOT_WARNING_RE, "stderr")],
 )
 
 
@@ -663,6 +803,48 @@ add_example_test(
 
 class TestRobotExamples(unittest.TestCase):
     pass
+
+
+def _test_robot_cartpole_capture_matches_eager(test, device):
+    if not USD_AVAILABLE:
+        test.skipTest("Requires USD")
+
+    args = SimpleNamespace(world_count=1, solver="kamino")
+    with wp.ScopedDevice(device):
+        with patch.object(RobotCartpoleExample, "capture", lambda example: setattr(example, "graph", None)):
+            eager = RobotCartpoleExample(ViewerNull(num_frames=2), args)
+        eager_frames = []
+        for _ in range(2):
+            eager.step()
+            eager_frames.append((eager.state_0.body_q.numpy(), eager.state_0.body_qd.numpy()))
+
+        captured = RobotCartpoleExample(ViewerNull(num_frames=2), args)
+        for frame, (eager_q, eager_qd) in enumerate(eager_frames):
+            captured.step()
+            wp.synchronize_device(device)
+            np.testing.assert_allclose(
+                captured.state_0.body_q.numpy(),
+                eager_q,
+                rtol=1.0e-5,
+                atol=1.0e-6,
+                err_msg=f"body positions differ after frame {frame}",
+            )
+            np.testing.assert_allclose(
+                captured.state_0.body_qd.numpy(),
+                eager_qd,
+                rtol=1.0e-5,
+                atol=1.0e-6,
+                err_msg=f"body velocities differ after frame {frame}",
+            )
+
+
+add_function_test(
+    TestRobotExamples,
+    "test_robot_cartpole_capture_matches_eager",
+    _test_robot_cartpole_capture_matches_eager,
+    devices=cuda_test_devices,
+    check_output=False,
+)
 
 
 add_example_test(
@@ -888,6 +1070,14 @@ add_example_test(
     use_viewer=True,
 )
 add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_cartpole",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
+add_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=cuda_test_devices,
@@ -988,6 +1178,14 @@ add_example_test(
     test_options={"num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
 )
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 160, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
+)
 
 add_example_test(
     TestSensorExamples,
@@ -1003,6 +1201,14 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
     use_viewer=True,
+)
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_imu",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 
 

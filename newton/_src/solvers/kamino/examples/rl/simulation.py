@@ -18,7 +18,6 @@ import os
 import threading
 
 # Thirdparty
-import torch  # noqa: TID253
 import warp as wp
 
 # Kamino
@@ -36,6 +35,17 @@ from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.viewer import ViewerGL
+
+
+def _require_torch():
+    """Import Torch only for examples that request the Torch tensor interface."""
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - exercised without the optional dependency
+        raise ImportError(
+            "The Torch tensor interface requires PyTorch. Install Newton with a `torch-cu12` or `torch-cu13` extra."
+        ) from exc
+    return torch
 
 
 class SimulatorFromNewton:
@@ -227,6 +237,8 @@ class RigidBodySim:
         scene_callback: Optional callable ``fn(robot_builder)`` that adds
             extra shapes (e.g. pushable objects) to the robot builder
             before multi-world duplication.
+        use_torch: Create the existing zero-copy Torch tensor interface.
+            Disable this for Warp-native examples that do not depend on PyTorch.
     """
 
     def __init__(
@@ -250,11 +262,13 @@ class RigidBodySim:
         collapse_fixed_joints: bool = False,
         terrain_fn: callable | None = None,
         scene_callback: callable | None = None,
+        use_torch: bool = True,
     ):
         # ----- Device setup -----
         self._device = wp.get_device(device)
         self._torch_device: str = "cuda" if self._device.is_cuda else "cpu"
         self._use_cuda_graph = use_cuda_graph
+        self._use_torch = use_torch
         self._sim_dt = sim_dt
 
         # ----- Video recording -----
@@ -339,8 +353,10 @@ class RigidBodySim:
             # Re-initialize state from the offset initial poses
             self.sim.reset()
 
-        # ----- Wire RL interface (zero-copy tensors) -----
-        self._make_rl_interface()
+        # ----- Wire RL interface -----
+        self._make_warp_interface()
+        if self._use_torch:
+            self._make_torch_interface()
 
         # ----- Extract metadata -----
         self._extract_metadata()
@@ -427,8 +443,9 @@ class RigidBodySim:
     # RL interface wiring
     # ------------------------------------------------------------------
 
-    def _make_rl_interface(self):
+    def _make_torch_interface(self):
         """Create zero-copy PyTorch views of simulator state, control and contact arrays."""
+        torch = _require_torch()
         nw = self.sim.model.size.num_worlds
         njc = self.sim.model.size.max_of_num_joint_coords
         njd = self.sim.model.size.max_of_num_joint_dofs
@@ -452,28 +469,14 @@ class RigidBodySim:
         self._dq_j_ref = wp.to_torch(self.sim.control.dq_j_ref).reshape(nw, njd)
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
 
-        # World mask for selective resets
-        self._world_mask_wp = wp.zeros((nw,), dtype=wp.bool, device=self._device)
+        # Torch views of reset state allocated by the Warp interface
         self._world_mask = wp.to_torch(self._world_mask_wp)
-
-        # Reset buffers
-        self._reset_base_q_wp = wp.zeros(nw, dtype=wp.transformf, device=self._device)
-        self._reset_base_u_wp = wp.zeros(nw, dtype=wp.spatial_vectorf, device=self._device)
-        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=wp.float32, device=self._device)
-        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=wp.float32, device=self._device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)
         self._reset_q_j = wp.to_torch(self._reset_q_j_wp).reshape(nw, njc)
         self._reset_dq_j = wp.to_torch(self._reset_dq_j_wp).reshape(nw, njd)
 
-        # Reset flags
-        self._update_q_j = False
-        self._update_dq_j = False
-        self._update_base_q = False
-        self._update_base_u = False
-
-        # Contact aggregation
-        self._contact_aggregation = ContactAggregation(model=self.sim.model, contacts=self.sim.contacts)
+        # Torch views of contact state allocated by the Warp interface
         self._contact_flags = wp.to_torch(self._contact_aggregation.body_contact_flag).reshape(nw, nb)
         self._ground_contact_flags = wp.to_torch(self._contact_aggregation.body_static_contact_flag).reshape(nw, nb)
         self._net_contact_forces = wp.to_torch(self._contact_aggregation.body_net_force).reshape(nw, nb, 3)
@@ -491,6 +494,52 @@ class RigidBodySim:
         # Body masses (zero-copy view)
         self._mass = wp.to_torch(self.sim.model.bodies.m_i).reshape(nw, nb)
 
+    def _make_warp_interface(self):
+        """Create Warp views of simulator state, control, resets, and contacts."""
+        nw = self.sim.model.size.num_worlds
+        njc = self.sim.model.size.max_of_num_joint_coords
+        njd = self.sim.model.size.max_of_num_joint_dofs
+        nb = self.sim.model.size.max_of_num_bodies
+
+        assert self.sim.model.size.sum_of_num_joint_coords == nw * njc
+        assert self.sim.model.size.sum_of_num_joint_dofs == nw * njd
+
+        self._q_j = self.sim.state.q_j.reshape((nw, njc))
+        self._dq_j = self.sim.state.dq_j.reshape((nw, njd))
+        self._q_i = self.sim.state.q_i.view(wp.float32).reshape((nw, nb, 7))
+        self._u_i = self.sim.state.u_i.view(wp.float32).reshape((nw, nb, 6))
+
+        self._q_j_ref = self.sim.control.q_j_ref.reshape((nw, njc))
+        self._dq_j_ref = self.sim.control.dq_j_ref.reshape((nw, njd))
+        self._tau_j_ref = self.sim.control.tau_j_ref.reshape((nw, njd))
+
+        self._world_mask_wp = wp.zeros((nw,), dtype=wp.bool, device=self._device)
+        self._world_mask = self._world_mask_wp
+        self._reset_base_q_wp = wp.zeros(nw, dtype=wp.transformf, device=self._device)
+        self._reset_base_u_wp = wp.zeros(nw, dtype=wp.spatial_vectorf, device=self._device)
+        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=wp.float32, device=self._device)
+        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=wp.float32, device=self._device)
+        self._reset_base_q = self._reset_base_q_wp.view(wp.float32).reshape((nw, 7))
+        self._reset_base_u = self._reset_base_u_wp.view(wp.float32).reshape((nw, 6))
+        self._reset_q_j = self._reset_q_j_wp.reshape((nw, njc))
+        self._reset_dq_j = self._reset_dq_j_wp.reshape((nw, njd))
+
+        self._update_q_j = False
+        self._update_dq_j = False
+        self._update_base_q = False
+        self._update_base_u = False
+
+        self._contact_aggregation = ContactAggregation(model=self.sim.model, contacts=self.sim.contacts)
+        self._contact_flags = self._contact_aggregation.body_contact_flag.reshape((nw, nb))
+        self._ground_contact_flags = self._contact_aggregation.body_static_contact_flag.reshape((nw, nb))
+        self._net_contact_forces = self._contact_aggregation.body_net_force.view(wp.float32).reshape((nw, nb, 3))
+        self._body_pair_contact_flag = None
+
+        self._default_q_j = wp.clone(self._q_j)
+        self._env_origins = wp.zeros((nw, 3), dtype=wp.float32, device=self._device)
+        self._w_e_i = self.sim.solver.data.bodies.w_e_i.view(wp.float32).reshape((nw, nb, 6))
+        self._mass = self.sim.model.bodies.m_i.reshape((nw, nb))
+
     # ------------------------------------------------------------------
     # Metadata extraction
     # ------------------------------------------------------------------
@@ -502,11 +551,11 @@ class RigidBodySim:
 
         # Read per-joint metadata from the Kamino model (first world only)
         joint_labels = [lbl.rsplit("/", 1)[-1] for lbl in self.sim.model.joints.label[:max_joints]]
-        joint_num_coords = wp.to_torch(self.sim.model.joints.num_coords)[:max_joints].tolist()
-        joint_num_dofs = wp.to_torch(self.sim.model.joints.num_dofs)[:max_joints].tolist()
-        joint_act_type = wp.to_torch(self.sim.model.joints.act_type)[:max_joints].tolist()
-        joint_q_j_min = wp.to_torch(self.sim.model.joints.q_j_min)
-        joint_q_j_max = wp.to_torch(self.sim.model.joints.q_j_max)
+        joint_num_coords = self.sim.model.joints.num_coords.numpy()[:max_joints].tolist()
+        joint_num_dofs = self.sim.model.joints.num_dofs.numpy()[:max_joints].tolist()
+        joint_act_type = self.sim.model.joints.act_type.numpy()[:max_joints].tolist()
+        joint_q_j_min = self.sim.model.joints.q_j_min.numpy()
+        joint_q_j_max = self.sim.model.joints.q_j_max.numpy()
 
         # Joint names and actuated indices
         self._joint_names: list[str] = []
@@ -528,12 +577,21 @@ class RigidBodySim:
             coord_offset += ncoords
             dof_offset += ndofs
 
-        self._actuated_coord_indices_tensor = torch.tensor(
-            self._actuated_coord_indices, device=self._torch_device, dtype=torch.long
-        )
-        self._actuated_dof_indices_tensor = torch.tensor(
-            self._actuated_dof_indices, device=self._torch_device, dtype=torch.long
-        )
+        if self._use_torch:
+            torch = _require_torch()
+            self._actuated_coord_indices_tensor = torch.tensor(
+                self._actuated_coord_indices, device=self._torch_device, dtype=torch.long
+            )
+            self._actuated_dof_indices_tensor = torch.tensor(
+                self._actuated_dof_indices, device=self._torch_device, dtype=torch.long
+            )
+        else:
+            self._actuated_coord_indices_tensor = wp.array(
+                self._actuated_coord_indices, device=self._device, dtype=wp.int32
+            )
+            self._actuated_dof_indices_tensor = wp.array(
+                self._actuated_dof_indices, device=self._device, dtype=wp.int32
+            )
 
         msg.info(f"Actuated joints ({self.num_actuated}): {self._actuated_joint_names}")
 
@@ -792,6 +850,8 @@ class RigidBodySim:
             dof_velocities: Joint velocities ``(len(env_ids), num_joint_dofs)``.
             env_ids: Which worlds to reset.  ``None`` resets all.
         """
+        if not self._use_torch:
+            raise RuntimeError("set_dof requires RigidBodySim(use_torch=True)")
         if env_ids is None:
             self._world_mask.fill_(1)
             ids = slice(None)
@@ -825,6 +885,8 @@ class RigidBodySim:
             root_angular_velocities: Root angular velocities ``(len(env_ids), 3)``.
             env_ids: Which worlds to reset.  ``None`` resets all.
         """
+        if not self._use_torch:
+            raise RuntimeError("set_root requires RigidBodySim(use_torch=True)")
         if env_ids is None:
             self._world_mask.fill_(1)
             ids = slice(None)
@@ -929,7 +991,10 @@ class RigidBodySim:
         a_idx = self.find_body_index(body_a_name)
         b_idx = self.find_body_index(body_b_name)
         self._contact_aggregation.set_body_pair_filter(a_idx, b_idx)
-        self._body_pair_contact_flag = wp.to_torch(self._contact_aggregation.body_pair_contact_flag)
+        body_pair_contact_flag = self._contact_aggregation.body_pair_contact_flag
+        self._body_pair_contact_flag = (
+            wp.to_torch(body_pair_contact_flag) if self._use_torch else body_pair_contact_flag
+        )
 
     def compute_body_pair_contacts(self) -> None:
         """Run body-pair contact detection (call after physics step)."""
