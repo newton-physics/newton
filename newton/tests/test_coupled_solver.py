@@ -1106,6 +1106,90 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.model = builder.finalize(device="cpu")
 
+    def test_compacted_vbd_view_remaps_same_entry_attachments(self):
+        """Compact native attachments only when both endpoints belong to the VBD entry."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        external_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        owned_particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        builder.add_attachment_body_particle(body_a, owned_particle)
+        builder.add_attachment_body_particle(body_b, external_particle)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "other",
+                    _StepCountingCopySolver,
+                    particles=(external_particle,),
+                ),
+                SolverCoupled.Entry(
+                    "vbd",
+                    lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
+                    bodies=(body_a, body_b),
+                    particles=(owned_particle,),
+                ),
+            ),
+        )
+        view = coupled.view("vbd")
+
+        # The view compacts bodies but keeps every particle visible, so the retained row pairs a
+        # view-local body index with the unchanged global particle index.
+        self.assertEqual(view.attachment_body_particle_count, 1)
+        np.testing.assert_array_equal(view.attachment_body_particle_body.numpy(), [0])
+        np.testing.assert_array_equal(view.attachment_body_particle_particle.numpy(), [owned_particle])
+
+    def test_noncompact_views_hide_cross_entry_attachments(self):
+        """Filter attachment ownership even when heterogeneous worlds prevent compaction."""
+        world = newton.ModelBuilder()
+        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = world.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
+        world.add_attachment_body_particle(body, particle)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(world)
+        builder.add_world(world)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        body_start = model.body_world_start.numpy()
+        particle_start = model.particle_world_start.numpy()
+
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "world0",
+                    _StepCountingCopySolver,
+                    bodies=(int(body_start[0]),),
+                    particles=(int(particle_start[0]),),
+                ),
+                SolverCoupled.Entry(
+                    "world1",
+                    _StepCountingCopySolver,
+                    bodies=(int(body_start[1]),),
+                    particles=(int(particle_start[1]),),
+                ),
+            ),
+        )
+
+        for world_index, name in enumerate(("world0", "world1")):
+            view = coupled.view(name)
+            self.assertEqual(view.body_count, model.body_count)
+            self.assertEqual(view.attachment_body_particle_count, 1)
+            np.testing.assert_array_equal(
+                view.attachment_body_particle_body.numpy(),
+                [body_start[world_index]],
+            )
+            np.testing.assert_array_equal(
+                view.attachment_body_particle_particle.numpy(),
+                [particle_start[world_index]],
+            )
+
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
             SolverCoupled(
