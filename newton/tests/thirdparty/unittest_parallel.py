@@ -68,12 +68,47 @@ except ImportError:
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
-# Add warning-clean test modules incrementally. Eventually this should cover
-# the entire test_* surface and be replaced by a single test_.* filter.
-_STRICT_WARNING_TEST_MODULES = ("test_actuators",)
+_TEST_MODULE_PREFIX = r"(?:.*\.)?"
+_STRICT_WARNING_TEST_MODULE = rf"{_TEST_MODULE_PREFIX}test_.*$"
+
+# Keep each exception narrow so warning-cleanup PRs can remove debt without
+# leaving an entire test module permissive.
+_KNOWN_WARNING_DEBT = (
+    {
+        "message": (
+            r"Inertia validation corrected \d+ bodies\. Set validate_inertia_detailed=True for detailed per-body "
+            r"warnings\."
+        ),
+        "category": UserWarning,
+        "module": (
+            rf"{_TEST_MODULE_PREFIX}"
+            r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
+            r"test_controllers_joint_selection|test_controllers_operational_space|test_convex_support|"
+            r"test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
+            r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
+            r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
+        ),
+    },
+)
 
 
-def _enable_strict_warnings():
+def _read_deprecation_allowlist(path):
+    """Read literal deprecation-message prefixes from a line-oriented file."""
+    with open(path, encoding="utf-8") as allowlist_file:
+        entries = []
+        for line_number, raw_line in enumerate(allowlist_file, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                raise ValueError(
+                    f"line {line_number} contains ':'; use a unique message prefix ending before the colon"
+                )
+            entries.append(line)
+        return tuple(entries)
+
+
+def _enable_strict_warnings(allowed_deprecation_warnings=()):
     """Escalate actionable and caller-attributed cleaned-test warnings to errors.
 
     Installed before discovery and in each worker initializer so import-time
@@ -81,8 +116,11 @@ def _enable_strict_warnings():
     """
     warnings.filterwarnings("error", category=DeprecationWarning)
     warnings.filterwarnings("error", module=r"newton(\.|$)")
-    for module in _STRICT_WARNING_TEST_MODULES:
-        warnings.filterwarnings("error", module=rf"{module}$")
+    warnings.filterwarnings("error", module=_STRICT_WARNING_TEST_MODULE)
+    for warning_filter in _KNOWN_WARNING_DEBT:
+        warnings.filterwarnings("default", **warning_filter)
+    for message in allowed_deprecation_warnings:
+        warnings.filterwarnings("default", message=re.escape(message), category=DeprecationWarning)
 
 
 def main(argv=None):
@@ -140,9 +178,15 @@ def main(argv=None):
         "--strict-warnings",
         action="store_true",
         default=False,
-        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
-        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
-        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
+        help="Treat all non-allowlisted DeprecationWarnings and warnings attributed to newton.* or test_* modules "
+        "as errors, except narrowly tracked known debt. Off by default so verifying an installation does not fail "
+        "on warnings the user cannot act on; enabled in CI to surface warning debt.",
+    )  # NVIDIA Modification
+    parser.add_argument(
+        "--deprecation-allowlist",
+        metavar="FILE",
+        help="Keep listed DeprecationWarning message prefixes non-fatal under --strict-warnings. "
+        "The file accepts one literal prefix without ':' per line, blank lines, and comments beginning with '#'.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -227,6 +271,14 @@ def main(argv=None):
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
+    if args.deprecation_allowlist and not args.strict_warnings:
+        parser.error("--deprecation-allowlist requires --strict-warnings")
+    try:
+        args.allowed_deprecation_warnings = (
+            _read_deprecation_allowlist(args.deprecation_allowlist) if args.deprecation_allowlist else ()
+        )
+    except (OSError, ValueError) as error:
+        parser.error(f"cannot read --deprecation-allowlist: {error}")
 
     if args.coverage_branch:
         args.coverage = args.coverage_branch
@@ -258,7 +310,7 @@ def main(argv=None):
         # Apply before discovery so import-time warnings are caught; also covers
         # the serial-fallback path, which runs here.
         if args.strict_warnings:
-            _enable_strict_warnings()
+            _enable_strict_warnings(args.allowed_deprecation_warnings)
 
         # Discover tests
         with _coverage(args, temp_dir):
@@ -575,8 +627,9 @@ class ParallelTestManager:
         # Filters are applied earlier (pre-discovery and in the worker
         # initializer); re-applying here is idempotent.
         newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        newton.tests.unittest_utils.allowed_deprecation_warnings = self.args.allowed_deprecation_warnings
         if self.args.strict_warnings:
-            _enable_strict_warnings()
+            _enable_strict_warnings(self.args.allowed_deprecation_warnings)
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
@@ -690,7 +743,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     # Apply before the worker imports any test module (suites are imported on
     # unpickle, before run_tests).
     if args.strict_warnings:
-        _enable_strict_warnings()
+        _enable_strict_warnings(args.allowed_deprecation_warnings)
 
     with lock:
         shared_index.value += 1
