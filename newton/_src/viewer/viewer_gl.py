@@ -910,18 +910,20 @@ class ViewerGL(ViewerBase):
             self.picking.world_offsets = self.world_offsets
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """
         Set the camera position, pitch, and yaw.
 
         Args:
-            pos: Camera position [m].
-            pitch: Camera pitch angle [deg].
-            yaw: Camera yaw angle [deg].
+            pos: The camera position [m].
+            pitch: The camera pitch [deg]. If None, the current pitch is kept.
+            yaw: The camera yaw [deg]. If None, the current yaw is kept.
         """
         self.camera.pos = self.camera._as_vec3(pos)
-        self.camera.pitch = max(min(pitch, 89.0), -89.0)
-        self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
+        if pitch is not None:
+            self.camera.pitch = max(min(pitch, 89.0), -89.0)
+        if yaw is not None:
+            self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
         self.camera.sync_pivot_to_view()
 
     @override

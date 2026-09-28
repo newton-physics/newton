@@ -476,6 +476,8 @@ class ViewerViser(ViewerBase):
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
+        self._camera_pitch = Camera.DEFAULT_PITCH
+        self._camera_yaw = Camera.DEFAULT_YAW
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
@@ -1583,6 +1585,8 @@ class ViewerViser(ViewerBase):
         """Reset to the same initial pose and orbit pivot as ViewerGL."""
         self._camera_up_axis = int(up_axis)
         position = np.asarray(Camera.get_default_position(up_axis), dtype=np.float64)
+        self._camera_pitch = Camera.DEFAULT_PITCH
+        self._camera_yaw = Camera.DEFAULT_YAW
         front, up_direction = self._compute_camera_front_up(Camera.DEFAULT_PITCH, Camera.DEFAULT_YAW)
         look_at = position + front * Camera.DEFAULT_PIVOT_DISTANCE
         self._set_camera_request(position, look_at, up_direction, fov=Camera.DEFAULT_FOV)
@@ -1655,17 +1659,21 @@ class ViewerViser(ViewerBase):
                 client.camera.fov = fov
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set camera position and orientation for connected Viser clients.
 
         The requested view is also cached so that newly connected clients receive
         the same camera setup as soon as they report camera state.
 
         Args:
-            pos: Requested camera position in meters.
-            pitch: Requested camera pitch angle in degrees.
-            yaw: Requested camera yaw angle in degrees.
+            pos: Requested camera position [m].
+            pitch: Requested camera pitch angle [deg]. If None, the current pitch is kept.
+            yaw: Requested camera yaw angle [deg]. If None, the current yaw is kept.
         """
+        pitch = self._camera_pitch if pitch is None else float(pitch)
+        yaw = self._camera_yaw if yaw is None else float(yaw)
+        self._camera_pitch = pitch
+        self._camera_yaw = yaw
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch, yaw)
         if self._camera_request is None:
@@ -1683,18 +1691,25 @@ class ViewerViser(ViewerBase):
         """Set the camera position, orbit target, and optional field of view.
 
         Args:
-            pos: Camera position in meters.
-            target: Orbit target in meters.
-            fov: Optional vertical field of view in degrees.
+            pos: Camera position [m].
+            target: Orbit target [m].
+            fov: Optional vertical field of view [deg].
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
         if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
             raise ValueError("Camera position and target must be finite")
-        if np.linalg.norm(look_at - position) <= 1.0e-12:
+        direction = look_at - position
+        direction_norm = float(np.linalg.norm(direction))
+        if direction_norm <= 1.0e-12:
             super().set_camera_look_at(pos, target, fov)
             return
 
+        # Track the equivalent angles so later set_camera() calls that omit
+        # pitch or yaw keep this orientation.
+        self._camera_pitch, self._camera_yaw = self._camera_pitch_yaw_from_direction(
+            direction / direction_norm, self._get_camera_up_axis()
+        )
         _, up_direction = self._compute_camera_front_up(0.0, 0.0)
         self._set_camera_request(position, look_at, up_direction, fov=fov)
 

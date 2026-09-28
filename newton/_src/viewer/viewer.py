@@ -835,13 +835,13 @@ class ViewerBase(ABC):
             raise ValueError("camera_speed must be finite and nonnegative")
         self._camera_speed = value
 
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set the camera position and orientation.
 
         Args:
-            pos: Camera position [m].
-            pitch: Camera pitch angle [deg].
-            yaw: Camera yaw angle [deg].
+            pos: The position of the camera [m].
+            pitch: The pitch of the camera [deg]. If None, the current pitch is kept.
+            yaw: The yaw of the camera [deg]. If None, the current yaw is kept.
         """
         return
 
@@ -867,8 +867,13 @@ class ViewerBase(ABC):
             self.set_camera(pos, pitch=0.0, yaw=0.0)
             return
 
-        direction /= direction_norm
         up_axis = int(self.model.up_axis) if self.model is not None else 2
+        pitch, yaw = self._camera_pitch_yaw_from_direction(direction / direction_norm, up_axis)
+        self.set_camera(pos, pitch=pitch, yaw=yaw)
+
+    @staticmethod
+    def _camera_pitch_yaw_from_direction(direction: np.ndarray, up_axis: int) -> tuple[float, float]:
+        """Convert a unit view direction to camera pitch and yaw angles [deg]."""
         if up_axis == 0:
             pitch = math.degrees(math.asin(float(np.clip(direction[0], -1.0, 1.0))))
             yaw = math.degrees(math.atan2(float(direction[2]), float(direction[1])))
@@ -878,7 +883,7 @@ class ViewerBase(ABC):
         else:
             pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
             yaw = math.degrees(math.atan2(float(direction[2]), float(direction[0])))
-        self.set_camera(pos, pitch=pitch, yaw=yaw)
+        return pitch, yaw
 
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
@@ -1988,6 +1993,7 @@ class ViewerBase(ABC):
 
         The GL viewer renders these with a dedicated arrow shader that draws
         a screen-space quad line body plus a triangular arrowhead per segment.
+        The RTX viewer renders cylinder shafts with cone heads in world space.
         Other backends fall back to :meth:`log_lines`.
 
         Args:
@@ -1995,9 +2001,9 @@ class ViewerBase(ABC):
             starts: Optional arrow start points as a Warp vec3 array.
             ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
             colors: Per-arrow colors as a Warp array, or a single RGB triplet.
-            width: Reserved for future use (world-space line width).
-                Currently ignored; arrow size is set in screen-space pixels
-                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            width: Shaft radius [m] in the RTX viewer. Ignored by the GL viewer,
+                where arrow size is set in screen-space pixels via
+                ``RendererGL.arrow_scale``.
             hidden: Whether the arrow batch should be hidden.
         """
         self.log_lines(self._qualify(name), starts, ends, colors, width=width, hidden=hidden)
@@ -2295,7 +2301,8 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        geometry_hash = hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        source_hash = geo_src._get_render_hash() if isinstance(geo_src, newton.Mesh) else geo_src
+        geometry_hash = hash((int(geo_type), source_hash, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
         if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
             geometry_hash = hash((geometry_hash, geo_src.texture_transform))
         return geometry_hash
