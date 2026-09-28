@@ -11896,9 +11896,10 @@ class ModelBuilder:
             joint_articulation = np.asarray(self.joint_articulation)
             joint_parent = np.asarray(self.joint_parent)
             joint_child = np.asarray(self.joint_child)
+            body_count = self.body_count
 
         articulated = joint_articulation >= 0
-        self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated)
+        self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated, body_count)
         if np.all(articulated):
             return
 
@@ -11919,6 +11920,7 @@ class ModelBuilder:
         joint_parent: np.ndarray,
         joint_child: np.ndarray,
         articulated: np.ndarray,
+        body_count: int,
     ) -> None:
         """Reject articulated joints whose parent body belongs to another articulation.
 
@@ -11931,6 +11933,7 @@ class ModelBuilder:
             joint_parent: Parent body index of each joint.
             joint_child: Child body index of each joint.
             articulated: Mask of joints that belong to an articulation.
+            body_count: Number of bodies in the builder.
 
         Raises:
             ValueError: If a joint connects two different articulations.
@@ -11944,11 +11947,11 @@ class ModelBuilder:
         children = joint_child[articulated_joints]
 
         # Map each body to one articulation that contains it as a joint child.
-        body_articulation = np.full(self.body_count, -1, dtype=np.int64)
-        valid_children = (children >= 0) & (children < self.body_count)
+        body_articulation = np.full(body_count, -1, dtype=np.int64)
+        valid_children = (children >= 0) & (children < body_count)
         body_articulation[children[valid_children]] = arts[valid_children]
 
-        valid_parents = (parents >= 0) & (parents < self.body_count)
+        valid_parents = (parents >= 0) & (parents < body_count)
         parent_articulation = np.full(len(articulated_joints), -1, dtype=np.int64)
         parent_articulation[valid_parents] = body_articulation[parents[valid_parents]]
         candidates = np.flatnonzero((parent_articulation >= 0) & (parent_articulation != arts))
