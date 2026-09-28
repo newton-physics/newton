@@ -644,6 +644,22 @@ class SolverCoupledADMM(SolverCoupled):
         contact_matching_force_scale: float = 0.9
         contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
 
+        contact_max_triangle_pairs: int | None = field(default=None, kw_only=True)
+        """Triangle-pair capacity for internal ADMM collision detection.
+
+        Must be positive and less than ``2**20`` when rigid contact matching is
+        enabled. Larger capacities are allowed when matching is disabled.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
+        contact_reduction_hashtable_size_factor: float | None = field(default=None, kw_only=True)
+        """Multiplier controlling the internal contact-reduction hash table size.
+
+        Must be finite and positive. Increase this independently of the
+        triangle-pair capacity when contact reduction needs more storage.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
     def __init__(
         self,
         model: Model,
@@ -688,6 +704,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @classmethod
     def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
+        """Validate ADMM parameters and collision capacities before allocation."""
         cls._positive_integer(coupling.iterations, "ADMM iterations")
         cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
         cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
@@ -712,6 +729,19 @@ class SolverCoupledADMM(SolverCoupled):
             raise ValueError(
                 "ADMM rigid_contact_matching must be 'disabled', 'latest', or 'sticky', "
                 f"got {coupling.rigid_contact_matching!r}"
+            )
+        if coupling.contact_max_triangle_pairs is not None:
+            capacity = cls._positive_integer(coupling.contact_max_triangle_pairs, "ADMM contact_max_triangle_pairs")
+            if coupling.rigid_contact_matching != "disabled" and capacity >= 2**20:
+                raise ValueError(
+                    "ADMM contact_max_triangle_pairs must be less than 2**20 when rigid contact matching is enabled"
+                )
+        if coupling.contact_reduction_hashtable_size_factor is not None:
+            cls._finite_scalar(
+                coupling.contact_reduction_hashtable_size_factor,
+                "ADMM contact_reduction_hashtable_size_factor",
+                lower_bound=0.0,
+                lower_inclusive=False,
             )
         if coupling.contact_matching_pos_threshold is not None:
             cls._finite_scalar(
@@ -1021,6 +1051,7 @@ class SolverCoupledADMM(SolverCoupled):
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
     def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
+        """Initialize ADMM buffers, constraint groups, and internal collision detection."""
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh())
@@ -1082,11 +1113,17 @@ class SolverCoupledADMM(SolverCoupled):
                 self._admm_dynamic_rr_contact_groups = self._build_collision_rigid_rigid_contact_groups()
             from ...sim import CollisionPipeline  # noqa: PLC0415
 
-            matching_kwargs = {}
+            collision_kwargs = {}
+            if coupling.contact_max_triangle_pairs is not None:
+                collision_kwargs["max_triangle_pairs"] = int(coupling.contact_max_triangle_pairs)
+            if coupling.contact_reduction_hashtable_size_factor is not None:
+                collision_kwargs["contact_reduction_hashtable_size_factor"] = float(
+                    coupling.contact_reduction_hashtable_size_factor
+                )
             if coupling.contact_matching_pos_threshold is not None:
-                matching_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
+                collision_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
             if coupling.contact_matching_normal_dot_threshold is not None:
-                matching_kwargs["contact_matching_normal_dot_threshold"] = float(
+                collision_kwargs["contact_matching_normal_dot_threshold"] = float(
                     coupling.contact_matching_normal_dot_threshold
                 )
 
@@ -1100,7 +1137,7 @@ class SolverCoupledADMM(SolverCoupled):
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),
-                **matching_kwargs,
+                **collision_kwargs,
             )
             if self._admm_rigid_particle_contact_specs:
                 self._admm_dynamic_rp_contact_groups = self._build_collision_rigid_particle_contact_groups()
