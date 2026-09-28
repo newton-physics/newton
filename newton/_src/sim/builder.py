@@ -139,10 +139,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
-_SCALAR_GRAVITY_DEPRECATION_MSG = (
-    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
-    "Scalar gravity will be removed in a future release."
-)
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
@@ -1482,7 +1478,7 @@ class ModelBuilder:
     def __init__(
         self,
         up_axis: AxisType = Axis.Z,
-        gravity: float | Vec3 | None = None,
+        gravity: Vec3 | None = None,
         sdf_texture_paired_samples: bool = True,
     ):
         """
@@ -1491,8 +1487,7 @@ class ModelBuilder:
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
-                applies acceleration along ``up_axis``. If omitted, gravity
+            gravity: Default gravity vector [m/s^2]. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
@@ -1935,11 +1930,11 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
-        self._gravity: float | wp.vec3 | None = None
+        """Up axis used by geometry helpers and for resolving default gravity."""
+        self._gravity: wp.vec3 | None = None
         """Explicit global/default gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
-            self._set_gravity(gravity, stacklevel=3)
+            self._set_gravity(gravity)
 
         self.world_gravity: list[Vec3] = []
         """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
@@ -2941,22 +2936,15 @@ class ModelBuilder:
         )
 
     @property
-    def gravity(self) -> float | wp.vec3:
-        """Global/default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
-        if np.isscalar(self._gravity):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            return self._gravity
+    def gravity(self) -> wp.vec3:
+        """Global/default gravity vector [m/s^2]."""
         return self._gravity_as_vector()
 
     @gravity.setter
-    def gravity(self, value: float | Vec3) -> None:
-        self._set_gravity(value, stacklevel=3)
+    def gravity(self, value: Vec3) -> None:
+        self._set_gravity(value)
 
-    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
-        if np.isscalar(value):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
-            self._gravity = float(value)
-            return
+    def _set_gravity(self, value: Vec3) -> None:
         gravity = np.asarray(value, dtype=np.float32)
         if gravity.shape != (3,):
             raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
@@ -2964,9 +2952,8 @@ class ModelBuilder:
 
     def _gravity_as_vector(self) -> wp.vec3:
         """Resolve gravity to a fresh vector so callers never alias builder state."""
-        if self._gravity is None or np.isscalar(self._gravity):
-            magnitude = -9.81 if self._gravity is None else self._gravity
-            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        if self._gravity is None:
+            return wp.vec3(*(-9.81 * component for component in self.up_vector))
         return wp.vec3(*self._gravity)
 
     @property
