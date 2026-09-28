@@ -1225,13 +1225,16 @@ class ModelBuilder:
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
 
-        reference_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
+        reference_value_transformer: Callable[[list[Any], dict[str, Any]], list[Any]] | None = None
+        """Batch transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
 
         Use this instead of :attr:`references` when the referenced entity type depends on
-        other values in the same row. The callback receives the value and a context with
-        ``builder`` (the source builder), ``destination_builder``, ``entity_offsets``,
-        ``custom_frequency_offsets``, ``row_index``, ``world``, and ``label_prefix``.
+        other values in the same row. The callback is invoked once per copied builder with the
+        list of the source builder's authored values for this attribute (``None`` for unset
+        rows, which must be returned unchanged) and a context with ``builder`` (the source
+        builder), ``destination_builder``, ``entity_offsets``, ``custom_frequency_offsets``,
+        ``row_indices`` (source row index of each value), ``world``, and ``label_prefix``. It
+        must return a list of the same length.
         """
 
         def __post_init__(self):
@@ -4777,14 +4780,42 @@ class ModelBuilder:
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
-            has_reference_value_transformer = attr.reference_value_transformer is not None
-            needs_remap = (
-                value_offset != 0
-                or use_current_world
-                or is_equality_target_attr
-                or is_collision_mask_domain_attr
-                or has_reference_value_transformer
-            )
+            source_values = attr.values
+            if attr.reference_value_transformer is not None:
+                # Remap all rows of this attribute in one call so the transformer
+                # can vectorize; builder replication invokes this once per copy.
+                if isinstance(source_values, dict):
+                    row_indices = list(source_values.keys())
+                    row_values = list(source_values.values())
+                else:
+                    row_indices = range(len(source_values))
+                    row_values = list(source_values)
+                transformed = attr.reference_value_transformer(
+                    row_values,
+                    {
+                        "builder": builder,
+                        "destination_builder": self,
+                        "entity_offsets": entity_offsets,
+                        "custom_frequency_offsets": custom_frequency_offsets,
+                        "row_indices": row_indices,
+                        "world": world,
+                        "label_prefix": label_prefix,
+                    },
+                )
+                if len(transformed) != len(row_values):
+                    raise ValueError(
+                        f"reference_value_transformer for custom attribute '{full_key}' returned "
+                        f"{len(transformed)} values, expected {len(row_values)}."
+                    )
+                if isinstance(source_values, dict):
+                    source_values = dict(zip(row_indices, transformed, strict=True))
+                else:
+                    source_values = list(transformed)
+                needs_remap = False
+            else:
+                needs_remap = (
+                    value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+                )
 
             if needs_remap:
 
@@ -4841,22 +4872,7 @@ class ModelBuilder:
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
                     is_collision_mask_domain: bool = is_collision_mask_domain_attr,
-                    reference_value_transformer: Callable[[Any, dict[str, Any]], Any]
-                    | None = attr.reference_value_transformer,
                 ) -> Any:
-                    if reference_value_transformer is not None:
-                        return reference_value_transformer(
-                            value,
-                            {
-                                "builder": builder,
-                                "destination_builder": self,
-                                "entity_offsets": entity_offsets,
-                                "custom_frequency_offsets": custom_frequency_offsets,
-                                "row_index": entity_idx,
-                                "world": world,
-                                "label_prefix": label_prefix,
-                            },
-                        )
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
                     if is_collision_mask_domain:
@@ -4868,15 +4884,17 @@ class ModelBuilder:
                 if isinstance(freq_key, str):
                     mapped_values = [None] * index_offset
                     if needs_remap:
-                        mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                        mapped_values.extend(
+                            transform_enum_value(idx, value) for idx, value in enumerate(source_values)
+                        )
                     else:
-                        mapped_values.extend(attr.values)
+                        mapped_values.extend(source_values)
                 elif needs_remap:
                     mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
                     }
                 else:
-                    mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
+                    mapped_values = {index_offset + idx: value for idx, value in source_values.items()}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 self._custom_schema_epoch += 1
                 continue
@@ -4894,15 +4912,15 @@ class ModelBuilder:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
-                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(source_values))
                 else:
-                    merged.values.extend(attr.values)
+                    merged.values.extend(source_values)
             elif needs_remap:
                 merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()}
+                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()}
                 )
             else:
-                merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
+                merged.values.update({index_offset + idx: value for idx, value in source_values.items()})
 
         if label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
