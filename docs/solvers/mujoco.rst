@@ -33,6 +33,36 @@ section at the bottom collects the most useful anchor points.
    GPU-resident analogues.
 
 
+Native MuJoCo CPU execution and CUDA transfers
+----------------------------------------------
+
+With ``use_mujoco_cpu=True`` and a CUDA Newton model, the native MuJoCo
+``mj_step`` call remains on the CPU while Newton packs controls and exchanges
+states through reusable GPU and pinned-host buffers. This avoids allocating
+temporary transfer arrays on every step. Applications that repeat the same
+state/control bindings can also capture the GPU transfer work around the CPU
+integration:
+
+.. code-block:: python
+
+   solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+   state_0 = model.state()
+   state_1 = model.state()
+   control = model.control()
+
+   solver.capture_native_io(state_0, state_1, control)
+   solver.capture_native_io(state_1, state_0, control)
+   for _ in range(steps):
+       solver.step(state_0, state_1, control, contacts=None, dt=dt)
+       state_0, state_1 = state_1, state_0
+
+``capture_native_io`` is CUDA-only and binds the exact state/control objects and
+their array storage. Recapture after replacing those arrays or after
+``notify_model_changed``. The CPU ``mj_step`` is not captured, so MuJoCo's
+native integration and synchronization semantics remain unchanged. If no graph
+has been captured, ``step`` continues to use the ordinary transfer path.
+
+
 Joint types
 -----------
 
