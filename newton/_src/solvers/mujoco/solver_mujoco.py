@@ -4090,8 +4090,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_naconmax: int | None = None
 
         # One-shot dedup for ``_update_solref_from_invweight0``'s authored
-        # ``mujoco.solreflimit`` domain validator. Re-armed by
-        # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
+        # ``mujoco.solreflimit`` domain validator. Re-armed on the MuJoCo CPU
+        # backend by ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
 
         self._cone_shape_indices = np.empty(0, dtype=np.int32)
@@ -4847,7 +4847,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_joint_dof_properties()
             self._invalidate_contact_fast_path()
             # The CPU backend validates authored ``mujoco.solreflimit`` values
-            # after reassignment. The GPU update path remains device-only.
+            # after reassignment. MuJoCo Warp validates them only during
+            # construction so this update path stays graph-capturable.
             if self.use_mujoco_cpu:
                 self._raw_solreflimit_validated = False
             need_const_0 = True
@@ -8462,6 +8463,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco_warp.kinematics(self.mjw_model, self.mjw_data)
             self._mujoco_warp.com_pos(self.mjw_model, self.mjw_data)
             self._mujoco_warp.crb(self.mjw_model, self.mjw_data)
+            if self.mjw_model.ntendon:
+                # Match set_const_0, whose mass matrix includes tendon armature.
+                from mujoco_warp._src.smooth import tendon_armature
+
+                self._mujoco_warp.tendon(self.mjw_model, self.mjw_data)
+                tendon_armature(self.mjw_model, self.mjw_data)
             wp.launch(
                 compute_physical_meaninertia_kernel,
                 dim=self.mjw_data.nworld,
@@ -9277,7 +9284,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             joint_limit_solref_mode is not None
             and joint_limit_solref is not None
             and not self._raw_solreflimit_validated
-            and self.use_mujoco_cpu
         ):
             mode_np = joint_limit_solref_mode.numpy()
             raw_np = joint_limit_solref.numpy()
@@ -9300,7 +9306,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # ``mujoco.solreflimit`` reassignments arrive; other
             # ``need_const_0`` notifies (BODY_INERTIAL_PROPERTIES, etc.) do
             # not reset it because they cannot change the authored solreflimit
-            # values themselves.
+            # values themselves. The MuJoCo Warp backend validates only during
+            # construction because later notifies may be graph-captured.
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:

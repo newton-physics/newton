@@ -1051,7 +1051,15 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             SolverMuJoCo.register_custom_attributes(builder)
             builder.replicate(template, 2)
             model = builder.finalize(device=device)
+            world_count = model.world_count
+            self.assertEqual(world_count, 2)
             model.joint_armature.fill_(0.25)
+            # Distinct per-world tendon armature makes the mean inertia differ
+            # between worlds and must be included like in ``set_const_0``.
+            tendon_armature = np.array([0.5, 1.5], dtype=np.float32)
+            model.mujoco.tendon_armature.assign(
+                np.repeat(tendon_armature, model.mujoco.tendon_armature.shape[0] // world_count)
+            )
             solver = SolverMuJoCo(
                 model,
                 use_mujoco_cpu=False,
@@ -1066,31 +1074,67 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             self.assertGreater(solver.mj_model.ntendon, 0)
             self.assertGreater(solver.mj_model.nu, 0)
             physical_meaninertia = solver.mjw_model.stat.meaninertia.numpy().copy()
+            # World 0 matches MuJoCo's compiled statistic. The fixed tendon has
+            # unit coefficients on both DOFs, so its armature adds to each diagonal.
+            self.assertAlmostEqual(physical_meaninertia[0], solver.mj_model.stat.meaninertia, places=5)
+            self.assertAlmostEqual(
+                physical_meaninertia[1] - physical_meaninertia[0],
+                tendon_armature[1] - tendon_armature[0],
+                places=5,
+            )
 
             with wp.ScopedCapture(device=device) as capture:
                 solver.notify_model_changed(ModelFlags.ALL)
 
-            model.body_flags.fill_(int(BodyFlags.KINEMATIC))
-            model.joint_friction.fill_(3.25)
-            model.joint_damping.fill_(4.5)
-            model.shape_material_mu.fill_(0.75)
-            model.mujoco.equality_constraint_enabled.fill_(False)
-            model.mujoco.tendon_stiffness.fill_(123.0)
-            model.mujoco.actuator_gainprm.fill_(2.0)
+            def per_world(values, count):
+                return np.repeat(np.asarray(values), count // world_count, axis=0)
+
+            kinematic = int(BodyFlags.KINEMATIC)
+            dynamic = int(BodyFlags.DYNAMIC)
+            friction = np.array([3.25, 5.5], dtype=np.float32)
+            damping = np.array([4.5, 6.75], dtype=np.float32)
+            mu = np.array([0.75, 0.25], dtype=np.float32)
+            eq_enabled = np.array([False, True])
+            tendon_stiffness = np.array([123.0, 321.0], dtype=np.float32)
+            gain = np.array([2.0, 7.0], dtype=np.float32)
+
+            model.body_flags.assign(per_world([kinematic, dynamic], model.body_count).astype(np.int32))
+            model.joint_friction.assign(per_world(friction, model.joint_dof_count))
+            model.joint_damping.assign(per_world(damping, model.joint_dof_count))
+            model.shape_material_mu.assign(per_world(mu, model.shape_count))
+            model.mujoco.equality_constraint_enabled.assign(
+                per_world(eq_enabled, model.mujoco.equality_constraint_enabled.shape[0])
+            )
+            model.mujoco.tendon_stiffness.assign(per_world(tendon_stiffness, model.mujoco.tendon_stiffness.shape[0]))
+            gainprm = model.mujoco.actuator_gainprm.numpy()
+            gainprm[:, 0] = per_world(gain, gainprm.shape[0])
+            model.mujoco.actuator_gainprm.assign(gainprm)
             wp.capture_launch(capture.graph)
 
-            np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
+            dof_armature = solver.mjw_model.dof_armature.numpy()
+            np.testing.assert_allclose(dof_armature[0], KINEMATIC_ARMATURE)
+            np.testing.assert_allclose(dof_armature[1], 0.25)
             np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
-            np.testing.assert_allclose(solver.mjw_model.dof_frictionloss.numpy(), 3.25)
-            np.testing.assert_allclose(solver.mjw_model.dof_damping.numpy(), 4.5)
-            np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[..., 0], 0.75)
-            np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy(), False)
-            np.testing.assert_allclose(solver.mjw_model.tendon_stiffness.numpy(), 123.0)
-            np.testing.assert_allclose(solver.mjw_model.actuator_gainprm.numpy()[..., 0], 2.0)
+            dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
+            np.testing.assert_allclose(dof_frictionloss, np.broadcast_to(friction[:, None], dof_frictionloss.shape))
+            dof_damping = solver.mjw_model.dof_damping.numpy()
+            np.testing.assert_allclose(dof_damping, np.broadcast_to(damping[:, None], dof_damping.shape))
+            geom_friction = solver.mjw_model.geom_friction.numpy()[..., 0]
+            np.testing.assert_allclose(geom_friction, np.broadcast_to(mu[:, None], geom_friction.shape))
+            eq_active = solver.mjw_data.eq_active.numpy()
+            np.testing.assert_array_equal(eq_active, np.broadcast_to(eq_enabled[:, None], eq_active.shape))
+            mjw_tendon_stiffness = solver.mjw_model.tendon_stiffness.numpy()
+            np.testing.assert_allclose(
+                mjw_tendon_stiffness, np.broadcast_to(tendon_stiffness[:, None], mjw_tendon_stiffness.shape)
+            )
+            mjw_gain = solver.mjw_model.actuator_gainprm.numpy()[..., 0]
+            np.testing.assert_allclose(mjw_gain, np.broadcast_to(gain[:, None], mjw_gain.shape))
 
-            model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+            model.body_flags.assign(per_world([dynamic, kinematic], model.body_count).astype(np.int32))
             wp.capture_launch(capture.graph)
-            np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
+            dof_armature = solver.mjw_model.dof_armature.numpy()
+            np.testing.assert_allclose(dof_armature[0], 0.25)
+            np.testing.assert_allclose(dof_armature[1], KINEMATIC_ARMATURE)
             np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
 
 
@@ -12851,57 +12895,65 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertFalse(np.allclose(jnt_solref[1], jnt_solref[2]))
 
     def test_invalid_raw_solreflimit_warns_in_update_solref(self):
-        """``_update_solref_from_invweight0`` warns once on invalid RAW solreflimit and re-arms after JOINT_DOF_PROPERTIES."""
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        SolverMuJoCo.register_custom_attributes(builder)
-        inertia = wp.mat33(np.eye(3) * 0.5)
-        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
-        joint = builder.add_joint_revolute(
-            parent=-1,
-            child=link,
-            axis=wp.vec3(0.0, 1.0, 0.0),
-            limit_lower=-1.0,
-            limit_upper=1.0,
-            limit_ke=2500.0,
-            limit_kd=100.0,
-        )
-        builder.add_articulation([joint])
-        model = builder.finalize()
+        """Warn once on invalid RAW solreflimit and re-arm only on the MuJoCo CPU backend.
 
-        # Promote to RAW with a mixed-sign solref — MuJoCo would silently
-        # treat the timeconst as 2500s and effectively disable the limit.
-        model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
-        model.mujoco.solreflimit.assign(
-            wp.array(np.array([[-2500.0, 1.0]], dtype=np.float32), dtype=wp.vec2, device=model.device)
-        )
+        The MuJoCo Warp backend validates during construction only, so later
+        ``notify_model_changed`` calls remain free of host synchronization and
+        can be captured in a CUDA graph.
+        """
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                SolverMuJoCo.register_custom_attributes(builder)
+                inertia = wp.mat33(np.eye(3) * 0.5)
+                link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
+                joint = builder.add_joint_revolute(
+                    parent=-1,
+                    child=link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    limit_lower=-1.0,
+                    limit_upper=1.0,
+                    limit_ke=2500.0,
+                    limit_kd=100.0,
+                )
+                builder.add_articulation([joint])
+                model = builder.finalize()
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
-        messages = [str(w.message) for w in caught]
-        self.assertTrue(
-            any("invalid components" in m and "DOF indices" in m for m in messages),
-            f"Expected RAW solreflimit domain warning, got: {messages}",
-        )
+                # Promote to RAW with a mixed-sign solref — MuJoCo would silently
+                # treat the timeconst as 2500s and effectively disable the limit.
+                model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
+                model.mujoco.solreflimit.assign(
+                    wp.array(np.array([[-2500.0, 1.0]], dtype=np.float32), dtype=wp.vec2, device=model.device)
+                )
 
-        # Second notify with no change must not re-warn — the one-shot flag
-        # is sticky outside JOINT_DOF_PROPERTIES.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
-        self.assertFalse(
-            any("invalid components" in str(w.message) for w in caught),
-            "RAW solreflimit warn must not re-fire on BODY_INERTIAL_PROPERTIES",
-        )
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+                messages = [str(w.message) for w in caught]
+                self.assertTrue(
+                    any("invalid components" in m and "DOF indices" in m for m in messages),
+                    f"Expected RAW solreflimit domain warning, got: {messages}",
+                )
 
-        # JOINT_DOF_PROPERTIES re-arms the validator.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
-        self.assertTrue(
-            any("invalid components" in str(w.message) for w in caught),
-            "JOINT_DOF_PROPERTIES must re-arm the RAW solreflimit validator",
-        )
+                # Second notify with no change must not re-warn — the one-shot flag
+                # is sticky outside JOINT_DOF_PROPERTIES.
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                self.assertFalse(
+                    any("invalid components" in str(w.message) for w in caught),
+                    "RAW solreflimit warn must not re-fire on BODY_INERTIAL_PROPERTIES",
+                )
+
+                # JOINT_DOF_PROPERTIES re-arms the validator on the CPU backend only.
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                self.assertEqual(
+                    any("invalid components" in str(w.message) for w in caught),
+                    use_mujoco_cpu,
+                    "JOINT_DOF_PROPERTIES must re-arm the RAW solreflimit validator only on the CPU backend",
+                )
 
     def test_mjcf_invalid_solreflimit_emits_import_warning(self):
         """Verify that MJCF import warns for invalid authored ``solreflimit`` signs."""
