@@ -253,8 +253,18 @@ def _bias_type(value: int | str) -> int:
     )
 
 
+# MuJoCo ``mjtCtrlInput`` bits for the single-input DC-motor signatures that
+# SolverMuJoCo supports; matches the MJCF ``input`` attribute parser.
+_DCMOTOR_INPUT_MODES = {"position": 1, "pos": 1, "velocity": 2, "vel": 2, "voltage": 8}
+
+
 def _input_mode(value: int | str) -> int:
-    return _enum_value(value, {"voltage": 0, "position": 1, "velocity": 2}, "DC-motor input mode")
+    mode = _enum_value(value, _DCMOTOR_INPUT_MODES, "DC-motor input mode")
+    if mode not in _DCMOTOR_INPUT_MODES.values():
+        raise ValueError(
+            f"Unsupported DC-motor input mode {value!r}; expected voltage (8), position (1), or velocity (2)."
+        )
+    return mode
 
 
 def _add_actuator(
@@ -657,7 +667,9 @@ def add_actuator_dcmotor(
         controller: Controller parameters.
         thermal: Thermal-model parameters.
         lugre: LuGre-friction parameters.
-        input_mode: ``"voltage"``, ``"position"``, ``"velocity"``, or its integer code.
+        input_mode: Control input: ``"voltage"``, ``"position"``, or
+            ``"velocity"``, or the corresponding MuJoCo ``mjtCtrlInput`` value
+            (8, 1, or 2).
         gear: Transmission gear, padded to six values.
         ctrlrange: Optional control range.
         ctrllimited: Control-limit tri-state (false, true, or auto).
@@ -678,6 +690,7 @@ def add_actuator_dcmotor(
 
     _ensure_mujoco_attributes(builder, "mujoco:actuator_trnid")
     SolverMuJoCo._register_dcmotor_custom_attributes(builder)
+    input_code = _input_mode(input_mode)
     specific_values = {
         "mujoco:actuator_dcmotor_motorconst": _vector(builder, "mujoco:actuator_dcmotor_motorconst", motorconst, 2),
         "mujoco:actuator_dcmotor_resistance": float(resistance),
@@ -688,7 +701,10 @@ def add_actuator_dcmotor(
         "mujoco:actuator_dcmotor_controller": _vector(builder, "mujoco:actuator_dcmotor_controller", controller, 6),
         "mujoco:actuator_dcmotor_thermal": _vector(builder, "mujoco:actuator_dcmotor_thermal", thermal, 6),
         "mujoco:actuator_dcmotor_lugre": _vector(builder, "mujoco:actuator_dcmotor_lugre", lugre, 5),
-        "mujoco:actuator_dcmotor_input": _input_mode(input_mode),
+        "mujoco:actuator_dcmotor_input": input_code,
+        # Mirror the MJCF importer, which also stores the input signature in
+        # the generic compiled-model attribute used by MuJoCo-Warp.
+        "mujoco:actuator_ctrlspec": input_code,
     }
     return _add_actuator(
         builder,

@@ -65,6 +65,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         np.testing.assert_allclose(model.mujoco.actuator_dcmotor_motorconst.numpy(), [[0.05, 0.06]])
         np.testing.assert_allclose(model.mujoco.actuator_dcmotor_lugre.numpy(), [[0.3, 0.4, 0.5, 12.0, 0.02]])
         np.testing.assert_array_equal(model.mujoco.actuator_dcmotor_input.numpy(), [1])
+        np.testing.assert_array_equal(model.mujoco.actuator_ctrlspec.numpy(), [1])
 
         solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
         self.assertEqual(solver.mj_model.nu, 1)
@@ -103,12 +104,12 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
     def test_dcmotor_input_modes_match_mujoco(self):
         """Preserve named and numeric input modes with MuJoCo's input bitmask."""
         native_mujoco = newton.solvers.SolverMuJoCo.import_mujoco()[0]
-        for name, code, ctrlspec, controller in (
-            ("voltage", 0, native_mujoco.mjtCtrlInput.mjINPUT_VOLTAGE, (0.0,) * 6),
-            ("position", 1, native_mujoco.mjtCtrlInput.mjINPUT_POS, (5.0, 1.0, 0.2, 10.0, 2.0, 3.0)),
-            ("velocity", 2, native_mujoco.mjtCtrlInput.mjINPUT_VEL, (0.0, 0.0, 0.2, 10.0, 2.0, 3.0)),
+        for name, ctrlspec, controller in (
+            ("voltage", native_mujoco.mjtCtrlInput.mjINPUT_VOLTAGE, (0.0,) * 6),
+            ("position", native_mujoco.mjtCtrlInput.mjINPUT_POS, (5.0, 1.0, 0.2, 10.0, 2.0, 3.0)),
+            ("velocity", native_mujoco.mjtCtrlInput.mjINPUT_VEL, (0.0, 0.0, 0.2, 10.0, 2.0, 3.0)),
         ):
-            for input_mode in (name, code):
+            for input_mode in (name, int(ctrlspec)):
                 with self.subTest(input_mode=input_mode):
                     builder = newton.ModelBuilder()
                     _, joint = _add_revolute(builder, "hinge")
@@ -122,6 +123,72 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
                     )
                     solver = newton.solvers.SolverMuJoCo(builder.finalize(), use_mujoco_cpu=True, disable_contacts=True)
                     np.testing.assert_array_equal(solver.mj_model.actuator_ctrlspec, [ctrlspec])
+
+    def test_add_actuator_dcmotor_matches_native_mujoco(self):
+        """Compile helper-authored DC motors like native MJCF and keep runtime updates."""
+        native_mujoco = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        native = native_mujoco.MjModel.from_xml_string(
+            """
+            <mujoco>
+              <worldbody>
+                <body>
+                  <joint name="hinge" type="hinge" axis="0 0 1"/>
+                  <geom type="sphere" size="0.1"/>
+                </body>
+              </worldbody>
+              <actuator>
+                <dcmotor joint="hinge" motorconst="0.05 0.06" resistance="2" input="pos"
+                         controller="5 1 0.2 10 2 3" ctrlrange="-1 1"/>
+              </actuator>
+            </mujoco>
+            """
+        )
+
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                _, joint = _add_revolute(builder, "hinge")
+                mujoco.add_actuator_dcmotor(
+                    builder,
+                    target=mujoco.ActuatorTarget.joint(joint),
+                    motorconst=(0.05, 0.06),
+                    resistance=2.0,
+                    controller=(5.0, 1.0, 0.2, 10.0, 2.0, 3.0),
+                    input_mode="position",
+                    ctrlrange=(-1.0, 1.0),
+                )
+                model = builder.finalize()
+                solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                for name in ("actuator_gainprm", "actuator_biasprm", "actuator_dynprm", "actuator_ctrlspec"):
+                    np.testing.assert_allclose(getattr(solver.mj_model, name), getattr(native, name), err_msg=name)
+
+                model.mujoco.actuator_ctrlrange.assign([[-0.5, 0.5]])
+                solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+                if use_mujoco_cpu:
+                    ctrlrange = solver.mj_model.actuator_ctrlrange[0]
+                    gainprm = solver.mj_model.actuator_gainprm[0]
+                else:
+                    ctrlrange = solver.mjw_model.actuator_ctrlrange.numpy()[0, 0]
+                    gainprm = solver.mjw_model.actuator_gainprm.numpy()[0, 0]
+                    # MuJoCo-Warp reads the legacy DC-motor input slot (1 = position).
+                    self.assertEqual(gainprm[8], 1.0)
+                np.testing.assert_allclose(ctrlrange, [-0.5, 0.5])
+                np.testing.assert_allclose(gainprm[:8], native.actuator_gainprm[0, :8], rtol=1e-6)
+
+    def test_reject_unsupported_dcmotor_input_mode(self):
+        """Reject DC-motor input signatures that SolverMuJoCo cannot drive."""
+        builder = newton.ModelBuilder()
+        _, joint = _add_revolute(builder, "hinge")
+
+        for input_mode in ("feedforward", 0, 3):
+            with self.subTest(input_mode=input_mode), self.assertRaises(ValueError):
+                mujoco.add_actuator_dcmotor(
+                    builder,
+                    target=mujoco.ActuatorTarget.joint(joint),
+                    motorconst=(0.05, 0.06),
+                    resistance=2.0,
+                    input_mode=input_mode,
+                )
 
     def test_reject_multidof_joint_without_dof(self):
         """Require an explicit local DOF for multi-DOF joint targets."""
