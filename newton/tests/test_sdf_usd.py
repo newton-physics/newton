@@ -589,8 +589,9 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "physics:approximation.*ignored"):
+            with self.assertWarnsRegex(UserWarning, "physics:approximation.*ignored") as warning:
                 result = builder.add_usd(str(usd_path))
+            self.assertEqual(warning.filename, newton.ModelBuilder.add_usd.__code__.co_filename)
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # SDF configuration must survive the ignored approximation.
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
@@ -755,8 +756,9 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "hydroelastic mesh requires"):
+            with self.assertWarnsRegex(UserWarning, "hydroelastic mesh requires") as warning:
                 result = builder.add_usd(str(usd_path))
+            self.assertEqual(warning.filename, newton.ModelBuilder.add_usd.__code__.co_filename)
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
 

@@ -129,7 +129,6 @@ def _parse_articulations(
 
             if key in body_specs:
                 body_desc = body_specs[key]
-                desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                 body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                 if override_root_xform:
                     # Strip the articulation root's world-space pose and rebase at the user-specified xform.
@@ -137,25 +136,24 @@ def _parse_articulations(
                     desired_world = incoming_world_xform * body_in_root_frame
                 else:
                     desired_world = incoming_world_xform * body_world
-                body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                 art_root_for_visuals = articulation_root_xform if override_root_xform else None
                 if bodies_follow_joint_ordering:
                     # we just parse the body information without yet adding it to the builder
                     body_data[current_body_id] = parse_body(
                         body_desc,
                         stage.GetPrimAtPath(p),
-                        incoming_xform=body_incoming_xform,
                         add_body_to_builder=False,
                         articulation_root_xform=art_root_for_visuals,
+                        origin=desired_world,
                     )
                 else:
                     # look up description and add body to builder
                     bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                         body_desc,
                         stage.GetPrimAtPath(p),
-                        incoming_xform=body_incoming_xform,
                         add_body_to_builder=True,
                         articulation_root_xform=art_root_for_visuals,
+                        origin=desired_world,
                     )
                     if bid >= 0:
                         art_bodies.append(bid)
@@ -231,7 +229,7 @@ def _parse_articulations(
                         # Use incoming_world_xform as the base parent-relative offset
                         parent_xform = incoming_world_xform
                         # If the USD body has a non-identity local transform, compose it with incoming_xform
-                        # Note: incoming_world_xform already includes the child's USD local transform via body_incoming_xform
+                        # Note: body_data[i]["xform"] already includes the child's USD transform.
                         # So we can use body_data[i]["xform"] directly for the intended position
                         # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
                         # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.

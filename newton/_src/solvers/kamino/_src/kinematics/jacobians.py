@@ -1158,63 +1158,18 @@ def store_col_major_jacobian_block(
 
 
 @wp.func
-def _scatter_joint_row_major_body_to_col_major(
+def _gather_joint_col_major_column(
     num_cts: wp.int32,
     nzb_start_rm: wp.int32,
-    rm_row_offset: wp.int32,
-    nzb_offset_cm: wp.int32,
-    cm_col_offset: wp.int32,
+    column: wp.int32,
     block_row_init: wp.int32,
     row_major_values: wp.array[vec6f],
-    col_major_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
-):
-    """Scatter one body's joint constraint rows from row-major vec6f to col-major 6x1 columns."""
+) -> mat61f:
+    """Gather one body column of a joint constraint group from row-major vec6f blocks."""
+    block = mat61f()
     for i in range(num_cts):
-        block_rm = row_major_values[nzb_start_rm + rm_row_offset + i]
-        for k in range(6):
-            col_major_values[nzb_offset_cm + cm_col_offset + k][block_row_init + i, 0] = block_rm[k]
-
-
-@wp.func
-def _scatter_joint_constraint_group_to_col_major(
-    num_cts: wp.int32,
-    has_base_body: bool,
-    nzb_start_rm: wp.int32,
-    nzb_offset_cm: wp.int32,
-    row_major_coords: wp.array2d[wp.int32],
-    row_major_values: wp.array[vec6f],
-    col_major_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
-):
-    """Convert one joint constraint group (dynamic/kinematic/friction/effort) row-major to col-major."""
-    # Offset the Jacobian rows within the 6x6 block to avoid exceeding matrix dimensions.
-    # Since we might not fill the full 6x6 block with Jacobian entries, shifting the block upwards
-    # and filling the bottom part will prevent the block lying outside the matrix dimensions.
-    # We additional guard against the case where the shift would push the block above the start of
-    # the matrix by taking the minimum of the full shift and `row_init`.
-    row_init = row_major_coords[nzb_start_rm, 0]
-    block_row_init = min(6 - num_cts, row_init)
-
-    _scatter_joint_row_major_body_to_col_major(
-        num_cts,
-        nzb_start_rm,
-        0,
-        nzb_offset_cm,
-        0,
-        block_row_init,
-        row_major_values,
-        col_major_values,
-    )
-    if has_base_body:
-        _scatter_joint_row_major_body_to_col_major(
-            num_cts,
-            nzb_start_rm,
-            num_cts,
-            nzb_offset_cm,
-            6,
-            block_row_init,
-            row_major_values,
-            col_major_values,
-        )
+        block[block_row_init + i, 0] = row_major_values[nzb_start_rm + i][column]
+    return block
 
 
 @wp.kernel
@@ -1234,75 +1189,46 @@ def _update_col_major_joint_jacobians(
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
+
+    One thread per (joint, body side, column) writes each 6x1 column-major block once.
     """
-    # Retrieve the thread index as the joint index
-    jid = wp.tid()
+    jid, slot = wp.tid()
+    side = slot // 6
+    column = slot - 6 * side
 
-    # Retrieve the joint model data
-    num_dynamic_cts = model_joints_num_dynamic_cts[jid]
-    num_kinematic_cts = model_joints_num_kinematic_cts[jid]
-    num_friction_cts = model_joints_num_friction_cts[jid]
-    num_effort_cts = model_joints_num_effort_cts[jid]
     bid_B = model_joints_bid_B[jid]
-
-    # Retrieve the Jacobian data
-    nzb_start_rm_j = jac_cts_row_major_joint_nzb_offsets[jid]
-    nzb_offset_cm = jac_cts_col_major_joint_nzb_offsets[jid]
-
     has_base_body = bid_B > -1
+    if side == 1 and not has_base_body:
+        return
     rm_advance = 2 if has_base_body else 1
     cm_advance = 12 if has_base_body else 6
 
-    if num_dynamic_cts > 0:
-        _scatter_joint_constraint_group_to_col_major(
-            num_dynamic_cts,
-            has_base_body,
-            nzb_start_rm_j,
-            nzb_offset_cm,
-            jac_cts_row_major_nzb_coords,
-            jac_cts_row_major_nzb_values,
-            jac_cts_col_major_nzb_values,
-        )
-        nzb_start_rm_j += num_dynamic_cts * rm_advance
-        nzb_offset_cm += cm_advance
+    nzb_start_rm_j = jac_cts_row_major_joint_nzb_offsets[jid]
+    nzb_offset_cm = jac_cts_col_major_joint_nzb_offsets[jid]
 
-    _scatter_joint_constraint_group_to_col_major(
-        num_kinematic_cts,
-        has_base_body,
-        nzb_start_rm_j,
-        nzb_offset_cm,
-        jac_cts_row_major_nzb_coords,
-        jac_cts_row_major_nzb_values,
-        jac_cts_col_major_nzb_values,
-    )
-    nzb_start_rm_j += num_kinematic_cts * rm_advance
-    nzb_offset_cm += cm_advance
-
-    if num_friction_cts > 0:
-        _scatter_joint_constraint_group_to_col_major(
-            num_friction_cts,
-            has_base_body,
-            nzb_start_rm_j,
-            nzb_offset_cm,
-            jac_cts_row_major_nzb_coords,
-            jac_cts_row_major_nzb_values,
-            jac_cts_col_major_nzb_values,
-        )
-        nzb_start_rm_j += num_friction_cts * rm_advance
-        nzb_offset_cm += cm_advance
-
-    if num_effort_cts > 0:
-        _scatter_joint_constraint_group_to_col_major(
-            num_effort_cts,
-            has_base_body,
-            nzb_start_rm_j,
-            nzb_offset_cm,
-            jac_cts_row_major_nzb_coords,
-            jac_cts_row_major_nzb_values,
-            jac_cts_col_major_nzb_values,
-        )
-        nzb_start_rm_j += num_effort_cts * rm_advance
-        nzb_offset_cm += cm_advance
+    for group in range(4):
+        num_cts = model_joints_num_kinematic_cts[jid]
+        if group == 0:
+            num_cts = model_joints_num_dynamic_cts[jid]
+        elif group == 2:
+            num_cts = model_joints_num_friction_cts[jid]
+        elif group == 3:
+            num_cts = model_joints_num_effort_cts[jid]
+        if num_cts > 0:
+            # Shift the block upwards so partially filled 6x6 blocks stay inside the matrix.
+            row_init = jac_cts_row_major_nzb_coords[nzb_start_rm_j, 0]
+            block_row_init = min(6 - num_cts, row_init)
+            jac_cts_col_major_nzb_values[nzb_offset_cm + 6 * side + column] = _gather_joint_col_major_column(
+                num_cts,
+                nzb_start_rm_j + side * num_cts,
+                column,
+                block_row_init,
+                jac_cts_row_major_nzb_values,
+            )
+            nzb_start_rm_j += num_cts * rm_advance
+        if num_cts > 0 or group == 1:
+            # The kinematic group always occupies a column block, even when empty.
+            nzb_offset_cm += cm_advance
 
 
 @wp.kernel
@@ -2486,7 +2412,7 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators[wp.float32, w
         if model.size.sum_of_num_joints > 0:
             wp.launch(
                 kernel=_update_col_major_joint_jacobians,
-                dim=model.size.sum_of_num_joints,
+                dim=(model.size.sum_of_num_joints, 12),
                 inputs=[
                     # Inputs:
                     model.joints.num_dynamic_cts,
