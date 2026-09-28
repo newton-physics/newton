@@ -266,7 +266,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 self._joint_drive_offset = wp.zeros(model.joint_count, dtype=wp.spatial_vector)
                 self._joint_drive_force = wp.zeros(model.joint_dof_count, dtype=float)
                 self._joint_drive_hinge = wp.zeros(model.joint_count, dtype=wp.vec4)
-            self._refresh_drive_joints()
+            self._init_drive_joints()
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
         if rigid_contact_restitution_iterations < 1:
@@ -342,15 +342,17 @@ class SolverXPBD(SolverBase, CouplingInterface):
             self._refresh_kinematic_state()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._refresh_joint_references()
-            self._refresh_drive_joints()
             if self.joint_armature_inertia != "none":
                 self._refresh_kinematic_state()
         if self.enable_restitution and flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_rigid_restitution_enabled()
 
-    def _refresh_drive_joints(self):
+    def _init_drive_joints(self):
         """Joints the drive kernels run over: revolute, prismatic and D6 joints with a linear DOF or a single rotational
-        DOF (the kernels skip joints without gains, so gains may change at any time)."""
+        DOF (the kernels skip joints without gains, so gains may change at any time).
+
+        The list depends only on the joint types and DOF dimensions, which no model-change flag covers, so it is built
+        once here; ``notify_model_changed`` never reallocates it, which keeps captured graphs of ``step`` valid."""
         model = self.model
         if not model.joint_count:
             return

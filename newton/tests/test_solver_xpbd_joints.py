@@ -198,7 +198,7 @@ def _run(model, solver, steps, dt, torque=0.0):
 
 
 def test_joint_drive_stiffness_is_ke_at_any_iteration_count(test, device):
-    """A pendulum held by a position drive settles at the sag tau_gravity / ke for 1, 4 and 16 iterations."""
+    """Verify that a pendulum held by a position drive settles at the sag tau_gravity / ke for 1, 4 and 16 iterations."""
     for mode, tol in (("pd", 0.01), ("implicit", 0.03)):
         for iterations in (1, 4, 16):
             if mode == "implicit" and iterations == 1:
@@ -211,7 +211,7 @@ def test_joint_drive_stiffness_is_ke_at_any_iteration_count(test, device):
 
 
 def test_joint_drive_compliance_mode_is_legacy(test, device):
-    """joint_drive_mode="compliance" keeps the former drive, whose stiffness grows with the iteration count."""
+    """Verify that joint_drive_mode="compliance" keeps the former drive, whose stiffness grows with the iterations."""
     stiffness = []
     for iterations in (2, 8):
         model = _pendulum_model(device, ke=200.0, kd=5.0, target=0.5)
@@ -229,7 +229,10 @@ def test_joint_drive_compliance_mode_is_legacy(test, device):
 
 
 def test_joint_drive_effort_limit(test, device):
-    """The drive force is clamped at joint_effort_limit (zero gravity, target far away: q = f dt^2 N (N + 1) / 2 / I)."""
+    """Verify that the drive force is clamped at joint_effort_limit.
+
+    Zero gravity and a distant target give q = f dt^2 N (N + 1) / 2 / I.
+    """
     dt, n = 2.5e-3, 20
     for mode in ("pd", "implicit"):
         model = _pendulum_model(device, gravity=0.0, ke=1000.0, target=1.0, effort=2.0)
@@ -240,7 +243,7 @@ def test_joint_drive_effort_limit(test, device):
 
 
 def test_joint_armature_inertia(test, device):
-    """joint_armature adds rotor inertia about the axis with "isotropic" or "axis"; "none" (default) ignores it."""
+    """Verify that joint_armature adds rotor inertia with "isotropic" or "axis" and is ignored with "none"."""
     dt, n, arm = 2.5e-3, 20, 0.2
     for mode, extra in (("isotropic", arm), ("axis", arm), ("none", 0.0)):  # default "none"
         model = _pendulum_model(device, gravity=0.0, armature=arm)
@@ -251,9 +254,12 @@ def test_joint_armature_inertia(test, device):
 
 
 def test_joint_drive_light_damped_chain(test, device):
-    """Overdamped light chain (3 links of 8 g, ke 40, kd 10, armature 0.001) stepped by 0.3 rad in zero gravity:
-    each joint creeps first-order, q(t) = 0.3 (1 - exp(-t ke / kd)) (0.0544 rad at 50 ms). A damper evaluated on the
-    joint's own inertia would let such links move several times faster."""
+    """Verify that an overdamped light chain follows the first-order creep of its drives.
+
+    Three links of 8 g (ke 40, kd 10, armature 0.001) are stepped by 0.3 rad in zero gravity; each joint should creep as
+    q(t) = 0.3 (1 - exp(-t ke / kd)) (0.0544 rad at 50 ms). A damper evaluated on the joint's own inertia would let
+    such links move several times faster.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     parent, joints = -1, []
     for i in range(3):
@@ -293,7 +299,7 @@ def test_joint_drive_light_damped_chain(test, device):
 
 
 def test_joint_drive_gains_set_after_construction(test, device):
-    """Drive gains written to the model after the solver is created take effect; the drive torque is reported."""
+    """Verify that drive gains written after the solver is created take effect and the drive torque is reported."""
     model = _pendulum_model(device, target=0.5)
     solver = newton.solvers.SolverXPBD(model, iterations=4, joint_drive_mode="pd")
     model.joint_target_ke.fill_(200.0)
@@ -303,6 +309,20 @@ def test_joint_drive_gains_set_after_construction(test, device):
     test.assertAlmostEqual(tau_g / (q - 0.5) / 200.0, 1.0, delta=0.01)
     # the reported drive torque balances gravity at rest
     test.assertAlmostEqual(float(solver.joint_drive_force.numpy()[0]) / -tau_g, 1.0, delta=0.01)
+
+
+def test_joint_drive_notify_keeps_buffers(test, device):
+    """Verify that notify_model_changed keeps the drive buffers that a captured step reads."""
+    model = _pendulum_model(device, ke=200.0, kd=5.0, target=0.5)
+    solver = newton.solvers.SolverXPBD(model, iterations=4, joint_drive_mode="pd")
+    ptr = solver._drive_joints.ptr
+    model.joint_target_ke.fill_(100.0)
+    model.joint_limit_upper.fill_(2.0)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    test.assertEqual(solver._drive_joints.ptr, ptr)
+    q, _ = _run(model, solver, 800, 2.5e-3)
+    tau_g = float(model.body_mass.numpy()[0]) * 9.81 * float(model.body_com.numpy()[0][0]) * np.cos(q)
+    test.assertAlmostEqual(tau_g / (q - 0.5) / 100.0, 1.0, delta=0.01)
 
 
 devices = get_test_devices()
@@ -394,6 +414,14 @@ add_function_test(
     TestSolverXPBDJoints,
     "test_joint_drive_gains_set_after_construction",
     test_joint_drive_gains_set_after_construction,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBDJoints,
+    "test_joint_drive_notify_keeps_buffers",
+    test_joint_drive_notify_keeps_buffers,
     devices=devices,
     check_output=False,
 )
