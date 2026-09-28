@@ -3172,6 +3172,13 @@ class ModelBuilder:
             Its previous state is restored before returning or propagating an exception.
 
         .. important::
+            Replication may replace the backing lists of attributes on this builder.
+            References to list-valued attributes obtained before calling this method
+            may become stale: they do not receive the replicated data, and mutations
+            through them are not reflected by the builder. Reacquire attribute
+            references from the builder after calling this method.
+
+        .. important::
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
@@ -4248,6 +4255,13 @@ class ModelBuilder:
             support width of twice that radius. Non-uniform scale or shear is
             rejected because one scalar width cannot preserve a spherical particle
             under that transform.
+
+            Visual meshes load or generate normals through :func:`newton.usd.get_mesh`.
+            Sharp shading can duplicate vertices in :attr:`Model.shape_source`,
+            including for untextured meshes. Collision-only loads do not request
+            normals, and visual expansion preserves source mass properties. Use
+            :func:`newton.usd.get_mesh` with ``load_normals=False`` when source
+            vertex sharing is required for geometry processing.
 
             The returned mapping has the following entries:
 
@@ -7563,12 +7577,6 @@ class ModelBuilder:
 
         self.shape_body.append(body)
         shape = self.shape_count
-        if cfg.has_shape_collision:
-            # no contacts between shapes of the same body
-            for same_body_shape in self.body_shapes[body]:
-                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
-                    continue
-                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -8403,7 +8411,7 @@ class ModelBuilder:
         +------------------------+-------------------------------------------------------------------------------+
         | Method                 | Description                                                                   |
         +========================+===============================================================================+
-        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/wjakob/coacd>`_         |
+        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/SarahWeiii/CoACD>`_     |
         +------------------------+-------------------------------------------------------------------------------+
         | ``"vhacd"``            | Convex decomposition using `V-HACD <https://github.com/trimesh/vhacdx>`_      |
         +------------------------+-------------------------------------------------------------------------------+
@@ -8965,10 +8973,7 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Use the graph core to create bodies and internal joints.
-        # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
-        # - open chains are wrapped into a single articulation (tree), and
-        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -8983,17 +8988,12 @@ class ModelBuilder:
             twist_stiffness=twist_stiffness,
             twist_damping=twist_damping,
             label=label,
-            wrap_in_articulation=False,
+            wrap_in_articulation=wrap_in_articulation,
             quaternions=quaternions,
             junction_collision_filter=True,
             color=color,
             body_frame_origin=body_frame_origin,
         )
-
-        # Wrap all joints into an articulation if requested.
-        if wrap_in_articulation and link_joints:
-            rod_art_label = f"{label}_articulation" if label else None
-            self.add_articulation(link_joints, label=rod_art_label)
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
@@ -9154,19 +9154,21 @@ class ModelBuilder:
             A pair ``(body_indices, joint_indices)``. Bodies follow segment
             order. An open ordered chain has one fewer joint than segments; a
             closed ordered chain has one joint per segment. Graph joint count
-            depends on topology and articulation wrapping.
+            depends on topology and articulation wrapping. Automatically
+            generated root joints are not included in ``joint_indices``.
 
         Articulations:
-            With ``wrap_in_articulation=True`` (the default), Newton places an
-            ordered chain's non-closure joints in one articulation; for a
-            closed chain, the loop-closing joint remains outside it. For an
-            explicit graph, Newton creates one articulation-safe spanning tree
-            per connected component; cyclic adjacency joints are omitted. With
-            ``wrap_in_articulation=False``, Newton creates no articulations.
-            Before :meth:`finalize <ModelBuilder.finalize>`, callers must place
-            the tree or forest joints in articulations. Loop-closing joints
-            whose child is already reachable through those articulations may
-            remain outside them.
+            With ``wrap_in_articulation=True`` (the default), Newton creates a
+            free joint to the world and places it with an ordered chain's
+            non-closure joints in one articulation. A closed chain's
+            loop-closing joint remains outside it. For an explicit graph,
+            Newton creates one free-rooted, articulation-safe spanning tree per
+            connected component; cyclic adjacency joints are omitted. With
+            ``wrap_in_articulation=False``, Newton creates no root joints or
+            articulations. Before :meth:`finalize <ModelBuilder.finalize>`,
+            callers must place the tree or forest joints in articulations.
+            Loop-closing joints whose child is already reachable through those
+            articulations may remain outside them.
 
         Raises:
             ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
@@ -9291,16 +9293,16 @@ class ModelBuilder:
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (local +Z points toward ``v``).
         - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent when wrapped into an articulation.
+          traversal so that each body has a single parent in an articulation.
 
         Notes:
 
         - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          articulation per connected component). This keeps the joint graph articulation-safe
-          (tree/forest), avoiding cycles at junctions.
+          free-rooted articulation per connected component). This keeps the joint graph
+          articulation-safe (tree/forest), avoiding cycles at junctions.
         - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
           ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without articulation wrapping.
+          you need closed loops, build them explicitly without placing the joints in an articulation.
         - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
           all incident edges. This can preserve rings/loops, but does not produce an articulation
           tree (edges may effectively have multiple "parents" in the joint graph).
@@ -9327,8 +9329,8 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
                 joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, wraps the generated joint forest into one articulation
-                per connected component.
+            wrap_in_articulation: If True, places each connected component's generated joints and a
+                free joint to the world in one articulation.
             quaternions: Optional per-edge orientations in world space. If provided, must have
                 ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
                 the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
@@ -9349,7 +9351,8 @@ class ModelBuilder:
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``.
+            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
+            not the automatically-created free root joints.
 
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
@@ -9401,8 +9404,10 @@ class ModelBuilder:
         junction_collision_filter: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"] | None,
+        articulation_root_node: int | None = None,
+        articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Internal graph-assembly implementation shared by the rod input forms."""
+        """Build a rod graph, optionally using an importer-provided articulation root joint."""
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -9429,6 +9434,13 @@ class ModelBuilder:
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
+        if articulation_root_node is not None:
+            if articulation_root_joint_factory is None:
+                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+            if articulation_root_node < 0 or articulation_root_node >= num_nodes:
+                raise ValueError(
+                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
                 f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
@@ -9526,14 +9538,17 @@ class ModelBuilder:
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
 
-        def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
+        def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
                 z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
-            return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
+            rotation = (
+                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi) if reverse_tangent else wp.quat_identity()
+            )
+            return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
         joint_counter = 0
         jointed_body_pairs: set[tuple[int, int]] = set()
@@ -9603,14 +9618,43 @@ class ModelBuilder:
             visited = [False] * num_edges
             component_index = 0
 
-            for start_edge in range(num_edges):
+            start_edges = list(range(num_edges))
+            if articulation_root_node is not None:
+                root_edges = node_incidence[articulation_root_node]
+                if not root_edges:
+                    raise ValueError(
+                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
+                    )
+                start_edges.remove(root_edges[0])
+                start_edges.insert(0, root_edges[0])
+
+            for start_edge in start_edges:
                 if visited[start_edge]:
                     continue
 
                 # BFS over edges
                 queue: deque[int] = deque([start_edge])
                 visited[start_edge] = True
-                component_joints: list[int] = []
+                use_imported_root = articulation_root_joint_factory is not None and component_index == 0
+                if not use_imported_root:
+                    root_label = None
+                    if label:
+                        root_label = (
+                            f"{label}_free_joint_{component_index}" if component_index > 0 else f"{label}_free_joint"
+                        )
+                    root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
+                else:
+                    assert articulation_root_joint_factory is not None
+                    root_node = articulation_root_node if articulation_root_node is not None else edge_u[start_edge]
+                    root_joint = articulation_root_joint_factory(
+                        edge_bodies[start_edge],
+                        _edge_anchor_xform(
+                            start_edge,
+                            root_node,
+                            reverse_tangent=root_node == edge_v[start_edge],
+                        ),
+                    )
+                component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []
 
                 while queue:
@@ -9628,8 +9672,16 @@ class ModelBuilder:
                                 raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
-                            parent_xform = _edge_anchor_xform(parent_edge, shared_node)
-                            child_xform = _edge_anchor_xform(child_edge, shared_node)
+                            parent_xform = _edge_anchor_xform(
+                                parent_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_u[parent_edge],
+                            )
+                            child_xform = _edge_anchor_xform(
+                                child_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_v[child_edge],
+                            )
 
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
@@ -9679,15 +9731,19 @@ class ModelBuilder:
                         )
 
                 # Wrap the connected component into an articulation.
-                if component_joints:
-                    if label:
-                        art_label = (
-                            f"{label}_articulation_{component_index}"
-                            if component_index > 0
-                            else f"{label}_articulation"
-                        )
-                    else:
-                        art_label = None
+                if label:
+                    art_label = (
+                        f"{label}_articulation_{component_index}" if component_index > 0 else f"{label}_articulation"
+                    )
+                else:
+                    art_label = None
+                if use_imported_root:
+                    self._finalize_imported_articulation(
+                        component_joints,
+                        parent_body=self.joint_parent[root_joint],
+                        articulation_label=art_label,
+                    )
+                else:
                     self.add_articulation(component_joints, label=art_label)
 
                 component_index += 1
@@ -14262,6 +14318,7 @@ class ModelBuilder:
             validated_templates.add(template_key)
 
     def _find_shape_contact_pairs(self, model: Model) -> None:
+        shape_body_values = self.shape_body
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -14295,6 +14352,14 @@ class ModelBuilder:
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
                 use_world_templates = np.array_equal(segment_worlds, shape_world_np)
+                if use_world_templates:
+                    shape_body_np = np.asarray(shape_body_values, dtype=np.int32)
+                    body_world_np = np.asarray(self.body_world, dtype=np.int32)
+                    attached = shape_body_np >= 0
+                    # Body-relative template keys are valid only when shapes and their bodies share a world.
+                    use_world_templates = np.array_equal(
+                        shape_world_np[attached], body_world_np[shape_body_np[attached]]
+                    )
 
         if use_world_templates:
             blocks_by_world = {}
@@ -14347,12 +14412,15 @@ class ModelBuilder:
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
                 colliding_globals = [
-                    (int(shape_idx), self.shape_collision_group[shape_idx])
+                    (int(shape_idx), self.shape_collision_group[shape_idx], int(shape_body_np[shape_idx]))
                     for shape_idx in np.flatnonzero((shape_world_np == -1) & colliding_np)
                 ]
 
-                for i1, (shape_a, group_a) in enumerate(colliding_globals):
-                    for shape_b, group_b in colliding_globals[i1 + 1 :]:
+                for i1, (shape_a, group_a, body_a) in enumerate(colliding_globals):
+                    for shape_b, group_b, body_b in colliding_globals[i1 + 1 :]:
+                        # Same-body and static-static shape pairs are inherently filtered.
+                        if body_a == body_b or (body_a < 0 and body_b < 0):
+                            continue
                         if not self._test_group_pair(group_a, group_b):
                             continue
                         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
@@ -14373,12 +14441,19 @@ class ModelBuilder:
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
+                    world_shape_bodies_np = shape_body_np[world_start:world_end]
+                    body_key = np.where(
+                        world_shape_bodies_np >= 0,
+                        world_shape_bodies_np - self.body_world_start[world],
+                        -1,
+                    ).tobytes()
                     # Key homogeneous worlds by raw bytes instead of Python
                     # tuples; re-hashing per-shape tuples per world dominates
                     # this loop at high world counts.
                     cache_key = (
                         shape_flags_np[world_start:world_end].tobytes(),
                         shape_group_np[world_start:world_end].tobytes(),
+                        body_key,
                         block_key,
                         explicit_filter_specs,
                     )
@@ -14386,6 +14461,7 @@ class ModelBuilder:
 
                     if cached_pairs is None:
                         collision_groups = self.shape_collision_group[world_start:world_end]
+                        world_shape_bodies = _list_for_iteration(world_shape_bodies_np)
                         local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
 
                         # Replicated-block filters are local to the source block;
@@ -14411,8 +14487,12 @@ class ModelBuilder:
                         # Cache global/local pairs separately: the global id is
                         # absolute, while the local id is shifted during replay.
                         global_local_pairs = []
-                        for global_shape, global_group in colliding_globals:
+                        for global_shape, global_group, global_body in colliding_globals:
                             for local_shape in local_colliding_indices:
+                                local_body = world_shape_bodies[local_shape]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if global_body == local_body or (global_body < 0 and local_body < 0):
+                                    continue
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
                                     pair = (global_shape, local_shape)
                                     if pair not in global_local_filters:
@@ -14421,7 +14501,12 @@ class ModelBuilder:
                         local_pairs = []
                         for i1, shape_a in enumerate(local_colliding_indices):
                             group_a = collision_groups[shape_a]
+                            body_a = world_shape_bodies[shape_a]
                             for shape_b in local_colliding_indices[i1 + 1 :]:
+                                body_b = world_shape_bodies[shape_b]
+                                # Same-body and static-static shape pairs are inherently filtered.
+                                if body_a == body_b or (body_a < 0 and body_b < 0):
+                                    continue
                                 if not self._test_group_pair(group_a, collision_groups[shape_b]):
                                     continue
 
@@ -14473,6 +14558,7 @@ class ModelBuilder:
                 return
 
         contact_pairs: list[tuple[int, int]] = []
+        shape_body = _list_for_iteration(shape_body_values)
         shape_world = self.shape_world
         shape_collision_group = self.shape_collision_group
 
@@ -14484,6 +14570,7 @@ class ModelBuilder:
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = shape_world[s1]
+            body1 = shape_body[s1]
             collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
@@ -14496,6 +14583,11 @@ class ModelBuilder:
                 # be in different worlds, so we can break early.
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
+
+                body2 = shape_body[s2]
+                # Same-body and static-static shape pairs are inherently filtered.
+                if body1 == body2 or (body1 < 0 and body2 < 0):
+                    continue
 
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
