@@ -614,6 +614,8 @@ class _UsdResolutionPolicy:
             inertia_margin=mass.inertia_margin,
         )
 
+    # Shape warnings pass through resolve_shape(), _parse_colliders(), and
+    # parse_usd() before reaching ModelBuilder.add_usd(), so they use stacklevel=5.
     def _resolve_shape_offsets(
         self,
         prim: Any,
@@ -661,7 +663,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"Prim '{prim_path}': legacy translation yields negative margin "
                 f"(mjc_margin={raw_margin}, mjc_gap={read_legacy_mjc_gap()}).",
-                stacklevel=4,
+                stacklevel=5,
             )
         return self._ShapeOffsets(margin, gap_policies.active.value, margin_policies, gap_policies)
 
@@ -693,7 +695,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTargetVoxelSize={raw_target!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
 
         def interpret_max_resolution(result: _ResolvedValue, target: float | None) -> int | None:
@@ -720,19 +722,19 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
         elif raw_max_resolution is not None and raw_max_resolution != float("-inf") and raw_max_resolution % 8 != 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} must be divisible by 8 "
                 f"(SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
         elif target_voxel_size is not None and raw_max_resolution not in (None, float("-inf")):
             warnings.warn(
                 f"{prim_path}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution are set; "
                 f"sdfTargetVoxelSize takes precedence.",
-                stacklevel=4,
+                stacklevel=5,
             )
 
         def resolution_settings(
@@ -823,7 +825,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTextureFormat={raw_texture_format!r} is invalid "
                 f"(expected one of {list(_VALID_SDF_TEXTURE_FORMATS)}); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
 
         def interpret_padding(result: _ResolvedValue) -> float | None:
@@ -843,7 +845,7 @@ class _UsdResolutionPolicy:
         if raw_padding is not None and raw_padding != float("-inf") and raw_padding < 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfPadding={raw_padding!r} is invalid (must be >= 0); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
         return self._ShapeSdfProperties(
             narrow_band_range=sdf_narrow_band_range,
@@ -938,7 +940,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:hydroelasticStiffness={raw_stiffness!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=4,
+                stacklevel=5,
             )
         if (
             requested
@@ -950,7 +952,7 @@ class _UsdResolutionPolicy:
                 f"{prim_path}: hydroelastic mesh requires newton:sdfMaxResolution or "
                 f"newton:sdfTargetVoxelSize so an SDF can be generated; disabling "
                 f"hydroelastic for this shape.",
-                stacklevel=4,
+                stacklevel=5,
             )
         return self._ShapeHydroelasticProperties(enabled, stiffness.value, legacy_enabled, composed_enabled)
 
@@ -1084,7 +1086,7 @@ class _UsdResolutionPolicy:
         ):
             warnings.warn(
                 f"Shape {prim_path}: negative shell thickness {raw_shell_thickness}; falling back to margin.",
-                stacklevel=4,
+                stacklevel=5,
             )
         return self._ShapeMassProperties(
             mass_model_policies.active.value,
