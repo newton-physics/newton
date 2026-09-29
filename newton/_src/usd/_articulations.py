@@ -13,12 +13,12 @@ import numpy as np
 import warp as wp
 
 from . import utils as usd
-from .schema_resolver import PrimType
 
 if TYPE_CHECKING:
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
     from ..sim.builder import ModelBuilder
+    from ._resolution_policy import _UsdResolutionPolicy
     from .schema_resolver import SchemaResolverManager
 
 
@@ -27,7 +27,8 @@ def _parse_articulations(
     stage: Usd.Stage,
     articulation_entries: list[tuple[Sdf.Path, UsdPhysics.ArticulationDesc]],
     *,
-    R: SchemaResolverManager,
+    resolver_manager: SchemaResolverManager,
+    resolution: _UsdResolutionPolicy,
     xform_cache: UsdGeom.XformCache,
     body_specs: dict[str, UsdPhysics.RigidBodyDesc],
     joint_descriptions: dict[str, UsdPhysics.JointDesc],
@@ -45,7 +46,8 @@ def _parse_articulations(
     parent_body: int,
     floating: bool | None,
     base_joint: dict[str, Any] | None,
-    enable_self_collisions: bool,
+    self_collision_default: Any,
+    self_collision_override: Any,
     ignore_paths: list[str],
     collect_schema_attrs: bool,
     verbose: bool,
@@ -81,14 +83,14 @@ def _parse_articulations(
         )
         # Collect engine-specific attributes for the articulation root on first encounter
         if collect_schema_attrs:
-            R.collect_prim_attrs(articulation_prim)
+            resolver_manager.collect_prim_attrs(articulation_prim)
             # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
             try:
                 parent_prim = articulation_prim.GetParent()
             except Exception:
                 parent_prim = None
             if parent_prim is not None and parent_prim.IsValid():
-                R.collect_prim_attrs(parent_prim)
+                resolver_manager.collect_prim_attrs(parent_prim)
 
         # Extract custom attributes for articulation frequency from the articulation root prim
         # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
@@ -125,7 +127,7 @@ def _parse_articulations(
             usd_prim = stage.GetPrimAtPath(p)
             if collect_schema_attrs:
                 # Collect on each articulated body prim encountered
-                R.collect_prim_attrs(usd_prim)
+                resolver_manager.collect_prim_attrs(usd_prim)
 
             if key in body_specs:
                 body_desc = body_specs[key]
@@ -479,14 +481,10 @@ def _parse_articulations(
             excluded_articulation_joints[joint_path] = root_joint_xform
         processed_joints.update(joint_excluded)
 
-        self_collisions = bool(
-            R.get_value(
-                articulation_prim,
-                prim_type=PrimType.ARTICULATION,
-                key="self_collision_enabled",
-                default=enable_self_collisions,
-                verbose=verbose,
-            )
+        self_collisions = resolution.resolve_articulation_self_collision(
+            articulation_prim,
+            default=self_collision_default,
+            override=self_collision_override,
         )
         for articulation in articulation_ids:
             articulation_has_self_collision[articulation] = self_collisions

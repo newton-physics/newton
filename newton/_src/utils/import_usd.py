@@ -42,13 +42,15 @@ from ..solvers.mujoco.utils import (
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd._asset_download import resolve_usd_from_url  # noqa: F401
-from ..usd._resolution_policy import (
-    _PhysicsMaterial,
-    _resolve_physics_material,
-    _UsdJointProperties,
-)
+from ..usd._resolution_policy import _UsdResolutionPolicy
 from ..usd.particles import find_particle_prims, import_particles
-from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schema_resolver import (
+    SchemaResolver,
+    SchemaResolverManager,
+    _interpret_import_argument,
+    _resolve_import_option,
+    _track_omitted_usd_import_defaults,
+)
 from ..usd.schemas import SchemaResolverNewton
 from .color import color_linear_to_srgb
 from .import_usd_deformable_attachments import (
@@ -146,6 +148,7 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
+@_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -174,6 +177,8 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
+    use_registered_schema_fallbacks: bool = False,
+    audit_registered_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -264,11 +269,25 @@ def parse_usd(
 
         only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+        joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+            default for scaling PD control gains. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        collapse_fixed_joints: When omitted, use ``False`` as the
+            importer default for removing fixed joints and merging their bodies.
+            With ``use_registered_schema_fallbacks=True``, an explicitly provided
+            value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
+        enable_self_collisions: When omitted, use ``True`` as the importer
+            default for self-collisions within an articulation. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides the corresponding authored USD value and schema fallback.
+            Legacy resolution continues to treat it as an importer default. USD
+            resolution reads ``newton:selfCollisionEnabled``
+            (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/".
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -291,7 +310,13 @@ def parse_usd(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``.
-        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        mesh_maxhullvert: When omitted, use
+            :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
+            convex hull approximation. Passing ``None`` explicitly selects
+            the same limit. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides the corresponding authored USD value and schema fallback.
+            Legacy resolution continues to treat it as an importer default.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
@@ -303,6 +328,29 @@ def parse_usd(
             .. experimental::
 
                 The ``schema_resolvers`` argument may change without prior notice.
+        use_registered_schema_fallbacks: If True, resolve each ordered resolver's
+            authored value and registered schema fallback before advancing to the
+            next resolver, then use importer and unregistered compatibility defaults.
+            False retains deprecated legacy precedence.
+
+            .. experimental::
+
+                The ``use_registered_schema_fallbacks`` argument may change without
+                prior notice.
+
+            .. deprecated:: 1.6
+                Passing False selects deprecated legacy fallback precedence. Pass
+                True to adopt registered schema fallback precedence.
+        audit_registered_schema_fallbacks: If True, retain legacy precedence while
+            comparing its interpreted results with registered-schema precedence and
+            emit one migration warning when they differ. The audit is disabled by
+            default because it evaluates both policies. It cannot be combined with
+            ``use_registered_schema_fallbacks=True``.
+
+            .. experimental::
+
+                The ``audit_registered_schema_fallbacks`` argument may change without
+                prior notice.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -436,12 +484,17 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
+    if use_registered_schema_fallbacks and audit_registered_schema_fallbacks:
+        raise ValueError("audit_registered_schema_fallbacks requires use_registered_schema_fallbacks=False")
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
 
+    self_collision_override, self_collision_default = _interpret_import_argument(enable_self_collisions)
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+    max_hull_vertices_override, max_hull_vertices_default = _interpret_import_argument(mesh_maxhullvert)
 
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
@@ -466,15 +519,7 @@ def parse_usd(
     from .topology import topological_sort_undirected  # noqa: PLC0415
 
     # Capture material defaults at the start of this import.
-    default_material = _PhysicsMaterial(
-        staticFriction=builder.default_shape_cfg.mu,
-        dynamicFriction=builder.default_shape_cfg.mu,
-        torsionalFriction=builder.default_shape_cfg.mu_torsional,
-        rollingFriction=builder.default_shape_cfg.mu_rolling,
-        restitution=builder.default_shape_cfg.restitution,
-        density=builder.default_shape_cfg.density,
-    )
-
+    default_material = _UsdResolutionPolicy.PhysicsMaterial.from_shape_config(builder.default_shape_cfg)
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
     default_joint_damping = builder.default_joint_cfg.damping
@@ -542,6 +587,26 @@ def parse_usd(
     ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+    authored_drive_gain_scaling = (
+        usd.get_attribute(physics_scene_prim, "newton:joint_drive_gains_scaling")
+        if physics_scene_prim is not None
+        else None
+    )
+    joint_drive_gains_scaling = _resolve_import_option(
+        joint_drive_gains_scaling,
+        authored_drive_gain_scaling,
+        use_explicit_overrides=use_registered_schema_fallbacks,
+    )
+    authored_collapse_fixed_joints = (
+        usd.get_attribute(physics_scene_prim, "newton:collapse_fixed_joints")
+        if physics_scene_prim is not None
+        else None
+    )
+    collapse_fixed_joints = _resolve_import_option(
+        collapse_fixed_joints,
+        authored_collapse_fixed_joints,
+        use_explicit_overrides=use_registered_schema_fallbacks,
+    )
 
     legacy_rigid_object_types = (
         UsdPhysics.ObjectType.RigidBody,
@@ -587,26 +652,37 @@ def parse_usd(
             )
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers)
+    resolver_manager = SchemaResolverManager(
+        schema_resolvers,
+        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+        audit_registered_schema_fallbacks=audit_registered_schema_fallbacks,
+    )
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
     # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
     # import parses the AOUSD proposal as written.
-    deformable_compat_ns = R.deformable_compat_namespaces()
+    deformable_compat_ns = resolver_manager.deformable_compat_namespaces()
     # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
-    deformable_read = R.read_deformable_attr
+    deformable_read = resolver_manager.read_deformable_attr
 
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
     mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
-    joint_properties = _UsdJointProperties(
-        resolver=R,
+    resolution = _UsdResolutionPolicy(
+        resolver_manager,
+        degrees_to_radian=DegreesToRadian,
+        default_joint_damping=default_joint_damping,
+        default_joint_velocity_limit=default_joint_velocity_limit,
+        verbose=verbose,
+    )
+    joint_properties = _joints._UsdJointProperties(
+        resolver=resolver_manager,
+        resolution=resolution,
         degrees_to_radian=DegreesToRadian,
         default_armature=default_joint_armature,
         default_friction=default_joint_friction,
-        default_damping=default_joint_damping,
         default_limit_ke=default_joint_limit_ke,
         default_limit_kd=default_joint_limit_kd,
         limit_gains_configured=default_joint_limit_gains_configured,
@@ -1181,7 +1257,7 @@ def parse_usd(
             incoming_xform,
             builder=builder,
             stage=stage,
-            R=R,
+            R=resolver_manager,
             joint_properties=joint_properties,
             path_body_map=path_body_map,
             path_joint_map=path_joint_map,
@@ -1216,7 +1292,7 @@ def parse_usd(
             incoming_xform,
             builder=builder,
             stage=stage,
-            R=R,
+            R=resolver_manager,
             joint_properties=joint_properties,
             joint_descriptions=joint_descriptions,
             path_body_map=path_body_map,
@@ -1266,22 +1342,10 @@ def parse_usd(
         for attr in declarations.values():
             builder.add_custom_attribute(attr)
 
-        # Updating joint_drive_gains_scaling if set of the PhysicsScene
-        joint_drive_gains_scaling = usd.get_float(
-            physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
-        )
-
-        time_steps_per_second = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose
-        )
-        physics_dt = (1.0 / time_steps_per_second) if time_steps_per_second > 0 else 0.001
-
-        gravity_enabled = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
-        )
-        max_solver_iters = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
-        )
+        scene_properties = resolution.resolve_scene(physics_scene_prim)
+        physics_dt = scene_properties.physics_dt
+        gravity_enabled = scene_properties.gravity_enabled
+        max_solver_iters = scene_properties.max_solver_iterations
 
     stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
@@ -1359,9 +1423,7 @@ def parse_usd(
                     f"{scene_path}: physics:gravityMagnitude does not convert to a finite, representable SI value."
                 )
 
-        mpm_gravity_enabled = R.get_value(
-            scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
-        )
+        mpm_gravity_enabled = resolution.resolve_gravity_enabled(scene_prim)
         gravity_xform = axis_xform if override_root_xform else incoming_world_xform
         direction = wp.transform_vector(gravity_xform, wp.vec3(*direction_array))
         gravity = direction * magnitude_si if mpm_gravity_enabled else wp.vec3()
@@ -1415,7 +1477,7 @@ def parse_usd(
     if physics_scene_prim is not None:
         # Collect schema-defined attributes from the scene prim for inspection (e.g., mjc:* attributes)
         if collect_schema_attrs:
-            R.collect_prim_attrs(physics_scene_prim)
+            resolver_manager.collect_prim_attrs(physics_scene_prim)
 
         # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
         # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -1446,7 +1508,7 @@ def parse_usd(
     # set of prim paths of rigid bodies that are ignored
     # (to avoid repeated regex evaluations)
     ignored_body_paths = set()
-    material_specs = {}
+    material_specs: dict[str, _UsdResolutionPolicy.PhysicsMaterial] = {}
 
     # TODO: uniform interface for iterating
     def data_for_key(physics_utils_results, key):
@@ -1475,8 +1537,21 @@ def parse_usd(
             continue
         prim = stage.GetPrimAtPath(sdf_path)
 
-        material_specs[str(sdf_path)] = _resolve_physics_material(
-            prim, desc, R, builder.default_shape_cfg, default_shape_density=default_shape_density, verbose=verbose
+        if not math.isfinite(desc.density):
+            warnings.warn(
+                f"{sdf_path}: authored material density must be finite; treating it as unspecified.",
+                stacklevel=2,
+            )
+
+        material_specs[str(sdf_path)] = resolution.resolve_material(
+            prim,
+            static_friction=desc.staticFriction,
+            dynamic_friction=desc.dynamicFriction,
+            restitution=desc.restitution,
+            # Treat non-positive, non-finite, or unauthored material density as "use importer default".
+            # Effective collider/body MassAPI mass+inertia is handled later.
+            density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
+            default_shape=builder.default_shape_cfg,
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1617,7 +1692,8 @@ def parse_usd(
         builder=builder,
         stage=stage,
         root_prim=root_prim,
-        resolver=R,
+        resolver=resolver_manager,
+        resolution_policy=resolution,
         collect_schema_attrs=collect_schema_attrs,
         deformable_read=deformable_read,
         get_prim_world_mat=_get_prim_world_mat,
@@ -1697,7 +1773,8 @@ def parse_usd(
             builder,
             stage,
             articulation_entries,
-            R=R,
+            resolver_manager=resolver_manager,
+            resolution=resolution,
             xform_cache=xform_cache,
             body_specs=body_specs,
             joint_descriptions=joint_descriptions,
@@ -1715,7 +1792,8 @@ def parse_usd(
             parent_body=parent_body,
             floating=floating,
             base_joint=base_joint,
-            enable_self_collisions=enable_self_collisions,
+            self_collision_default=self_collision_default,
+            self_collision_override=self_collision_override,
             ignore_paths=ignore_paths,
             collect_schema_attrs=collect_schema_attrs,
             verbose=verbose,
@@ -1867,7 +1945,8 @@ def parse_usd(
         stage=stage,
         xform_cache=xform_cache,
         ret_dict=ret_dict,
-        R=R,
+        resolver_manager=resolver_manager,
+        resolution=resolution,
         visuals=visuals,
         mass_properties=mass_properties,
         material_specs=material_specs,
@@ -1884,7 +1963,8 @@ def parse_usd(
         load_visual_shapes=load_visual_shapes,
         hide_collision_shapes=hide_collision_shapes,
         force_show_colliders=force_show_colliders,
-        mesh_maxhullvert=mesh_maxhullvert,
+        max_hull_vertices_default=max_hull_vertices_default,
+        max_hull_vertices_override=max_hull_vertices_override,
         skip_mesh_approximation=skip_mesh_approximation,
         collect_schema_attrs=collect_schema_attrs,
         legacy_margin_gap=legacy_margin_gap,
@@ -2403,7 +2483,7 @@ def parse_usd(
                 continue
 
             if collect_schema_attrs and (is_connect or is_weld):
-                R.collect_prim_attrs(joint_prim)
+                resolver_manager.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
                 joint_prim, builder_custom_attr_eq, context={"builder": builder}
@@ -2571,7 +2651,7 @@ def parse_usd(
     collapse_results = None
     path_body_relative_transform = {}
     builder_joint_labels_before_collapse = list(builder.joint_label)
-    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
+    if collapse_fixed_joints:
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
@@ -2820,7 +2900,7 @@ def parse_usd(
         "physics_scene_path": str(physics_scene_prim.GetPath()) if physics_scene_prim is not None else None,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "schema_attrs": R.schema_attrs,
+        "schema_attrs": resolver_manager.schema_attrs,
         # "articulation_roots": articulation_roots,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
@@ -3015,6 +3095,14 @@ def parse_usd(
                 "path_attachment_map": path_attachment_map,
                 "path_attachment_attrs": path_attachment_attrs,
             }
+        )
+
+    fallback_migration_warning = resolver_manager._fallback_migration_warning()
+    if fallback_migration_warning is not None:
+        warnings.warn(
+            fallback_migration_warning,
+            DeprecationWarning,
+            stacklevel=_external_stacklevel(),
         )
 
     return result

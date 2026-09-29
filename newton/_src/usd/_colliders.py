@@ -21,20 +21,12 @@ from ..sim.builder import ModelBuilder
 from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
-from ._resolution_policy import (
-    _resolve_shape_contact,
-    _resolve_shape_hydroelastic,
-    _resolve_shape_offsets,
-    _resolve_shape_sdf,
-    _resolve_shape_shell,
-)
-from .schema_resolver import PrimType
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdGeom, UsdPhysics
 
     from ._mass_properties import _UsdMassProperties
-    from ._resolution_policy import _PhysicsMaterial
+    from ._resolution_policy import _UsdResolutionPolicy
     from ._visuals import _UsdVisuals
     from .schema_resolver import SchemaResolverManager
 
@@ -45,10 +37,11 @@ def _parse_colliders(
     stage: Usd.Stage,
     xform_cache: UsdGeom.XformCache,
     ret_dict: dict[Any, Any],
-    R: SchemaResolverManager,
+    resolver_manager: SchemaResolverManager,
+    resolution: _UsdResolutionPolicy,
     visuals: _UsdVisuals,
     mass_properties: _UsdMassProperties,
-    material_specs: dict[str, _PhysicsMaterial],
+    material_specs: dict[str, _UsdResolutionPolicy.PhysicsMaterial],
     default_shape_density: float,
     path_body_map: dict[str, int],
     path_shape_map: dict[str, int],
@@ -62,7 +55,8 @@ def _parse_colliders(
     load_visual_shapes: bool,
     hide_collision_shapes: bool,
     force_show_colliders: bool,
-    mesh_maxhullvert: int,
+    max_hull_vertices_default: Any,
+    max_hull_vertices_override: Any,
     skip_mesh_approximation: bool,
     collect_schema_attrs: bool,
     legacy_margin_gap: bool,
@@ -120,14 +114,16 @@ def _parse_colliders(
                 collision_group = builder.default_shape_cfg.collision_group
                 collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
                 material = material_specs[""]
+                material_path = ""
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
                         print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material = material_specs[str(shape_spec.materials[0])]
+                    material_path = str(shape_spec.materials[0])
+                    material = material_specs[material_path]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamic_friction},\ttorsional friction: {material.torsional_friction},\trolling friction: {material.rolling_friction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -151,11 +147,15 @@ def _parse_colliders(
                     prim, builder_custom_attr_shape, context={"builder": builder}
                 )
                 if collect_schema_attrs:
-                    R.collect_prim_attrs(prim)
+                    resolver_manager.collect_prim_attrs(prim)
 
-                margin_val, gap_val = _resolve_shape_offsets(
-                    prim, R, builder.default_shape_cfg, legacy_margin_gap=legacy_margin_gap, verbose=verbose
-                )
+                legacy_mjc_gap: list[float] = []
+
+                def _get_legacy_mjc_gap(prim=prim, cache=legacy_mjc_gap):
+                    if not cache:
+                        value = usd.get_attribute(prim, "mjc:gap")
+                        cache.append(0.0 if value is None else float(value))
+                    return cache[0]
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = visuals.get_material_props_cached(prim)
@@ -180,33 +180,62 @@ def _parse_colliders(
                     load_visual_shapes and visuals.is_viewport_drawn(prim) and not hide_collider_for_body
                 )
 
-                shape_contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
-                shape_ke = shape_contact["ke"]
-                shape_kd = shape_contact["kd"]
-                shape_kf = shape_contact["kf"]
-                shape_ka = shape_contact["ka"]
+                # Contact response precedence:
+                #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
+                shape_contact = resolution.resolve_contact_response(
+                    prim,
+                    material,
+                    builder.default_shape_cfg,
+                    has_mjc_solref=usd.get_attribute(prim, "mjc:solref") is not None,
+                )
+                shape_ke = shape_contact.ke
+                shape_kd = shape_contact.kd
+                shape_kf = shape_contact.kf
+                shape_ka = shape_contact.ka
 
                 shape_color = material_props.get("color")
                 carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
                 if shape_color is None and not carries_texture and collider_is_visible:
                     shape_color = _UNMATERIALED_VISUAL_COLOR
 
-                sdf = _resolve_shape_sdf(prim, R, builder.default_shape_cfg, verbose=verbose)
-                has_sdf_api = sdf.has_api
-                sdf_max_resolution = sdf.max_resolution
-                sdf_narrow_band_range = sdf.narrow_band_range
-                sdf_target_voxel_size = sdf.target_voxel_size
-                sdf_texture_format = sdf.texture_format
-                sdf_padding = sdf.padding
-                is_hydroelastic, kh = _resolve_shape_hydroelastic(
+                # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
+                # signal that SDF generation is configured for this shape.
+                has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+                # collision representations and should not be co-applied. SDF wins
+                # when both are present.
+                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+                    warnings.warn(
+                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+                        f"independent collision representations and should not be co-applied; "
+                        f"SDF configuration will be used.",
+                        stacklevel=3,
+                    )
+
+                shape_properties = resolution.resolve_shape(
                     prim,
-                    R,
-                    builder.default_shape_cfg,
-                    sdf,
+                    prim_path=path,
+                    defaults=builder.default_shape_cfg,
+                    has_sdf_api=has_sdf_api,
                     is_mesh=key == UsdPhysics.ObjectType.MeshShape,
-                    verbose=verbose,
+                    is_plane=key == UsdPhysics.ObjectType.PlaneShape,
+                    collider_is_enabled=collider_is_enabled,
+                    rigid_gap=builder.rigid_gap,
+                    legacy_margin_gap=legacy_margin_gap,
+                    read_legacy_mjc_gap=_get_legacy_mjc_gap,
                 )
-                shape_is_solid, inertia_margin, shell_thickness_val = _resolve_shape_shell(prim, R, margin_val)
+                margin_val = shape_properties.margin
+                gap_val = shape_properties.gap
+                sdf_max_resolution = shape_properties.sdf_max_resolution
+                sdf_narrow_band_range = shape_properties.sdf_narrow_band_range
+                sdf_target_voxel_size = shape_properties.sdf_target_voxel_size
+                sdf_texture_format = shape_properties.sdf_texture_format
+                sdf_padding = shape_properties.sdf_padding
+                is_hydroelastic = shape_properties.is_hydroelastic
+                kh = shape_properties.kh
+                shape_is_solid = shape_properties.is_solid
+                shell_thickness_val = shape_properties.shell_thickness
+                inertia_margin = shape_properties.inertia_margin
 
                 if shape_already_added:
                     builder.shape_collision_group[path_shape_map[path]] = collision_group
@@ -234,10 +263,10 @@ def _parse_colliders(
                         ka=shape_ka,
                         margin=inertia_margin,
                         gap=gap_val,
-                        mu=material.dynamicFriction,
+                        mu=material.dynamic_friction,
                         restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
+                        mu_torsional=material.torsional_friction,
+                        mu_rolling=material.rolling_friction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
@@ -332,12 +361,10 @@ def _parse_colliders(
                         # prim path, so every consumer resolves the same values.
                         mesh = visuals.get_mesh_cached(prim)
                         visuals.apply_visual_material(mesh, material_props)
-                    mesh.maxhullvert = R.get_value(
+                    mesh.maxhullvert = resolution.resolve_max_hull_vertices(
                         prim,
-                        prim_type=PrimType.SHAPE,
-                        key="max_hull_vertices",
-                        default=mesh_maxhullvert,
-                        verbose=verbose,
+                        default=max_hull_vertices_default,
+                        override=max_hull_vertices_override,
                     )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().

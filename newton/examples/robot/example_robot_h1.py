@@ -36,7 +36,7 @@ class Example:
 
         h1 = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(h1)
-        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1)
         h1.default_shape_cfg.ke = 2.0e3
         h1.default_shape_cfg.kd = 1.0e2
         h1.default_shape_cfg.kf = 1.0e3
@@ -48,6 +48,7 @@ class Example:
             asset_file,
             ignore_paths=["/GroundPlane"],
             enable_self_collisions=False,
+            use_registered_schema_fallbacks=True,
         )
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
