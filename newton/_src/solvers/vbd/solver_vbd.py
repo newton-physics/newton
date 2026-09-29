@@ -841,7 +841,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         if integrates_rigid_bodies:
-            self._set_module_options(options, module=rigid_vbd_kernels)
+            rigid_modules = (
+                rigid_vbd_kernels,
+                accumulate_body_body_contacts_per_body.module,
+                compute_rigid_contact_forces.module,
+                update_duals_body_body_contacts.module,
+            )
+            for module in rigid_modules:
+                self._set_module_options(options, module=module)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -3876,6 +3883,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_surface_velocity,
                         contacts.rigid_contact_offset0,
                         contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
@@ -3985,6 +3993,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
+                    contacts.rigid_contact_surface_velocity,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
@@ -3993,6 +4002,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.shape_body,
                     state_in.body_q,
                     self.body_q_prev,
+                    dt,
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
@@ -4189,6 +4199,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_surface_velocity,
                 contacts.rigid_contact_offset0,
                 contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
