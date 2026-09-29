@@ -104,6 +104,7 @@ class TestImportUsdJoints(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_collision_enabled(self):
+        """Respect joint collision flags and the self-collision override."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         def build(joints, *, enable_self_collisions=True):
@@ -205,6 +206,7 @@ class TestImportUsdJoints(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_does_not_filter_collisions(self):
+        """Keep collisions between world-attached bodies and static colliders."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         for joint_type in (UsdPhysics.FixedJoint, UsdPhysics.RevoluteJoint):
@@ -233,7 +235,7 @@ class TestImportUsdJoints(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_parsing(self):
-        """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
+        """Parse NewtonJointAPI broadcast attributes onto a revolute joint, including sentinels."""
         from pxr import Usd
 
         from newton._src.usd._resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
@@ -379,7 +381,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_prismatic(self):
-        """NewtonJointAPI attributes parse onto a prismatic joint without per-degree conversion."""
+        """Parse NewtonJointAPI attributes onto a prismatic joint without per-degree conversion."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -461,7 +463,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_revolute_default_damping(self):
-        """builder.default_joint_cfg.damping is used as-is when newton:damping is not authored.
+        """Use builder.default_joint_cfg.damping unchanged when newton:damping is not authored.
 
         Regression: the importer previously divided the builder default by DegreesToRadian,
         producing an incorrect value (e.g. 3.0 → ~171.9) for revolute joints.
@@ -537,7 +539,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_merged_joint_revolute_default_damping(self):
-        """Merged-joint (D6 consolidation) path uses builder default damping as-is.
+        """Use builder default damping unchanged when merging joints into a D6 joint.
 
         Regression: when two single-DOF joints between the same body pair are
         merged into one D6 joint, the revolute (angular) DOF ran an unconditional
@@ -693,7 +695,7 @@ def Xform "World" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
-        """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
+        """Broadcast NewtonJointAPI attributes across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
 
         deg2rad = math.pi / 180.0
@@ -801,7 +803,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_velocity_limit_unlimited(self):
-        """newton:velocityLimit=inf falls back to the builder default rather than storing inf."""
+        """Use the builder default for newton:velocityLimit=inf rather than storing inf."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -873,8 +875,10 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_limit_sentinel_precedence_over_mjc(self):
-        """Authored newton:limitStiffness=-inf must select the builder default,
-        not fall through to a lower-priority MuJoCo per-DOF gain."""
+        """Select the builder default for authored newton:limitStiffness=-inf.
+
+        Do not fall through to a lower-priority MuJoCo per-DOF gain.
+        """
         from pxr import Sdf, Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
@@ -1039,6 +1043,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
+        """Order ant articulation joints using DFS or BFS traversal."""
         builder_dfs = newton.ModelBuilder()
         builder_dfs.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
@@ -1195,7 +1200,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_override_replaces_authored_root_joint(self):
-        """Explicit floating overrides must not leave a duplicate USD root joint."""
+        """Replace the authored root joint when an explicit floating override is provided."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def create_stage():
@@ -1250,7 +1255,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
-        """Reversing a D6 joint should raise an error."""
+        """Reject a reversed D6 joint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -1294,7 +1299,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_spherical_raises(self):
-        """Reversing a spherical joint should raise an error."""
+        """Reject a reversed spherical joint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -1338,6 +1343,8 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_filtering(self):
+        """Filter ignored joints and bodies and rebuild the affected articulations."""
+
         def test_filtering(
             msg,
             ignore_paths,
@@ -1478,7 +1485,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_loop_joint(self):
-        """Test that an articulation with a loop joint denoted with excludeFromArticulation is correctly parsed from USD."""
+        """Import an articulation with a loop joint marked excludeFromArticulation."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -1579,7 +1586,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solimp_friction_parsing(self):
-        """Test that solimp_friction attribute is parsed correctly from USD."""
+        """Parse solimp_friction attributes from USD."""
         from pxr import Usd
 
         # Create USD stage with multiple single-DOF revolute joints

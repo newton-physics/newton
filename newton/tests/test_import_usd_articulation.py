@@ -22,6 +22,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 class TestImportUsdArticulation(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_raises_on_stage_errors(self):
+        """Reject a USD stage with composition errors."""
         from pxr import Usd
 
         usd_text = """#usda 1.0
@@ -42,6 +43,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation(self):
+        """Import the ant articulation with its bodies, joints, shapes, and path maps."""
         builder = newton.ModelBuilder()
 
         results = builder.add_usd(
@@ -68,7 +70,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mirrored_body_transform_warns(self):
-        """A rigid body with a negative-determinant (mirrored) transform warns.
+        """Warn when a rigid body has a negative-determinant (mirrored) transform.
 
         Improper transforms have no unique rotation decomposition, so the
         incoming-xform rebase can inject a spurious constant rotation into
@@ -99,9 +101,10 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_body_newton_armature_ignored(self):
-        # Body-level newton:armature was removed: an authored value must be
-        # ignored without warning and contribute nothing to body inertia.
-        # (Joint-level newton:armature is a separate, supported attribute.)
+        """Ignore body-level newton:armature without warnings or changes to inertia.
+
+        Body-level armature was removed; joint-level armature remains supported.
+        """
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -134,6 +137,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_non_articulated_joints(self):
+        """Import a rootless four-bar mechanism without creating an articulation."""
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("boxes_fourbar.usda")
@@ -198,7 +202,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
-        """A USD fixed joint to world remains rootless and finalizes normally."""
+        """Keep a fixed joint to world rootless and finalize normally."""
         stage = self._make_rootless_fixed_stage(with_child_joint=False)
         builder = newton.ModelBuilder()
         builder.add_usd(stage, load_visual_shapes=False)
@@ -215,7 +219,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
-        """A root joint without ArticulationRootAPI must not split the mechanism."""
+        """Keep root and child joints outside articulations without ArticulationRootAPI."""
         stage = self._make_rootless_fixed_stage(with_child_joint=True)
         builder = newton.ModelBuilder()
         builder.add_usd(stage, load_visual_shapes=False)
@@ -237,7 +241,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rootless_multi_joint_body_is_merged(self):
-        """Multiple world joints on one orphan body retain all MJCF DOFs."""
+        """Retain all MJCF DOFs when merging multiple world joints on one orphan body."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -280,6 +284,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
+        """Create free joints for floating bodies when all authored joints are disabled."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -328,7 +333,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_unrelated_floating_body_gets_single_body_articulation(self):
-        """Floating bodies outside authored articulations get standalone articulations."""
+        """Create standalone articulations for floating bodies outside authored articulations."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -384,7 +389,8 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_orphan_joints_with_articulation_present(self):
-        """Joints outside any articulation must not be silently dropped.
+        """Import joints outside articulations alongside an authored articulation.
+
         This test creates a stage with an articulation and a separate revolute joint outside it,
         and verifies that both are parsed correctly.
         """
@@ -486,8 +492,9 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_stray_joint_does_not_strip_unrelated_floating_bodies(self):
-        """A stray authored joint under no articulation root must not suppress base-joint
-        creation for unrelated floating bodies. Regression test for issue #3002.
+        """Preserve base joints for unrelated floating bodies when importing a stray joint.
+
+        Regression test for issue #3002.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -533,8 +540,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
-        """A body connected to the world via a PhysicsFixedJoint must be imported
-        with a FIXED joint (not FREE) without synthesizing a new articulation."""
+        """Import a body-to-world PhysicsFixedJoint as FIXED without creating an articulation."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -608,7 +614,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
-        """Orphan body-to-world fixed joints keep env-origin + spawn xform."""
+        """Preserve environment offsets and spawn transforms for orphan body-to-world fixed joints."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         local_pose0 = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat(0.0, 0.0, 0.7071068, 0.7071068))  # 90deg about z
@@ -668,7 +674,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
-        """collapse_fixed_joints must not drop orphan joints or their bodies."""
+        """Preserve orphan joints and their bodies when collapsing fixed joints."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -726,6 +732,7 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     @_expect_jointless_articulation_warning
     def test_import_articulation_parent_offset(self):
+        """Combine articulation parent offsets with the import transform."""
         from pxr import Usd
 
         usd_text = """#usda 1.0
@@ -790,6 +797,7 @@ def "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_scale_ops_units_resolve(self):
+        """Combine authored and unitsResolve scale operations for collider dimensions."""
         from pxr import Usd
 
         usd_text = """#usda 1.0
@@ -833,6 +841,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_scale_ops_nested_xforms(self):
+        """Combine nested transform scales for collider dimensions."""
         from pxr import Usd
 
         usd_text = """#usda 1.0
@@ -985,6 +994,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):
+        """Import the ant articulation with collision shapes but no visuals or sites."""
         builder = newton.ModelBuilder()
 
         results = builder.add_usd(
@@ -1013,6 +1023,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_with_mesh(self):
+        """Import an articulation containing a mesh without errors."""
         builder = newton.ModelBuilder()
 
         _ = builder.add_usd(
@@ -1022,7 +1033,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_revolute_articulation(self):
-        """Test importing USD with a joint that has missing body1.
+        """Connect body0 to the world when a fixed joint has no body1.
 
         This tests the behavior where:
         - Normally: body0 is parent, body1 is child
