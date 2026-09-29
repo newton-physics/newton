@@ -903,10 +903,13 @@ def parse_urdf(
                 )
                 continue
 
+            # The composed relation uses URDF units. Convert it to the imported joint coordinates.
+            follower_scale = scale if joint["type"] == "prismatic" else 1.0
+            reference_scale = scale if joints_by_name[mimic_target_name]["type"] == "prismatic" else 1.0
             builder.set_joint_mimic(
                 joint=follower_idx,
                 reference_joint=joint_name_to_idx[mimic_target_name],
-                coeffs=(offset, multiplier),
+                coeffs=(offset * follower_scale, multiplier * follower_scale / reference_scale),
             )
 
     # Create articulation from all collected joints

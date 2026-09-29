@@ -2102,6 +2102,42 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
         np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], (0.5, 6.0))
 
+    def test_scaled_mimic_chain_converts_joint_units(self):
+        """Scale a flattened chain for its follower and reference coordinates."""
+        cases = (
+            ("prismatic", "prismatic", (1.0, 6.0)),
+            ("revolute", "prismatic", (1.0, 12.0)),
+            ("prismatic", "revolute", (0.5, 3.0)),
+        )
+        for reference_type, follower_type, expected in cases:
+            with self.subTest(reference_type=reference_type, follower_type=follower_type):
+                urdf = f"""
+                <robot name="scaled_chain">
+                    <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/>
+                    <joint name="j1" type="{reference_type}">
+                        <parent link="base"/><child link="l1"/>
+                        <limit lower="-2" upper="2"/>
+                    </joint>
+                    <joint name="j2" type="{follower_type}">
+                        <parent link="l1"/><child link="l2"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j1" multiplier="2" offset="0.1"/>
+                    </joint>
+                    <joint name="j3" type="{follower_type}">
+                        <parent link="l2"/><child link="l3"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j2" multiplier="3" offset="0.2"/>
+                    </joint>
+                </robot>
+                """
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=2.0)
+                model = builder.finalize(device="cpu")
+                j1 = model.joint_label.index("scaled_chain/j1")
+                j3 = model.joint_label.index("scaled_chain/j3")
+                self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
+                np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], expected)
+
     def test_mimic_cycle_reports_joint_names(self):
         """Reject cyclic URDF mimic references with named joints."""
         urdf = """
