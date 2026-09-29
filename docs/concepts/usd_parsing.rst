@@ -565,6 +565,8 @@ On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the followi
      - ``limit_kd``
      - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
 
+On ``SphericalJoint`` prims, only ``newton:armature``, ``newton:damping``, and ``newton:friction`` are resolved; each applies to all three rotational DOFs.
+
 Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
 
 **MuJoCo Attribute Remapping Examples:**

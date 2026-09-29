@@ -4048,6 +4048,67 @@ def Xform "Articulation" (
         self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_spherical_joint_armature_and_friction_via_schema_resolver(self):
+        """Verify schema-resolved armature and friction reach every spherical-joint DOF."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+        child_mass = UsdPhysics.MassAPI.Apply(child.GetPrim())
+        child_mass.CreateMassAttr().Set(1.0)
+        child_mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+
+        # Fix the parent to the world so the ball joint is the only MuJoCo joint.
+        root = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/Root")
+        root.CreateBody1Rel().SetTargets([parent.GetPath()])
+
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        for name, value in (
+            ("newton:armature", 0.25),
+            ("newton:friction", 0.5),
+            ("mjc:armature", 0.125),
+            ("mjc:frictionloss", 0.375),
+            ("physxJoint:armature", 0.0625),
+        ):
+            joint.GetPrim().CreateAttribute(name, Sdf.ValueTypeNames.Float, custom=True).Set(value)
+
+        # SchemaResolverPhysx maps armature only, so friction keeps the builder default.
+        cases = (
+            (usd.SchemaResolverNewton, 0.25, 0.5),
+            (usd.SchemaResolverMjc, 0.125, 0.375),
+            (usd.SchemaResolverPhysx, 0.0625, 0.0),
+        )
+        for resolver_type, armature, friction in cases:
+            with self.subTest(resolver=resolver_type.name):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[resolver_type()])
+                model = builder.finalize(device="cpu")
+
+                joint_index = model.joint_label.index("/World/Articulation/Joint")
+                dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                dofs = slice(dof_start, dof_start + 3)
+                np.testing.assert_allclose(model.joint_armature.numpy()[dofs], [armature] * 3)
+                np.testing.assert_allclose(model.joint_friction.numpy()[dofs], [friction] * 3)
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+                np.testing.assert_allclose(solver.mj_model.dof_armature, [armature] * 3)
+                np.testing.assert_allclose(solver.mj_model.dof_frictionloss, [friction] * 3)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_damping_from_d6_joint_via_schema_resolver(self):
         """Verify MuJoCo USD damping reaches linear and angular D6 DOFs."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics

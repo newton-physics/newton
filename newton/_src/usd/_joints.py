@@ -175,6 +175,12 @@ def parse_joint(
         else:
             joint_index = builder.add_joint_prismatic(**joint_params)
     elif key == UsdPhysics.ObjectType.SphericalJoint:
+        joint_params["armature"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        )
+        joint_params["friction"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+        )
         _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
         joint_params["damping"] = joint_damping
         joint_index = builder.add_joint_ball(**joint_params)
