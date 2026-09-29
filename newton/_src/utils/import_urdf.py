@@ -869,20 +869,12 @@ def parse_urdf(
         joint_indices.append(created_joint_idx)
         joint_name_to_idx[joint["name"]] = created_joint_idx
 
-    # Configure mimic relationships
+    # Flatten imported chains because joint-owned mimic metadata requires an independent reference.
+    joints_by_name = {joint["name"]: joint for joint in sorted_joints}
     for joint in sorted_joints:
         if "mimic_joint" in joint:
             mimic_target_name = joint["mimic_joint"]
-            if mimic_target_name not in joint_name_to_idx:
-                warnings.warn(
-                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
-                    stacklevel=2,
-                )
-                continue
-
             follower_idx = joint_name_to_idx.get(joint["name"])
-            leader_idx = joint_name_to_idx.get(mimic_target_name)
-
             if follower_idx is None:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
@@ -890,10 +882,31 @@ def parse_urdf(
                 )
                 continue
 
+            offset = joint.get("mimic_coef0", 0.0)
+            multiplier = joint.get("mimic_coef1", 1.0)
+            visited = [joint["name"]]
+            while mimic_target_name in joint_name_to_idx:
+                if mimic_target_name in visited:
+                    cycle = " -> ".join([*visited, mimic_target_name])
+                    raise ValueError(f"Cyclic URDF mimic joints: {cycle}")
+                visited.append(mimic_target_name)
+                target = joints_by_name[mimic_target_name]
+                if "mimic_joint" not in target:
+                    break
+                offset += multiplier * target.get("mimic_coef0", 0.0)
+                multiplier *= target.get("mimic_coef1", 1.0)
+                mimic_target_name = target["mimic_joint"]
+            else:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
             builder.set_joint_mimic(
                 joint=follower_idx,
-                reference_joint=leader_idx,
-                coeffs=(joint.get("mimic_coef0", 0.0), joint.get("mimic_coef1", 1.0)),
+                reference_joint=joint_name_to_idx[mimic_target_name],
+                coeffs=(offset, multiplier),
             )
 
     # Create articulation from all collected joints

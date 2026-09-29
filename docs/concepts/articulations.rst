@@ -180,10 +180,12 @@ left unchanged. By default the function updates the input state in place; pass
 a different output state to copy the input coordinates and update the
 followers in that state instead.
 
-Mimic chains are not supported. The reference joint must be independent, and a
-joint that is already the reference for a follower cannot itself become a
-follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
-case would create a chain.
+Joint-owned mimic chains are not supported. The reference joint must be
+independent, and a joint that is already the reference for a follower cannot
+itself become a follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises
+an error if either case would create a chain. When importing URDF,
+:meth:`newton.ModelBuilder.add_urdf` composes chained ``<mimic>`` coefficients
+into direct references to independent joints.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
