@@ -11997,7 +11997,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             np.array([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW], dtype=np.int32)
         )
         solver = SolverMuJoCo(model, disable_contacts=True)
-        initial = solver.mjw_model.tendon_solref_lim.numpy()
+        initial = solver.mjw_model.tendon_solref_lim.numpy().copy()
         np.testing.assert_allclose(initial[1, 0], [-100.0, -20.0])
         self.assertTrue(np.all(initial[0, 0] > 0.0))
         self.assertGreater(float(model.mujoco.tendon_limit_ke.numpy()[1]), 0.0)
@@ -12012,6 +12012,27 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertTrue(np.isneginf(ranges[0, 0, 0]))
         self.assertTrue(np.isposinf(ranges[0, 0, 1]))
         np.testing.assert_allclose(ranges[1, 0], [-0.1, 0.1])
+
+    def test_tendon_limit_force_gains_degenerate_scaling(self):
+        """Preserve damped and undamped tendon gains when inverse-inertia scaling degenerates."""
+        for use_cpu, boundary, kd in itertools.product((False, True), ("zero_invweight", "unit_dmax"), (0.0, 20.0)):
+            with self.subTest(use_cpu=use_cpu, boundary=boundary, kd=kd):
+                model = self._build_tendon_limit_model()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
+                model.mujoco.tendon_limit_ke.fill_(100.0)
+                model.mujoco.tendon_limit_kd.fill_(kd)
+                model.mujoco.tendon_solref_limit_mode.fill_(SOLREF_MODE_FORCE_SPACE)
+                if boundary == "zero_invweight":
+                    # Exercise the conversion boundary without a subsequent inertia recomputation.
+                    solver.mj_model.tendon_invweight0[:] = 0.0
+                    solver.mjw_model.tendon_invweight0.zero_()
+                    solver._update_tendon_limit_gains()
+                else:
+                    model.mujoco.tendon_solimp_limit.assign(np.array([[0.95, 1.0, 0.001, 0.5, 2.0]], dtype=np.float32))
+                    solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
+                expected = _expected_positive_limit_solref(100.0, kd, 1.0) if kd else [-100.0, 0.0]
+                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], expected, rtol=1.0e-5)
+                np.testing.assert_allclose(solver.mjw_model.tendon_solref_lim.numpy()[0, 0], expected, rtol=1.0e-5)
 
     def _build_pendulum_model(
         self,

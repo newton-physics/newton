@@ -2749,7 +2749,11 @@ def update_tendon_limit_gains_kernel(
     if source < 0:
         return
 
-    factor = invweight0[world, tendon] * (1.0 - solimp[world, tendon][1])
+    invw = invweight0[world, tendon]
+    dmax = solimp[world, tendon][1]
+    factor = float(1.0)
+    if invw > 0.0 and dmax < 1.0:
+        factor = invw * (1.0 - dmax)
     tendon_range[world, tendon] = authored_range[source]
     solref[world, tendon] = authored_solref[source]
     mode = solref_mode[source]
