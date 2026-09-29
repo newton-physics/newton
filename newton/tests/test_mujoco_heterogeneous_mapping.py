@@ -146,6 +146,36 @@ class TestMuJoCoHeterogeneousMapping(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use_mujoco_cpu=False"):
             SolverMuJoCo(model, allow_heterogeneous_shapes=True, use_mujoco_contacts=False, use_mujoco_cpu=True)
 
+    def test_reject_native_contacts(self):
+        """Require Newton contacts even for homogeneous models when the opt-in is enabled."""
+        model = _basic_builder().finalize(device="cpu")
+        for options in ({}, {"use_mujoco_contacts": True}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "use_mujoco_contacts=False"):
+                SolverMuJoCo(model, allow_heterogeneous_shapes=True, **options)
+
+    def test_homogeneous_native_contacts_remain_supported(self):
+        """Keep ordinary native MuJoCo Warp contact generation available without the opt-in."""
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                model = _basic_builder().finalize(device=device)
+                solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+                state = model.state()
+                q = state.joint_q.numpy().reshape(2, 7).copy()
+                q[:, 2] = 0.1
+                state.joint_q.assign(q.reshape(-1))
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                next_state = model.state()
+                control = model.control()
+                for _ in range(12):
+                    state.clear_forces()
+                    solver.step(state, next_state, control, None, 1.0 / 240.0)
+                    state, next_state = next_state, state
+                np.testing.assert_allclose(state.body_q.numpy()[:, 2], [0.1, 0.1], atol=0.015)
+                self.assertTrue(np.isfinite(state.body_qd.numpy()).all())
+                count = int(solver.mjw_data.nacon.numpy()[0])
+                self.assertGreater(count, 0)
+                self.assertEqual(set(solver.mjw_data.contact.worldid.numpy()[:count]), {0, 1})
+
 
 if __name__ == "__main__":
     unittest.main()

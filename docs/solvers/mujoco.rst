@@ -521,43 +521,45 @@ Different collider counts across worlds
    mode for worlds with identical body and joint layouts but different collider
    counts, types, or mesh geometry. This mode may change without prior notice.
 
-This mode requires the MuJoCo Warp backend and supports both contact generators.
-With ``use_mujoco_contacts=False``, Newton generates contacts against each world's
-original shapes. With ``use_mujoco_contacts=True`` (the default), MuJoCo generates
-contacts using each world's mesh assets, geometry poses, and collision bounds.
-The Newton model's shapes, meshes, mass, and inertia are not padded or modified.
-The internal slot count grows
-with the largest per-body groups of compatible geometry types, contact
-dimensions, and priorities across the worlds.
+This mode requires MuJoCo Warp dynamics and Newton-generated contacts
+(``use_mujoco_cpu=False`` and ``use_mujoco_contacts=False``). Newton's collision
+pipeline uses each world's original shapes. The solver allocates internal
+geometry slots and maps them to the corresponding Newton shapes in each world;
+unused slots do not receive contacts. The Newton model's shapes, meshes, mass,
+and inertia are not padded or modified.
 
 .. code-block:: python
 
    solver = newton.solvers.SolverMuJoCo(
        model,
-       use_mujoco_contacts=True,
+       use_mujoco_cpu=False,
+       use_mujoco_contacts=False,
        allow_heterogeneous_shapes=True,
    )
-   view = newton.selection.ArticulationView(model, "*", include_shapes=False)
-   solver.step(state_in, state_out, control, None, dt)
-
-To use Newton collision detection, select ``use_mujoco_contacts=False`` and pass
-the contacts produced by :class:`~newton.CollisionPipeline` to ``step``.
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
+   pipeline.collide(state_in, contacts)
+   solver.step(state_in, state_out, control, contacts, dt)
 
 Body counts, joint counts, types, degrees of freedom, and parent/child layouts
-must match across worlds. Sites, spatial tendons, explicit MuJoCo contact
-pairs, and fluid density or viscosity are unsupported and rejected.
-Native contacts support non-planar meshes (as convex hulls), planes, boxes,
-spheres, capsules, cylinders, and ellipsoids. Cones and heightfields require
-Newton contacts in this mode. Geometry sizes, mesh assets, geometry types,
-collision-enable flags, collision groups and exclusions, contact dimensions,
-and priorities are fixed at construction; recreate the solver after changing
-them. Shape poses and the supported material properties can be updated through
+must match across worlds. Multiple worlds require ``separate_worlds=True``.
+Sites, spatial tendons, explicit MuJoCo contact pairs, and fluid density or
+viscosity are unsupported and rejected. Native MuJoCo collision detection is
+not supported with this opt-in; the default homogeneous mode retains both
+contact generators.
+
+Slots are grouped by corresponding body, geometry type, contact dimension, and
+priority. Their count grows with the largest group of each kind across worlds.
+The shape layout and these grouping properties are fixed at construction;
+recreate the solver after changing them. Shape poses and supported material
+properties can be updated through
 :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed`.
-With native contacts, these updates support CUDA graph capture. Call
-``notify_model_changed`` with ``ModelFlags.SHAPE_PROPERTIES`` once outside
-capture to validate the starting geometry. The fixed geometry and
-collision-filter fields listed above must remain unchanged during capture
-and every replay; their host-side validation only runs outside capture.
+Newton's collision pipeline applies the Newton model's collision filters.
+
+Read and write simulation state through the original :class:`~newton.Model`
+and :class:`~newton.State` arrays. This solver option does not change the
+homogeneity requirements of :class:`newton.selection.ArticulationView`.
+It is a runtime solver configuration and does not add an asset or USD schema.
 
 For per-world placement of fixed bodies, include their fixed root joint in an
 articulation (see :ref:`mujoco-kinematic-links-and-fixed-roots`). Standalone
@@ -565,23 +567,13 @@ fixed roots retain the template body's placement in the current solver;
 this mode supports differing collider geometry on those roots, but does not
 add per-world fixed-root placement.
 
-Native detection exports each distinct mesh/scale combination once and shares
-identical pair-filter tables between worlds. Small valid placeholders reduce
-collision work for unused mesh and primitive slots. A parallel contact filter
-removes remaining contacts involving unused slots or pairs excluded in that
-world before constraint construction and collision wake processing. Under CUDA
-graph capture, contact record compaction is skipped when all contacts are valid.
-Unused plane slots remain infinite planes until this filter removes their contacts.
-Filtering runs after narrowphase, so contact buffers must still accommodate
-contacts that will be discarded. Overflow flags and warnings remain available
-on the MuJoCo Warp data. Performance depends on hull-count variation, internal
-slot count, and contact capacity; benchmark representative scenes before choosing
-a contact generator.
-
-This mode does not enable arbitrary heterogeneous articulations.
-The MuJoCo model uses representative internal
-geometry, so its viewer and MJCF export do not reproduce each world's distinct
-collision meshes. Use the original Newton model for geometry inspection.
+MuJoCo exports one representative shape per internal slot for body and
+contact-property lookup. Its viewer and MJCF export therefore do not reproduce
+each world's geometry; use the original Newton model for geometry inspection.
+Padding still incurs geometry storage and pose-update
+work. Benchmark representative scenes when choosing between one heterogeneous
+batch and several homogeneous batches. This mode does not enable arbitrary
+heterogeneous articulations.
 
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
@@ -721,8 +713,9 @@ all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
 
-With experimental ``allow_heterogeneous_shapes=True``, body and joint layouts must still match, but
-collider counts, types, and mesh geometry may differ. The solver uses internal
+With experimental ``allow_heterogeneous_shapes=True`` and Newton-generated
+contacts, body and joint layouts must still match, but collider counts, types,
+and mesh geometry may differ. The solver uses internal
 geom slots and explicit per-world mappings as described in
 `Different collider counts across worlds`_.
 

@@ -44,6 +44,7 @@ def _build_model(variants, device):
 
 class _Simulation:
     def __init__(self, model, *, heterogeneous):
+        """Create Newton collision and MuJoCo Warp state for one batch."""
         self.model = model
         self.solver = SolverMuJoCo(
             model,
@@ -62,6 +63,7 @@ class _Simulation:
         newton.eval_fk(model, self.state.joint_q, self.state.joint_qd, self.state)
 
     def advance(self, steps):
+        """Advance the batch with contacts from its original Newton shapes."""
         for _ in range(steps):
             self.state.clear_forces()
             self.pipeline.collide(self.state, self.contacts)

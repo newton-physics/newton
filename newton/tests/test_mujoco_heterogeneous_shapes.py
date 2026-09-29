@@ -9,8 +9,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.selection import ArticulationView
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import get_test_devices
 
 
 def build_model(variants, device):
@@ -87,11 +87,14 @@ class TestMuJoCoHeterogeneousShapes(unittest.TestCase):
 
     def test_empty_world_has_no_phantom_collider(self):
         """Let a shapeless body fall through the floor while other worlds settle."""
-        model = build_model([(0, 0.1), (3, 0.2), (1, 0.3)], "cpu")
-        simulation = advance(create_simulation(model, heterogeneous=True), 240)
-        positions = simulation[2].body_q.numpy()[:, 2]
-        self.assertLess(positions[0], -3.0)
-        np.testing.assert_allclose(positions[1:], [0.2, 0.3], atol=0.015)
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                model = build_model([(0, 0.1), (3, 0.2), (1, 0.3)], device)
+                simulation = advance(create_simulation(model, heterogeneous=True), 240)
+                positions = simulation[2].body_q.numpy()[:, 2]
+                self.assertLess(positions[0], -3.0)
+                np.testing.assert_allclose(positions[1:], [0.2, 0.3], atol=0.015)
+                self.assertTrue(np.isfinite(simulation[2].body_qd.numpy()).all())
 
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph replay requires a CUDA device")
     def test_sixteen_variants_with_cuda_graph(self):
@@ -124,7 +127,6 @@ class TestMuJoCoHeterogeneousShapes(unittest.TestCase):
                 inertia = model.body_inertia.numpy().copy()
                 mesh_vertices = [shape.vertices.copy() for shape in model.shape_source if shape is not None]
                 simulation = create_simulation(model, heterogeneous=True)
-                view = ArticulationView(model, "*", include_shapes=False)
                 isolated = [
                     create_simulation(build_model([variant], device), heterogeneous=False) for variant in variants
                 ]
@@ -159,24 +161,95 @@ class TestMuJoCoHeterogeneousShapes(unittest.TestCase):
                     np.testing.assert_array_equal(source.vertices, expected)
 
                 # Teleport only the middle world, as an RL environment reset would.
-                poses = view.get_root_transforms(state).numpy().copy()
-                poses[1, 0, 2] = 1.0
-                view.set_root_transforms(
-                    state,
-                    wp.array(poses, dtype=wp.transform, device=device),
-                    mask=wp.array([False, True, False], dtype=bool, device=device),
-                )
-                view.set_root_velocities(
-                    state,
-                    wp.zeros((3, 1), dtype=wp.spatial_vector, device=device),
-                    mask=wp.array([False, True, False], dtype=bool, device=device),
-                )
+                poses = state.joint_q.numpy().reshape(3, 7).copy()
+                velocities = state.joint_qd.numpy().reshape(3, 6).copy()
+                poses[1, 2] = 1.0
+                velocities[1] = 0.0
+                state.joint_q.assign(poses.reshape(-1))
+                state.joint_qd.assign(velocities.reshape(-1))
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
                 simulation[0].reset(state, world_mask=wp.array([False, True, False, False], dtype=bool, device=device))
                 simulation = advance(simulation, 12)
                 reset_positions = simulation[2].body_q.numpy()[:, 2]
                 self.assertGreater(reset_positions[1], 0.9)
                 np.testing.assert_allclose(reset_positions[[0, 2]], batched_q[[0, 2], 2], atol=2.0e-3)
+
+    def test_shape_properties_follow_notifications(self):
+        """Update ragged collider transforms and materials without changing other worlds."""
+        for device in get_test_devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                model = build_model([(1, 0.1), (3, 0.2)], device)
+                simulation = create_simulation(model, heterogeneous=True)
+                shape_world = model.shape_world.numpy()
+                poses = model.shape_transform.numpy().copy()
+                poses[shape_world == 1, 2] -= 0.05
+                friction = np.where(shape_world == 0, 0.3, 0.8).astype(np.float32)
+                friction[shape_world < 0] = 0.0
+                model.shape_transform.assign(poses)
+                model.shape_material_mu.assign(friction)
+                simulation[0].notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                simulation = advance(simulation, 360)
+                np.testing.assert_allclose(simulation[2].body_q.numpy()[:, 2], [0.1, 0.25], atol=0.015)
+                solver = simulation[0]
+                mapping = solver.mjc_geom_to_newton_shape.numpy()
+                valid = mapping >= 0
+                np.testing.assert_allclose(
+                    solver.mjw_model.geom_friction.numpy()[:, :, 0][valid], friction[mapping[valid]]
+                )
+                count = int(solver.mjw_data.nacon.numpy()[0])
+                contact_worlds = solver.mjw_data.contact.worldid.numpy()[:count]
+                contact_friction = solver.mjw_data.contact.friction.numpy()[:count, 0]
+                self.assertEqual(set(contact_worlds), {0, 1})
+                for world, expected in enumerate((0.3, 0.8)):
+                    np.testing.assert_allclose(contact_friction[contact_worlds == world], expected)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph replay requires a CUDA device")
+    def test_shape_property_updates_with_cuda_graph(self):
+        """Match eager Newton-contact dynamics after graph-captured property notifications."""
+        with wp.ScopedDevice("cuda:0"):
+            variants = [(1, 0.1), (3, 0.2)]
+            model = build_model(variants, "cuda:0")
+            reference_model = build_model(variants, "cuda:0")
+            simulation = advance(create_simulation(model, heterogeneous=True), 2)
+            reference = advance(create_simulation(reference_model, heterogeneous=True), 2)
+            transforms = model.shape_transform.numpy().copy()
+            updated_transforms = wp.clone(model.shape_transform)
+            updated_friction = wp.clone(model.shape_material_mu)
+
+            def update_and_step(current_simulation):
+                """Copy device-side shape edits and advance both state buffers."""
+                solver = current_simulation[0]
+                wp.copy(solver.model.shape_transform, updated_transforms)
+                wp.copy(solver.model.shape_material_mu, updated_friction)
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                advance(current_simulation, 2)
+
+            update_and_step(simulation)
+            update_and_step(reference)
+            with wp.ScopedCapture() as capture:
+                update_and_step(simulation)
+
+            for phase in range(2):
+                with self.subTest(phase=phase):
+                    poses = transforms.copy()
+                    poses[0, 2] += 0.03
+                    poses[1:, 2] -= 0.05 * phase
+                    friction = np.linspace(0.3, 0.6, model.shape_count, dtype=np.float32) + 0.5 * phase
+                    updated_transforms.assign(poses)
+                    updated_friction.assign(friction)
+                    for _ in range(120):
+                        wp.capture_launch(capture.graph)
+                        update_and_step(reference)
+                    np.testing.assert_allclose(simulation[2].body_q.numpy(), reference[2].body_q.numpy(), atol=2.0e-3)
+                    np.testing.assert_allclose(simulation[2].body_qd.numpy(), reference[2].body_qd.numpy(), atol=2.0e-2)
+                    np.testing.assert_allclose(
+                        simulation[2].body_q.numpy()[:, 2], np.array([0.1, 0.2]) + 0.03 + 0.05 * phase, atol=0.015
+                    )
+                    mapping = simulation[0].mjc_geom_to_newton_shape.numpy()
+                    valid = mapping >= 0
+                    np.testing.assert_allclose(
+                        simulation[0].mjw_model.geom_friction.numpy()[:, :, 0][valid], friction[mapping[valid]]
+                    )
 
 
 if __name__ == "__main__":

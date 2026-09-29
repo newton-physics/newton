@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measure native and Newton contacts for heterogeneous convex decompositions.
+"""Measure Newton contacts with heterogeneous convex decompositions in MuJoCo Warp.
 
 Each world contains one free cuboid above a shared plane. A small mesh bank is
 reused across worlds, as with repeated assets in robot learning. The uniform
 case cycles through one to five hulls; the skewed case uses eight hulls in one
 world out of sixteen and one hull elsewhere. Homogeneous controls use three
-hulls everywhere and compare the default native path with the experimental
+hulls everywhere and compare the default Newton-contact path with the experimental
 opt-in. These synthetic scenes do not measure a complete robot task.
 """
 
@@ -73,16 +73,14 @@ class HeterogeneousMuJoCo:
     the timed region. Each sample advances 200 physics steps using eight-step
     CUDA graphs. The median includes graph launch overhead and one device
     synchronization per sample. Solver iteration warnings retain their normal
-    behavior; collision-buffer overflow or incorrect resting heights fail the
+    behavior; buffer overflow or incorrect resting heights fail the
     benchmark instead of producing a misleading timing.
     """
 
     params: ClassVar = (
-        [16, 256, 1024],
+        [16, 128, 1024],
         [
-            "uniform_native",
             "uniform_newton",
-            "skew_native",
             "skew_newton",
             "homogeneous_default",
             "homogeneous_enabled",
@@ -102,24 +100,19 @@ class HeterogeneousMuJoCo:
         if not wp.is_mempool_enabled(self.device):
             raise SkipNotImplemented
         distribution, mode = case.split("_")
-        native = mode != "newton"
         with wp.ScopedDevice(self.device):
             self.model, self.heights = _build_model(world_count, distribution, self.device)
             self.solver = SolverMuJoCo(
                 self.model,
                 allow_heterogeneous_shapes=mode != "default",
-                use_mujoco_contacts=native,
+                use_mujoco_contacts=False,
                 iterations=50,
                 ls_iterations=20,
                 nconmax=128,
                 njmax=512,
             )
-            self.pipeline = (
-                None
-                if native
-                else newton.CollisionPipeline(self.model, rigid_contact_max=max(256, self.model.shape_count * 8))
-            )
-            self.contacts = None if native else self.pipeline.contacts()
+            self.pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=max(256, world_count * 64))
+            self.contacts = self.pipeline.contacts()
             self.state = self.model.state()
             self.next_state = self.model.state()
             self.control = self.model.control()
@@ -136,8 +129,7 @@ class HeterogeneousMuJoCo:
 
     def _step(self) -> None:
         self.state.clear_forces()
-        if self.pipeline is not None:
-            self.pipeline.collide(self.state, self.contacts)
+        self.pipeline.collide(self.state, self.contacts)
         self.solver.step(self.state, self.next_state, self.control, self.contacts, 1.0 / 240.0)
         self.state, self.next_state = self.next_state, self.state
 
@@ -146,11 +138,21 @@ class HeterogeneousMuJoCo:
         np.testing.assert_allclose(poses[:, 2], self.heights, atol=0.015)
         if not np.isfinite(poses).all():
             raise RuntimeError("The benchmark produced nonfinite body poses.")
-        collision_bits = int(
-            OverflowType.BROADPHASE | OverflowType.NARROWPHASE | OverflowType.CCD | OverflowType.EPA_HORIZON
+        capacity_bits = int(
+            OverflowType.NEFC
+            | OverflowType.NJMAX_NNZ
+            | OverflowType.BROADPHASE
+            | OverflowType.NARROWPHASE
+            | OverflowType.CCD
+            | OverflowType.HFIELD
+            | OverflowType.CONTACT_MATCH
+            | OverflowType.NVMAX
+            | OverflowType.EPA_HORIZON
         )
-        if np.any(self.solver.mjw_data.overflow.numpy() & collision_bits):
-            raise RuntimeError("The benchmark overflowed a collision buffer.")
+        if np.any(self.solver.mjw_data.overflow.numpy() & capacity_bits):
+            raise RuntimeError("The benchmark overflowed a MuJoCo Warp buffer.")
+        if int(self.contacts.rigid_contact_count.numpy()[0]) >= self.contacts.rigid_contact_max:
+            raise RuntimeError("The benchmark exhausted the Newton contact buffer.")
 
     def track_median_step_ms(self, world_count: int, case: str) -> float:
         """Report median milliseconds per batched physics step after warmup."""
@@ -166,25 +168,6 @@ class HeterogeneousMuJoCo:
         return statistics.median(timings)
 
     track_median_step_ms.unit = "ms/step"
-
-    def track_filter_scratch_mib(self, world_count: int, case: str) -> float:
-        """Report owned compaction scratch, excluding lookup tables and scan workspace."""
-        contact_filter = self.solver._heterogeneous_contact_filter
-        if contact_filter is None:
-            return 0.0
-        arrays = [scratch for _, scratch in contact_filter._buffers]
-        arrays.extend(
-            [
-                contact_filter._keep,
-                contact_filter._offsets,
-                contact_filter._original_count,
-                contact_filter._rejected,
-                contact_filter._fields,
-            ]
-        )
-        return sum(array.capacity for array in arrays) / 1024**2
-
-    track_filter_scratch_mib.unit = "MiB"
 
 
 if __name__ == "__main__":
