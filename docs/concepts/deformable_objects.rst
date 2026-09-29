@@ -6,11 +6,10 @@
 Deformable Objects
 ==================
 
-A deformable object is a complete cable, cloth, or soft volume. Newton records
-its label, world, and the simulation elements that belong to it. A rod-backed
-curve contains bodies and joints. A triangle surface contains particles,
-triangles, and bending edges. A tetrahedral volume contains particles and
-tetrahedra. Recording this information does not change the simulation.
+Each deformable object has a label, a world index, and ranges identifying its
+simulation elements. A rod-backed curve contains bodies and joints. A triangle
+surface contains particles, triangles, and bending edges. A tetrahedral volume
+contains particles and tetrahedra.
 
 Builder identities
 ------------------
@@ -52,11 +51,16 @@ Use the lists to identify assets while composing or cloning a builder:
    ['env_0/gripper_cable', 'env_1/gripper_cable']
    [0, 1]
 
-World ``-1`` identifies global deformable objects. The builder assigns world
-indices during construction and cloning. Editing an identity does not move its
-simulation elements to another world. Keep the label and world entries aligned
-with the recorded deformable objects; do not append, remove, or reorder entries
-manually. Change existing labels rather than creating replacement records.
+Labels are editable. The label and world lists must remain aligned with the
+recorded deformable objects, so entries must not be appended, removed, or
+reordered manually.
+
+The builder assigns world indices during construction and cloning.
+World ``-1`` identifies global deformable objects.
+Use :meth:`~newton.ModelBuilder.begin_world` / :meth:`~newton.ModelBuilder.end_world`,
+:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
+to assign worlds when creating or cloning deformable objects. Do not edit the
+world lists: changing an entry does not move its simulation elements.
 
 Composition and finalization
 ----------------------------

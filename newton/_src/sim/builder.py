@@ -1872,10 +1872,9 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # One entry describes each recorded deformable object. Public labels and worlds mirror
-        # articulation_label/articulation_world so applications can rebase identities before
-        # finalization. add_builder() and replicate() preserve the entries and assign their
-        # destination worlds. Private [start, end) ranges locate simulation data in builder
+        # Public labels and worlds mirror articulation_label/articulation_world.
+        # Applications may edit labels; the builder assigns worlds during construction
+        # and cloning. Private [start, end) ranges locate simulation data in builder
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
@@ -1889,6 +1888,9 @@ class ModelBuilder:
         """
         self.curve_world: list[int] = []
         """World index corresponding to each entry in :attr:`curve_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
@@ -1916,6 +1918,9 @@ class ModelBuilder:
         """
         self.surface_world: list[int] = []
         """World index corresponding to each entry in :attr:`surface_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
@@ -1945,6 +1950,9 @@ class ModelBuilder:
         """
         self.volume_world: list[int] = []
         """World index corresponding to each entry in :attr:`volume_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
