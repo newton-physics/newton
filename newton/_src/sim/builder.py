@@ -1872,16 +1872,15 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # One entry describes each recorded deformable object. Public labels and worlds mirror
-        # articulation_label/articulation_world so applications can rebase identities before
-        # finalization. add_builder() and replicate() preserve the entries and assign their
-        # destination worlds. Private [start, end) ranges locate simulation data in builder
+        # Public labels and worlds mirror articulation_label/articulation_world.
+        # Applications may edit labels; the builder assigns worlds during construction
+        # and cloning. Private [start, end) ranges locate simulation data in builder
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        Used by :class:`~newton.selection.DeformableCurveView`.
+        See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
 
@@ -1889,6 +1888,9 @@ class ModelBuilder:
         """
         self.curve_world: list[int] = []
         """World index corresponding to each entry in :attr:`curve_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
@@ -1908,7 +1910,7 @@ class ModelBuilder:
         self.surface_label: list[str] = []
         """Labels of deformable objects represented by triangle surfaces, aligned with :attr:`surface_world`.
 
-        Used by :class:`~newton.selection.DeformableSurfaceView`.
+        See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
 
@@ -1916,6 +1918,9 @@ class ModelBuilder:
         """
         self.surface_world: list[int] = []
         """World index corresponding to each entry in :attr:`surface_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
@@ -1937,7 +1942,7 @@ class ModelBuilder:
         self.volume_label: list[str] = []
         """Labels of deformable objects represented by tetrahedral volumes, aligned with :attr:`volume_world`.
 
-        Used by :class:`~newton.selection.DeformableVolumeView`.
+        See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
 
@@ -1945,6 +1950,9 @@ class ModelBuilder:
         """
         self.volume_world: list[int] = []
         """World index corresponding to each entry in :attr:`volume_label`.
+
+        Assigned by the builder during construction and cloning. Do not edit this list;
+        use the world-assignment methods described in :ref:`deformable-objects`.
 
         .. experimental::
 
@@ -6600,10 +6608,10 @@ class ModelBuilder:
                 the collapse process.
 
         Note:
-            Deformable labels do not change which fixed joints are collapsed. A recorded curve
-            group remains selectable only if all of its segment bodies and joints survive. Pass
-            the relevant fixed joint through ``joints_to_keep`` when complete post-collapse
-            curve access is required.
+            Deformable labels do not change which fixed joints are collapsed. A curve's
+            record is retained only if all of its segment bodies and joints survive.
+            Otherwise the incomplete record is omitted with a warning. Pass the relevant
+            fixed joint through ``joints_to_keep`` to preserve the complete curve.
         """
         joints_to_keep = set(joints_to_keep or ())
 
@@ -7044,7 +7052,7 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild deformable curve ranges after reindexing. A deformable object remains selectable only when
+        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
         # every one of its simulation bodies and joints survived collapse; exposing a partial
         # range would misrepresent the original curve topology.
         curve_records = []
@@ -9168,8 +9176,8 @@ class ModelBuilder:
                 to include the closing segment. When using ``rod``, pass
                 ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                selectable deformable curve. If None, the deformable object receives a generated ``curve_N``
-                label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
+                recorded deformable curve. If None, the deformable object receives a generated ``curve_N``
+                label. See :ref:`deformable-objects`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates
                 articulations for the generated tree joints. Defaults to True.
@@ -9373,8 +9381,8 @@ class ModelBuilder:
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                selectable deformable curve. If None, the deformable object receives a generated ``curve_N``
-                label. See :class:`~newton.selection.DeformableCurveView`. Generated joint labels retain
+                recorded deformable curve. If None, the deformable object receives a generated ``curve_N``
+                label. See :ref:`deformable-objects`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, places each connected component's generated joints and a
                 free joint to the world in one articulation.
@@ -10572,8 +10580,8 @@ class ModelBuilder:
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
-                The same name labels the selectable deformable surface; if None, the deformable object receives
-                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
+                The same name labels the recorded deformable surface; if None, the deformable object receives
+                a generated ``surface_N`` label. See :ref:`deformable-objects`.
             color: Display color in [0, 1] for the cloth surface. If a single
                 RGB value, applied to all triangles. If array-like, RGB values
                 are applied per triangle.
@@ -10717,8 +10725,8 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify this cloth.
-                The same name labels the selectable deformable surface; if None, the deformable object receives
-                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableSurfaceView`.
+                The same name labels the recorded deformable surface; if None, the deformable object receives
+                a generated ``surface_N`` label. See :ref:`deformable-objects`.
 
         Note:
             The mesh should be two-manifold.
@@ -10997,10 +11005,10 @@ class ModelBuilder:
             opacity: Display opacity in [0, 1] for the generated surface mesh.
                 If scalar, applied to all triangles. If array-like, values are
                 applied per triangle.
-            label: Optional name for the selectable deformable volume. If None, the deformable object receives
+            label: Optional name for the recorded deformable volume. If None, the deformable object receives
                 a generated ``volume_N`` label. Currently unused by mesh-quality diagnostics
                 because the generated grid is degenerate-free by construction. See
-                :class:`~newton.selection.DeformableVolumeView`.
+                :ref:`deformable-objects`.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -11186,8 +11194,8 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
                 ``validate_mesh=True`` can identify this soft body. The same name labels the
-                selectable deformable volume; if None, the deformable object receives a generated ``volume_N``
-                label. See :class:`~newton.selection.DeformableVolumeView`.
+                recorded deformable volume; if None, the deformable object receives a generated ``volume_N``
+                label. See :ref:`deformable-objects`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -14024,9 +14032,8 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
-            # Combine public deformable object identities and private simulation ranges into finalized
-            # records. The selection views are the public interface for selecting those records and
-            # accessing their state and topology.
+            # Preserve builder identities and element ownership across finalization without
+            # exposing the record layout as a public Model API.
             deformable_objects: list[_DeformableObjectRecord] = []
 
             def _append_deformable_object_records(

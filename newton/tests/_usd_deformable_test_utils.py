@@ -183,8 +183,8 @@ def group_labels(builder, family):
     """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
 
     The single seam through which tests locate deformable groups: it reads the builder
-    registry (which the importer populates regardless of what ``Model`` exposes), so a
-    reshape of the experimental ``Model`` group API only touches this helper, not the tests.
+    registry, so a change to its private range storage only touches this helper,
+    not the importer behavior tests.
     """
     family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
     return list(getattr(builder, f"{family}_label"))

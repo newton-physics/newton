@@ -365,13 +365,10 @@ deformable object record is omitted with a warning; pass the relevant joint thro
 ``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
 See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
 
-Before finalization, :class:`~newton.ModelBuilder` exposes the label and world of every recorded
-deformable through ``curve_label`` / ``curve_world``, ``surface_label`` / ``surface_world``, and
-``volume_label`` / ``volume_world``. Applications may change existing entries when composing or
-cloning a builder, for example to replace a template label with an application asset path. Keep
-each label list the same length as its corresponding world list. The simulation ranges remain
-private builder details; use the family-specific selection views to access them after
-finalization.
+Imported deformables also populate the experimental builder identity lists
+described in :ref:`deformable-objects`. Cloth and volume imports use the same
+recording as native builder calls. Cables retain one record per USD simulation
+prim, including prims with several curves and curves welded into a shared graph.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)

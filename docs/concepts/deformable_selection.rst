@@ -141,9 +141,8 @@ complete cable with the rigid bodies used for its segments. A USD deformable bod
 can also own visual and collision geometry; these views expose its recorded
 simulation elements, not that entire USD hierarchy.
 
-Native builder calls and USD imports record deformable objects in the same way. Explicit labels
-support application lookup; otherwise native deformable objects get names such as
-``surface_0``. USD deformable objects use their prim paths. Labels can repeat.
+See :ref:`deformable-objects` for how native builder calls and USD imports record
+deformable objects, assign labels and worlds, and preserve their simulation ranges.
 
 Each view orders selected deformable objects by world, then by their order in the model.
 For example, suppose deformable objects are added in this order within each world:

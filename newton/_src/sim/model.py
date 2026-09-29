@@ -129,8 +129,7 @@ class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
 class _DeformableObjectRecord:
     """Identity and simulation ranges for one finalized deformable object.
 
-    Private backing data for the public deformable selection views. Applications
-    use those views to address deformables, so this representation can change freely.
+    Private data retained from the builder; this representation is not a public API.
     ``ranges`` maps an element kind to its ``[start, end)`` index range.
     """
 
@@ -1149,7 +1148,7 @@ class Model:
 
         # Each curve, surface, or volume has a world-tagged deformable object record
         # with [start, end) simulation ranges. Keep the records private
-        # so their layout can evolve without changing the family-specific views.
+        # so their layout can evolve independently of public APIs.
         self._deformable_objects: tuple[_DeformableObjectRecord, ...] = ()
 
         self.soft_contact_ke: float = 1.0e3
