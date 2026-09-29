@@ -1,0 +1,61 @@
+{
+  "schema": "impedance_instron_sample_fit_1",
+  "sample_status": "exploratory_not_accepted",
+  "experiment": "window_only_peak_to_peak",
+  "trial": "FR3_2",
+  "source_window_s": [
+    0.03,
+    0.38
+  ],
+  "source_window_changed_from_s": [
+    0.048,
+    0.394
+  ],
+  "unchanged_factors": [
+    "saved leg profile and gains",
+    "Maxwell shoe",
+    "12 equilibrium controls",
+    "three-block measured objective"
+  ],
+  "fit": {
+    "status": "budget_exhausted",
+    "converged": false,
+    "iterations": 200,
+    "initial_loss": 34.81622654018668,
+    "final_loss": 4.640145818327434,
+    "objective_blocks": {
+      "hip": 2.024946702498702,
+      "joint": 0.33317729533200724,
+      "force": 2.2820218204967246
+    },
+    "hip_rmse_m": [
+      0.026177571906517098,
+      0.030572734439007727
+    ],
+    "joint_rmse_rad": [
+      0.02466244343566403,
+      0.032521536870860034
+    ],
+    "force_rmse_n": [
+      159.6488562693094,
+      141.96013208586353
+    ],
+    "acceptance_limits_met": false
+  },
+  "rollout": {
+    "complete": true,
+    "integrated_steps": 5600,
+    "duration_s": 0.35,
+    "dt_s": 0.0000625,
+    "passive_cap_hit": true,
+    "maximum_compression_fraction": 0.9000000175945748,
+    "maximum_hip_speed_m_s": 5.015500347070105,
+    "hip_velocity_rmse_m_s": [
+      0.502050335073814,
+      0.6500687981901264
+    ],
+    "fraction_contact_samples_near_coulomb_limit": 0.38356690343636013
+  },
+  "loss_note": "Hip velocity is recorded as a rollout diagnostic and is excluded from the three-block fit loss.",
+  "qualification": "Numerical search only; no convergence, measured acceptance, or physical validation claim."
+}

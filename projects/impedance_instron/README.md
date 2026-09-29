@@ -5,6 +5,10 @@ with **12 cubic control points per equilibrium channel** (48 coefficients).
 One shared controller uses a fixed batch of **128 CUDA worlds**.
 There is no trunk, opposite leg, hip-angle motor, or added upper-body load.
 
+Small reference and rollout bundles for the recovered FR3_1 rate refit and the
+FR3_2 peak-to-peak window experiment are in [sample data](data/samples/README.md).
+The FR3_2 fit is exploratory and did not meet the measured-fit tolerances.
+
 ## Import processed measurements
 
 Raw C3D and processed Visual3D exports use separate preparation paths. To audit
@@ -20,6 +24,22 @@ trials now contain the required clocks, static measurements, joint centers, and
 force channels. Subject-specific inertias remain provisional. A baseline
 comparison also requires the baseline's exact shoe artifact and fixed
 foot-to-shoe registration.
+
+Subject-profile preparation now scales sagittal thigh and shank inertia by
+the square of the measured-to-model segment-length ratio. Foot and toes are
+combined about their shared COM, then scaled by the square of the endpoint
+ratio. Population radii of gyration from de Leva (1996) are recorded as a
+comparison; they do not replace subject-model segment masses or inertias.
+Source inertial-frame rotations remain recorded in provenance and need to be
+checked against the source model's frame convention before treating the
+inertias as validated.
+
+The GPU objective computes measured hip-velocity RMSE, maximum hip speed, peak
+hip spring and damping loads, and a Coulomb-equivalent force ratio for every
+candidate; the final selected candidate's diagnostics are saved in its fit
+summary. These are diagnostics only and do not enter the fitted loss. The ratio is
+`abs(GRF_x)/(mu*GRF_z)` where normal force exceeds 5 N; it is a proximity proxy,
+not the internal saturation state of the selected viscoelastic shoe model.
 
 ## Selected baseline
 

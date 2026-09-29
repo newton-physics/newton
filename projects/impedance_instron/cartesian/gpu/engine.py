@@ -15,6 +15,7 @@ import warp as wp
 
 from projects.digital_shoe.runtime import FoundationConfig
 
+from ..diagnostics import summarize as summarize_diagnostics
 from ..fit import FitConfig
 from ..mechanics import Body
 from ..run import Config
@@ -687,6 +688,7 @@ def _snapshot(
     maximum_error: wp.array2d[wp.float64],
     costs: wp.array2d[wp.float64],
     residual: wp.array2d[wp.float64],
+    diagnostics: wp.array2d[wp.float64],
     out_states: wp.array2d[Vec5],
     out_velocities: wp.array2d[Vec5],
     out_equilibrium: wp.array2d[wp.vec4d],
@@ -706,6 +708,7 @@ def _snapshot(
     out_maximum_error: wp.array2d[wp.float64],
     out_costs: wp.array2d[wp.float64],
     out_residual: wp.array2d[wp.float64],
+    out_diagnostics: wp.array2d[wp.float64],
 ):
     i = wp.tid()
     w = winner[0]
@@ -736,6 +739,8 @@ def _snapshot(
             out_maximum_error[0, ch] = maximum_error[w, ch]
         for ch in range(3):
             out_costs[0, ch] = costs[w, ch]
+        for ch in range(11):
+            out_diagnostics[0, ch] = diagnostics[w, ch]
 
 
 class Engine:
@@ -869,7 +874,16 @@ class Engine:
         )
         for name in ("integrated", "recorded", "failure", "failure_step", "range_step", "range_mask"):
             setattr(self, name, wp.zeros(world_count, dtype=wp.int32, device=self.device))
-        self.objective = MeasuredObjective(reference, settings, self.time_s, world_count, self.device)
+        self.objective = MeasuredObjective(
+            reference,
+            settings,
+            self.time_s,
+            world_count,
+            self.device,
+            profile["hip_damping_ns_m"],
+            self.shoe.metadata["friction_mu"],
+            self.dt,
+        )
         self.graph = None
         self.tail_graph = None
         self.resident_graph = None
@@ -1005,7 +1019,7 @@ class Engine:
         self.foundation.enabled.fill_(1)
         self._reset()
         self._step()
-        self.objective.launch(self.states, self.forces, self.integrated, self.failure)
+        self.objective.launch(self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure)
         self.objective.loss.numpy()
         with wp.ScopedCapture(device=self.device) as capture:
             for _ in range(min(self.chunk_steps, self.steps)):
@@ -1060,7 +1074,9 @@ class Engine:
             else:
                 for _ in range(self.steps):
                     self._step(staged=True)
-            self.objective.launch(self.states, self.forces, self.integrated, self.failure)
+            self.objective.launch(
+                self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure
+            )
         self.resident_graph = capture.graph
 
     def evaluate_device(self):
@@ -1113,7 +1129,7 @@ class Engine:
         "range_step",
         "range_mask",
     )
-    _SNAPSHOT_SCORES = ("loss", "rmse", "maximum_error", "costs", "residual")
+    _SNAPSHOT_SCORES = ("loss", "rmse", "maximum_error", "costs", "residual", "diagnostics")
 
     def create_snapshot(self):
         """Allocate one best-history buffer before search starts."""
@@ -1216,6 +1232,8 @@ class Engine:
             "joints_m": joints,
             "equilibrium": eq[:recorded],
             "hip_force_n": load[:recorded, :2],
+            "hip_spring_force_n": load[:recorded, :2] + np.asarray(self.profile["hip_damping_ns_m"]) * v[:recorded, :2],
+            "hip_damping_force_n": -np.asarray(self.profile["hip_damping_ns_m"]) * v[:recorded, :2],
             "joint_torque_nm": load[:recorded, 2:],
             "grf_n": f,
             "ankle_contact_moment_nm": m,
@@ -1264,6 +1282,14 @@ class Engine:
             "terminal_state": q[integrated].tolist(),
             "terminal_velocity": v[integrated].tolist(),
             "leg_mass_kg": float(np.sum(body.masses_kg)),
+            "segment_inertial_properties": {
+                "body_order": ["thigh", "shank", "foot"],
+                "masses_kg": np.asarray(self.profile["masses_kg"], dtype=float).tolist(),
+                "com_local_m": np.asarray(self.profile["com_local_m"], dtype=float).tolist(),
+                "sagittal_inertias_kg_m2": np.asarray(self.profile["inertias_kg_m2"], dtype=float).tolist(),
+                "provenance": self.profile["provenance"].get("inertial"),
+                "population_comparison": self.profile["provenance"].get("de_leva_1996_population_comparison"),
+            },
             "controller": "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot",
             "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
             "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
@@ -1290,4 +1316,7 @@ class Engine:
             "The existing passive cap and footprint attachment approximation are unchanged. "
             "No trunk, opposite leg, upper-body weight, hip torque, or measured-force input is present.",
         }
+        summary["rollout_diagnostics"] = summarize_diagnostics(
+            trace, self.reference, float(self.shoe.metadata["friction_mu"])
+        )
         return trace, summary

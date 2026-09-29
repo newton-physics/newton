@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .diagnostics import summarize as summarize_diagnostics
 from .mechanics import Body
 
 
@@ -123,6 +124,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         "joints_m": (4, 2),
         "equilibrium": (4,),
         "hip_force_n": (2,),
+        "hip_spring_force_n": (2,),
+        "hip_damping_force_n": (2,),
         "joint_torque_nm": (2,),
         "grf_n": (2,),
         "ankle_contact_moment_nm": (),
@@ -142,7 +145,9 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         try:
             if not np.isfinite(state).all() or not np.isfinite(velocity).all():
                 raise FloatingPointError("Nonfinite leg state or velocity")
-            hip_force = stiffness_hip * (equilibrium[index, :2] - state[:2]) - damping_hip * velocity[:2]
+            hip_spring_force = stiffness_hip * (equilibrium[index, :2] - state[:2])
+            hip_damping_force = -damping_hip * velocity[:2]
+            hip_force = hip_spring_force + hip_damping_force
             torque = stiffness_joint * (equilibrium[index, 2:] - state[3:]) - damping_joint * velocity[3:]
             if not np.isfinite(hip_force).all() or not np.isfinite(torque).all():
                 raise FloatingPointError("Nonfinite actuator load")
@@ -190,6 +195,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             trace["joints_m"][index] = body.kinematics(state)
             trace["equilibrium"][index] = equilibrium[index]
             trace["hip_force_n"][index] = hip_force
+            trace["hip_spring_force_n"][index] = hip_spring_force
+            trace["hip_damping_force_n"][index] = hip_damping_force
             trace["joint_torque_nm"][index] = torque
             trace["grf_n"][index] = wrench[:2]
             trace["ankle_contact_moment_nm"][index] = wrench[2]
@@ -237,6 +244,14 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         "terminal_state": state.tolist(),
         "terminal_velocity": velocity.tolist(),
         "leg_mass_kg": float(np.sum(body.masses_kg)),
+        "segment_inertial_properties": {
+            "body_order": ["thigh", "shank", "foot"],
+            "masses_kg": np.asarray(profile["masses_kg"], dtype=float).tolist(),
+            "com_local_m": np.asarray(profile["com_local_m"], dtype=float).tolist(),
+            "sagittal_inertias_kg_m2": np.asarray(profile["inertias_kg_m2"], dtype=float).tolist(),
+            "provenance": profile["provenance"].get("inertial"),
+            "population_comparison": profile["provenance"].get("de_leva_1996_population_comparison"),
+        },
         "controller": "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot",
         "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
         "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
@@ -262,4 +277,5 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             "No trunk, opposite leg, upper-body weight, hip torque, or measured-force input is present."
         ),
     }
+    summary["rollout_diagnostics"] = summarize_diagnostics(trace, reference, float(shoe.metadata["friction_mu"]))
     return trace, summary
