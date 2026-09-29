@@ -337,6 +337,11 @@ The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and
 values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
 marked ``legacy_implicit_type``.
 
+Imported deformables also populate the experimental builder identity lists
+described in :ref:`deformable-objects`. Cloth and volume imports use the same
+recording as native builder calls. Cables retain one record per USD simulation
+prim, including prims with several curves and curves welded into a shared graph.
+
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
 naming what on that prim is attached -- ``point``, ``segment``, ``face``, ``tetrahedron``, or
