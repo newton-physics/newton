@@ -42,9 +42,7 @@ def summarize(trace: dict, reference: dict, friction_mu: float) -> dict:
         "maximum_coulomb_equivalent_ratio": float(np.max(ratios)) if len(ratios) else None,
         "fraction_contact_samples_near_coulomb_limit": float(np.mean(ratios >= 0.95)) if len(ratios) else None,
         "contact_sample_fraction": float(np.mean(contact)) if len(contact) else 0.0,
-        "minimum_hip_spring_vertical_force_in_flight_n": float(np.min(spring[flight, 1]))
-        if np.any(flight)
-        else None,
+        "minimum_hip_spring_vertical_force_in_flight_n": float(np.min(spring[flight, 1])) if np.any(flight) else None,
         "hip_spring_work_in_flight_j": float(np.sum(np.sum(spring[flight] * velocity[flight], axis=1)) * dt)
         if np.any(flight)
         else 0.0,

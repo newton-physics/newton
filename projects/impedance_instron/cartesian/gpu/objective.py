@@ -19,6 +19,7 @@ def _evaluate(
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    hip_gate: wp.array[wp.float64],
     forces: wp.array2d[wp.vec2d],
     integrated_steps: wp.array[int],
     failure_code: wp.array[int],
@@ -89,10 +90,11 @@ def _evaluate(
         for step in range(steps):
             velocity = velocities[step, world]
             control = actuator[step, world]
-            spring_x = control[0] + damping[0] * velocity[0]
-            spring_z = control[1] + damping[1] * velocity[1]
-            damping_x = -damping[0] * velocity[0]
-            damping_z = -damping[1] * velocity[1]
+            gate = hip_gate[step]
+            spring_x = control[0] + gate * damping[0] * velocity[0]
+            spring_z = control[1] + gate * damping[1] * velocity[1]
+            damping_x = -gate * damping[0] * velocity[0]
+            damping_z = -gate * damping[1] * velocity[1]
             max_hip_speed = wp.max(max_hip_speed, wp.length(wp.vec2d(velocity[0], velocity[1])))
             max_spring_force = wp.max(max_spring_force, wp.length(wp.vec2d(spring_x, spring_z)))
             max_damping_force = wp.max(max_damping_force, wp.length(wp.vec2d(damping_x, damping_z)))
@@ -220,6 +222,7 @@ class MeasuredObjective:
         damping,
         friction_mu: float,
         dt: float,
+        hip_gate: wp.array[wp.float64],
     ):
         time = np.array(time_s, dtype=np.float64, copy=True)
         if time.ndim != 1 or len(time) < 2 or not np.isfinite(time).all() or np.any(np.diff(time) <= 0):
@@ -257,6 +260,9 @@ class MeasuredObjective:
         self.device = wp.get_device(device)
         self.world_count = world_count
         self.steps = len(time) - 1
+        if hip_gate.shape != (self.steps + 1,):
+            raise ValueError("hip_gate must contain one value per simulation sample")
+        self._hip_gate = hip_gate
         self.time_s = time
         self.motion_sample_count = len(motion_time)
         self.force_sample_count = int(force_mask.sum())
@@ -341,6 +347,7 @@ class MeasuredObjective:
                 states,
                 velocities,
                 actuator,
+                self._hip_gate,
                 forces,
                 integrated_steps,
                 failure_code,

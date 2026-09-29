@@ -12,6 +12,7 @@ import numpy as np
 
 from .diagnostics import summarize as summarize_diagnostics
 from .mechanics import Body
+from .phase import hip_contact_gate
 
 
 @dataclass(frozen=True)
@@ -30,13 +31,15 @@ class Config:
     minimum_hip_height_m: float = 0.2
     maximum_speed: float = 100.0
     joint_limits_diagnostic: bool = True
+    hip_flight_gate_enabled: bool = False
+    hip_flight_gate_ramp_s: float = 0.02
 
     def __post_init__(self):
         """Reject invalid integration settings before advancing contact."""
         for name, value in vars(self).items():
-            if name == "joint_limits_diagnostic":
+            if name in ("joint_limits_diagnostic", "hip_flight_gate_enabled"):
                 if not isinstance(value, bool):
-                    raise ValueError("joint_limits_diagnostic must be a boolean")
+                    raise ValueError(f"{name} must be a boolean")
             elif not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if self.compression_limit >= 1:
@@ -46,7 +49,7 @@ class Config:
 def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | None = None):
     """Integrate one free leg from measured initial position and velocity.
 
-    The only actuator loads are ``Khip*(p_eq-p)-Dhip*v`` at the hip point
+    The hip load is ``gate*(Khip*(p_eq-p)-Dhip*v)`` at the hip point
     and ``Kjoint*(theta_eq-theta)-Djoint*theta_dot`` at knee and ankle.
     Equilibrium velocity is not a damping target. Later measured motion and
     measured forces never drive the equations of motion.
@@ -114,6 +117,11 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
     steps = math.ceil(duration / cfg.dt_s)
     dt = duration / steps
     times = np.linspace(0.0, duration, steps + 1)
+    hip_gate = (
+        hip_contact_gate(reference, times, cfg.hip_flight_gate_ramp_s)
+        if cfg.hip_flight_gate_enabled
+        else np.ones_like(times)
+    )
     equilibrium, _, _ = spline.sample(times)
     equilibrium = np.asarray(equilibrium, dtype=float)
     if equilibrium.shape != (steps + 1, 4) or not np.isfinite(equilibrium).all():
@@ -132,6 +140,7 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         "compression_fraction": (),
         "driven_compression_fraction": (),
         "passive_compression_fraction": (),
+        "hip_gate": (),
     }
     trace = {key: np.empty((steps, *shape)) for key, shape in shapes.items()}
     trace["passive_cap_column_count"] = np.empty(steps, dtype=np.int32)
@@ -145,8 +154,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         try:
             if not np.isfinite(state).all() or not np.isfinite(velocity).all():
                 raise FloatingPointError("Nonfinite leg state or velocity")
-            hip_spring_force = stiffness_hip * (equilibrium[index, :2] - state[:2])
-            hip_damping_force = -damping_hip * velocity[:2]
+            hip_spring_force = hip_gate[index] * stiffness_hip * (equilibrium[index, :2] - state[:2])
+            hip_damping_force = -hip_gate[index] * damping_hip * velocity[:2]
             hip_force = hip_spring_force + hip_damping_force
             torque = stiffness_joint * (equilibrium[index, 2:] - state[3:]) - damping_joint * velocity[3:]
             if not np.isfinite(hip_force).all() or not np.isfinite(torque).all():
@@ -197,6 +206,7 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             trace["hip_force_n"][index] = hip_force
             trace["hip_spring_force_n"][index] = hip_spring_force
             trace["hip_damping_force_n"][index] = hip_damping_force
+            trace["hip_gate"][index] = hip_gate[index]
             trace["joint_torque_nm"][index] = torque
             trace["grf_n"][index] = wrench[:2]
             trace["ankle_contact_moment_nm"][index] = wrench[2]
@@ -235,6 +245,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
         "body_count": 3,
         "shoe_count": 1,
         "actuated_channels": 4,
+        "hip_flight_gate_enabled": cfg.hip_flight_gate_enabled,
+        "hip_flight_gate_ramp_s": cfg.hip_flight_gate_ramp_s,
         "mechanics_backend": "NumPy CPU; not a GPU-vectorized limb solver",
         "shoe_device": str(shoe.device),
         "actual_dt_s": dt,
@@ -252,7 +264,13 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             "provenance": profile["provenance"].get("inertial"),
             "population_comparison": profile["provenance"].get("de_leva_1996_population_comparison"),
         },
-        "controller": "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot",
+        "controller": (
+            "Fhip = gate*(Khip*(p_eq-p)-Dhip*v); tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+            if cfg.hip_flight_gate_enabled
+            else "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+        ),
+        "hip_flight_gate_contact_threshold_n": 5.0,
+        "hip_flight_gate_reference_source": "grf_time_s/grf_target_n vertical force",
         "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
         "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
         "trace_sampling": "preintegration, one contact update per row; terminal state/velocity in summary",

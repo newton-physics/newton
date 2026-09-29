@@ -16,9 +16,11 @@ reaction force, contact moment, and compression diagnostics. Load them with
 
 - [`fr3_1_rate_refit/`](fr3_1_rate_refit/README.md): recovered frozen FR3_1
   rate-refit controller and rollout, with its prepared reference and profile.
-- [`fr3_2_peak_to_peak/`](fr3_2_peak_to_peak/README.md): FR3_2 reference
-  re-windowed from source time 0.030 to 0.380 s and its full-refit controller
-  and rollout. This is an exploratory fit and failed measured-fit acceptance.
+- **Working movement baseline:** [`fr3_2_peak_to_peak/`](fr3_2_peak_to_peak/README.md),
+  the FR3_2 reference re-windowed from source time 0.030 to 0.380 s. Use this
+  measured movement for subsequent movement-fit experiments. Its bundled
+  controller and rollout are historical exploratory results; that fit did not
+  meet measured-fit acceptance and is not the selected controller baseline.
 
 The profiles preserve the mass, center-of-mass, inertia, gains, and equilibrium
 bounds used for these experiments. They do not certify the inertias or shoe
