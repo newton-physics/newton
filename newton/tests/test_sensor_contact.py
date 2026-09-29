@@ -310,35 +310,6 @@ class TestSensorContact(unittest.TestCase):
         np.testing.assert_allclose(total[0], [0, 0, -3.0], atol=1e-5)
         np.testing.assert_allclose(total[1], [0, 0, 3.0], atol=1e-5)
 
-    def test_deprecated_sensing_object_aliases(self):
-        """Deprecated sensing object aliases warn and return the new attributes."""
-        model = _make_two_world_model()
-        sensor = SensorContact(model, sensing_bodies=[1, 0])
-
-        with self.assertWarnsRegex(DeprecationWarning, "sensing_indices"):
-            legacy_indices = sensor.sensing_obj_idx
-        self.assertIs(legacy_indices, sensor.sensing_indices)
-
-        with self.assertWarnsRegex(DeprecationWarning, "sensing_type"):
-            legacy_type = sensor.sensing_obj_type
-        self.assertEqual(legacy_type, sensor.sensing_type)
-
-        with self.assertWarnsRegex(DeprecationWarning, "sensing_transforms"):
-            legacy_transforms = sensor.sensing_obj_transforms
-        self.assertIs(legacy_transforms, sensor.sensing_transforms)
-
-    def test_deprecated_sensing_constructor_aliases(self):
-        """Deprecated sensing constructor keywords warn and map to the new keywords."""
-        model = _make_two_world_model()
-
-        with self.assertWarnsRegex(DeprecationWarning, "sensing_bodies"):
-            body_sensor = SensorContact(model, sensing_obj_bodies=[1, 0])
-        self.assertEqual(body_sensor.sensing_indices, [1, 0])
-
-        with self.assertWarnsRegex(DeprecationWarning, "sensing_shapes"):
-            shape_sensor = SensorContact(model, sensing_obj_shapes=["s0"])
-        self.assertEqual(shape_sensor.sensing_indices, [0])
-
     def test_measure_total_false(self):
         """measure_total=False produces total_force=None and populates force_matrix."""
         model = _make_two_world_model(include_ground=True)

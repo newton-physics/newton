@@ -260,6 +260,13 @@ class DVISolver:
 
     def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
         """Return host-side repeated bilateral solve points for direct-block DVI."""
+        if self._use_schur_complement:
+            # Schur elimination incorporates the bilateral response into every
+            # unilateral update. Re-solving the bilateral block between
+            # projected sweeps defeats that elimination and makes
+            # bilateral_solve_interval affect a mode where its documented
+            # contract says it is ignored.
+            return (False,) * max(0, self._max_alternating_iterations - 1)
         return tuple(
             any(
                 next_block < c.max_alternating_iterations and next_block % c.bilateral_solve_interval == 0
@@ -356,11 +363,19 @@ class DVISolver:
             self._sparse_path.contacts = contacts
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
-        """Reset scratch state and cached solution data."""
+        """
+        Resets the persistent solution cache used for internal warm-starting, for all worlds
+        or the subset selected by `world_mask`.
+
+        This does not touch the scratch solver state (`self._data.state`) or the diagnostics
+        (`self._data.info`):
+        * `coldstart()`/`warmstart()` reinitialize `state` before every `solve()` call, except
+          for the large response matrices, which they deliberately skip because solves overwrite
+          their active entries before reading them.
+        * `info.status` is overwritten wholesale at the end of every `solve()` call if info
+          collection is enabled.
+        """
         if world_mask is None:
-            self._data.state.reset()
-            if self._data.info is not None:
-                self._data.info.zero()
             self._data.solution.zero()
         else:
             if problem is None:
@@ -380,7 +395,7 @@ class DVISolver:
 
     def coldstart(self):
         """Prepare a cold-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         self._data.solution.zero()
 
     def warmstart(
@@ -392,7 +407,7 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
     ):
         """Prepare a warm-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         if limits is None:
             limits = self._limits
         else:
@@ -543,9 +558,10 @@ class DVISolver:
         # Classify the final iterate using all DVI conditions. This replaces
         # provisional iterate-change convergence from the dense fallback;
         # direct and sparse paths reach this check after fixed iteration counts.
+        residual_workers = 32 if self._device.is_cuda and self._size.num_worlds <= 16 else 1
         wp.launch(
             kernel=_compute_dvi_status_residuals,
-            dim=self._size.num_worlds,
+            dim=self._size.num_worlds * residual_workers,
             inputs=[
                 problem.data.dim,
                 problem.data.vio,
@@ -565,6 +581,7 @@ class DVISolver:
                 self._data.state.v_aug,
                 self._data.solution.lambdas,
                 self._data.status,
+                residual_workers,
             ],
             device=self.device,
         )

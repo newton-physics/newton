@@ -36,7 +36,6 @@ newton
    DeformableVisualGaussian
    DeformableVisualMesh
    DeformableVisuals
-   EqType
    Gaussian
    GeoType
    Heightfield

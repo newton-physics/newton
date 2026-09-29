@@ -15,7 +15,6 @@ from .deformable_visual import (
 )
 from .enums import (
     BodyFlags,
-    EqType,
     JointTargetMode,
     JointType,
     ModelFlags,
@@ -36,7 +35,6 @@ __all__ = [
     "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "Model",

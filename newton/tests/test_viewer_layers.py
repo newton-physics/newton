@@ -331,7 +331,7 @@ class TestViewerLayers(unittest.TestCase):
         np.testing.assert_array_equal(pending_indices, reversed_indices.numpy())
 
         viewer.log_mesh("/mesh", moved, indices, normals=None, hidden=False, dynamic=True)
-        self.assertIsNone(viewer._pending_mesh_normals["/mesh"])
+        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], [[0.0, 0.0, 1.0]] * 3)
 
         empty_points = wp.empty(0, dtype=wp.vec3)
         empty_indices = wp.empty(0, dtype=wp.int32)

@@ -140,10 +140,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
-_SCALAR_GRAVITY_DEPRECATION_MSG = (
-    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
-    "Scalar gravity will be removed in a future release."
-)
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
@@ -1491,7 +1487,7 @@ class ModelBuilder:
     def __init__(
         self,
         up_axis: AxisType = Axis.Z,
-        gravity: float | Vec3 | None = None,
+        gravity: Vec3 | None = None,
         sdf_texture_paired_samples: bool = True,
     ):
         """
@@ -1500,8 +1496,7 @@ class ModelBuilder:
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
-                applies acceleration along ``up_axis``. If omitted, gravity
+            gravity: Default gravity vector [m/s^2]. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
@@ -1952,11 +1947,11 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
-        self._gravity: float | wp.vec3 | None = None
+        """Up axis used by geometry helpers and for resolving default gravity."""
+        self._gravity: wp.vec3 | None = None
         """Explicit global/default gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
-            self._set_gravity(gravity, stacklevel=3)
+            self._set_gravity(gravity)
 
         self.world_gravity: list[Vec3] = []
         """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
@@ -2958,22 +2953,15 @@ class ModelBuilder:
         )
 
     @property
-    def gravity(self) -> float | wp.vec3:
-        """Global/default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
-        if np.isscalar(self._gravity):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            return self._gravity
+    def gravity(self) -> wp.vec3:
+        """Global/default gravity vector [m/s^2]."""
         return self._gravity_as_vector()
 
     @gravity.setter
-    def gravity(self, value: float | Vec3) -> None:
-        self._set_gravity(value, stacklevel=3)
+    def gravity(self, value: Vec3) -> None:
+        self._set_gravity(value)
 
-    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
-        if np.isscalar(value):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
-            self._gravity = float(value)
-            return
+    def _set_gravity(self, value: Vec3) -> None:
         gravity = np.asarray(value, dtype=np.float32)
         if gravity.shape != (3,):
             raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
@@ -2981,9 +2969,8 @@ class ModelBuilder:
 
     def _gravity_as_vector(self) -> wp.vec3:
         """Resolve gravity to a fresh vector so callers never alias builder state."""
-        if self._gravity is None or np.isscalar(self._gravity):
-            magnitude = -9.81 if self._gravity is None else self._gravity
-            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        if self._gravity is None:
+            return wp.vec3(*(-9.81 * component for component in self.up_vector))
         return wp.vec3(*self._gravity)
 
     @property
@@ -3179,6 +3166,13 @@ class ModelBuilder:
 
             Python's cyclic garbage collector is temporarily disabled during this operation.
             Its previous state is restored before returning or propagating an exception.
+
+        .. important::
+            Replication may replace the backing lists of attributes on this builder.
+            References to list-valued attributes obtained before calling this method
+            may become stale: they do not receive the replicated data, and mutations
+            through them are not reflected by the builder. Reacquire attribute
+            references from the builder after calling this method.
 
         .. important::
             To approximate mesh shapes, call
@@ -4334,6 +4328,13 @@ class ModelBuilder:
             support width of twice that radius. Non-uniform scale or shear is
             rejected because one scalar width cannot preserve a spherical particle
             under that transform.
+
+            Visual meshes load or generate normals through :func:`newton.usd.get_mesh`.
+            Sharp shading can duplicate vertices in :attr:`Model.shape_source`,
+            including for untextured meshes. Collision-only loads do not request
+            normals, and visual expansion preserves source mass properties. Use
+            :func:`newton.usd.get_mesh` with ``load_normals=False`` when source
+            vertex sharing is required for geometry processing.
 
             The returned mapping has the following entries:
 
@@ -8463,7 +8464,7 @@ class ModelBuilder:
         +------------------------+-------------------------------------------------------------------------------+
         | Method                 | Description                                                                   |
         +========================+===============================================================================+
-        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/wjakob/coacd>`_         |
+        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/SarahWeiii/CoACD>`_     |
         +------------------------+-------------------------------------------------------------------------------+
         | ``"vhacd"``            | Convex decomposition using `V-HACD <https://github.com/trimesh/vhacdx>`_      |
         +------------------------+-------------------------------------------------------------------------------+
@@ -13519,7 +13520,14 @@ class ModelBuilder:
                     continue
 
                 geo_hash = hash(geo)
-                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                # Distinct meshes with mutable surface-velocity fields need
+                # distinct Warp meshes even when their geometry is identical.
+                # Repeated shapes using the same Mesh object still share via
+                # finalized_geos_by_identity above.
+                geo_cache_key = (
+                    (geo_hash, geo_identity) if isinstance(geo, Mesh) and geo.enable_surface_velocity else geo_hash
+                )
+                if geo_cache_key not in finalized_geos and isinstance(geo, Heightfield):
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
@@ -13530,15 +13538,15 @@ class ModelBuilder:
                         ground_z=geo.min_z,
                         compute_inertia=False,
                     )
-                    finalized_geos[geo_hash] = hf_geo.finalize(
+                    finalized_geos[geo_cache_key] = hf_geo.finalize(
                         device=device,
                         bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                     )
                     # keep mesh alive for the model's lifetime
                     heightfield_meshes.append(hf_geo.mesh)
-                elif geo_hash not in finalized_geos:
+                elif geo_cache_key not in finalized_geos:
                     if isinstance(geo, Mesh):
-                        finalized_geos[geo_hash] = geo.finalize(
+                        finalized_geos[geo_cache_key] = geo.finalize(
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
@@ -13548,15 +13556,15 @@ class ModelBuilder:
                         # object keeping the finalized wp.Mesh alive
                         mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
-                        finalized_geos[geo_hash] = len(gaussians)
+                        finalized_geos[geo_cache_key] = len(gaussians)
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
                         gaussian_bvhs.append(geo.bvh)
                     else:
-                        finalized_geos[geo_hash] = geo.finalize()
+                        finalized_geos[geo_cache_key] = geo.finalize()
 
-                finalized_geo = finalized_geos[geo_hash]
+                finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
@@ -13575,6 +13583,8 @@ class ModelBuilder:
                     if mesh_properties is None:
                         mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
                         mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
                 shape_mesh_properties.append(mesh_properties)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
