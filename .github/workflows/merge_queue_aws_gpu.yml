@@ -10,6 +10,7 @@ jobs:
     uses: ./.github/workflows/aws_gpu_tests.yml
     with:
       ref: ${{ github.sha }}
+      trigger-category: merge-queue
     secrets: inherit
     permissions:
       id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner

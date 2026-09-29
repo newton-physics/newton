@@ -258,9 +258,11 @@ class _MatchData:
     # Per-new candidate prev index (final value resolved in pass 2).
     match_index: wp.array[wp.int32]
 
-    # Thresholds
+    # Thresholds and packed-key layout
     pos_threshold_sq: float
     normal_dot_threshold: float
+    pair_sub_key_mask: wp.int64
+    pair_key_stride: wp.int64
 
 
 @wp.kernel(enable_backward=False)
@@ -317,8 +319,8 @@ def _match_contacts_kernel(data: _MatchData):
     # exact key would spuriously break stable contacts.  Pair counts are
     # small (<= a few manifold points), so a linear scan inside the
     # range is cheap.
-    pair_prefix = target_key & wp.int64(~0x7FFFFF)
-    pair_end = pair_prefix + wp.int64(0x800000)  # 1 << 23
+    pair_prefix = target_key & ~data.pair_sub_key_mask
+    pair_end = pair_prefix + data.pair_key_stride
     range_lo = _lower_bound_int64(0, n_old, pair_prefix, data.prev_keys)
     range_hi = _lower_bound_int64(range_lo, n_old, pair_end, data.prev_keys)
 
@@ -333,12 +335,13 @@ def _match_contacts_kernel(data: _MatchData):
         old_pos = data.prev_pos_world[old_idx]
         diff = new_pos_w - old_pos
         dist_sq = wp.dot(diff, diff)
-        old_n = data.prev_normal[old_idx]
-        ndot = wp.dot(new_n, old_n)
 
-        if dist_sq <= best_dist_sq and ndot >= data.normal_dot_threshold:
-            best_dist_sq = dist_sq
-            best_idx = old_idx
+        if dist_sq <= best_dist_sq:
+            old_n = data.prev_normal[old_idx]
+            ndot = wp.dot(new_n, old_n)
+            if ndot >= data.normal_dot_threshold:
+                best_dist_sq = dist_sq
+                best_idx = old_idx
 
     if best_idx >= 0:
         data.match_index[tid] = wp.int32(best_idx)
@@ -351,24 +354,6 @@ def _match_contacts_kernel(data: _MatchData):
     else:
         # Pair range exists but no contact within thresholds.
         data.match_index[tid] = MATCH_BROKEN
-
-
-@wp.kernel(enable_backward=False)
-def _clear_prev_claim_kernel(
-    prev_claim: wp.array[wp.int64],
-    prev_count: wp.array[wp.int32],
-):
-    """Reset only the active prefix of the claim buffer to ``_CLAIM_SENTINEL``.
-
-    Launched with ``capacity`` threads so the per-frame launch fits a
-    static CUDA graph, but each thread guards on ``prev_count[0]`` so we
-    only touch the (typically much smaller) range of slots that ``match``
-    will actually race on.  Slots beyond ``prev_count`` are never read
-    by either kernel, so leaving them stale is safe.
-    """
-    i = wp.tid()
-    if i < prev_count[0]:
-        prev_claim[i] = _CLAIM_SENTINEL
 
 
 @wp.kernel(enable_backward=False)
@@ -448,9 +433,12 @@ class _SaveStateData:
     # ``sort_full`` and the next ``save_sorted_state``) is not reading the
     # sorter's ``scratch_normal`` after the sort has clobbered it.
     dst_normal_sticky: wp.array[wp.vec3]
+    dst_claim: wp.array[wp.int64]
+    dst_prev_was_matched: wp.array[wp.int32]
     dst_count: wp.array[wp.int32]
 
     has_sticky: int
+    has_report: int
 
 
 @wp.kernel(enable_backward=False)
@@ -466,6 +454,9 @@ def _save_sorted_state_kernel(data: _SaveStateData):
         data.dst_count[0] = data.src_count[0]
     if i < data.src_count[0]:
         data.dst_keys[i] = data.src_keys[i]
+        data.dst_claim[i] = _CLAIM_SENTINEL
+        if data.has_report != 0:
+            data.dst_prev_was_matched[i] = wp.int32(0)
 
         p0 = data.src_point0[i]
         bid0 = data.shape_body[data.src_shape0[i]]
@@ -573,46 +564,39 @@ def _replay_matched_kernel(data: _ReplayData):
 
 
 @wp.kernel(enable_backward=False)
-def _collect_new_contacts_kernel(
+def _collect_contact_report_kernel(
     match_index: wp.array[wp.int32],
     contact_count: wp.array[wp.int32],
     new_indices: wp.array[wp.int32],
     new_count: wp.array[wp.int32],
-):
-    """Collect indices of new or broken contacts (match_index < 0) after sorting."""
-    i = wp.tid()
-    if i >= contact_count[0]:
-        return
-    if match_index[i] < wp.int32(0):
-        slot = wp.atomic_add(new_count, 0, wp.int32(1))
-        new_indices[slot] = wp.int32(i)
-
-
-@wp.kernel(enable_backward=False)
-def _collect_broken_contacts_kernel(
     prev_was_matched: wp.array[wp.int32],
     prev_keys: wp.array[wp.int64],
     prev_count: wp.array[wp.int32],
+    shape_index_bits: int,
+    sub_key_bits: int,
     shape_world: wp.array[wp.int32],
     reset_world_mask: wp.array[wp.bool],
     world_count: int,
     broken_indices: wp.array[wp.int32],
     broken_count: wp.array[wp.int32],
 ):
-    """Collect indices of old contacts that were not matched by any new contact."""
+    """Collect new and broken contact indices after matching and sorting."""
     i = wp.tid()
-    if i >= prev_count[0]:
-        return
-    key = prev_keys[i]
-    shape0 = wp.int32((key >> wp.int64(43)) & wp.int64(0xFFFFF))
-    shape1 = wp.int32((key >> wp.int64(23)) & wp.int64(0xFFFFF))
-    if reset_world_selected(shape_world[shape0], reset_world_mask, world_count) or reset_world_selected(
-        shape_world[shape1], reset_world_mask, world_count
-    ):
-        return
-    if prev_was_matched[i] == wp.int32(0):
-        slot = wp.atomic_add(broken_count, 0, wp.int32(1))
-        broken_indices[slot] = wp.int32(i)
+    if i < contact_count[0] and match_index[i] < wp.int32(0):
+        new_slot = wp.atomic_add(new_count, 0, wp.int32(1))
+        new_indices[new_slot] = wp.int32(i)
+
+    if i < prev_count[0]:
+        key = prev_keys[i]
+        shape_mask = (wp.int64(1) << wp.int64(shape_index_bits)) - wp.int64(1)
+        shape0 = wp.int32((key >> wp.int64(sub_key_bits + shape_index_bits)) & shape_mask)
+        shape1 = wp.int32((key >> wp.int64(sub_key_bits)) & shape_mask)
+        reset_selected = reset_world_selected(
+            shape_world[shape0], reset_world_mask, world_count
+        ) or reset_world_selected(shape_world[shape1], reset_world_mask, world_count)
+        if not reset_selected and prev_was_matched[i] == wp.int32(0):
+            broken_slot = wp.atomic_add(broken_count, 0, wp.int32(1))
+            broken_indices[broken_slot] = wp.int32(i)
 
 
 # ------------------------------------------------------------------
@@ -653,6 +637,8 @@ class ContactMatcher:
             reused for storing previous-frame positions and normals.
         shape_world: Per-shape world ids, with ``-1`` for global shapes.
         world_count: Number of local worlds.
+        shape_index_bits: Number of sort-key bits reserved for each shape index.
+        sub_key_bits: Number of low sort-key bits reserved for the per-pair contact sub-key.
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
@@ -679,6 +665,8 @@ class ContactMatcher:
         sorter: ContactSorter,
         shape_world: wp.array[wp.int32],
         world_count: int,
+        shape_index_bits: int,
+        sub_key_bits: int,
         pos_threshold: float = 0.0005,
         normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
@@ -692,6 +680,10 @@ class ContactMatcher:
             self._sorter = sorter
             self._shape_world = shape_world
             self._world_count = int(world_count)
+            self._shape_index_bits = int(shape_index_bits)
+            self._sub_key_bits = int(sub_key_bits)
+            self._pair_sub_key_mask = wp.int64((1 << sub_key_bits) - 1)
+            self._pair_key_stride = wp.int64(1 << sub_key_bits)
             self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
 
             # Only buffer we must own: sorted keys survive across frames
@@ -702,14 +694,11 @@ class ContactMatcher:
             self._prev_sorted_keys = wp.full(capacity, SORT_KEY_SENTINEL, dtype=wp.int64)
             self._prev_count = wp.zeros(1, dtype=wp.int32)
 
-            # Per-prev claim word for the atomic_min race that keeps the
-            # new→prev mapping injective (see module docstring).  Reset
-            # to _CLAIM_SENTINEL each frame; the low 32 bits of the
-            # surviving value identify the winning new contact by the low
-            # 32 bits of its sort key (deterministic, invariant under
-            # non-deterministic narrow-phase slot assignment -- see
-            # ``_pack_claim``).
-            self._prev_claim = wp.empty(capacity, dtype=wp.int64)
+            # Per-prev claim word for the atomic_min race that keeps the new→prev
+            # mapping injective (see module docstring). The save-state pass resets
+            # each active slot for the next frame; initialize the allocation for
+            # the first frame before any state has been saved.
+            self._prev_claim = wp.full(capacity, _CLAIM_SENTINEL, dtype=wp.int64)
 
             # Contact report (optional).
             self._has_report = contact_report
@@ -828,21 +817,6 @@ class ContactMatcher:
                 Written directly (no intermediate copy).
             device: Device to launch on.
         """
-        if self._has_report:
-            self._prev_was_matched.zero_()
-
-        # Reset only the active prefix of the claim buffer.  Launching
-        # ``capacity`` threads keeps the call shape constant for graph
-        # capture, but the kernel guards on ``prev_count`` so we touch
-        # the minimum bytes — important for sparsely-loaded pipelines
-        # where ``capacity >> prev_count``.
-        wp.launch(
-            _clear_prev_claim_kernel,
-            dim=self._capacity,
-            inputs=[self._prev_claim, self._prev_count],
-            device=device,
-        )
-
         data = _MatchData()
         data.prev_keys = self._prev_sorted_keys
         # Reuse sorter scratch buffers for prev-frame world-space data.
@@ -865,6 +839,8 @@ class ContactMatcher:
         data.prev_claim = self._prev_claim
         data.pos_threshold_sq = self._pos_threshold_sq
         data.normal_dot_threshold = self._normal_dot_threshold
+        data.pair_sub_key_mask = self._pair_sub_key_mask
+        data.pair_key_stride = self._pair_key_stride
 
         wp.launch(_match_contacts_kernel, dim=self._capacity, inputs=[data], device=device)
         wp.launch(
@@ -939,7 +915,10 @@ class ContactMatcher:
         data.dst_pos_world = self._sorter.scratch_pos_world
         data.dst_normal = self._sorter.scratch_normal
         data.dst_count = self._prev_count
+        data.dst_claim = self._prev_claim
 
+        data.dst_prev_was_matched = self._prev_was_matched
+        data.has_report = 1 if self._has_report else 0
         if self._sticky:
             if sorted_offset0 is None or sorted_offset1 is None:
                 raise ValueError("save_sorted_state requires sorted_offset0/offset1 when sticky is enabled")
@@ -1071,18 +1050,18 @@ class ContactMatcher:
         broken_count.zero_()
 
         wp.launch(
-            _collect_new_contacts_kernel,
-            dim=self._capacity,
-            inputs=[match_index, contact_count, new_indices, new_count],
-            device=device,
-        )
-        wp.launch(
-            _collect_broken_contacts_kernel,
+            _collect_contact_report_kernel,
             dim=self._capacity,
             inputs=[
+                match_index,
+                contact_count,
+                new_indices,
+                new_count,
                 self._prev_was_matched,
                 self._prev_sorted_keys,
                 self._prev_count,
+                self._shape_index_bits,
+                self._sub_key_bits,
                 self._shape_world,
                 self._reset_world_mask,
                 self._world_count,

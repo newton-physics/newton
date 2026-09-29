@@ -24,6 +24,7 @@ for debugging/introspection.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import warp as wp
@@ -62,6 +63,26 @@ __all__ = ["LLTBlockedRCMSolver"]
 ###
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.kernel
+def _mark_structural_tiles(
+    pair_world: wp.array[wp.int32],
+    pair_row: wp.array[wp.int32],
+    pair_col: wp.array[wp.int32],
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    tpo: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    block_size: wp.int32,
+    pattern: wp.array[wp.int32],
+):
+    pair = wp.tid()
+    world = pair_world[pair]
+    row = inverse[vio[world] + pair_row[pair]] / block_size
+    col = inverse[vio[world] + pair_col[pair]] / block_size
+    tiles = (dim[world] + block_size - 1) / block_size
+    wp.atomic_max(pattern, tpo[world] + wp.max(row, col) * tiles + wp.min(row, col), 1)
 
 
 class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
@@ -159,6 +180,12 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # pointer changes.
         self._reorder_callback = None
         self._reorder_attached_to: wp.array[dtype] | None = None
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id: int | None = None
+        self._structural_pairs: tuple[wp.array, wp.array, wp.array] | None = None
+        self._structural_pattern: wp.array[wp.int32] | None = None
+        self._structural_ready: wp.array[wp.int32] | None = None
 
         # Cache the fixed block/tile dimensions
         self._block_size: int = block_size
@@ -229,9 +256,102 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             raise ValueError("Tile pattern array has not been allocated!")
         return self._tile_pattern
 
+    @property
+    def block_size(self) -> int:
+        """Side length of a factorization tile."""
+        return self._block_size
+
+    @property
+    def tile_pattern_offsets(self) -> wp.array:
+        """Offsets of the per-matrix tile masks in :attr:`tile_pattern`."""
+        if self._tpo is None:
+            raise ValueError("Tile pattern offsets have not been allocated!")
+        return self._tpo
+
     ###
     # Implementation
     ###
+
+    def configure_sparse_assembly(self, pair_world: wp.array, pair_row: wp.array, pair_col: wp.array) -> None:
+        """Cache a fixed structural superset for direct assembly in numerical RCM order.
+
+        Call outside capture, after allocation. Pairs describe all possible
+        off-diagonal entries, including currently cancelling contributions.
+        Changing this topology requires reconfiguration and graph recapture.
+        Numerical resets retain the topology but invalidate its ordered mask.
+        """
+        if self._device.is_capturing:
+            raise RuntimeError("Configure sparse assembly before graph capture.")
+        self._structural_pairs = None
+        self._structural_pattern = None
+        self._structural_ready = None
+        if not self._device.is_cuda or not wp.is_conditional_graph_supported():
+            return
+        if not self._reuse_permutation or self._reorder_tol != 0.0:
+            return
+        self._structural_pairs = (pair_world, pair_row, pair_col)
+        self._structural_pattern = wp.zeros_like(self._tile_pattern)
+        self._structural_ready = wp.zeros(1, dtype=wp.int32, device=self._device)
+
+    def compute_sparse(self, assemble: Callable[[wp.array, wp.array | None], None]) -> None:
+        """Assemble and factor, preserving first-use numerical ordering.
+
+        The callback receives a target matrix and an optional inverse row
+        permutation. Eager stepping uses the original asynchronous path;
+        captured stepping selects initialization entirely on the device.
+        """
+        if self._structural_ready is None or not self._device.is_capturing:
+            assemble(self._operator.mat, None)
+            self.compute(self._operator.mat)
+            return
+        wp.capture_if(
+            self._structural_ready,
+            on_true=self._compute_sparse_reuse,
+            on_false=self._compute_sparse_initialize,
+            assemble=assemble,
+        )
+
+    def _compute_sparse_initialize(self, assemble: Callable) -> None:
+        # Each captured initialization branch must include the device RCM
+        # validity check, even if an earlier graph initialized the host cache.
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
+        assemble(self._operator.mat, None)
+        self.compute(self._operator.mat)
+        self._structural_pattern.zero_()
+        info = self._operator.info
+        if self._structural_pairs[0].size:
+            wp.launch(
+                _mark_structural_tiles,
+                dim=self._structural_pairs[0].size,
+                inputs=[
+                    *self._structural_pairs,
+                    info.dim,
+                    info.vio,
+                    self._tpo,
+                    self._inv_P,
+                    self._block_size,
+                    self._structural_pattern,
+                ],
+                device=self._device,
+            )
+        llt_blocked_rcm_symbolic_fill_in(
+            kernel=self._symbolic_fill_in_kernel,
+            dim=info.dim,
+            tpo=self._tpo,
+            block_size=self._block_size,
+            tile_pattern=self._structural_pattern,
+            num_blocks=info.num_blocks,
+            device=self._device,
+        )
+        self._structural_ready.fill_(1)
+
+    def _compute_sparse_reuse(self, assemble: Callable) -> None:
+        assemble(self._A_hat, self._inv_P)
+        wp.copy(self._tile_pattern, self._structural_pattern)
+        self._factorize_numeric()
+        self._has_factors = True
 
     @override
     def _allocate_impl(self, A: DenseLinearOperatorData[wp.float32, wp.int32], **kwargs: dict[str, Any]) -> None:
@@ -242,6 +362,14 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
         info = self._operator.info
         self._max_dim = int(info.max_dimension)
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
+        self._reorder_callback = None
+        self._reorder_attached_to = None
+        self._structural_pairs = None
+        self._structural_pattern = None
+        self._structural_ready = None
 
         # Resolve auxiliary kernels now that max_dim is known.
         self._permute_vector_kernel = make_llt_blocked_rcm_permute_vector_kernel(self._max_dim)
@@ -296,6 +424,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
     @override
     def _reset_impl(self) -> None:
+        if self._structural_ready is not None:
+            self._structural_ready.zero_()
         self._L.zero_()
         self._y.zero_()
         self._A_hat.zero_()
@@ -304,6 +434,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_scratch["permutation_valid"].zero_()
         self._rcm_scratch["permutation_dim"].zero_()
         self._inv_P.zero_()
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
         self._tile_pattern.zero_()
         self._has_factors = False
 
@@ -338,8 +471,37 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
     @override
     def _factorize_impl(self, A: wp.array[Any]) -> None:
+        # Ordinary compute may change the numerical permutation or matrix
+        # dimensions, so the next sparse capture must rebuild its ordered mask.
+        if self._structural_ready is not None:
+            self._structural_ready.zero_()
         info = self._operator.info
         num_blocks = info.num_blocks
+        is_capturing = bool(self._device.is_capturing)
+        capture_id = None
+        if is_capturing and self._device.is_cuda:
+            capture = self._device.captures.get(self._device.stream)
+            if capture is not None:
+                capture_id = capture.capture_id
+
+        # Recording RCM launches mutates host cache state before a captured
+        # graph executes. Validate that one-time transition against the device
+        # flags after capture, so an unlaunched or aborted graph cannot leave
+        # the replacement permutation buffers marked as initialized.
+        if self._reuse_permutation and self._permutation_initialized_during_capture:
+            if is_capturing and capture_id != self._permutation_capture_id:
+                self._permutation_initialized = False
+                self._permutation_initialized_during_capture = False
+                self._permutation_capture_id = None
+            elif not is_capturing:
+                valid = self._rcm_scratch["permutation_valid"].numpy()
+                valid_dims = self._rcm_scratch["permutation_dim"].numpy()
+                self._permutation_initialized = all(
+                    int(is_valid) != 0 and int(valid_dim) == expected_dim
+                    for is_valid, valid_dim, expected_dim in zip(valid, valid_dims, info.dimensions, strict=True)
+                )
+                self._permutation_initialized_during_capture = False
+                self._permutation_capture_id = None
 
         # Bind / rebind views to the current A buffer.
         self._ensure_reorder_launches_bound(A)
@@ -347,7 +509,13 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Compute per-block P via the batched RCM callback. The callback is a
         # set of recorded Warp launches and is safe to replay under CUDA graph
         # capture initiated by the caller.
-        self._reorder_callback()
+        if not self._reuse_permutation or not self._permutation_initialized:
+            self._reorder_callback()
+            # Later calls are ordered behind these launches on the same stream,
+            # including calls recorded later in the same CUDA graph capture.
+            self._permutation_initialized = True
+            self._permutation_initialized_during_capture = self._reuse_permutation and is_capturing
+            self._permutation_capture_id = capture_id if self._permutation_initialized_during_capture else None
 
         # 2. Fused: build inv_P, permute A -> A_hat, and reduce |A_hat| into the
         #    raw tile pattern in a single launch. Each thread writes only its
@@ -383,6 +551,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         )
 
         # 4. Numeric factorization with tile-pattern skips.
+        self._factorize_numeric()
+
+    def _factorize_numeric(self) -> None:
+        info = self._operator.info
+        num_blocks = info.num_blocks
         if self._parallel_factorization:
             llt_blocked_rcm_factorize_parallel(
                 kernels=self._parallel_factorize_kernels,

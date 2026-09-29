@@ -134,10 +134,9 @@ class Example:
             kd=self.CONTACT_DAMPING,
             gap=self.contact_gap,
         )
+        rod = newton.Rod(points, radius=self.cable_radius)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=None,
-            radius=self.cable_radius,
+            rod=rod,
             cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
@@ -198,11 +197,10 @@ class Example:
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
-            if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
-                self.viewer.camera.fov = 35.0
+        self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
+            self.viewer.camera.fov = 35.0
 
         self.graph = None
         self.capture()

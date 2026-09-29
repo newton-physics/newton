@@ -214,6 +214,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         model = builder.finalize()
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0])
         self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.POSITION))
         np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0]])
@@ -469,10 +470,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
 
     def test_ball_joint_target_ranges_applied_to_all_axes(self):
-        """A ball-joint position actuator expands to one mj_model actuator per axis.
-
-        The single authored ctrl/force range must apply to every per-axis actuator.
-        """
+        """Ball-joint axes share the actuator-range row stored at the joint's base DOF."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="ball">
     <option gravity="0 0 0"/>
@@ -484,6 +482,7 @@ class TestMuJoCoActuators(unittest.TestCase):
     </worldbody>
     <actuator>
         <position name="p" joint="bj" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+        <velocity name="v" joint="bj" kv="10" forcerange="-3 3" forcelimited="true" ctrlrange="-5 5" ctrllimited="true"/>
     </actuator>
 </mujoco>
 """
@@ -493,12 +492,23 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
-        self.assertEqual(mj_model.nu, 3)  # one actuator per ball DOF
+        self.assertEqual(mj_model.nu, 6)
+        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
         for mj_idx in range(mj_model.nu):
-            np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
-            np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            if mjc_to_newton[mj_idx] >= 0:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            else:
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
             self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
             self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+
+        model.mujoco.actuator_ctrlrange.assign([[-4.0, 4.0], [-6.0, 6.0]])
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        for mj_idx in range(mj_model.nu):
+            expected = [-4.0, 4.0] if mjc_to_newton[mj_idx] >= 0 else [-6.0, 6.0]
+            np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy()[0, mj_idx], expected)
 
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
@@ -927,6 +937,21 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_JOINT_IN_PARENT_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_in_parent_actuator">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="body">
+            <joint name="ball" type="ball"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="parent_motor" jointinparent="ball" gear="1 2 3 0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+
 MJCF_SLIDERCRANK_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_slidercrank_actuator">
     <option gravity="0 0 0"/>
@@ -960,6 +985,64 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
     </actuator>
 </mujoco>
 """
+
+
+class TestMuJoCoJointInParentActuators(unittest.TestCase):
+    """Tests for parent-frame joint actuator transmissions."""
+
+    def test_jointinparent_actuator_parsed_from_mjcf(self):
+        """Preserve the jointinparent transmission during MJCF import."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_JOINT_IN_PARENT_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(
+            model.mujoco.actuator_trntype.numpy(),
+            [int(SolverMuJoCo.TrnType.JOINT_IN_PARENT)],
+        )
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+
+    def test_jointinparent_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo parent-frame actuator moments."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_JOINT_IN_PARENT_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_JOINT_IN_PARENT_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        self.assertEqual(solver.mj_model.actuator_trntype[0], mujoco.mjtTrn.mjTRN_JOINTINPARENT)
+
+        rotated_q = [np.cos(np.pi / 8.0), 0.0, np.sin(np.pi / 8.0), 0.0]
+        native_data.qpos[:] = rotated_q
+        solver.mj_data.qpos[:] = rotated_q
+        mujoco.mj_forward(native_model, native_data)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        np.testing.assert_allclose(solver.mj_data.actuator_moment, native_data.actuator_moment, atol=1.0e-7)
+
+    def test_jointinparent_actuator_does_not_apply_inheritrange(self):
+        """Do not inherit a control range for a joint-in-parent transmission."""
+        self.assertIn('<joint name="ball" type="ball"/>', MJCF_JOINT_IN_PARENT_ACTUATOR)
+        self.assertIn('<general name="parent_motor"', MJCF_JOINT_IN_PARENT_ACTUATOR)
+        mjcf = MJCF_JOINT_IN_PARENT_ACTUATOR.replace(
+            '<joint name="ball" type="ball"/>',
+            '<joint name="ball" type="ball" limited="true" range="0 90"/>',
+        ).replace(
+            '<general name="parent_motor"',
+            '<position name="parent_motor" inheritrange="1"',
+        )
+        self.assertIn('limited="true" range="0 90"', mjcf)
+        self.assertIn('inheritrange="1"', mjcf)
+        self.assertIn('jointinparent="ball"', mjcf)
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.actuator_ctrllimited.numpy(), [2])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[0.0, 0.0]])
 
 
 class TestMuJoCoSliderCrankActuators(unittest.TestCase):

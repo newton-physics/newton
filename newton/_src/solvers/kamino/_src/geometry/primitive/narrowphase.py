@@ -1376,6 +1376,24 @@ def plane_cylinder(
 ###
 
 
+@wp.func
+def should_cull_contact_by_immovability(
+    bid_1: wp.int32,
+    bid_2: wp.int32,
+    body_is_immovable: wp.array[wp.int32],
+) -> bool:
+    """Return True when both endpoints are bodies Kamino treats as immovable.
+
+    Contact rows between two such bodies contribute nothing to the constraint
+    dynamics (both diagonal Delassus blocks vanish) and would only add solver
+    work and warmstart noise. The bid == -1 (world) case is intentionally not
+    culled: it exercises the other endpoint against an infinite-mass anchor.
+    """
+    if bid_1 < 0 or bid_2 < 0:
+        return False
+    return body_is_immovable[bid_1] != 0 and body_is_immovable[bid_2] != 0
+
+
 @wp.kernel
 def _primitive_narrowphase(
     # Inputs
@@ -1387,6 +1405,7 @@ def _primitive_narrowphase(
     geom_gap: wp.array[wp.float32],
     geom_margin: wp.array[wp.float32],
     geom_pose: wp.array[wp.transformf],
+    body_is_immovable: wp.array[wp.int32],
     candidate_model_num_pairs: wp.array[wp.int32],
     candidate_wid: wp.array[wp.int32],
     candidate_geom_pair: wp.array[wp.vec2i],
@@ -1447,6 +1466,11 @@ def _primitive_narrowphase(
     gap2 = geom_gap[gid2]
     margin2 = geom_margin[gid2]
     pose2 = geom_pose[gid2]
+
+    # Skip candidate pairs whose bodies are both immovable in Kamino: the
+    # contact row would be structurally singular and never affect motion.
+    if should_cull_contact_by_immovability(bid1, bid2, body_is_immovable):
+        return
 
     # Pairwise additive rest offset (margin) determines resting separation
     margin_12 = margin1 + margin2
@@ -1867,6 +1891,7 @@ def primitive_narrowphase(
             model.geoms.gap,
             model.geoms.margin,
             data.geoms.pose,
+            model.bodies.is_immovable,
             candidates.model_num_collisions,
             candidates.wid,
             candidates.geom_pair,

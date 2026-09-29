@@ -119,8 +119,8 @@ attributes, and usage examples.
   shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector.
 * :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
-Camera Rays from USD Data
--------------------------
+Camera Rays from USD and Calibration Data
+-----------------------------------------
 
 :class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
 :meth:`~newton.sensors.SensorCamera.update`. The caller owns the camera-space rays and the per-view transforms.
@@ -156,6 +156,10 @@ attributes you use in your pipeline and pass the numeric values into the matchin
    camera.sync_transforms(state)
    camera.update(state, camera_transforms, camera_rays, color_image=color)
 
+For OpenCV-calibrated pinhole cameras, call
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_pinhole_opencv` with the calibrated intrinsics and
+radial, tangential, and optional thin-prism coefficients.
+
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_opencv`,
 :meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_ftheta`, or
@@ -169,7 +173,12 @@ Some sensors depend on extended attributes that are not allocated by default:
 
 - ``SensorIMU`` requires ``State.body_qdd`` (rigid-body accelerations). By
   default it requests this from the model at construction, so subsequent
-  ``model.state()`` calls allocate it automatically.
+  ``model.state()`` calls allocate it automatically. Both
+  :class:`~newton.solvers.SolverKamino` and
+  :class:`~newton.solvers.SolverMuJoCo` populate this attribute. Kamino reports
+  the discrete step-average center-of-mass acceleration in the world frame;
+  impact steps therefore include the velocity impulse divided by the step
+  duration.
 - ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
   wrenches). By default it requests this from the model at construction, so
   subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver

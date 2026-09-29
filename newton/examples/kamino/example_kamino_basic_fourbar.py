@@ -47,7 +47,6 @@ class Example:
             asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
             robot_builder.add_usd(
                 asset_file,
-                joint_ordering=None,
                 force_show_colliders=True,
                 force_position_velocity_actuation=True,
                 enable_self_collisions=False,
@@ -99,10 +98,6 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)

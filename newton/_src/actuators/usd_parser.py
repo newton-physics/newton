@@ -12,34 +12,137 @@ from typing import Any
 
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
+from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
+from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .utils import load_metadata
 
+_DEPRECATED_UNSET = object()
+_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
+    "ComponentKind.CONTROLLER is deprecated in Newton 1.6; use ComponentKind.DRIVE instead."
+)
+_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG = (
+    "ActuatorParsed.controller_class is deprecated in Newton 1.6; use drive_class instead."
+)
+_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG = (
+    "ActuatorParsed.controller_kwargs is deprecated in Newton 1.6; use drive_kwargs instead."
+)
 
-class ComponentKind(enum.Enum):
+
+class _ComponentKindMeta(enum.EnumMeta):
+    """Provide a warning-producing compatibility member for ``CONTROLLER``."""
+
+    def __getattr__(cls, name: str):
+        if name == "CONTROLLER":
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return cls.DRIVE
+        return super().__getattr__(name)
+
+    def __getitem__(cls, name: str):
+        if name == "CONTROLLER":
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return cls.DRIVE
+        return super().__getitem__(name)
+
+
+class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     """Classification of actuator component schemas."""
 
-    CONTROLLER = "controller"
+    DRIVE = "drive"
     CLAMPING = "clamping"
     DELAY = "delay"
 
+    @classmethod
+    def _missing_(cls, value: object):
+        if value == "controller":
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return cls.DRIVE
+        return None
 
-@dataclass
+
+@dataclass(init=False)
 class ActuatorParsed:
     """Result of parsing a USD actuator prim.
 
     Each detected API schema produces a (class, kwargs) entry.
-    The controller is separated out; everything else goes into
+    The drive is separated out; everything else goes into
     component_specs (delay, clamping, etc.).
     """
 
-    controller_class: type[Controller]
-    controller_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
+    drive_class: type[DriveBase]
+    drive_kwargs: dict[str, Any] = field(default_factory=dict)
+    component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
+
+    def __init__(
+        self,
+        drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
+        drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
+        component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] | None = None,
+        target_path: str = "",
+        *,
+        controller_class: type[DriveBase] | object = _DEPRECATED_UNSET,
+        controller_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
+    ) -> None:
+        """Initialize a parsed actuator specification.
+
+        Args:
+            drive_class: Parsed drive class.
+            drive_kwargs: Parsed drive constructor arguments.
+            component_specs: Parsed delay and clamping specifications.
+            target_path: USD prim path of the driven joint.
+            controller_class: Deprecated in Newton 1.6; use ``drive_class``.
+            controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
+        """
+        if controller_class is not _DEPRECATED_UNSET and drive_class is not _DEPRECATED_UNSET:
+            raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+        if controller_kwargs is not _DEPRECATED_UNSET and drive_kwargs is not _DEPRECATED_UNSET:
+            raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
+
+        if controller_class is not _DEPRECATED_UNSET:
+            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            drive_class = controller_class
+        if controller_kwargs is not _DEPRECATED_UNSET:
+            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            drive_kwargs = controller_kwargs
+        if drive_class is _DEPRECATED_UNSET:
+            raise TypeError("ActuatorParsed() missing required argument: 'drive_class'")
+
+        self.drive_class = drive_class
+        self.drive_kwargs = {} if drive_kwargs is _DEPRECATED_UNSET else drive_kwargs
+        self.component_specs = [] if component_specs is None else component_specs
+        self.target_path = target_path
+
+    @property
+    def controller_class(self) -> type[DriveBase]:
+        """Deprecated alias for :attr:`drive_class`.
+
+        .. deprecated:: 1.6
+            Use :attr:`drive_class` instead.
+        """
+        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.drive_class
+
+    @controller_class.setter
+    def controller_class(self, value: type[DriveBase]) -> None:
+        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.drive_class = value
+
+    @property
+    def controller_kwargs(self) -> dict[str, Any]:
+        """Deprecated alias for :attr:`drive_kwargs`.
+
+        .. deprecated:: 1.6
+            Use :attr:`drive_kwargs` instead.
+        """
+        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.drive_kwargs
+
+    @controller_kwargs.setter
+    def controller_kwargs(self, value: dict[str, Any]) -> None:
+        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.drive_kwargs = value
 
 
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
@@ -86,24 +189,24 @@ class _SchemaEntry:
 
     component_class: type | Callable[[dict[str, Any]], type]
     """Concrete class, or a callable that receives the parsed kwargs and
-    returns the concrete class (e.g. for neural controllers that pick
+    returns the concrete class (e.g. for neural drives that pick
     MLP vs LSTM at parse time).  The callable may also validate kwargs
     and raise :class:`ValueError`.
     """
     kind: ComponentKind
 
 
-_NEURAL_CONTROLLER_TYPES: dict[str, type[Controller]] = {
-    "mlp": ControllerNeuralMLP,
-    "lstm": ControllerNeuralLSTM,
+_NEURAL_DRIVE_TYPES: dict[str, type[DriveBase]] = {
+    "mlp": DriveNeuralMLP,
+    "lstm": DriveNeuralLSTM,
 }
 
 
-def _resolve_neural_control(kwargs: dict[str, Any]) -> type[Controller]:
-    """Validate neural-control kwargs and return the concrete controller class.
+def _resolve_neural_drive(kwargs: dict[str, Any]) -> type[DriveBase]:
+    """Validate neural-control kwargs and return the concrete drive class.
 
     Inspects the checkpoint's ``model_type`` metadata to choose between
-    :class:`ControllerNeuralMLP` and :class:`ControllerNeuralLSTM`.
+    :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`.
 
     Raises:
         ValueError: If ``model_path`` is empty or the checkpoint's
@@ -119,13 +222,13 @@ def _resolve_neural_control(kwargs: dict[str, Any]) -> type[Controller]:
     if model_type is None:
         raise ValueError(
             f"Checkpoint at '{model_path}' is missing 'model_type' in metadata; "
-            f"expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+            f"expected one of {sorted(_NEURAL_DRIVE_TYPES)}"
         )
-    resolved_cls = _NEURAL_CONTROLLER_TYPES.get(model_type)
+    resolved_cls = _NEURAL_DRIVE_TYPES.get(model_type)
     if resolved_cls is None:
         raise ValueError(
             f"Unsupported model_type '{model_type}' in checkpoint metadata "
-            f"at '{model_path}'; expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+            f"at '{model_path}'; expected one of {sorted(_NEURAL_DRIVE_TYPES)}"
         )
     return resolved_cls
 
@@ -155,9 +258,9 @@ class SchemaNames:
 
 
 _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
-    SchemaNames.PD_CONTROL: _SchemaEntry(ControllerPD, ComponentKind.CONTROLLER),
-    SchemaNames.PID_CONTROL: _SchemaEntry(ControllerPID, ComponentKind.CONTROLLER),
-    SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_control, ComponentKind.CONTROLLER),
+    SchemaNames.PD_CONTROL: _SchemaEntry(DrivePD, ComponentKind.DRIVE),
+    SchemaNames.PID_CONTROL: _SchemaEntry(DrivePID, ComponentKind.DRIVE),
+    SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_drive, ComponentKind.DRIVE),
     SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
@@ -179,7 +282,7 @@ def register_actuator_component(
             the parsed kwargs dict and returns the concrete class.
             A callable may also validate kwargs and raise
             :class:`ValueError`.
-        kind: Whether this schema is a controller, clamping, delay, etc.
+        kind: Whether this schema is a drive, clamping, delay, etc.
 
     If *schema_name* is already registered, a warning is emitted and the
     existing entry is overwritten.
@@ -207,8 +310,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             - has no authored ``newton:targets`` relationship,
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
-            - has multiple controller schemas applied,
-            - has no controller schema, or
+            - has multiple drive schemas applied,
+            - has no drive schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model.
     """
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
@@ -243,8 +346,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             f"are supported"
         )
 
-    controller_class = None
-    controller_kwargs: dict[str, Any] = {}
+    drive_class = None
+    drive_kwargs: dict[str, Any] = {}
     component_specs: list[tuple[type, dict[str, Any]]] = []
     detected: list[str] = []
 
@@ -264,23 +367,22 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
 
-        if entry.kind is ComponentKind.CONTROLLER:
-            if controller_class is not None:
+        if entry.kind is ComponentKind.DRIVE:
+            if drive_class is not None:
                 raise ValueError(
-                    f"Actuator prim '{prim.GetPath()}' has multiple controllers: "
-                    f"{controller_class.__name__} and {cls.__name__}"
+                    f"Actuator prim '{prim.GetPath()}' has multiple drives: {drive_class.__name__} and {cls.__name__}"
                 )
-            controller_class = cls
-            controller_kwargs = kwargs
+            drive_class = cls
+            drive_kwargs = kwargs
         else:
             component_specs.append((cls, kwargs))
 
-    if controller_class is None:
-        raise ValueError(f"Actuator prim '{prim.GetPath()}' has no controller schema (detected schemas: {detected})")
+    if drive_class is None:
+        raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
 
     return ActuatorParsed(
-        controller_class=controller_class,
-        controller_kwargs=controller_kwargs,
+        drive_class=drive_class,
+        drive_kwargs=drive_kwargs,
         component_specs=component_specs,
         target_path=target_paths[0],
     )
