@@ -68,6 +68,7 @@ from .rigid_vbd_kernels import (
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
+    compute_body_particle_contact_forces,
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
     forward_step_rigid_bodies,
@@ -236,6 +237,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         warm-start buffers on every replay. With ``rigid_contact_history=True``,
         construct :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run
         one uncaptured solver step before capture.
+
+    Contact force export:
+        Allocating :attr:`~newton.Contacts.force` (request the ``"force"`` extended contact
+        attribute) on the ``Contacts`` passed to :meth:`step` makes the step evaluate one wrench
+        per rigid-soft contact record -- particle, edge, and face -- at its final configuration;
+        :meth:`update_contacts` then publishes them into the soft-contact rows of
+        ``contacts.force``. The evaluation reads the solve's result and never changes it, and
+        its buffer follows the body-particle contact state sizing rules above. Rigid-rigid rows
+        are not populated; see :meth:`collect_rigid_contact_forces`.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -1288,6 +1298,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._particle_contact_worker_count = 0
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
+        # Opt-in contact force export (``Contacts.force``): one wrench per soft-contact record,
+        # evaluated at the end of step() and published by update_contacts(). Allocated with the
+        # body-particle contact state when the model already requests "force", otherwise on the
+        # first step that receives a force-enabled Contacts buffer.
+        self._body_particle_contact_force: wp.array | None = None
+        self._body_particle_contact_force_layout: tuple[int, int] | None = None
         if model.particle_count > 0 and model.shape_count > 0:
             # Not shape_count * particle_count: that counts cross-world pairs, so it is quadratic in
             # world count and can exceed Warp's int32 array shape limit. A hint only -- the first step
@@ -1680,6 +1696,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self._particle_contact_next = wp.empty(3 * soft_contact_max, dtype=wp.int32, device=self.device)
+        if self._body_particle_contact_force is not None or "force" in self.model.get_requested_contact_attributes():
+            self._body_particle_contact_force = wp.zeros(soft_contact_max, dtype=wp.spatial_vector, device=self.device)
         self._particle_contact_adjacency_initialized = False
         self._particle_contact_worker_count = _particle_contact_scatter_worker_count(
             soft_contact_max, self.model.particle_count, self.device
@@ -2414,7 +2432,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             contacts: Contact data produced by :meth:`~newton.CollisionPipeline.collide` (rigid-rigid and
                 rigid-particle contacts), allocated with :meth:`~newton.CollisionPipeline.contacts`.
                 If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
-                depend on this argument.
+                depend on this argument. If ``contacts.force`` is allocated, the step also evaluates one wrench
+                per rigid-soft contact record at its final configuration for :meth:`update_contacts`.
             dt: Time step size.
 
         Raises:
@@ -2459,6 +2478,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+
+        # Opt-in contact force export: evaluate at the final iterate while the pose history the
+        # iterations used is still intact (finalization advances it below).
+        self._export_body_particle_contact_forces(state_in, state_out, contacts, dt)
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
@@ -4140,6 +4163,75 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _export_body_particle_contact_forces(
+        self, state_in: State, state_out: State, contacts: Contacts | None, dt: float
+    ) -> None:
+        """Evaluate one wrench per body-particle contact record for :meth:`update_contacts`.
+
+        Runs only when ``contacts.force`` is allocated (the export opt-in). The evaluation reads
+        the final iterate together with the pose history the last iteration used and writes a
+        solver-owned buffer, so it never changes the solve. Must run before rigid finalization
+        advances ``body_q_prev``.
+        """
+        if contacts is None or contacts.force is None:
+            return
+
+        model = self.model
+        soft_contact_max = contacts.soft_contact_max
+        capacity = 0 if self._body_particle_contact_force is None else self._body_particle_contact_force.shape[0]
+        if capacity < soft_contact_max:
+            self._raise_if_capturing_resize("body-particle contact force output", capacity, soft_contact_max)
+            self._body_particle_contact_force = wp.zeros(soft_contact_max, dtype=wp.spatial_vector, device=self.device)
+        self._body_particle_contact_force_layout = (contacts.rigid_contact_max, soft_contact_max)
+        if soft_contact_max == 0:
+            return
+        if model.particle_count == 0:
+            # Without particles no soft contact can exist and the per-contact material state is unsized.
+            self._body_particle_contact_force.zero_()
+            return
+
+        # Same body pose selection as _solve_particle_iteration: the particle side evaluated these
+        # contacts against exactly these arrays in the last iteration.
+        if self.integrate_with_external_rigid_solver:
+            body_q = state_out.body_q
+            body_q_prev = state_in.body_q
+            body_qd = state_out.body_qd
+        else:
+            body_q = state_in.body_q
+            body_q_prev = self.body_q_prev if model.body_count > 0 else None
+            body_qd = state_in.body_qd
+
+        wp.launch(
+            kernel=compute_body_particle_contact_forces,
+            dim=soft_contact_max,
+            inputs=[
+                dt,
+                state_in.particle_q,
+                self.particle_q_prev,
+                model.particle_radius,
+                model.shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                model.body_com,
+                self.friction_epsilon,
+                self.rigid_soft_contact_use_log_barrier,
+                self.body_particle_contact_penalty_k,
+                self.body_particle_contact_material_kd,
+                self.body_particle_contact_material_mu,
+                contacts.soft_contact_count,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_body_vel,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_barycentric,
+                model.shape_margin,
+            ],
+            outputs=[self._body_particle_contact_force],
+            device=self.device,
+        )
+
     def collect_rigid_contact_forces(
         self,
         body_q: wp.array[wp.transform],
@@ -4289,6 +4381,74 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._rigid_contact_point1_world,
             contacts.rigid_contact_force,
             contacts.rigid_contact_count,
+        )
+
+    @override
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
+        """Populate the soft-contact rows of ``contacts.force`` from the last :meth:`step`.
+
+        ``SolverVBD`` exports the rigid-soft (body-particle) contact wrenches it evaluated at the
+        end of the preceding :meth:`step`. The export is enabled by allocating ``contacts.force``
+        (request the ``"force"`` extended contact attribute) on the buffer passed to :meth:`step`.
+        Soft contact ``i`` is written to ``contacts.force[contacts.rigid_contact_max + i]`` for
+        ``i < soft_contact_count``; the remaining soft rows are zero. Rigid-rigid rows
+        (``[0, rigid_contact_max)``) are not written by this solver; use
+        :meth:`collect_rigid_contact_forces` for body-body contact forces.
+
+        Each soft row follows the :attr:`~newton.Contacts.force` convention with the contacted
+        shape (:attr:`~newton.Contacts.soft_contact_shape`) in the role of shape 0 and the soft
+        feature -- particle, edge, or face -- in the role of shape 1. The linear part is the force
+        [N] exerted on the shape's body by the soft feature; the angular part is the torque [N·m]
+        of that force about the body's center of mass, or about the world origin when the shape is
+        static. Both are in world frame, with the force applied at the shape-side contact point
+        (:attr:`~newton.Contacts.soft_contact_body_pos` mapped to world space). Negating the linear
+        part gives the force on the soft contact point; the solve distributes that force to the
+        record's particles with :attr:`~newton.Contacts.soft_contact_barycentric`.
+
+        The value is the solver's own penalty contact force -- normal penalty at the per-contact
+        stiffness in effect at the end of the step, damping while the contact point approaches
+        the surface, and regularized Coulomb friction on the slip over the step bounded by the
+        elastic normal load -- evaluated once at the final particle and body configuration of the
+        step with the same step-start history the iterations used. It is the force the last
+        iteration balanced, not a time-step average. Records without penetration report zero.
+        See :ref:`vbd_soft_contact_forces` for a usage guide.
+
+        Args:
+            contacts: Buffer whose :attr:`~newton.Contacts.force` rows are written. Must have been
+                created with ``"force"`` requested and must have the same rigid and soft capacities
+                as the buffer passed to the preceding :meth:`step`.
+            state: Unused (accepted for API compatibility with :class:`~newton.solvers.SolverBase`).
+
+        Raises:
+            ValueError: If ``contacts.force`` is ``None``, if no :meth:`step` has run with a
+                force-enabled ``Contacts`` buffer, or if the capacities differ from that buffer.
+        """
+        self._apply_module_options()
+        if contacts.force is None:
+            raise ValueError(
+                "contacts.force is not allocated. Call model.request_contact_attributes('force') "
+                "before creating the Contacts object."
+            )
+        if self._body_particle_contact_force_layout is None:
+            raise ValueError(
+                "No soft contact force data available. Call step() with a Contacts object whose "
+                "'force' attribute is allocated before update_contacts()."
+            )
+        layout = (contacts.rigid_contact_max, contacts.soft_contact_max)
+        if layout != self._body_particle_contact_force_layout:
+            raise ValueError(
+                "Contacts capacity mismatch: update_contacts() received "
+                f"(rigid_contact_max, soft_contact_max)={layout}, but step() used "
+                f"{self._body_particle_contact_force_layout}. Pass the same Contacts instance to both "
+                "step() and update_contacts()."
+            )
+        if contacts.soft_contact_max == 0:
+            return
+        wp.copy(
+            dest=contacts.force,
+            src=self._body_particle_contact_force,
+            dest_offset=contacts.rigid_contact_max,
+            count=contacts.soft_contact_max,
         )
 
     def _finalize_particles(self, state_out: State, dt: float):

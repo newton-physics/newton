@@ -1,0 +1,1 @@
+Add rigid-soft contact force export to `SolverVBD`: `update_contacts()` populates the soft-contact rows of `Contacts.force` with one wrench per particle, edge, or face contact record (force on the contacted shape's body and torque about its center of mass), evaluated at the final configuration of the preceding step.

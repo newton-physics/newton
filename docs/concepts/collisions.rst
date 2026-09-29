@@ -1655,6 +1655,15 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
    approximate -- see that method's documentation for details.
 
+.. note::
+
+   :class:`~solvers.SolverVBD` populates only the soft-contact rows of
+   :attr:`~Contacts.force` (rigid-soft particle, edge, and face records; row
+   ``rigid_contact_max + i`` for soft contact ``i``) and leaves the rigid-rigid
+   rows unwritten. See :meth:`~solvers.SolverVBD.update_contacts` for the sign
+   and torque convention, and :meth:`~solvers.SolverVBD.collect_rigid_contact_forces`
+   for body-body contact forces.
+
 Example usage:
 
 .. testsetup:: contact-data

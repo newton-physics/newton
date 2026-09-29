@@ -5713,6 +5713,129 @@ def accumulate_body_particle_contacts_per_body(
 
 
 @wp.kernel
+def compute_body_particle_contact_forces(
+    dt: float,
+    # Particle state
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    # Rigid body state
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    # AVBD body-particle soft contact penalties and material properties
+    friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    # Soft contact data (body-particle)
+    body_particle_contact_count: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_shape: wp.array[int],
+    body_particle_contact_body_pos: wp.array[wp.vec3],
+    body_particle_contact_body_vel: wp.array[wp.vec3],
+    body_particle_contact_normal: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    # Output (length >= soft_contact_max)
+    contact_force: wp.array[wp.spatial_vector],
+):
+    """Evaluate one wrench per body-particle soft contact record at the given configuration.
+
+    One thread per soft-contact slot. Active records use the same dispatch and force law as the
+    solve (``_eval_body_particle_contact`` for a particle record, ``_eval_soft_ef_contact`` for an
+    edge/face record) with the per-contact AVBD penalty and pre-mixed material. Each row stores the
+    force on the contacted shape's body (the reaction to the force on the soft point) and its torque
+    about that body's COM -- the world origin for a static shape -- in world frame. Slots at or
+    beyond the active count are zeroed. This is a read-only evaluation: nothing is accumulated into
+    solver state.
+    """
+    tid = wp.tid()
+    if tid >= body_particle_contact_count[0]:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    corners = soft_contact_indices[tid]
+    shape_index = body_particle_contact_shape[tid]
+    if corners[0] < 0 or shape_index < 0:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    body_index = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    com_world = wp.vec3(0.0)
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        com_world = wp.transform_point(X_wb, body_com[body_index])
+
+    contact_ke = body_particle_contact_penalty_k[tid]
+    contact_kd = body_particle_contact_material_kd[tid]
+    contact_mu = body_particle_contact_material_mu[tid]
+
+    f_soft = wp.vec3(0.0)
+    cp_world = wp.vec3(0.0)
+    if corners[1] < 0:
+        # Particle record (p, -1, -1): same single-particle evaluation as the particle-side gather.
+        particle_index = corners[0]
+        f_soft, _h_soft = _eval_body_particle_contact(
+            particle_index,
+            particle_q[particle_index],
+            particle_q_prev[particle_index],
+            tid,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            particle_radius,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
+            shape_margin,
+            dt,
+            rigid_body_particle_contact_use_log_barrier,
+        )
+        cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[tid])
+    else:
+        # Edge/face record: barycentric contact point over the record's 2-3 soft particles.
+        f_soft, _h_soft, cp_world = _eval_soft_ef_contact(
+            tid,
+            corners,
+            soft_contact_barycentric[tid],
+            particle_q,
+            particle_q_prev,
+            particle_radius,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
+            shape_margin,
+            dt,
+            rigid_body_particle_contact_use_log_barrier,
+        )
+
+    f_body = -f_soft
+    contact_force[tid] = wp.spatial_vector(f_body, wp.cross(cp_world - com_world, f_body))
+
+
+@wp.kernel
 def solve_rigid_body(
     dt: float,
     body_ids_in_color: wp.array[wp.int32],
