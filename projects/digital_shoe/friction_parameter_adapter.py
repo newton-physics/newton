@@ -17,14 +17,30 @@ import warp as wp
 
 from projects.digital_shoe.contact import bristle_step, contact_kinematics
 from projects.digital_shoe.friction_deflection import bristle_deflection_step
-from projects.digital_shoe.friction_maxwell import bristle_maxwell_step, maxwell_bristle_energy
+from projects.digital_shoe.friction_maxwell import (
+    bristle_elastic_coulomb_step,
+    bristle_maxwell_step,
+    column_maxwell_parameters,
+    elastic_coulomb_stiffness,
+    maxwell_bristle_energy,
+)
 from projects.digital_shoe.friction_pressure import bristle_pressure_step, pressure_coefficient
 from projects.digital_shoe.friction_slip_history import bristle_slip_history_step, slip_history_coefficient
 from projects.digital_shoe.friction_stribeck import bristle_stribeck_step, stribeck_coefficient
+from projects.digital_shoe.runtime import FoundationParams
 
 wp.set_module_options({"enable_backward": False})
 
-SUPPORTED_METHODS = {0: "legacy", 1: "deflection", 4: "stribeck", 5: "pressure", 6: "slip_history", 7: "maxwell"}
+SUPPORTED_METHODS = {
+    0: "legacy",
+    1: "deflection",
+    4: "stribeck",
+    5: "pressure",
+    6: "slip_history",
+    7: "maxwell",
+    8: "column_maxwell",
+    9: "elastic_coulomb",
+}
 
 
 @wp.kernel
@@ -43,6 +59,8 @@ def _postnormal_friction_step(
     base_kt: wp.array[float],
     base_kv: wp.array[float],
     area: wp.array[float],
+    rest_len: wp.array[float],
+    world_params: wp.array[FoundationParams],
     tangent_anchor: wp.array[wp.vec2],
     tangent_stuck: wp.array[int],
     tangent_dwell: wp.array[float],
@@ -85,20 +103,44 @@ def _postnormal_friction_step(
     elapsed = tangent_dwell[i]
     old_energy = stored_energy[i]
 
-    if method == 7:
+    if method == 9:
+        p = world_params[w]
+        kt = elastic_coulomb_stiffness(p.g_eq + p.g_eq2, area[c], rest_len[c]) * settings[w, 2]
+        force, _jac, z, s, elapsed = bristle_elastic_coulomb_step(v, dt, n, kt, mu, release, z, s, elapsed)
+        maxwell_force[i] = wp.vec2(0.0)
+        a = pos + dt * v - z
+    elif method == 7:
+        shear_tau = settings[w, 11]
         force, _jac, z, q, s, elapsed = bristle_maxwell_step(
             v,
             dt,
             n,
             kt,
             kv,
-            settings[w, 11],
+            shear_tau,
             mu,
             release,
             z,
             maxwell_force[i],
             s,
             elapsed,
+        )
+        maxwell_force[i] = q
+        a = pos + dt * v - z
+    elif method == 8:
+        p = world_params[w]
+        shear_tau = p.friction_relaxation_time_s
+        kt, kv = column_maxwell_parameters(
+            p.g_eq + p.g_eq2,
+            p.overstress,
+            area[c],
+            rest_len[c],
+            shear_tau,
+        )
+        kt *= settings[w, 2]
+        kv *= settings[w, 3]
+        force, _jac, z, q, s, elapsed = bristle_maxwell_step(
+            v, dt, n, kt, kv, shear_tau, mu, release, z, maxwell_force[i], s, elapsed
         )
         maxwell_force[i] = q
         a = pos + dt * v - z
@@ -153,6 +195,8 @@ def _postnormal_friction_step(
     energy = 0.5 * kt * wp.dot(z, z)
     if method == 7:
         energy = maxwell_bristle_energy(z, maxwell_force[i], kt, kv, settings[w, 11])
+    elif method == 8:
+        energy = maxwell_bristle_energy(z, maxwell_force[i], kt, kv, world_params[w].friction_relaxation_time_s)
     work = wp.dot(force, v) * dt
     residual = energy - old_energy + work
     tolerance = 1.0e-6 * (energy + old_energy + wp.abs(work) + 1.0e-6)
@@ -359,18 +403,25 @@ class FrictionParameterAdapter:
         if len(arr) > self.world_count:
             raise ValueError(f"Parameter row count ({len(arr)}) exceeds world count ({self.world_count})")
 
-        # Validate methods: only 0 (legacy) and 1 (deflection) are eligible for dynamic qualification
+        # Validate all supported methods before assigning world parameters.
         methods = arr[:, 0].astype(int)
         for m in methods:
             if m not in SUPPORTED_METHODS:
                 raise ValueError(
-                    f"Friction method {m} is unsupported. Supported method codes are 0, 1, 4, 5, 6 and 7 for dynamic qualification. Diagnostic methods 2/3 are rejected."
+                    f"Friction method {m} is unsupported. Supported method codes are 0, 1, 4, 5, 6, 7, 8 and 9. Diagnostic methods 2/3 are rejected."
                 )
 
         if np.any(methods == 5):
             areas = self.foundation.area.numpy()
             if not np.isfinite(areas).all() or np.any(areas <= 0):
                 raise ValueError("Pressure-dependent friction requires finite positive column areas")
+        if np.any(np.isin(methods, [8, 9])):
+            areas = self.foundation.area.numpy()
+            lengths = self.foundation.rest_len.numpy()
+            if not np.isfinite(areas).all() or np.any(areas <= 0.0):
+                raise ValueError("Column-derived friction requires finite positive column areas")
+            if not np.isfinite(lengths).all() or np.any(lengths <= 0.0):
+                raise ValueError("Column-derived friction requires finite positive column rest lengths")
 
         # Validate physics parameters
         if np.any(arr[:, 1] < 0.0):
@@ -395,7 +446,7 @@ class FrictionParameterAdapter:
             raise ValueError("Sliding scale must be positive [m]")
         if np.any(arr[:, 11] <= 0.0):
             raise ValueError("Shear relaxation time must be positive [s]")
-        if np.any((methods == 7) & (arr[:, 4] != 0.0)):
+        if np.any(np.isin(methods, [7, 8]) & (arr[:, 4] != 0.0)):
             raise ValueError("Maxwell friction requires viscous_ratio=0; viscosity is internal to the branch")
 
         padded = np.repeat(arr[-1:], self.world_count, axis=0)
@@ -443,6 +494,8 @@ class FrictionParameterAdapter:
                 self.base_kt,
                 self.base_kv,
                 f.area,
+                f.rest_len,
+                f.world_params,
                 f.tangent_anchor,
                 f.tangent_stuck,
                 f.tangent_dwell,
@@ -498,5 +551,9 @@ class FrictionParameterAdapter:
         if getattr(self.foundation, "friction_solver", None) is self:
             self.foundation.friction_solver = None
             if restore_default and getattr(self.foundation, "config", None) is not None:
-                if getattr(self.foundation.config, "friction_model", "legacy") == "maxwell":
+                if getattr(self.foundation.config, "friction_model", "legacy") in (
+                    "elastic_coulomb",
+                    "maxwell",
+                    "column_maxwell",
+                ):
                     self.foundation._install_default_friction_adapter()

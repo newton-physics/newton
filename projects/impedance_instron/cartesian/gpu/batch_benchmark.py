@@ -94,6 +94,7 @@ def benchmark(
         config=config,
         settings=settings,
         world_count=count,
+        friction_model=shoe["friction_model"],
     )
     engine.capture(candidates)
     first = engine.evaluate(candidates)
@@ -144,6 +145,7 @@ def benchmark(
         config=config,
         settings=settings,
         world_count=1,
+        friction_model=shoe["friction_model"],
     )
     single.capture(coefficients[None])
     isolated = []

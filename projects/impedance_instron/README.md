@@ -23,18 +23,19 @@ foot-to-shoe registration.
 
 ## Selected baseline
 
-`outputs/impedance_instron/baseline12_maxwell/` is the current baseline. Maxwell
-shear friction is selected automatically in the shared shoe, CPU leg and GPU leg
-paths. The leg-shoe defaults are mu 0.8, 1000 N/m equilibrium tangential stiffness
-per nominal 25 mm² column, 10 N s/m internal viscosity, and the effective material
-relaxation time. Normal material/contact mechanics are unchanged.
+`outputs/impedance_instron/baseline12_maxwell/` is the saved baseline. Its shoe
+uses the friction model recorded in its manifest (`maxwell`). New Cartesian
+shoe and GPU Engine instances default to `elastic_coulomb`, with per-column
+stiffness `G_eq A / L`, `mu = 0.8`, and no tangential damping. `maxwell` and
+`column_maxwell` remain available explicitly. Normal material/contact mechanics
+are unchanged.
 
 The gains remain those of the previous K2/D2 controller:
 
 - Hip stiffness [8000, 12000] N/m; joint stiffness [240, 180] N m/rad.
 - Hip damping [80, 80] N s/m; joint damping [12, 8] N m s/rad.
 - All twelve hip-Z equilibrium coefficients are shifted by +1.5 mm to restore
-  tracking margin under the new law. No other coefficients, gains, masses,
+  tracking margin under the saved Maxwell law. No other coefficients, gains, masses,
   initial conditions or normal parameters are changed.
 
 The previous accepted legacy-friction baseline is archived in

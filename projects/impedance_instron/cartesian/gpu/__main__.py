@@ -300,6 +300,7 @@ def optimize(args):
         config=config,
         settings=settings,
         world_count=world_count,
+        friction_model=shoe["friction_model"],
     )
     if engine.shoe.metadata != shoe:
         raise ValueError("GPU shoe metadata changed from the frozen model")
@@ -357,6 +358,7 @@ def optimize(args):
             config=replace(config, dt_s=config.dt_s / 2),
             settings=settings,
             world_count=1,
+            friction_model=shoe["friction_model"],
         )
         fine_score = fine_engine.evaluate(spline.coefficients[None])
         fine_trace, fine_run = fine_engine.trace()

@@ -773,7 +773,7 @@ class Engine:
         world_count: int = 49,
         device: str = "cuda:0",
         chunk_steps: int = 32,
-        friction_model: str = "maxwell",
+        friction_model: str = "elastic_coulomb",
     ):
         started = perf_counter()
         self.device = wp.get_device(device)
@@ -818,8 +818,10 @@ class Engine:
             FoundationConfig(
                 ground_height_m=0.0,
                 normal_damping=0.0,
-                friction_stiffness=10000.0 if friction_model == "legacy" else 1000.0,
-                friction=10.0,
+                friction_stiffness=10000.0
+                if friction_model == "legacy"
+                else (1000.0 if friction_model == "maxwell" else 0.0),
+                friction=10.0 if friction_model in ("legacy", "maxwell") else 0.0,
                 mu=0.8,
                 friction_model=friction_model,
             ),

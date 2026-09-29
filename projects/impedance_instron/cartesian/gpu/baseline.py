@@ -142,6 +142,9 @@ def build(source: Path, output: Path, *, from_scratch: bool = False) -> dict[str
     if output.exists():
         raise FileExistsError(f"Baseline output directory already exists: {output}")
     manifest = json.loads((source / "baseline.json").read_text())
+    friction_model = manifest.get("friction_model", {}).get("model")
+    if friction_model not in ("legacy", "maxwell", "column_maxwell", "elastic_coulomb"):
+        raise ValueError("Saved baseline must declare a supported friction model")
     for name, expected in manifest["files_sha256"].items():
         if Path(name).name != name or hashlib.sha256((source / name).read_bytes()).hexdigest() != expected:
             raise ValueError(f"Saved baseline file changed: {name}")
@@ -189,6 +192,7 @@ def build(source: Path, output: Path, *, from_scratch: bool = False) -> dict[str
         equilibrium=equilibrium,
         initialization=None if from_scratch else initialization,
         input_provenance={"selected_baseline": manifest},
+        friction_model=friction_model,
     )
 
 
@@ -205,6 +209,7 @@ def build_inputs(
     equilibrium: Spline | None = None,
     initialization: dict | None = None,
     input_provenance: dict | None = None,
+    friction_model: str = "elastic_coulomb",
 ) -> dict[str, Any]:
     """Create new numerical evidence from independently frozen measured inputs.
 
@@ -250,7 +255,9 @@ def build_inputs(
     ):
         raise ValueError("Initial controller violates canonical bounds")
     initialization = initialization or {"kind": "explicit_controller", "used_previous_controller_coefficients": True}
-    shoe = Shoe(artifact_path, mount_m, pitch_rad, device="cpu")
+    if friction_model not in ("legacy", "maxwell", "column_maxwell", "elastic_coulomb"):
+        raise ValueError("Baseline inputs must select a supported friction model")
+    shoe = Shoe(artifact_path, mount_m, pitch_rad, device="cpu", friction_model=friction_model)
     shoe_identity = {
         "artifact_sha256": shoe.metadata["sha256"],
         "mount_m": shoe.metadata["mount_m"],
@@ -277,7 +284,7 @@ def build_inputs(
     loss = float(residual @ residual)
 
     failure_spline, failure_info = _failure_fixture(
-        reference, profile, artifact_path, mount_m, pitch_rad, fit_config, config
+        reference, profile, artifact_path, mount_m, pitch_rad, fit_config, config, friction_model
     )
     output.mkdir(parents=True)
     (output / "reference.npz").write_bytes(reference_bytes)
@@ -355,7 +362,7 @@ def build_inputs(
     return summary
 
 
-def _failure_fixture(reference, profile, artifact_path, mount, pitch, settings, config):
+def _failure_fixture(reference, profile, artifact_path, mount, pitch, settings, config, friction_model):
     """Find and confirm a bounded failure without changing the numerical screens."""
     q0, v0 = reference["state"][0], reference["velocity"][0]
     upper = np.asarray(profile["equilibrium_upper"])
@@ -375,12 +382,20 @@ def _failure_fixture(reference, profile, artifact_path, mount, pitch, settings, 
     corners = np.asarray([np.where(bits, upper, lower) for bits in product((False, True), repeat=4)])
     candidates = np.repeat(corners[:, None, :], 12, axis=1)
     engine = Engine(
-        reference, profile, artifact_path, mount, pitch, config=config, settings=settings, world_count=len(candidates)
+        reference,
+        profile,
+        artifact_path,
+        mount,
+        pitch,
+        config=config,
+        settings=settings,
+        world_count=len(candidates),
+        friction_model=friction_model,
     )
     scores = engine.evaluate(candidates)
     for index in np.flatnonzero(scores["failure_code"]):
         spline = Spline(float(reference["time_s"][-1]), candidates[index])
-        shoe = Shoe(artifact_path, mount, pitch, device="cpu")
+        shoe = Shoe(artifact_path, mount, pitch, device="cpu", friction_model=friction_model)
         _, run = simulate(reference, profile, spline, shoe, config=config)
         if run["failure"] is not None:
             initial_force = (

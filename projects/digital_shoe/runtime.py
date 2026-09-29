@@ -112,7 +112,7 @@ class FoundationParams:
     friction_viscous_ratio: wp.float32  # viscous cap as a fraction of the cone mu*fn
     friction_release_dwell_s: wp.float32  # unloaded dwell before the stick point is discarded [s]
     mu: wp.float32  # Coulomb friction coefficient
-    friction_model: wp.int32  # 0: legacy, 1: maxwell
+    friction_model: wp.int32  # 0: legacy, 1: maxwell, 2: column_maxwell, 3: elastic_coulomb
     friction_relaxation_time_s: wp.float32  # shear relaxation time [s]
 
 
@@ -1428,28 +1428,38 @@ class FoundationConfig:
     The Instron replay leaves ``normal_damping``, ``friction_stiffness`` and
     ``friction`` at zero and keeps ``stretch_floor`` below the calibration's peak
     strain so the collected loop reproduces the fitted force-displacement response
-    exactly. The default friction model is a Maxwell shear bristle: an equilibrium
+    exactly. The default friction model is an area-scaled elastic Coulomb bristle.
+    ``friction_model="elastic_coulomb"`` derives each column's stiffness as
+    ``G_eq * area / rest_length`` and applies no tangential damping. It is a
+    geometry-scaled contact assumption; normal compression does not identify
+    outsole friction. Maxwell shear remains available explicitly: an equilibrium
     spring in parallel with a spring/dashpot branch, in series with a Coulomb slider.
     ``friction_stiffness`` is the equilibrium tangential stiffness, ``friction``
     is the internal dashpot viscosity, and ``mu`` bounds traction at ``mu * fn``.
     Select ``friction_model="legacy"`` for the previous anchored spring with direct
     velocity damping. No public kernel or legacy symbol is removed.
 
-    The tangential bed is a property of the contact area, not of the sampling grid, so
-    the per-column values are converted to ``friction_stiffness_per_area``
+    For configured-coefficient models, the tangential bed is a property of the
+    contact area, not of the sampling grid, so the per-column values are
+    converted to ``friction_stiffness_per_area``
     ``k'' = kt / A`` [N/m^3] and ``friction_damping_per_area`` ``c'' = kv / A``
     [N.s/m^3] and re-expanded as ``kt_i = k'' * A_i``. Set the per-area fields directly
     to declare the tangential layer independently of the column count; leaving them at
     zero derives them from the per-column values and the mean tributary area, which is
-    exactly the previous behaviour on a uniform grid. The current shoe settings,
+    exactly the previous behaviour on a uniform grid. The legacy shoe settings,
     kt = 1e4 N/m over 25 mm^2, correspond to ``k'' = 4.0e8 N/m^3``, i.e. a thin outsole
     rubber layer (G ~ 0.8 MPa over 2 mm). That is a declared assumption: it is 2-3
     orders of magnitude above the shear stiffness of the identified foam, and the
     Instron identification is compression only.
 
-    ``friction_viscous_ratio`` applies only to legacy direct velocity damping.
-    Maxwell uses ``friction_relaxation_time_s``, or the material relaxation time when
-    omitted. This is an explicit shear extrapolation, not independent shear calibration.
+    ``friction_model="maxwell"`` uses the configured tangential stiffness and
+    viscosity with a Maxwell branch. ``friction_model="column_maxwell"`` derives
+    each column's shear stiffness and viscosity from the material modulus, column
+    area, rest length, and relaxation time. That law extrapolates the fitted normal
+    material into large shear strain; independent outsole shear calibration is not
+    available. ``friction_viscous_ratio`` applies only to legacy direct velocity
+    damping. Maxwell models use ``friction_relaxation_time_s``, or the material
+    relaxation time when omitted.
     ``friction_release_dwell_s`` preserves contact history through short normal dropouts.
 
     ``ground_height_m`` opts into a horizontal external contact plane [m]. In this
@@ -1480,12 +1490,14 @@ class FoundationConfig:
     friction_release_dwell_s: float = 0.0005
     mu: float = 0.0
     ground_height_m: float | None = None
-    friction_model: str = "maxwell"
+    friction_model: str = "elastic_coulomb"
     friction_relaxation_time_s: float | None = None
 
     def __post_init__(self) -> None:
-        if self.friction_model not in ("maxwell", "legacy"):
-            raise ValueError(f"friction_model must be 'maxwell' or 'legacy', got {self.friction_model!r}")
+        if self.friction_model not in ("elastic_coulomb", "maxwell", "column_maxwell", "legacy"):
+            raise ValueError(
+                f"friction_model must be 'elastic_coulomb', 'maxwell', 'column_maxwell', or 'legacy', got {self.friction_model!r}"
+            )
         if self.friction_relaxation_time_s is not None and (
             not np.isfinite(self.friction_relaxation_time_s) or self.friction_relaxation_time_s <= 0.0
         ):
@@ -1663,6 +1675,21 @@ class MidsoleFoundation:
         self.column_count = int(len(rest_len))
         self.friction_solver = None
 
+        if config.friction_model in ("column_maxwell", "elastic_coulomb"):
+            column_area = np.asarray(area, dtype=np.float64)
+            column_length = np.asarray(rest_len, dtype=np.float64)
+            if (
+                column_area.shape != (self.column_count,)
+                or column_length.shape != (self.column_count,)
+                or not np.isfinite(column_area).all()
+                or not np.isfinite(column_length).all()
+                or np.any(column_area <= 0.0)
+                or np.any(column_length <= 0.0)
+            ):
+                raise ValueError(
+                    f"{config.friction_model} requires positive finite area and rest length for every column"
+                )
+
         params = FoundationParams()
         set_material_block(params, material)
         params.inv_h2 = 1.0 / spacing_m**2
@@ -1673,7 +1700,9 @@ class MidsoleFoundation:
         params.friction_viscous_ratio = config.friction_viscous_ratio
         params.friction_release_dwell_s = config.friction_release_dwell_s
         params.mu = config.mu
-        params.friction_model = 1 if config.friction_model == "maxwell" else 0
+        params.friction_model = {"legacy": 0, "maxwell": 1, "column_maxwell": 2, "elastic_coulomb": 3}[
+            config.friction_model
+        ]
         params.friction_relaxation_time_s = float(
             config.friction_relaxation_time_s
             if config.friction_relaxation_time_s is not None
@@ -1786,13 +1815,15 @@ class MidsoleFoundation:
             # relaxation is still travelling when the substep ends.
             self.surround_rate = wp.zeros(n, dtype=wp.float32, device=device)
 
-        if self.config.friction_model == "maxwell":
+        if self.config.friction_model in ("maxwell", "column_maxwell", "elastic_coulomb"):
             self._install_default_friction_adapter()
 
     def _install_default_friction_adapter(self) -> None:
-        """Auto-install default Maxwell friction parameter adapter (method 7)."""
+        """Auto-install the configured non-legacy friction parameter adapter."""
         if self.config.mu <= 0.0 or (
-            self.config.friction_stiffness <= 0.0 and self.config.friction_stiffness_per_area <= 0.0
+            self.config.friction_model not in ("column_maxwell", "elastic_coulomb")
+            and self.config.friction_stiffness <= 0.0
+            and self.config.friction_stiffness_per_area <= 0.0
         ):
             self.friction_solver = None
             return
@@ -1804,7 +1835,9 @@ class MidsoleFoundation:
             tau_w = float(self.world_blocks[w].friction_relaxation_time_s)
             rows.append(
                 [
-                    7.0,
+                    9.0
+                    if self.config.friction_model == "elastic_coulomb"
+                    else (8.0 if self.config.friction_model == "column_maxwell" else 7.0),
                     float(self.config.mu),
                     1.0,
                     1.0,

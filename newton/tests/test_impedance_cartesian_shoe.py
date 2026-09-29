@@ -13,6 +13,7 @@ import numpy as np
 
 import newton
 from newton.tests.test_digital_shoe import _tiny_artifact
+from projects.digital_shoe.runtime import FoundationConfig
 from projects.impedance_instron.cartesian.shoe import Shoe
 
 
@@ -54,6 +55,30 @@ class TestCartesianShoe(unittest.TestCase):
         self.assertGreater(force[1], 0)
         self.assertAlmostEqual(force[2], 0, places=6)
         self.assertAlmostEqual(compression, 0.001, places=6)
+
+    def test_elastic_coulomb_is_the_leg_default_and_scales_with_column_geometry(self):
+        """Use area-scaled equilibrium shear stiffness without a Maxwell branch."""
+        self.assertEqual(self.shoe.foundation.config.friction_model, "elastic_coulomb")
+        self.assertEqual(int(self.shoe.foundation.friction_solver.settings.numpy()[0, 0]), 9)
+        self.assertEqual(FoundationConfig().friction_model, "elastic_coulomb")
+        cfg = FoundationConfig(friction_model="column_maxwell")
+        self.assertEqual(cfg.friction_model, "column_maxwell")
+        material = self.shoe.shoe.material
+        g_eq = material.equilibrium_shear_modulus_pa
+        area = np.asarray(self.shoe.shoe.column_bed.area_m2)
+        rest = np.asarray(self.shoe.shoe.column_bed.rest_length_m)
+        kt = g_eq * area / rest
+        dt, speed = 0.001, 0.01
+        expected = -np.sum(kt * dt * speed)
+        actual, _compression = self.shoe.apply([0, 0.099], [speed, 0], 0, 0, dt)
+        np.testing.assert_allclose(actual[0], expected, rtol=1e-5, atol=1e-7)
+
+        explicit_maxwell = Shoe(self.shoe.artifact_path, [0, 0, 0.1], 0.0, friction_model="maxwell")
+        prior_force, _compression = explicit_maxwell.apply([0, 0.099], [speed, 0], 0, 0, dt)
+        self.assertGreater(abs(prior_force[0]), 10.0 * abs(actual[0]))
+
+        explicit_column_maxwell = Shoe(self.shoe.artifact_path, [0, 0, 0.1], 0.0, friction_model="column_maxwell")
+        self.assertEqual(explicit_column_maxwell.foundation.config.friction_model, "column_maxwell")
 
     def test_pitch_sign_and_virtual_power(self):
         """Map Newton wrench signs into mathematical planar angular power."""

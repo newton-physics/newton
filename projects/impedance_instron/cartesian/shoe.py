@@ -41,7 +41,7 @@ class Shoe:
         static_pitch_rad: float,
         device: str = "cpu",
         *,
-        friction_model: str = "maxwell",
+        friction_model: str = "elastic_coulomb",
     ):
         self.artifact_path = Path(artifact_path).resolve()
         self.shoe = load_artifact(self.artifact_path)
@@ -104,8 +104,10 @@ class Shoe:
             FoundationConfig(
                 ground_height_m=0.0,
                 normal_damping=0.0,
-                friction_stiffness=10000.0 if friction_model == "legacy" else 1000.0,
-                friction=10.0,
+                friction_stiffness=10000.0
+                if friction_model == "legacy"
+                else (1000.0 if friction_model == "maxwell" else 0.0),
+                friction=10.0 if friction_model in ("legacy", "maxwell") else 0.0,
                 mu=0.8,
                 friction_model=friction_model,
             ),
@@ -125,12 +127,23 @@ class Shoe:
             "static_pitch_rad": self.static_pitch_rad,
             "registration": "rigid placement only; no geometry scaling or material refit",
             "friction_model": friction_model,
-            "friction_equilibrium_stiffness_n_m": 10000.0 if friction_model == "legacy" else 1000.0,
-            "friction_viscosity_ns_m": 10.0,
+            "friction_equilibrium_stiffness_n_m": (
+                10000.0 if friction_model == "legacy" else (1000.0 if friction_model == "maxwell" else None)
+            ),
+            "friction_viscosity_ns_m": (
+                10.0
+                if friction_model in ("legacy", "maxwell")
+                else (None if friction_model == "column_maxwell" else 0.0)
+            ),
             "friction_mu": 0.8,
             "friction_relaxation_time_s": self.shoe.material.maxwell_relaxation_time_s
-            if friction_model == "maxwell"
+            if friction_model in ("maxwell", "column_maxwell")
             else None,
+            "friction_stiffness_source": (
+                "material_shear_modulus_times_column_area_over_rest_length"
+                if friction_model in ("column_maxwell", "elastic_coulomb")
+                else "configured_per_column"
+            ),
             "attachment": "fullfoot last and driven spring tops share one rigid carrier with fixed assembly offsets",
             "column_count": len(driven),
             "driven_columns": int(driven.sum()),
@@ -145,10 +158,26 @@ class Shoe:
             "friction": {
                 "mu": 0.8,
                 "model": friction_model,
-                "per_column_stiffness_n_m": 10000.0 if friction_model == "legacy" else 1000.0,
-                "per_column_damping_n_s_m": 10.0,
+                "per_column_stiffness_n_m": (
+                    10000.0 if friction_model == "legacy" else (1000.0 if friction_model == "maxwell" else None)
+                ),
+                "per_column_damping_n_s_m": (
+                    10.0
+                    if friction_model in ("legacy", "maxwell")
+                    else (None if friction_model == "column_maxwell" else 0.0)
+                ),
+                "stiffness_source": (
+                    "material_shear_modulus_times_column_area_over_rest_length"
+                    if friction_model in ("column_maxwell", "elastic_coulomb")
+                    else "configured_per_column"
+                ),
+                "equilibrium_shear_modulus_pa": self.shoe.material.equilibrium_shear_modulus_pa,
+                "instantaneous_shear_modulus_pa": (
+                    self.shoe.material.instantaneous_shear_modulus_pa
+                    + self.shoe.material.instantaneous_shear_modulus_2_pa
+                ),
                 "relaxation_time_s": self.shoe.material.maxwell_relaxation_time_s
-                if friction_model == "maxwell"
+                if friction_model in ("maxwell", "column_maxwell")
                 else None,
                 "source": "declared contact assumptions, not identified by normal Instron loading",
             },

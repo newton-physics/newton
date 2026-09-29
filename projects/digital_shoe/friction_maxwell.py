@@ -14,6 +14,33 @@ import warp as wp
 
 
 @wp.func
+def column_maxwell_parameters(
+    equilibrium_shear_modulus: float,
+    overstress_ratio: float,
+    area: float,
+    rest_length: float,
+    relaxation_time_s: float,
+) -> tuple[float, float]:
+    """Return material-derived equilibrium shear stiffness [N/m] and viscosity [N s/m].
+
+    The foam column is treated as a linear shear layer with ``k = G A / L``.
+    Its Maxwell branch uses the material's branch-to-equilibrium modulus ratio
+    and relaxation time. This is a large-strain extrapolation of the fitted
+    normal material, not independent outsole shear calibration.
+    """
+    scale = area / wp.max(rest_length, 1.0e-12)
+    stiffness = equilibrium_shear_modulus * scale
+    viscosity = equilibrium_shear_modulus * overstress_ratio * scale * relaxation_time_s
+    return stiffness, viscosity
+
+
+@wp.func
+def elastic_coulomb_stiffness(equilibrium_shear_modulus: float, area: float, rest_length: float) -> float:
+    """Return area-scaled elastic shear stiffness [N/m] for one column."""
+    return equilibrium_shear_modulus * area / wp.max(rest_length, 1.0e-12)
+
+
+@wp.func
 def bristle_maxwell_step(
     velocity: wp.vec2,
     dt: float,
@@ -83,6 +110,36 @@ def bristle_maxwell_step(
     q_new = decay * (q_old + branch_k * (increment - plastic))
     force = -traction
     return force, tangent, z_new, q_new, 1, 0.0
+
+
+@wp.func
+def bristle_elastic_coulomb_step(
+    velocity: wp.vec2,
+    dt: float,
+    normal: float,
+    kt: float,
+    mu: float,
+    release_dwell: float,
+    deflection: wp.vec2,
+    stuck: int,
+    dwell: float,
+) -> tuple[wp.vec2, wp.mat22, wp.vec2, int, float]:
+    """Advance an area-scaled elastic bristle with a Coulomb slider."""
+    force, tangent, z, _q, next_stuck, next_dwell = bristle_maxwell_step(
+        velocity,
+        dt,
+        normal,
+        kt,
+        0.0,
+        1.0,
+        mu,
+        release_dwell,
+        deflection,
+        wp.vec2(0.0),
+        stuck,
+        dwell,
+    )
+    return force, tangent, z, next_stuck, next_dwell
 
 
 @wp.func

@@ -198,6 +198,7 @@ def replay_probe(probe_directory: Path, output: Path, *, probe_index: int | None
         config=config,
         settings=settings,
         world_count=1,
+        friction_model=shoe["friction_model"],
     )
     if engine.shoe.metadata != shoe:
         raise ValueError("Shoe metadata differs from the qualified probe")
@@ -216,6 +217,7 @@ def replay_probe(probe_directory: Path, output: Path, *, probe_index: int | None
         config=replace(config, dt_s=config.dt_s / 2),
         settings=settings,
         world_count=1,
+        friction_model=shoe["friction_model"],
     )
     fine_engine.capture(coefficients[None])
     warmup_steps += int(fine_engine.integrated.numpy().sum())
