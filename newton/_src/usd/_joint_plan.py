@@ -14,11 +14,10 @@ from ..utils import topology
 
 @dataclass
 class _ArticulationJointPlan:
-    """Keep one articulation's graph after source filtering and endpoint resolution.
+    """Group and order joints using already-resolved body IDs.
 
-    Body IDs are local to the articulation, with -1 for the world. The caller
-    adds joints at the existing graph-planning checkpoint, after preparing the
-    bodies, so the plan does not cache source data across callbacks.
+    IDs are local to one articulation, with -1 for the world. The caller reads
+    and filters the joints after preparing the bodies; this plan stores no USD objects.
     """
 
     joint_names: list[str] = field(default_factory=list, init=False)
@@ -28,7 +27,7 @@ class _ArticulationJointPlan:
     _body_pair_to_representative: dict[tuple[int, int], str] = field(default_factory=dict, init=False, repr=False)
 
     def add_joint(self, joint_path: str, parent_id: int, child_id: int, *, excluded: bool) -> None:
-        """Group an admitted joint by its ordered body pair, or defer a loop joint."""
+        """Group a joint by its ordered body pair, or keep it outside the tree."""
         if excluded:
             self.joint_excluded.add(joint_path)
             return
@@ -45,10 +44,10 @@ class _ArticulationJointPlan:
     def get_joint_order(
         self, joint_ordering: Literal["bfs", "dfs"] | None, *, verbose: bool = False
     ) -> list[int] | npt.NDArray[np.intp]:
-        """Return construction order and reject disconnected or reversed trees.
+        """Order the joints and report invalid trees.
 
-        ``None`` retains source order without topology validation, as in the
-        importer. Excluded joints never participate in this ordering.
+        ``None`` keeps source order without checking the graph. Excluded joints
+        are not included in the ordering.
         """
         if not self.joint_edges:
             return []
