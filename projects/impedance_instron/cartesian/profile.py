@@ -9,8 +9,10 @@ load. Local positive x points proximal-to-distal in the thigh and shank and
 heel-to-toe in the foot; local coordinates are planar [x, z].
 
 Actuator order is hip forward force, hip upward force, knee torque, ankle
-torque. Equilibrium positions have units [m, m, rad, rad], their rates
-[m/s, m/s, rad/s, rad/s], and accelerations [m/s^2, m/s^2, rad/s^2, rad/s^2].
+torque, with optional ankle forward and upward position forces. Equilibrium
+positions have units [m, m, rad, rad], optionally followed by ankle [m, m];
+rates and accelerations follow the same order. Ankle Cartesian gains are
+independent of hip gains.
 Hip stiffness [N/m] and damping [N s/m] must be supplied explicitly, never
 converted from a removed hip rotational actuator. Knee/ankle stiffness and
 damping have units [N m/rad] and [N m s/rad]. Bounds describe an engineering
@@ -34,12 +36,10 @@ _SHAPES = {
     "inertias_kg_m2": (3,),
     "hip_stiffness_n_m": (2,),
     "hip_damping_ns_m": (2,),
+    "ankle_stiffness_n_m": (2,),
+    "ankle_damping_ns_m": (2,),
     "joint_stiffness_nm_rad": (2,),
     "joint_damping_nms_rad": (2,),
-    "equilibrium_lower": (4,),
-    "equilibrium_upper": (4,),
-    "equilibrium_rate_limit": (4,),
-    "equilibrium_acceleration_limit": (4,),
     "joint_lower_rad": (2,),
     "joint_upper_rad": (2,),
 }
@@ -61,7 +61,7 @@ def validate(profile: dict) -> None:
 
     Args:
         profile: Plain mapping with three body inertial values, two Cartesian
-            gains, two joint gains, and four-channel equilibrium limits.
+            gains, two joint gains, and four- or six-channel equilibrium limits.
             Required provenance entries ``inertial``, ``impedance``, and
             ``limits`` must be nonempty strings. Other provenance entries may
             contain JSON-compatible context. Unknown top-level fields are
@@ -72,16 +72,43 @@ def validate(profile: dict) -> None:
     """
     if not isinstance(profile, Mapping):
         raise ValueError("profile must be a mapping")
-    required = {*_SHAPES, "provenance"}
+    limit_names = (
+        "equilibrium_lower",
+        "equilibrium_upper",
+        "equilibrium_rate_limit",
+        "equilibrium_acceleration_limit",
+    )
+    required = {
+        *set(_SHAPES) - {"ankle_stiffness_n_m", "ankle_damping_ns_m"},
+        *limit_names,
+        "provenance",
+    }
     missing = required - profile.keys()
     if missing:
         raise ValueError(f"Missing profile fields: {', '.join(sorted(missing))}")
-    unknown = profile.keys() - required - {"schema"}
+    unknown = profile.keys() - required - {"schema", "ankle_stiffness_n_m", "ankle_damping_ns_m"}
     if unknown:
         raise ValueError(f"Unsupported profile fields: {', '.join(sorted(unknown))}")
     if profile.get("schema", SCHEMA) != SCHEMA:
         raise ValueError("Unsupported Cartesian profile schema")
-    arrays = {name: _array(profile[name], name, shape) for name, shape in _SHAPES.items()}
+    arrays = {name: _array(profile[name], name, shape) for name, shape in _SHAPES.items() if name in profile}
+    for name in limit_names:
+        value = np.asarray(profile[name])
+        if value.shape not in ((4,), (6,)):
+            raise ValueError(f"{name} must have shape (4,) or (6,)")
+        arrays[name] = _array(value, name, value.shape)
+    if len({arrays[name].shape for name in limit_names}) != 1:
+        raise ValueError("All equilibrium limits must use the same channel count")
+    ankle_gains = {"ankle_stiffness_n_m", "ankle_damping_ns_m"} & profile.keys()
+    if ankle_gains and ankle_gains != {"ankle_stiffness_n_m", "ankle_damping_ns_m"}:
+        raise ValueError("ankle stiffness and damping must be provided together")
+    if len(arrays["equilibrium_lower"]) == 6 and not ankle_gains:
+        raise ValueError("Six-channel equilibrium requires ankle Cartesian stiffness and damping")
+    if ankle_gains:
+        if np.any(arrays["ankle_stiffness_n_m"] <= 0):
+            raise ValueError("ankle_stiffness_n_m must be positive")
+        if np.any(arrays["ankle_damping_ns_m"] < 0):
+            raise ValueError("ankle_damping_ns_m must be nonnegative")
     for name in (
         "masses_kg",
         "inertias_kg_m2",

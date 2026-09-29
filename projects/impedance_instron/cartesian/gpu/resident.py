@@ -41,7 +41,7 @@ _DIAGONAL_FLOOR = 1.0e-12
 _TRUST_MULTIPLIER = 2.0
 
 _CONTROL_COUNT = 12
-_WORLD_COUNT = 128
+_WORLD_COUNT_BY_CHANNELS = {4: 128, 6: 192}
 
 
 def canonical_knot_scales() -> tuple[np.ndarray, np.ndarray]:
@@ -58,34 +58,25 @@ def _check_bounds(
     coeffs: wp.array3d[wp.float64],
     world: int,
     duration_s: wp.float64,
-    lower: wp.vec4d,
-    upper: wp.vec4d,
-    rate_limit: wp.vec4d,
-    acc_limit: wp.vec4d,
+    lower: wp.array[wp.float64],
+    upper: wp.array[wp.float64],
+    rate_limit: wp.array[wp.float64],
+    acc_limit: wp.array[wp.float64],
     first_scale: wp.array[wp.float64],
     second_scale: wp.array[wp.float64],
     control_count: int,
 ) -> int:
     """Evaluate position, rate, and acceleration control-polygon bounds."""
     # 1. Position bounds
+    channels = coeffs.shape[2]
     for i in range(control_count):
-        c0 = coeffs[world, i, 0]
-        c1 = coeffs[world, i, 1]
-        c2 = coeffs[world, i, 2]
-        c3 = coeffs[world, i, 3]
-        if not wp.isfinite(c0) or not wp.isfinite(c1) or not wp.isfinite(c2) or not wp.isfinite(c3):
-            return 0
-        if c0 < lower[0] or c0 > upper[0]:
-            return 0
-        if c1 < lower[1] or c1 > upper[1]:
-            return 0
-        if c2 < lower[2] or c2 > upper[2]:
-            return 0
-        if c3 < lower[3] or c3 > upper[3]:
-            return 0
+        for ch in range(channels):
+            value = coeffs[world, i, ch]
+            if not wp.isfinite(value) or value < lower[ch] or value > upper[ch]:
+                return 0
 
     # 2. Derivative control-polygon bounds
-    for ch in range(4):
+    for ch in range(channels):
         for row in range(control_count - 1):
             first = first_scale[row] * (coeffs[world, row + 1, ch] - coeffs[world, row, ch])
             if wp.abs(first) > rate_limit[ch] * duration_s:
@@ -106,10 +97,10 @@ def _generate_poll_coefficients_kernel(
     scale: wp.array[wp.float64],
     rng_states: wp.array[wp.uint32],
     duration_s: wp.float64,
-    lower: wp.vec4d,
-    upper: wp.vec4d,
-    rate_limit: wp.vec4d,
-    acc_limit: wp.vec4d,
+    lower: wp.array[wp.float64],
+    upper: wp.array[wp.float64],
+    rate_limit: wp.array[wp.float64],
+    acc_limit: wp.array[wp.float64],
     first_scale: wp.array[wp.float64],
     second_scale: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
@@ -132,20 +123,21 @@ def _generate_poll_coefficients_kernel(
     island = tid // worlds_per_island
     slot = tid % worlds_per_island
     frac = island_fraction[island]
+    channels = coefficients.shape[2]
     stochastic = int(0)
     if slot == 0:
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(channels):
                 coefficients[tid, i, ch] = island_incumbent[island, i, ch]
     elif slot <= 2 * parameter_count:
         coord_idx = (slot - 1) // 2
         sign = wp.float64(1.0)
         if (slot - 1) % 2 == 1:
             sign = wp.float64(-1.0)
-        ctrl = coord_idx // 4
-        ch_idx = coord_idx % 4
+        ctrl = coord_idx // channels
+        ch_idx = coord_idx % channels
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(channels):
                 val = island_incumbent[island, i, ch]
                 if i == ctrl and ch == ch_idx:
                     val = val + sign * frac * scale[coord_idx]
@@ -155,8 +147,8 @@ def _generate_poll_coefficients_kernel(
         state = rng_states[tid]
         trust_bound = wp.float64(_TRUST_MULTIPLIER) * frac
         for c in range(parameter_count):
-            ctrl = c // 4
-            ch = c % 4
+            ctrl = c // channels
+            ch = c % channels
             state = state * wp.uint32(1664525) + wp.uint32(1013904223)
             u = wp.float64(state) / wp.float64(4294967295.0)
             coefficients[tid, ctrl, ch] = (
@@ -172,7 +164,7 @@ def _generate_poll_coefficients_kernel(
             if valid == 1:
                 break
             for i in range(control_count):
-                for ch in range(4):
+                for ch in range(channels):
                     incumbent = island_incumbent[island, i, ch]
                     coefficients[tid, i, ch] = incumbent + wp.float64(0.5) * (coefficients[tid, i, ch] - incumbent)
             valid = _check_bounds(
@@ -192,7 +184,7 @@ def _generate_poll_coefficients_kernel(
         padding_mask[tid] = 0
     else:
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(channels):
                 coefficients[tid, i, ch] = island_incumbent[island, i, ch]
         real_mask[tid] = 0
         padding_mask[tid] = 1
@@ -300,7 +292,7 @@ def _select_global_candidate_kernel(
         best_loss[0] = candidate_loss
         winner[0] = candidate
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(coefficients.shape[2]):
                 best_coeffs[i, ch] = coefficients[candidate, i, ch]
 
 
@@ -611,10 +603,10 @@ def _generate_trial_coefficients_kernel(
     net_valid: wp.array[int],
     rng_states: wp.array[wp.uint32],
     duration_s: wp.float64,
-    lower: wp.vec4d,
-    upper: wp.vec4d,
-    rate_limit: wp.vec4d,
-    acc_limit: wp.vec4d,
+    lower: wp.array[wp.float64],
+    upper: wp.array[wp.float64],
+    rate_limit: wp.array[wp.float64],
+    acc_limit: wp.array[wp.float64],
     first_scale: wp.array[wp.float64],
     second_scale: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
@@ -637,11 +629,12 @@ def _generate_trial_coefficients_kernel(
     island = tid // worlds_per_island
     slot = tid % worlds_per_island
     frac = island_fraction[island]
+    channels = coefficients.shape[2]
 
     # Slot 0: incumbent
     if slot == 0:
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(channels):
                 coefficients[tid, i, ch] = island_incumbent[island, i, ch]
         real_mask[tid] = 1
         proposed_mask[tid] = 1
@@ -663,8 +656,8 @@ def _generate_trial_coefficients_kernel(
                 factor = wp.float64(0.25)
 
             for c in range(parameter_count):
-                ctrl = c // 4
-                ch = c % 4
+                ctrl = c // channels
+                ch = c % channels
                 dir_val = gn_directions[island, gn_idx, c]
                 val = island_origin[island, ctrl, ch] + factor * dir_val * scale[c]
                 coefficients[tid, ctrl, ch] = val
@@ -679,8 +672,8 @@ def _generate_trial_coefficients_kernel(
                 factor = wp.float64(0.25)
 
             for c in range(parameter_count):
-                ctrl = c // 4
-                ch = c % 4
+                ctrl = c // channels
+                ch = c % channels
                 pat_val = net_pattern[island, c]
                 val = island_origin[island, ctrl, ch] + factor * pat_val * scale[c]
                 coefficients[tid, ctrl, ch] = val
@@ -693,8 +686,8 @@ def _generate_trial_coefficients_kernel(
         state = rng_states[tid]
         trust_bound = wp.float64(_TRUST_MULTIPLIER) * frac
         for c in range(parameter_count):
-            ctrl = c // 4
-            ch = c % 4
+            ctrl = c // channels
+            ch = c % channels
             state = state * wp.uint32(1664525) + wp.uint32(1013904223)
             u = wp.float64(state) / wp.float64(4294967295.0)
             rand_step = (u * wp.float64(2.0) - wp.float64(1.0)) * trust_bound * scale[c]
@@ -710,7 +703,7 @@ def _generate_trial_coefficients_kernel(
             if valid == 1:
                 break
             for i in range(control_count):
-                for ch in range(4):
+                for ch in range(channels):
                     incumbent = island_incumbent[island, i, ch]
                     coefficients[tid, i, ch] = incumbent + wp.float64(0.5) * (coefficients[tid, i, ch] - incumbent)
             valid = _check_bounds(
@@ -730,7 +723,7 @@ def _generate_trial_coefficients_kernel(
         padding_mask[tid] = 0
     else:
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(channels):
                 coefficients[tid, i, ch] = island_incumbent[island, i, ch]
         real_mask[tid] = 0
         padding_mask[tid] = 1
@@ -775,7 +768,7 @@ def _update_island_incumbents_kernel(
         improved = 1
         island_loss[island] = best_l
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(coefficients.shape[2]):
                 island_incumbent[island, i, ch] = coefficients[best_w, i, ch]
 
     # Poll selection must not alter the origin or fraction used by the
@@ -788,7 +781,7 @@ def _update_island_incumbents_kernel(
             island_fraction[island] = f
 
         for i in range(control_count):
-            for ch in range(4):
+            for ch in range(coefficients.shape[2]):
                 island_origin[island, i, ch] = island_incumbent[island, i, ch]
 
 
@@ -803,7 +796,7 @@ def _begin_iteration(
     island = wp.tid()
     before[island] = loss[island]
     for row in range(control_count):
-        for channel in range(4):
+        for channel in range(incumbent.shape[2]):
             origin[island, row, channel] = incumbent[island, row, channel]
 
 
@@ -954,20 +947,21 @@ def fit_resident(
         raise ValueError("minimum_step_fraction must not exceed initial_step_fraction")
 
     control_count = getattr(engine.settings, "control_count", None)
-    if control_count != _CONTROL_COUNT or initial.coefficients.shape != (_CONTROL_COUNT, 4):
-        raise ValueError("Engine and initial spline must use exactly 12 control points and four channels")
+    channels = initial.coefficients.shape[1] if initial.coefficients.ndim == 2 else 0
+    if control_count != _CONTROL_COUNT or channels not in (4, 6):
+        raise ValueError("Engine and initial spline must use 12 control points and four or six channels")
     if not np.isclose(initial.duration_s, engine.duration, rtol=0, atol=1e-12):
         raise ValueError("Initial spline duration must match the engine duration")
 
-    if engine.world_count != _WORLD_COUNT:
-        raise ValueError("Engine must use exactly 128 worlds")
-    w_per_island = _WORLD_COUNT
+    expected_worlds = _WORLD_COUNT_BY_CHANNELS[channels]
+    if engine.world_count != expected_worlds:
+        raise ValueError(f"A {channels}-channel engine must use exactly {expected_worlds} worlds")
+    w_per_island = expected_worlds
     parameter_count = initial.coefficients.size
-    expected_worlds = _WORLD_COUNT
 
     channel_scale = np.asarray(engine.settings.parameter_scale, dtype=np.float64)
-    if channel_scale.shape != (4,) or not np.isfinite(channel_scale).all() or np.any(channel_scale <= 0):
-        raise ValueError("parameter_scale must contain four finite positive channel scales")
+    if channel_scale.shape != (channels,) or not np.isfinite(channel_scale).all() or np.any(channel_scale <= 0):
+        raise ValueError(f"parameter_scale must contain {channels} finite positive channel scales")
     scale = np.tile(channel_scale, control_count)
 
     limits = tuple(
@@ -985,10 +979,10 @@ def fit_resident(
     first_scale_np, second_scale_np = canonical_knot_scales()
 
     device = engine.device
-    lower_vec = wp.vec4d(*engine.profile["equilibrium_lower"])
-    upper_vec = wp.vec4d(*engine.profile["equilibrium_upper"])
-    rate_vec = wp.vec4d(*engine.profile["equilibrium_rate_limit"])
-    acc_vec = wp.vec4d(*engine.profile["equilibrium_acceleration_limit"])
+    lower_vec = wp.array(engine.profile["equilibrium_lower"], dtype=wp.float64, device=device)
+    upper_vec = wp.array(engine.profile["equilibrium_upper"], dtype=wp.float64, device=device)
+    rate_vec = wp.array(engine.profile["equilibrium_rate_limit"], dtype=wp.float64, device=device)
+    acc_vec = wp.array(engine.profile["equilibrium_acceleration_limit"], dtype=wp.float64, device=device)
     duration_s = float(engine.duration)
 
     # Initialize the shared controller before transferring it to the device.

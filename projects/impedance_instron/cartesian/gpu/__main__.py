@@ -179,8 +179,9 @@ def optimize(args):
             raise ValueError("Warm-start controller must retain the validated spline duration")
         coefficients = candidate
 
-    if coefficients.shape != (12, 4):
-        raise ValueError("The starting controller must have shape (12, 4)")
+    channels = len(profile["equilibrium_lower"])
+    if coefficients.shape != (12, channels) or channels not in (4, 6):
+        raise ValueError(f"The starting controller must have shape (12, {channels})")
     active_controls = 12
     single_evidence = _validation(
         args.single_validation,
@@ -198,7 +199,7 @@ def optimize(args):
 
     plateau_patience = getattr(args, "plateau_patience", 20)
     plateau_rtol = getattr(args, "plateau_rtol", 1.0e-4)
-    world_count = 128
+    world_count = 128 if channels == 4 else 192
     search_mode = "shared_controller"
     settings = replace(
         settings,
@@ -210,7 +211,7 @@ def optimize(args):
     if settings.control_count != 12:
         raise ValueError("FitConfig must use exactly 12 controls")
     if mixed_evidence["batch_size"] != world_count:
-        raise ValueError("The mixed-world validation must use exactly 128 worlds")
+        raise ValueError(f"The mixed-world validation must use exactly {world_count} worlds")
 
     args.output.mkdir(parents=True)
     # Preserve byte identities rather than reserializing the measured input snapshots.

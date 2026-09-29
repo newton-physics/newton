@@ -1,0 +1,94 @@
+{
+  "schema": "cartesian_ankle_xy_refit_sample_1",
+  "reference": "reference.npz in this sample bundle (FR3_2 source window 0.030\u20130.380 s)",
+  "profile": "profile_ankle_xy.json",
+  "profile_sha256": "b149038759c816762b46bcaa22b22799c369ca564058c24b65723019918830d1",
+  "seed_controller": "controller_ankle_xy_seed.npz",
+  "seed_controller_sha256": "eac3b3c34465abe0afb4120565507bc4dff15dfdfd3fa4cea8ed816285195a8f",
+  "fitted_controller": "controller_ankle_xy.npz",
+  "fitted_controller_sha256": "787ba4625d810e9b996dceda7fde15a8e00e9db74da210ae9e7228c9e3bea7c5",
+  "controller_shape": [
+    12,
+    6
+  ],
+  "channel_order": [
+    "hip_x_m",
+    "hip_z_m",
+    "knee_rad",
+    "ankle_angle_rad",
+    "ankle_x_m",
+    "ankle_z_m"
+  ],
+  "hip_flight_gate_enabled": false,
+  "ankle_position_flight_gate_enabled": false,
+  "ankle_stiffness_n_m": [
+    3000.0,
+    3000.0
+  ],
+  "ankle_damping_ns_m": [
+    40.0,
+    40.0
+  ],
+  "optimizer": "resident CUDA shared-controller search",
+  "world_count": 192,
+  "iterations_completed": 200,
+  "termination": "iteration_budget_exhausted",
+  "coarse_dt_s": 6.25e-05,
+  "refinement_dt_s": 3.125e-05,
+  "initial_loss": 24.03034748353069,
+  "final_loss": 0.5204371516067673,
+  "accepted_by_measured_fit_limits": true,
+  "within_measured_tolerances": true,
+  "metrics": {
+    "hip_rmse_m": [
+      0.0043829340216328784,
+      0.017021326949496558
+    ],
+    "hip_maximum_error_m": [
+      0.00895657572920805,
+      0.027470390396320155
+    ],
+    "joint_rmse_rad": [
+      0.013376095724041573,
+      0.0126515327145397
+    ],
+    "joint_maximum_error_rad": [
+      0.026373172162889813,
+      0.02903334226769852
+    ],
+    "force_rmse_n": [
+      33.15221482052759,
+      15.17750879606569
+    ],
+    "force_maximum_error_n": [
+      133.5572204542969,
+      47.907758685443156
+    ],
+    "rollout_diagnostics": {
+      "hip_velocity_rmse_x_m_s": 0.16689244269253214,
+      "hip_velocity_rmse_z_m_s": 0.4991287665092648,
+      "maximum_hip_speed_m_s": 4.432824649775717,
+      "maximum_hip_spring_force_n": 1246.1105876506938,
+      "maximum_hip_damping_force_n": 354.62597198205737,
+      "maximum_coulomb_equivalent_ratio": 1.0000003341432966,
+      "fraction_contact_samples_near_coulomb_limit": 0.16773125147859003,
+      "contact_sample_fraction": 0.7548214285714285,
+      "minimum_hip_spring_vertical_force_in_flight_n": -855.4424715904063,
+      "hip_spring_work_in_flight_j": 168.9277709891293,
+      "hip_damping_work_in_flight_j": -102.11161514876903
+    }
+  },
+  "refinement": {
+    "passed": true,
+    "maximum_hip_position_difference_m": 2.9087807297540508e-05,
+    "maximum_joint_angle_difference_rad": 0.0001705093756212417,
+    "maximum_thigh_angle_difference_rad": 0.00019819169370949297,
+    "maximum_grf_difference_n": 2.6202947199292312
+  },
+  "passive_cap": {
+    "hit": true,
+    "steps": 3828,
+    "maximum_fraction": 0.9000000175945748
+  },
+  "qualification": "Measured-fit/refinement acceptance is numerical only, not validation of the inherited last/foam interface."
+}

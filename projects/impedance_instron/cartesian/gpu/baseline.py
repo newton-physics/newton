@@ -162,8 +162,8 @@ def build(source: Path, output: Path, *, from_scratch: bool = False) -> dict[str
         with np.load(source / "equilibrium.npz", allow_pickle=False) as archive:
             equilibrium = Spline(float(archive["duration_s"]), archive["coefficients"])
             frozen_identity = json.loads(str(archive["identity_json"]))
-        if equilibrium.coefficients.shape != (12, 4):
-            raise ValueError("The baseline must have twelve controls per channel")
+        if equilibrium.coefficients.shape[0] != 12 or equilibrium.coefficients.shape[1] not in (4, 6):
+            raise ValueError("The baseline must have twelve controls and four or six channels")
         expected_identity = {
             "reference_sha256": hashlib.sha256(reference_path.read_bytes()).hexdigest(),
             "profile_sha256": hashlib.sha256(
@@ -238,10 +238,10 @@ def build_inputs(
     validate_profile(profile)
     if from_scratch:
         equilibrium, initialization = _fresh_equilibrium(reference, profile)
-    if equilibrium.coefficients.shape != (12, 4) or not np.isclose(
+    if equilibrium.coefficients.shape != (12, len(profile["equilibrium_lower"])) or not np.isclose(
         equilibrium.duration_s, float(reference["time_s"][-1]), rtol=0, atol=1e-12
     ):
-        raise ValueError("Initial controller must match the twelve-point reference duration")
+        raise ValueError("Initial controller must match the profile channels and twelve-point reference duration")
     if not equilibrium.bounds(
         *(
             profile[k]

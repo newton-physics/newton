@@ -36,7 +36,7 @@ def hip_contact_gate(reference: dict, times_s: np.ndarray, ramp_duration_s: floa
     contact = vertical > 5.0
     starts, ends = [], []
     edges = np.diff(np.r_[False, contact, False].astype(np.int8))
-    for start, stop in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+    for start, stop in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True):
         if start == 0:
             touchdown = force_time[0]
         else:
@@ -53,7 +53,7 @@ def hip_contact_gate(reference: dict, times_s: np.ndarray, ramp_duration_s: floa
         ends.append(float(toeoff))
 
     gate = np.zeros(times.shape, dtype=float)
-    for touchdown, toeoff in zip(starts, ends):
+    for touchdown, toeoff in zip(starts, ends, strict=True):
         stance = (times >= touchdown) & (times <= toeoff)
         if not np.any(stance):
             continue

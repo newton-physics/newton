@@ -39,13 +39,14 @@ def benchmark(
     if controls not in (None, 12):
         raise ValueError("Control-count conversion is not supported; the frozen controller must use 12 points")
     control_count = len(coefficients)
-    if coefficients.shape != (12, 4) or settings.control_count != 12:
-        raise ValueError("The frozen controller and FitConfig must use exactly 12 control points")
+    channels = len(profile["equilibrium_lower"])
+    if coefficients.shape != (12, channels) or channels not in (4, 6) or settings.control_count != 12:
+        raise ValueError("The frozen controller and FitConfig must use 12 controls and four or six channels")
 
     poll_count = 1 + 2 * coefficients.size
-    if worlds not in (None, 128):
-        raise ValueError("The mixed-world benchmark requires exactly 128 worlds")
-    count = 128
+    count = 128 if channels == 4 else 192
+    if worlds not in (None, count):
+        raise ValueError(f"The mixed-world benchmark requires exactly {count} worlds for {channels} channels")
     candidates = np.repeat(coefficients[None], count, axis=0)
     bounds = [
         profile[key]
@@ -60,7 +61,7 @@ def benchmark(
     for coordinate in range(coefficients.size):
         for index, sign in enumerate((1, -1)):
             w = 1 + 2 * coordinate + index
-            candidates[w].flat[coordinate] += sign * 0.05 * settings.parameter_scale[coordinate % 4]
+            candidates[w].flat[coordinate] += sign * 0.05 * settings.parameter_scale[coordinate % channels]
             if not Spline(float(reference["time_s"][-1]), candidates[w]).bounds(*bounds):
                 valid[w] = False
                 candidates[w] = coefficients
@@ -217,7 +218,7 @@ def main(argv: list[str] | None = None):
     parser.add_argument("directory", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--failure-equilibrium", type=Path)
-    parser.add_argument("--worlds", type=int, default=128, help="Qualify exactly 128 distinct-controller worlds.")
+    parser.add_argument("--worlds", type=int, choices=(128, 192), help="Batch size required by controller channels.")
     args = parser.parse_args(argv)
     if not benchmark(
         args.directory,

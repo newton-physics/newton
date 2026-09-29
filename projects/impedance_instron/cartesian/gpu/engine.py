@@ -27,12 +27,15 @@ from .mechanics import Params, Vec5, ankle, dynamics, foot_angle, make_params, s
 from .objective import MeasuredObjective
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
+Vec6 = wp.types.vector(6, wp.float64)
 
 
 @wp.struct
 class _Settings:
     stiffness: wp.vec4d
     damping: wp.vec4d
+    ankle_stiffness: wp.vec2d
+    ankle_damping: wp.vec2d
     lower: wp.vec2d
     upper: wp.vec2d
     dt: wp.float64
@@ -92,8 +95,9 @@ def _prepare_world(
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     failure: wp.array[int],
@@ -110,16 +114,16 @@ def _prepare_world(
         failure[w] = 1
         failure_step[w] = s
         return
-    eq = wp.vec4d(wp.float64(0.0))
+    eq = Vec6(wp.float64(0.0))
     if cfg.controls == 12:
         # Replay must reconstruct this value before evaluating the force screen.
         # Warp does not replay intermediate values from a dynamic loop.
         for row in range(12):
-            for c in range(4):
+            for c in range(coefficients.shape[2]):
                 eq[c] += basis_values[s, row] * coefficients[w, row, c]
     else:
         for row in range(cfg.controls):
-            for c in range(4):
+            for c in range(coefficients.shape[2]):
                 eq[c] += basis_values[s, row] * coefficients[w, row, c]
     gate = hip_gate[s]
     control = wp.vec4d(
@@ -128,13 +132,26 @@ def _prepare_world(
         cfg.stiffness[2] * (eq[2] - q[3]) - cfg.damping[2] * v[3],
         cfg.stiffness[3] * (eq[3] - q[4]) - cfg.damping[3] * v[4],
     )
+    position, jx, jz = ankle(q, p)
+    ankle_control = wp.vec2d(wp.float64(0.0))
+    if coefficients.shape[2] == 6:
+        ankle_control = wp.vec2d(
+            cfg.ankle_stiffness[0] * (eq[4] - position[0]) - cfg.ankle_damping[0] * wp.dot(jx, v),
+            cfg.ankle_stiffness[1] * (eq[5] - position[1]) - cfg.ankle_damping[1] * wp.dot(jz, v),
+        )
     for c in range(4):
         if not wp.isfinite(control[c]):
             failure[w] = 2
             failure_step[w] = s
             return
+    for c in range(2):
+        if not wp.isfinite(ankle_control[c]):
+            failure[w] = 2
+            failure_step[w] = s
+            return
     equilibrium[state_row, w] = eq
     actuator[state_row, w] = control
+    ankle_force[state_row, w] = ankle_control
     outside = int(0)
     for j in range(2):
         if q[j + 3] < cfg.lower[j] or q[j + 3] > cfg.upper[j]:
@@ -154,13 +171,14 @@ def _prepare_world(
             code = code | 16
     if wp.length(wp.vec2d(control[0], control[1])) > cfg.max_force:
         code = code | 32
+    if wp.length(ankle_control) > cfg.max_force:
+        code = code | 4096
     if code != 0:
         failure[w] = code
         failure_step[w] = s
         return
     if s == cfg.steps:
         return
-    position, jx, jz = ankle(q, p)
     angle = (foot_angle(q) - cfg.pitch) / wp.float64(2.0)
     body_q[w] = wp.transform(
         wp.vec3(wp.float32(position[0]), 0.0, wp.float32(position[1])),
@@ -188,8 +206,9 @@ def _replay_prepare_world(
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     failure: wp.array[int],
@@ -211,8 +230,9 @@ def _prepare(
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     failure: wp.array[int],
@@ -234,6 +254,7 @@ def _prepare(
         velocities,
         equilibrium,
         actuator,
+        ankle_force,
         body_q,
         body_qd,
         failure,
@@ -254,8 +275,9 @@ def _prepare_masked(
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     failure: wp.array[int],
@@ -279,6 +301,7 @@ def _prepare_masked(
         velocities,
         equilibrium,
         actuator,
+        ankle_force,
         body_q,
         body_qd,
         failure,
@@ -339,6 +362,7 @@ def _advance_world(
     next_states: wp.array2d[Vec5],
     next_velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -394,10 +418,11 @@ def _advance_world(
     q = states[state_row, w]
     v = velocities[state_row, w]
     control = actuator[state_row, w]
+    ankle_control = ankle_force[state_row, w]
     _position, jx, jz = ankle(q, p)
     load = Vec5(control[0], control[1], wp.float64(0.0), control[2], control[3])
     for j in range(5):
-        external = jx[j] * force[0] + jz[j] * force[1]
+        external = jx[j] * (force[0] + ankle_control[0]) + jz[j] * (force[1] + ankle_control[1])
         if j >= 2:
             external = external + moment
         load[j] += external
@@ -427,6 +452,7 @@ def _replay_advance_world(
     next_states: wp.array2d[Vec5],
     next_velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -453,6 +479,7 @@ def _advance(
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -480,6 +507,7 @@ def _advance(
         states,
         velocities,
         actuator,
+        ankle_force,
         body_f,
         groups,
         partial_maxima,
@@ -505,6 +533,7 @@ def _advance_masked(
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -534,6 +563,7 @@ def _advance_masked(
         states,
         velocities,
         actuator,
+        ankle_force,
         body_f,
         groups,
         partial_maxima,
@@ -557,7 +587,7 @@ def _advance_prepare(
     basis_values: wp.array2d[wp.float64],
     hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     range_step: wp.array[int],
@@ -568,6 +598,7 @@ def _advance_prepare(
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -597,6 +628,7 @@ def _advance_prepare(
         states,
         velocities,
         actuator,
+        ankle_force,
         body_f,
         groups,
         partial_maxima,
@@ -625,6 +657,7 @@ def _advance_prepare(
         velocities,
         equilibrium,
         actuator,
+        ankle_force,
         body_q,
         body_qd,
         failure,
@@ -644,16 +677,18 @@ def _gather(
     world: int,
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     forces: wp.array2d[wp.vec2d],
     moments: wp.array2d[wp.float64],
     fractions: wp.array2d[wp.vec3d],
     caps: wp.array2d[int],
     q: wp.array[Vec5],
     v: wp.array[Vec5],
-    eq: wp.array[wp.vec4d],
+    eq: wp.array[Vec6],
     load: wp.array[wp.vec4d],
+    ankle_load: wp.array[wp.vec2d],
     f: wp.array[wp.vec2d],
     m: wp.array[wp.float64],
     comp: wp.array[wp.vec3d],
@@ -664,6 +699,7 @@ def _gather(
     v[i] = velocities[i, world]
     eq[i] = equilibrium[i, world]
     load[i] = actuator[i, world]
+    ankle_load[i] = ankle_force[i, world]
     if i < forces.shape[0]:
         f[i] = forces[i, world]
         m[i] = moments[i, world]
@@ -681,8 +717,9 @@ def _snapshot(
     winner: wp.array[int],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     forces: wp.array2d[wp.vec2d],
     moments: wp.array2d[wp.float64],
     fractions: wp.array2d[wp.vec3d],
@@ -701,8 +738,9 @@ def _snapshot(
     diagnostics: wp.array2d[wp.float64],
     out_states: wp.array2d[Vec5],
     out_velocities: wp.array2d[Vec5],
-    out_equilibrium: wp.array2d[wp.vec4d],
+    out_equilibrium: wp.array2d[Vec6],
     out_actuator: wp.array2d[wp.vec4d],
+    out_ankle_force: wp.array2d[wp.vec2d],
     out_forces: wp.array2d[wp.vec2d],
     out_moments: wp.array2d[wp.float64],
     out_fractions: wp.array2d[wp.vec3d],
@@ -729,6 +767,7 @@ def _snapshot(
         out_velocities[i, 0] = velocities[i, w]
         out_equilibrium[i, 0] = equilibrium[i, w]
         out_actuator[i, 0] = actuator[i, w]
+        out_ankle_force[i, 0] = ankle_force[i, w]
     if i < forces.shape[0]:
         out_forces[i, 0] = forces[i, w]
         out_moments[i, 0] = moments[i, w]
@@ -853,6 +892,11 @@ class Engine:
         cfg = _Settings()
         cfg.stiffness = wp.vec4d(*profile["hip_stiffness_n_m"], *profile["joint_stiffness_nm_rad"])
         cfg.damping = wp.vec4d(*profile["hip_damping_ns_m"], *profile["joint_damping_nms_rad"])
+        self.channels = len(profile["equilibrium_lower"])
+        if self.channels not in (4, 6):
+            raise ValueError("Equilibrium must have four or six channels")
+        cfg.ankle_stiffness = wp.vec2d(*(profile["ankle_stiffness_n_m"] if self.channels == 6 else (0.0, 0.0)))
+        cfg.ankle_damping = wp.vec2d(*(profile["ankle_damping_ns_m"] if self.channels == 6 else (0.0, 0.0)))
         cfg.lower, cfg.upper = wp.vec2d(*profile["joint_lower_rad"]), wp.vec2d(*profile["joint_upper_rad"])
         cfg.dt, cfg.gravity, cfg.pitch = self.dt, config.gravity_m_s2, static_pitch_rad
         cfg.hip_floor, cfg.max_speed = config.minimum_hip_height_m, config.maximum_speed
@@ -861,15 +905,18 @@ class Engine:
         cfg.joint_diagnostic = int(config.joint_limits_diagnostic)
         cfg.steps, cfg.controls = self.steps, settings.control_count
         self.kernel_config = cfg
-        self.coefficients = wp.zeros((world_count, settings.control_count, 4), dtype=wp.float64, device=self.device)
+        self.coefficients = wp.zeros(
+            (world_count, settings.control_count, self.channels), dtype=wp.float64, device=self.device
+        )
         self.basis = wp.array(
             basis(self.time_s, self.duration, settings.control_count), dtype=wp.float64, device=self.device
         )
         self.hip_gate = wp.array(self.hip_gate_values, dtype=wp.float64, device=self.device)
         self.states = wp.zeros((self.steps + 1, world_count), dtype=Vec5, device=self.device)
         self.velocities = wp.zeros_like(self.states)
-        self.equilibrium = wp.zeros((self.steps + 1, world_count), dtype=wp.vec4d, device=self.device)
-        self.actuator = wp.zeros_like(self.equilibrium)
+        self.equilibrium = wp.zeros((self.steps + 1, world_count), dtype=Vec6, device=self.device)
+        self.actuator = wp.zeros((self.steps + 1, world_count), dtype=wp.vec4d, device=self.device)
+        self.ankle_force = wp.zeros((self.steps + 1, world_count), dtype=wp.vec2d, device=self.device)
         self.forces = wp.zeros((self.steps, world_count), dtype=wp.vec2d, device=self.device)
         self.moments = wp.zeros((self.steps, world_count), dtype=wp.float64, device=self.device)
         self.fractions = wp.zeros((self.steps, world_count), dtype=wp.vec3d, device=self.device)
@@ -932,7 +979,7 @@ class Engine:
         )
 
     def _prepare(self):
-        """Evaluate the four-channel controller and stage the ankle carrier on device."""
+        """Evaluate the controller and stage the ankle carrier on device."""
         # One independent world per block spreads small batches across CUDA SMs.
         wp.launch(
             _prepare_masked,
@@ -949,6 +996,7 @@ class Engine:
                 self.velocities,
                 self.equilibrium,
                 self.actuator,
+                self.ankle_force,
                 self.carriers.body_q,
                 self.carriers.body_qd,
                 self.failure,
@@ -1010,6 +1058,7 @@ class Engine:
                 self.states,
                 self.velocities,
                 self.actuator,
+                self.ankle_force,
                 self.carriers.body_f,
                 self.reduction_groups,
                 self.partial_maxima,
@@ -1137,6 +1186,7 @@ class Engine:
         "velocities",
         "equilibrium",
         "actuator",
+        "ankle_force",
         "forces",
         "moments",
         "fractions",
@@ -1165,8 +1215,8 @@ class Engine:
     def _validate_coefficients(self, coefficients):
         """Check the same global spline bounds before a batch enters the device."""
         values = np.asarray(coefficients, dtype=np.float64)
-        if values.shape != (self.world_count, self.settings.control_count, 4):
-            raise ValueError("Coefficients must have shape (world_count, control_count, 4)")
+        if values.shape != (self.world_count, self.settings.control_count, self.channels):
+            raise ValueError(f"Coefficients must have shape (world_count, control_count, {self.channels})")
         bounds = [
             self.profile[k]
             for k in (
@@ -1203,8 +1253,9 @@ class Engine:
         integrated = int(self.integrated.numpy()[world])
         q = wp.empty(self.steps + 1, dtype=Vec5, device=self.device)
         v = wp.empty_like(q)
-        eq = wp.empty(self.steps + 1, dtype=wp.vec4d, device=self.device)
-        load = wp.empty_like(eq)
+        eq = wp.empty(self.steps + 1, dtype=Vec6, device=self.device)
+        load = wp.empty(self.steps + 1, dtype=wp.vec4d, device=self.device)
+        ankle_load = wp.empty(self.steps + 1, dtype=wp.vec2d, device=self.device)
         f = wp.empty(self.steps, dtype=wp.vec2d, device=self.device)
         m = wp.empty(self.steps, dtype=wp.float64, device=self.device)
         comp = wp.empty(self.steps, dtype=wp.vec3d, device=self.device)
@@ -1218,6 +1269,7 @@ class Engine:
                 self.velocities,
                 self.equilibrium,
                 self.actuator,
+                self.ankle_force,
                 self.forces,
                 self.moments,
                 self.fractions,
@@ -1226,6 +1278,7 @@ class Engine:
                 v,
                 eq,
                 load,
+                ankle_load,
                 f,
                 m,
                 comp,
@@ -1233,7 +1286,7 @@ class Engine:
             ],
             device=self.device,
         )
-        q, v, eq, load = q.numpy(), v.numpy(), eq.numpy(), load.numpy()
+        q, v, eq, load, ankle_load = q.numpy(), v.numpy(), eq.numpy(), load.numpy(), ankle_load.numpy()
         f, m, comp, cap = f.numpy()[:recorded], m.numpy()[:recorded], comp.numpy()[:recorded], cap.numpy()[:recorded]
         gate = self.hip_gate_values[:recorded]
         hip_stiffness = np.asarray(self.profile["hip_stiffness_n_m"], dtype=float)
@@ -1249,17 +1302,22 @@ class Engine:
         )
         # Plot-only joint positions are derived after integration, never in the fitting loop.
         joints = np.asarray([body.kinematics(row) for row in q[:recorded]]).reshape(recorded, 4, 2)
+        ankle_velocity = np.asarray(
+            [body.point(q[i], 2, np.zeros(2))[1] @ v[i] for i in range(recorded)], dtype=float
+        ).reshape(recorded, 2)
         trace = {
             "time_s": self.time_s[:recorded].copy(),
             "state": q[:recorded],
             "velocity": v[:recorded],
             "joints_m": joints,
-            "equilibrium": eq[:recorded],
+            "equilibrium": eq[:recorded, : self.channels],
             "hip_force_n": load[:recorded, :2],
             "hip_spring_force_n": spring_force,
             "hip_damping_force_n": damping_force,
             "hip_gate": gate.copy(),
-            "joint_torque_nm": load[:recorded, 2:],
+            "ankle_position_force_n": ankle_load[:recorded],
+            "ankle_position_velocity_m_s": ankle_velocity,
+            "joint_torque_nm": load[:recorded, 2:4],
             "grf_n": f,
             "ankle_contact_moment_nm": m,
             "compression_fraction": comp[:, 0],
@@ -1284,6 +1342,7 @@ class Engine:
             512: "Shoe supplied tensile ground normal force",
             1024: "Ground force screen exceeded",
             2048: "Nonfinite integrated state or velocity",
+            4096: "Ankle position force screen exceeded",
         }
         cap_rows = np.flatnonzero(cap > 0)
         summary = {
@@ -1297,7 +1356,7 @@ class Engine:
             "model": "cartesian_single_leg",
             "body_count": 3,
             "shoe_count": 1,
-            "actuated_channels": 4,
+            "actuated_channels": self.channels,
             "hip_flight_gate_enabled": self.config.hip_flight_gate_enabled,
             "hip_flight_gate_ramp_s": self.config.hip_flight_gate_ramp_s,
             "hip_flight_gate_contact_threshold_n": 5.0,
@@ -1323,8 +1382,18 @@ class Engine:
                 "Fhip = gate*(Khip*(p_eq-p)-Dhip*v); tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
                 if self.config.hip_flight_gate_enabled
                 else "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+            ).replace("; tau", "; Fankle = Kankle*(p_eq-p)-Dankle*v; tau")
+            if self.channels == 6
+            else (
+                "Fhip = gate*(Khip*(p_eq-p)-Dhip*v); tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+                if self.config.hip_flight_gate_enabled
+                else "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
             ),
-            "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
+            "external_loads": (
+                "hip and ankle point forces, knee/ankle torques, gravity on three leg masses, and one shoe-ground wrench"
+                if self.channels == 6
+                else "hip point force, gravity on three leg masses, and one shoe-ground wrench only"
+            ),
             "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
             "trace_sampling": "preintegration, one contact update per row; terminal state/velocity in summary",
             "joint_limits_diagnostic": self.config.joint_limits_diagnostic,

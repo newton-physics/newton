@@ -32,6 +32,8 @@ def summarize(trace: dict, reference: dict, friction_mu: float) -> dict:
     ratios = np.abs(force[contact, 0]) / (friction_mu * force[contact, 1]) if np.any(contact) else np.zeros(0)
     spring = np.asarray(trace["hip_spring_force_n"], dtype=float)
     damping = np.asarray(trace["hip_damping_force_n"], dtype=float)
+    ankle_force = np.asarray(trace.get("ankle_position_force_n", np.zeros_like(spring)), dtype=float)
+    ankle_velocity = np.asarray(trace.get("ankle_position_velocity_m_s", np.zeros_like(velocity)), dtype=float)
     dt = float(np.median(np.diff(time))) if len(time) > 1 else 0.0
     return {
         "hip_velocity_rmse_x_m_s": float(velocity_rmse[0]),
@@ -39,6 +41,9 @@ def summarize(trace: dict, reference: dict, friction_mu: float) -> dict:
         "maximum_hip_speed_m_s": maximum_speed,
         "maximum_hip_spring_force_n": float(np.max(np.linalg.norm(spring, axis=1))) if len(spring) else None,
         "maximum_hip_damping_force_n": float(np.max(np.linalg.norm(damping, axis=1))) if len(damping) else None,
+        "maximum_ankle_position_force_n": float(np.max(np.linalg.norm(ankle_force, axis=1)))
+        if len(ankle_force)
+        else None,
         "maximum_coulomb_equivalent_ratio": float(np.max(ratios)) if len(ratios) else None,
         "fraction_contact_samples_near_coulomb_limit": float(np.mean(ratios >= 0.95)) if len(ratios) else None,
         "contact_sample_fraction": float(np.mean(contact)) if len(contact) else 0.0,
@@ -47,6 +52,11 @@ def summarize(trace: dict, reference: dict, friction_mu: float) -> dict:
         if np.any(flight)
         else 0.0,
         "hip_damping_work_in_flight_j": float(np.sum(np.sum(damping[flight] * velocity[flight], axis=1)) * dt)
+        if np.any(flight)
+        else 0.0,
+        "ankle_position_work_in_flight_j": float(
+            np.sum(np.sum(ankle_force[flight] * ankle_velocity[flight], axis=1)) * dt
+        )
         if np.any(flight)
         else 0.0,
         "contact_normal_threshold_n": 5.0,

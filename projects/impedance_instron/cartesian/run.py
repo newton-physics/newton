@@ -49,8 +49,10 @@ class Config:
 def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | None = None):
     """Integrate one free leg from measured initial position and velocity.
 
-    The hip load is ``gate*(Khip*(p_eq-p)-Dhip*v)`` at the hip point
-    and ``Kjoint*(theta_eq-theta)-Djoint*theta_dot`` at knee and ankle.
+    The hip load is ``gate*(Khip*(p_eq-p)-Dhip*v)`` at the hip point.
+    Six-channel splines additionally apply ``Kankle*(p_eq-p)-Dankle*v`` at
+    the ankle point, using independent Cartesian gains. Joint torques remain
+    ``Kjoint*(theta_eq-theta)-Djoint*theta_dot`` at knee and ankle.
     Equilibrium velocity is not a damping target. Later measured motion and
     measured forces never drive the equations of motion.
 
@@ -59,8 +61,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             angles in radians. Only the first state and velocity initialize motion.
         profile: Explicit three-segment inertias, Cartesian hip impedance,
             knee/ankle impedance, and mixed-unit equilibrium limits.
-        spline: Four-channel equilibrium spline, ordered hip x/z [m] then
-            knee/ankle [rad], covering the reference duration.
+        spline: Four- or six-channel equilibrium spline. Channels are hip x/z
+            [m], knee/ankle [rad], and optional ankle x/z [m].
         shoe: One shared-artifact Shoe instance. Its material and friction
             histories reset once per rollout. Its kinematic carrier adds no
             integrated body mass; the declared foot mass belongs to the leg.
@@ -124,16 +126,21 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
     )
     equilibrium, _, _ = spline.sample(times)
     equilibrium = np.asarray(equilibrium, dtype=float)
-    if equilibrium.shape != (steps + 1, 4) or not np.isfinite(equilibrium).all():
-        raise ValueError("Equilibrium samples must be finite with shape (step_count + 1, 4)")
+    channels = spline.coefficients.shape[1]
+    if equilibrium.shape != (steps + 1, channels) or not np.isfinite(equilibrium).all():
+        raise ValueError(f"Equilibrium samples must be finite with shape (step_count + 1, {channels})")
+    ankle_stiffness = np.asarray(profile["ankle_stiffness_n_m"], dtype=float) if channels == 6 else None
+    ankle_damping = np.asarray(profile["ankle_damping_ns_m"], dtype=float) if channels == 6 else None
     shapes = {
         "state": (5,),
         "velocity": (5,),
         "joints_m": (4, 2),
-        "equilibrium": (4,),
+        "equilibrium": (channels,),
         "hip_force_n": (2,),
         "hip_spring_force_n": (2,),
         "hip_damping_force_n": (2,),
+        "ankle_position_force_n": (2,),
+        "ankle_position_velocity_m_s": (2,),
         "joint_torque_nm": (2,),
         "grf_n": (2,),
         "ankle_contact_moment_nm": (),
@@ -157,8 +164,19 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             hip_spring_force = hip_gate[index] * stiffness_hip * (equilibrium[index, :2] - state[:2])
             hip_damping_force = -hip_gate[index] * damping_hip * velocity[:2]
             hip_force = hip_spring_force + hip_damping_force
-            torque = stiffness_joint * (equilibrium[index, 2:] - state[3:]) - damping_joint * velocity[3:]
-            if not np.isfinite(hip_force).all() or not np.isfinite(torque).all():
+            torque = stiffness_joint * (equilibrium[index, 2:4] - state[3:]) - damping_joint * velocity[3:]
+            ankle_position_force = np.zeros(2)
+            ankle, ankle_jacobian, _ = body.point(state, 2, ankle_local)
+            ankle_position_velocity = ankle_jacobian @ velocity
+            if channels == 6:
+                ankle_position_force = (
+                    ankle_stiffness * (equilibrium[index, 4:6] - ankle) - ankle_damping * ankle_position_velocity
+                )
+            if (
+                not np.isfinite(hip_force).all()
+                or not np.isfinite(torque).all()
+                or not np.isfinite(ankle_position_force).all()
+            ):
                 raise FloatingPointError("Nonfinite actuator load")
             reasons = []
             outside = (state[3:] < lower_joint) | (state[3:] > upper_joint)
@@ -174,12 +192,14 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
                 reasons.append("Numerical speed screen exceeded")
             if np.linalg.norm(hip_force) > cfg.maximum_force_n:
                 reasons.append("Hip force screen exceeded")
+            if np.linalg.norm(ankle_position_force) > cfg.maximum_force_n:
+                reasons.append("Ankle position force screen exceeded")
             if reasons:
                 failure = {"time_s": float(time), "reasons": reasons}
                 break
             if index == steps:
                 break
-            ankle, jacobian, _ = body.point(state, 2, ankle_local)
+            jacobian = ankle_jacobian
             wrench, _ = shoe.apply(
                 ankle,
                 jacobian @ velocity,
@@ -192,6 +212,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
                 raise FloatingPointError("Nonfinite or invalid shoe wrench")
             # Shoe.apply already converts Newton +Y torque to mathematical X/Z moment.
             generalized = np.array([hip_force[0], hip_force[1], 0.0, torque[0], torque[1]])
+            if channels == 6:
+                generalized += ankle_jacobian.T @ ankle_position_force
             generalized += jacobian.T @ wrench[:2] + angular_jacobian * wrench[2]
             compression = shoe.foundation.compression.numpy() / rest_length
             if not np.isfinite(compression).all():
@@ -206,6 +228,8 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             trace["hip_force_n"][index] = hip_force
             trace["hip_spring_force_n"][index] = hip_spring_force
             trace["hip_damping_force_n"][index] = hip_damping_force
+            trace["ankle_position_force_n"][index] = ankle_position_force
+            trace["ankle_position_velocity_m_s"][index] = ankle_position_velocity
             trace["hip_gate"][index] = hip_gate[index]
             trace["joint_torque_nm"][index] = torque
             trace["grf_n"][index] = wrench[:2]
@@ -238,13 +262,18 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
     trace = {key: value[:recorded].copy() for key, value in trace.items()}
     trace["time_s"] = times[:recorded].copy()
     cap_rows = np.flatnonzero(trace["passive_cap_column_count"] > 0)
+    hip_load = "gate*(Khip*(p_eq-p)-Dhip*v)" if cfg.hip_flight_gate_enabled else "Khip*(p_eq-p)-Dhip*v"
+    controller = f"Fhip = {hip_load}; "
+    if channels == 6:
+        controller += "Fankle = Kankle*(p_eq-p)-Dankle*v; "
+    controller += "tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
     summary = {
         "status": "failed" if failure else "completed",
         "failure": failure,
         "model": "cartesian_single_leg",
         "body_count": 3,
         "shoe_count": 1,
-        "actuated_channels": 4,
+        "actuated_channels": channels,
         "hip_flight_gate_enabled": cfg.hip_flight_gate_enabled,
         "hip_flight_gate_ramp_s": cfg.hip_flight_gate_ramp_s,
         "mechanics_backend": "NumPy CPU; not a GPU-vectorized limb solver",
@@ -264,14 +293,14 @@ def simulate(reference: dict, profile: dict, spline, shoe, *, config: Config | N
             "provenance": profile["provenance"].get("inertial"),
             "population_comparison": profile["provenance"].get("de_leva_1996_population_comparison"),
         },
-        "controller": (
-            "Fhip = gate*(Khip*(p_eq-p)-Dhip*v); tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
-            if cfg.hip_flight_gate_enabled
-            else "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
-        ),
+        "controller": controller,
         "hip_flight_gate_contact_threshold_n": 5.0,
         "hip_flight_gate_reference_source": "grf_time_s/grf_target_n vertical force",
-        "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
+        "external_loads": (
+            "hip and ankle point forces, knee/ankle torques, gravity on three leg masses, and one shoe-ground wrench"
+            if channels == 6
+            else "hip point force, knee/ankle torques, gravity on three leg masses, and one shoe-ground wrench"
+        ),
         "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
         "trace_sampling": "preintegration, one contact update per row; terminal state/velocity in summary",
         "joint_limits_diagnostic": cfg.joint_limits_diagnostic,

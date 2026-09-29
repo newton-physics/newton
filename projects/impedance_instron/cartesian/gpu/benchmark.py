@@ -117,8 +117,9 @@ def benchmark(
     if controls not in (None, 12):
         raise ValueError("Control-count conversion is not supported; the frozen controller must use 12 points")
     control_count = len(coefficients)
-    if coefficients.shape != (12, 4) or settings.control_count != 12:
-        raise ValueError("The frozen controller and FitConfig must use exactly 12 control points")
+    channels = len(profile["equilibrium_lower"])
+    if coefficients.shape != (12, channels) or channels not in (4, 6) or settings.control_count != 12:
+        raise ValueError("The frozen controller and FitConfig must use 12 controls and four or six channels")
 
     shoe = baseline["shoe"]
     started = perf_counter()

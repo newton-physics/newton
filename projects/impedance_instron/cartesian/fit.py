@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fit four equilibrium channels to recorded motion and native single-foot GRF."""
+"""Fit four- or six-channel equilibria to motion and native single-foot GRF."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import numpy as np
 class FitConfig:
     """Declare measured tolerances and a bounded mixed-unit search budget.
 
-    ``parameter_scale`` gives coordinate scales [m, m, rad, rad], not search
+    ``parameter_scale`` gives coordinate scales [m, m, rad, rad], optionally
+    followed by ankle XY scales [m, m], not search
     bounds. Each step is the current dimensionless fraction times this scale.
     Profile bounds, masses, gains, initial state, and shoe stay fixed. Force
     tolerances are in newtons, with no subject-bodyweight normalization.
@@ -26,7 +27,7 @@ class FitConfig:
     max_evaluations: int = 60
     initial_step_fraction: float = 0.08
     minimum_step_fraction: float = 0.01
-    parameter_scale: tuple[float, float, float, float] = (0.2, 0.2, 0.5, 0.5)
+    parameter_scale: tuple[float, ...] = (0.2, 0.2, 0.5, 0.5)
     hip_tolerance_m: float = 0.02
     joint_tolerance_rad: float = 0.05
     force_tolerance_n: float = 100.0
@@ -47,8 +48,8 @@ class FitConfig:
                     raise ValueError("refine must be a boolean")
             elif name == "parameter_scale":
                 scale = np.asarray(value, dtype=float)
-                if scale.shape != (4,) or not np.isfinite(scale).all() or np.any(scale <= 0):
-                    raise ValueError("parameter_scale must contain four finite positive values")
+                if scale.shape not in ((4,), (6,)) or not np.isfinite(scale).all() or np.any(scale <= 0):
+                    raise ValueError("parameter_scale must contain four or six finite positive values")
                 object.__setattr__(self, name, tuple(float(item) for item in scale))
             elif isinstance(value, bool) or not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")

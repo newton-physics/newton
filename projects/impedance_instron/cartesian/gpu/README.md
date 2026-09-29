@@ -188,10 +188,12 @@ uv run --no-sync -m projects.impedance_instron.cartesian.gpu.profile_search \
 ```
 
 This timing-only command checks the saved bundle's file hashes. It keeps the
-128 worlds, 48 coefficients, physical timestep, objective, proposal seed, and
-both search phases. It warms graph replay before timing and starts every repeat
-from the same saved controller. Plateau stopping is disabled for fixed-work
-comparisons. Use a fresh output directory.
+search dimensions for the selected controller: 128 worlds and 48 coefficients
+for four channels, or 192 worlds and 72 coefficients for six channels. It also
+keeps the physical timestep, objective, proposal seed, and both search phases.
+It warms graph replay before timing and starts every repeat from the same saved
+controller. Plateau stopping is disabled for fixed-work comparisons. Use a
+fresh output directory.
 
 `profile.json` records complete iteration wall time, completed real candidates
 per second, candidate/padding counts, source and runtime identities, and losses.

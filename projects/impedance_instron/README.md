@@ -1,13 +1,17 @@
 # Twelve-point controller baseline
 
 This worktree has one controller pipeline: one leg, one shoe, one stance,
-with **12 cubic control points per equilibrium channel** (48 coefficients).
-One shared controller uses a fixed batch of **128 CUDA worlds**.
+with **12 cubic control points per equilibrium channel**. The original
+controller has four equilibrium channels (48 coefficients); the promoted FR3_2
+sample adds ankle XY for six channels (72 coefficients). The shared GPU search
+uses 128 worlds for four channels and 192 for six.
 There is no trunk, opposite leg, hip-angle motor, or added upper-body load.
 
-Small reference and rollout bundles for the recovered FR3_1 rate refit and the
-FR3_2 peak-to-peak window experiment are in [sample data](data/samples/README.md).
-The FR3_2 fit is exploratory and did not meet the measured-fit tolerances.
+Small reference and controller bundles for the recovered FR3_1 rate refit and
+the FR3_2 peak-to-peak movement are in [sample data](data/samples/README.md).
+The promoted FR3_2 six-channel controller meets numerical measured-fit and
+refinement criteria; its rollout still reaches the passive shoe compression
+cap.
 
 ## Import processed measurements
 
@@ -88,9 +92,9 @@ uv run --no-sync -m projects.impedance_instron \
 This command:
 
 1. Checks bundle hashes and replays the selected controller on CPU.
-2. Runs same-step CPU/GPU, common-pose contact, and 128-world
+2. Runs same-step CPU/GPU, common-pose contact, and channel-sized
    permutation/reset/isolation checks, including a failed candidate.
-3. Fits one shared controller on GPU with the original six-channel measured loss.
+3. Fits one shared controller on GPU with the six-output measured loss.
 4. Runs a frozen half-timestep check and writes `fit/report.html`, including
    verified spring and deformation views.
 

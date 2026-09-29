@@ -77,7 +77,10 @@ def main(argv: list[str] | None = None) -> None:
                 str(output / "contact"),
             ]
         )
-        mixed_benchmark(baseline, output / "mixed", baseline / "failure_equilibrium.npz", worlds=128)
+        prepared = json.loads((baseline / "summary.json").read_text())
+        channels = int(prepared["run"]["actuated_channels"])
+        fit_worlds = 128 if channels == 4 else 192
+        mixed_benchmark(baseline, output / "mixed", baseline / "failure_equilibrium.npz", worlds=fit_worlds)
         _validation(
             output / "single/benchmark.json",
             baseline,
