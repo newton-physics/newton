@@ -11,7 +11,7 @@ import math
 import os
 import re
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -45,11 +45,6 @@ from ..usd._asset_download import resolve_usd_from_url  # noqa: F401
 from ..usd._resolution_policy import (
     _PhysicsMaterial,
     _resolve_physics_material,
-    _resolve_shape_contact,
-    _resolve_shape_hydroelastic,
-    _resolve_shape_offsets,
-    _resolve_shape_sdf,
-    _resolve_shape_shell,
     _UsdJointProperties,
 )
 from ..usd.particles import find_particle_prims, import_particles
@@ -459,6 +454,8 @@ def parse_usd(
     require_newton_usd_schemas(Usd)
 
     from ..usd import _joints  # noqa: PLC0415
+    from ..usd._articulations import _parse_articulations  # noqa: PLC0415
+    from ..usd._colliders import _parse_colliders  # noqa: PLC0415
     from ..usd._collision_filters import (  # noqa: PLC0415
         _apply_collision_groups,
         _apply_filtered_pairs,
@@ -492,20 +489,6 @@ def parse_usd(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
-
-    # mapping from physics:approximation attribute (lower case) to remeshing method
-    approximation_to_remeshing_method = {
-        "convexdecomposition": "coacd",
-        "convexhull": "convex_hull",
-        "boundingsphere": "bounding_sphere",
-        "boundingcube": "bounding_box",
-        "meshsimplification": "quadratic",
-    }
-    # mapping from remeshing method to a list of shape indices
-    remeshing_queue = {}
-    # Approximated colliders whose prim is viewport geometry, and which therefore keep
-    # their authored topology as a visual shape. See the approximation pass below.
-    approximated_viewport_shapes: set[int] = set()
 
     if ignore_paths is None:
         ignore_paths = []
@@ -1710,438 +1693,41 @@ def parse_usd(
 
         articulation_entries = list(zip(paths, articulation_descs, strict=False))
 
-        parent_prim = None
-        body_data = {}
-        for path, desc in articulation_entries:
-            if warn_invalid_desc(path, desc):
-                continue
-            articulation_path = str(path)
-            if any(re.match(p, articulation_path) for p in ignore_paths):
-                continue
-            articulation_prim = stage.GetPrimAtPath(path)
-            articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
-            root_joint_xform = (
-                incoming_world_xform if override_root_xform else incoming_world_xform * articulation_root_xform
-            )
-            # Collect engine-specific attributes for the articulation root on first encounter
-            if collect_schema_attrs:
-                R.collect_prim_attrs(articulation_prim)
-                # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
-                try:
-                    parent_prim = articulation_prim.GetParent()
-                except Exception:
-                    parent_prim = None
-                if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_attrs(parent_prim)
-
-            # Extract custom attributes for articulation frequency from the articulation root prim
-            # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
-            articulation_custom_attrs = {}
-            # First check if articulation_prim itself has the PhysicsArticulationRootAPI
-            if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-                if verbose:
-                    print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
-                articulation_custom_attrs = usd.get_custom_attribute_values(
-                    articulation_prim, builder_custom_attr_articulation
-                )
-            # If not, check the parent prim
-            elif (
-                parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI)
-            ):
-                if verbose:
-                    print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
-                articulation_custom_attrs = usd.get_custom_attribute_values(
-                    parent_prim, builder_custom_attr_articulation
-                )
-            if verbose and articulation_custom_attrs:
-                print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
-            body_ids = {}
-            body_labels = []
-            current_body_id = 0
-            art_bodies = []
-            if verbose:
-                print(f"Bodies under articulation {path!s}:")
-            for p in desc.articulatedBodies:
-                if verbose:
-                    print(f"\t{p!s}")
-                if p == Sdf.Path.emptyPath:
-                    continue
-                key = str(p)
-                if key in ignored_body_paths:
-                    continue
-
-                usd_prim = stage.GetPrimAtPath(p)
-                if collect_schema_attrs:
-                    # Collect on each articulated body prim encountered
-                    R.collect_prim_attrs(usd_prim)
-
-                if key in body_specs:
-                    body_desc = body_specs[key]
-                    body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
-                    if override_root_xform:
-                        # Strip the articulation root's world-space pose and rebase at the user-specified xform.
-                        body_in_root_frame = wp.transform_inverse(articulation_root_xform) * body_world
-                        desired_world = incoming_world_xform * body_in_root_frame
-                    else:
-                        desired_world = incoming_world_xform * body_world
-                    art_root_for_visuals = articulation_root_xform if override_root_xform else None
-                    if bodies_follow_joint_ordering:
-                        # we just parse the body information without yet adding it to the builder
-                        body_data[current_body_id] = parse_body(
-                            body_desc,
-                            stage.GetPrimAtPath(p),
-                            add_body_to_builder=False,
-                            articulation_root_xform=art_root_for_visuals,
-                            origin=desired_world,
-                        )
-                    else:
-                        # look up description and add body to builder
-                        bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
-                            body_desc,
-                            stage.GetPrimAtPath(p),
-                            add_body_to_builder=True,
-                            articulation_root_xform=art_root_for_visuals,
-                            origin=desired_world,
-                        )
-                        if bid >= 0:
-                            art_bodies.append(bid)
-                    # remove body spec once we inserted it
-                    del body_specs[key]
-
-                body_ids[key] = current_body_id
-                body_labels.append(key)
-                current_body_id += 1
-
-            if len(body_ids) == 0:
-                # no bodies under the articulation or we ignored all of them
-                continue
-
-            # determine the joint graph for this articulation
-            joint_names: list[str] = []
-            joint_edges: list[tuple[int, int]] = []
-            # keys of joints that are excluded from the articulation (loop joints)
-            joint_excluded: set[str] = set()
-            # Groups of joints that share the same body pair (multi-DOF joints from MuJoCo USD).
-            # Maps the representative joint path (first encountered) to all joint paths in the group.
-            merged_joint_groups: dict[str, list[str]] = {}
-            # Track which body pair maps to which representative joint path
-            body_pair_to_representative: dict[tuple[int, int], str] = {}
-            for p in desc.articulatedJoints:
-                joint_path = str(p)
-                joint_desc = joint_descriptions[joint_path]
-                if joint_path in mjc_equality_connect_or_weld_paths:
-                    if verbose:
-                        print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
-                    continue
-                # it may be possible that a joint is filtered out in the middle of
-                # a chain of joints, which results in a disconnected graph
-                # we should raise an error in this case
-                if any(re.match(p, joint_path) for p in ignore_paths):
-                    continue
-                if str(joint_desc.body0) in ignored_body_paths:
-                    continue
-                if str(joint_desc.body1) in ignored_body_paths:
-                    continue
-                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
-                if joint_desc.excludeFromArticulation:
-                    joint_excluded.add(joint_path)
-                else:
-                    body_pair = (parent_id, child_id)
-                    if body_pair in body_pair_to_representative:
-                        # Another joint between the same bodies — merge into existing group
-                        rep = body_pair_to_representative[body_pair]
-                        merged_joint_groups[rep].append(joint_path)
-                    else:
-                        # First joint for this body pair
-                        body_pair_to_representative[body_pair] = joint_path
-                        merged_joint_groups[joint_path] = [joint_path]
-                        joint_edges.append(body_pair)
-                        joint_names.append(joint_path)
-
-            articulation_joint_indices = []
-            articulation_ids: set[int] = set()
-
-            if len(joint_edges) == 0:
-                # We have an articulation without joints, i.e. only free rigid bodies
-                # Use add_base_joint to honor floating, base_joint, and parent_body parameters
-                base_parent = parent_body
-                if bodies_follow_joint_ordering:
-                    for i in body_ids.values():
-                        child_body_id = add_body(**body_data[i])
-                        # Compute parent_xform to preserve imported pose when attaching to parent_body
-                        parent_xform = None
-                        if base_parent != -1:
-                            # When parent_body is specified, interpret xform parameter as parent-relative offset
-                            # body_data[i]["xform"] = USD_local * incoming_world_xform
-                            # We want parent_xform to position the child at this location relative to parent
-                            # Use incoming_world_xform as the base parent-relative offset
-                            parent_xform = incoming_world_xform
-                            # If the USD body has a non-identity local transform, compose it with incoming_xform
-                            # Note: body_data[i]["xform"] already includes the child's USD transform.
-                            # So we can use body_data[i]["xform"] directly for the intended position
-                            # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
-                            # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.
-                            # For articulations without joints, incoming_world_xform IS the parent-relative offset.
-                            parent_xform = incoming_world_xform
-                        joint_id = builder._add_base_joint(
-                            child_body_id,
-                            floating=floating,
-                            base_joint=base_joint,
-                            parent=base_parent,
-                            parent_xform=parent_xform,
-                        )
-                        # note the free joint's coordinates will be initialized by the body_q of the
-                        # child body
-                        builder._finalize_imported_articulation(
-                            joint_indices=[joint_id],
-                            parent_body=parent_body,
-                            articulation_label=body_data[i]["label"],
-                            custom_attributes=articulation_custom_attrs,
-                        )
-                        articulation_ids.add(builder.joint_articulation[joint_id])
-                        import_attached_cables([body_data[i]["label"]])
-                else:
-                    for i, child_body_id in enumerate(art_bodies):
-                        # Compute parent_xform to preserve imported pose when attaching to parent_body
-                        parent_xform = None
-                        if base_parent != -1:
-                            # When parent_body is specified, interpret xform parameter as parent-relative offset
-                            parent_xform = incoming_world_xform
-                        joint_id = builder._add_base_joint(
-                            child_body_id,
-                            floating=floating,
-                            base_joint=base_joint,
-                            parent=base_parent,
-                            parent_xform=parent_xform,
-                        )
-                        # note the free joint's coordinates will be initialized by the body_q of the
-                        # child body
-                        builder._finalize_imported_articulation(
-                            joint_indices=[joint_id],
-                            parent_body=parent_body,
-                            articulation_label=body_labels[i],
-                            custom_attributes=articulation_custom_attrs,
-                        )
-                        articulation_ids.add(builder.joint_articulation[joint_id])
-                        import_attached_cables([body_labels[i]])
-                sorted_joints = []
-            else:
-                # we have an articulation with joints, we need to sort them topologically
-                if joint_ordering is not None:
-                    if verbose:
-                        print(f"Sorting joints using {joint_ordering} ordering...")
-                    sorted_joints, reversed_joint_list = topological_sort_undirected(
-                        joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
-                    )
-                    if reversed_joint_list:
-                        reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
-                        reversed_joint_names = ", ".join(reversed_joint_paths)
-                        raise ValueError(
-                            f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
-                        )
-                    if verbose:
-                        print("Joint ordering:", sorted_joints)
-                else:
-                    # we keep the original order of the joints
-                    sorted_joints = np.arange(len(joint_names))
-
-            if len(sorted_joints) > 0:
-                # insert the bodies in the order of the joints
-                if bodies_follow_joint_ordering:
-                    inserted_bodies = set()
-                    for jid in sorted_joints:
-                        parent, child = joint_edges[jid]
-                        if parent >= 0 and parent not in inserted_bodies:
-                            b = add_body(**body_data[parent])
-                            inserted_bodies.add(parent)
-                            art_bodies.append(b)
-                            path_body_map[body_data[parent]["label"]] = b
-                        if child >= 0 and child not in inserted_bodies:
-                            b = add_body(**body_data[child])
-                            inserted_bodies.add(child)
-                            art_bodies.append(b)
-                            path_body_map[body_data[child]["label"]] = b
-
-                first_joint_parent = joint_edges[sorted_joints[0]][0]
-                if first_joint_parent != -1:
-                    # the mechanism is floating since there is no joint connecting it to the world
-                    # we explicitly add a joint connecting the first body in the articulation to the world
-                    # (or to parent_body if specified) to make sure generalized-coordinate solvers can simulate it
-                    base_parent = parent_body
-                    if bodies_follow_joint_ordering:
-                        child_body = body_data[first_joint_parent]
-                        child_body_id = path_body_map[child_body["label"]]
-                    else:
-                        child_body_id = art_bodies[first_joint_parent]
-                    # Compute parent_xform to preserve imported pose when attaching to parent_body
-                    parent_xform = None
-                    if base_parent != -1:
-                        # When parent_body is specified, use incoming_world_xform as parent-relative offset
-                        parent_xform = incoming_world_xform
-                    base_joint_id = builder._add_base_joint(
-                        child_body_id,
-                        floating=floating,
-                        base_joint=base_joint,
-                        parent=base_parent,
-                        parent_xform=parent_xform,
-                    )
-                    articulation_joint_indices.append(base_joint_id)
-
-                # insert the remaining joints in topological order
-                for joint_id, i in enumerate(sorted_joints):
-                    if joint_id == 0 and first_joint_parent == -1:
-                        # The root joint connects to the world (parent_id=-1).
-                        # If base_joint or floating is specified, override the USD's root joint.
-                        if base_joint is not None or floating is not None:
-                            # Get the child body of the root joint
-                            root_joint_child = joint_edges[sorted_joints[0]][1]
-                            if bodies_follow_joint_ordering:
-                                child_body = body_data[root_joint_child]
-                                child_body_id = path_body_map[child_body["label"]]
-                            else:
-                                child_body_id = art_bodies[root_joint_child]
-                            base_parent = parent_body
-                            # Compute parent_xform to preserve imported pose
-                            parent_xform = None
-                            if base_parent != -1:
-                                # When parent_body is specified, use incoming_world_xform as parent-relative offset
-                                parent_xform = incoming_world_xform
-                            else:
-                                # body_q is already in world space, use it directly
-                                parent_xform = builder.body_q[child_body_id]
-                            base_joint_id = builder._add_base_joint(
-                                child_body_id,
-                                floating=floating,
-                                base_joint=base_joint,
-                                parent=base_parent,
-                                parent_xform=parent_xform,
-                            )
-                            articulation_joint_indices.append(base_joint_id)
-                            group = merged_joint_groups.get(joint_names[i])
-                            if group is not None:
-                                processed_joints.update(group)
-                            else:
-                                processed_joints.add(joint_names[i])
-                            continue  # Skip parsing the USD's root joint
-                        # When body0 maps to world the physics API may resolve
-                        # localPose0 into world space (baking the non-body prim's
-                        # transform). JointDesc.body0 returns "" for non-rigid
-                        # targets, so we attempt to look up the prim directly.
-                        root_joint_desc = joint_descriptions[joint_names[i]]
-                        b0 = str(root_joint_desc.body0)
-                        b1 = str(root_joint_desc.body1)
-                        # Determine the world-facing side from this articulation's body set.
-                        # path_body_map includes previously imported articulations, so using
-                        # it here can misidentify the world-side path for the current root
-                        # joint when b0 references an external rigid body.
-                        if b0 not in body_ids:
-                            world_body_path = b0
-                        elif b1 not in body_ids:
-                            world_body_path = b1
-                        else:
-                            # Defensive fallback; root joints should have exactly one side
-                            # outside the articulation.
-                            world_body_path = b0
-                        world_body_prim = stage.GetPrimAtPath(world_body_path) if world_body_path else None
-                        if world_body_prim is not None and world_body_prim.IsValid():
-                            world_body_xform = usd.get_transform(world_body_prim, local=False, xform_cache=xform_cache)
-                        else:
-                            # body0/body1 can resolve to world with an empty path (""),
-                            # leaving no world-side prim to query.
-                            # If the authored world-side local pose is identity, recover
-                            # the missing world-side frame from the resolved child body
-                            # pose and local poses so root-joint FK stays consistent with
-                            # imported body_q.
-                            # If the world-side local pose is non-identity, keep the
-                            # previous identity fallback: USD often bakes non-rigid world
-                            # anchors directly into localPose0/localPose1 in this case.
-                            _, child_local_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
-                                root_joint_desc,
-                                body_ids,
-                                get_transforms=True,
-                            )
-                            assert parent_tf is not None and child_tf is not None
-                            identity_tf = wp.transform_identity()
-                            parent_pos = np.array(parent_tf.p, dtype=float)
-                            parent_quat = np.array(parent_tf.q, dtype=float)
-                            identity_pos = np.array(identity_tf.p, dtype=float)
-                            identity_quat = np.array(identity_tf.q, dtype=float)
-                            parent_pos_is_identity = np.allclose(parent_pos, identity_pos, atol=1e-6)
-                            # q and -q represent the same rotation
-                            parent_rot_is_identity = abs(np.dot(parent_quat, identity_quat)) > 1.0 - 1e-6
-                            if (
-                                parent_pos_is_identity
-                                and parent_rot_is_identity
-                                and 0 <= child_local_id < len(body_labels)
-                            ):
-                                child_path = body_labels[child_local_id]
-                                child_prim = stage.GetPrimAtPath(child_path)
-                            else:
-                                child_prim = None
-                            if child_prim is not None and child_prim.IsValid():
-                                child_world_xform = usd.get_transform(child_prim, local=False, xform_cache=xform_cache)
-                                world_body_xform = child_world_xform * child_tf * wp.transform_inverse(parent_tf)
-                            else:
-                                world_body_xform = wp.transform_identity()
-                        root_frame_xform = (
-                            wp.transform_inverse(articulation_root_xform)
-                            if override_root_xform
-                            else wp.transform_identity()
-                        )
-                        root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
-                        group = merged_joint_groups.get(joint_names[i])
-                        if group is not None and len(group) > 1:
-                            joint = parse_merged_joints(group, incoming_xform=root_incoming_xform)
-                        else:
-                            joint = parse_joint(
-                                joint_descriptions[joint_names[i]],
-                                incoming_xform=root_incoming_xform,
-                            )
-                    else:
-                        group = merged_joint_groups.get(joint_names[i])
-                        if group is not None and len(group) > 1:
-                            joint = parse_merged_joints(group)
-                        else:
-                            joint = parse_joint(
-                                joint_descriptions[joint_names[i]],
-                            )
-                    if joint is not None:
-                        articulation_joint_indices.append(joint)
-                        processed_joints.add(joint_names[i])
-                        # Mark all paths in the group as processed
-                        group = merged_joint_groups.get(joint_names[i])
-                        if group is not None:
-                            for gp in group:
-                                processed_joints.add(gp)
-
-            # Create the articulation from all collected joints
-            if articulation_joint_indices:
-                builder._finalize_imported_articulation(
-                    joint_indices=articulation_joint_indices,
-                    parent_body=parent_body,
-                    articulation_label=articulation_path,
-                    custom_attributes=articulation_custom_attrs,
-                )
-                articulation_ids.add(builder.joint_articulation[articulation_joint_indices[0]])
-                import_attached_cables(body_labels)
-
-            # Defer external constraints until later bodies and cables have extended their
-            # articulations. Reserve these paths so the orphan-joint pass does not emit them.
-            for joint_path in sorted(joint_excluded):
-                excluded_articulation_joints[joint_path] = root_joint_xform
-            processed_joints.update(joint_excluded)
-
-            self_collisions = bool(
-                R.get_value(
-                    articulation_prim,
-                    prim_type=PrimType.ARTICULATION,
-                    key="self_collision_enabled",
-                    default=enable_self_collisions,
-                    verbose=verbose,
-                )
-            )
-            for articulation in articulation_ids:
-                articulation_has_self_collision[articulation] = self_collisions
+        _parse_articulations(
+            builder,
+            stage,
+            articulation_entries,
+            R=R,
+            xform_cache=xform_cache,
+            body_specs=body_specs,
+            joint_descriptions=joint_descriptions,
+            ignored_body_paths=ignored_body_paths,
+            mjc_equality_connect_or_weld_paths=mjc_equality_connect_or_weld_paths,
+            path_body_map=path_body_map,
+            processed_joints=processed_joints,
+            excluded_articulation_joints=excluded_articulation_joints,
+            articulation_has_self_collision=articulation_has_self_collision,
+            builder_custom_attr_articulation=builder_custom_attr_articulation,
+            incoming_world_xform=incoming_world_xform,
+            override_root_xform=override_root_xform,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            joint_ordering=joint_ordering,
+            parent_body=parent_body,
+            floating=floating,
+            base_joint=base_joint,
+            enable_self_collisions=enable_self_collisions,
+            ignore_paths=ignore_paths,
+            collect_schema_attrs=collect_schema_attrs,
+            verbose=verbose,
+            warn_invalid_desc=warn_invalid_desc,
+            parse_body=parse_body,
+            add_body=add_body,
+            resolve_joint_parent_child=resolve_joint_parent_child,
+            parse_joint=parse_joint,
+            parse_merged_joints=parse_merged_joints,
+            import_attached_cables=import_attached_cables,
+            topological_sort_undirected=topological_sort_undirected,
+        )
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
     has_joints = any(
         (
@@ -2276,368 +1862,38 @@ def parse_usd(
     # still disable collisions with zero or a shared negative group.
     imported_rigid_collider_groups: dict[str, tuple[str, ...]] = {}
 
-    for key, value in ret_dict.items():
-        if key in {
-            UsdPhysics.ObjectType.CubeShape,
-            UsdPhysics.ObjectType.SphereShape,
-            UsdPhysics.ObjectType.CapsuleShape,
-            UsdPhysics.ObjectType.CylinderShape,
-            UsdPhysics.ObjectType.ConeShape,
-            UsdPhysics.ObjectType.MeshShape,
-            UsdPhysics.ObjectType.PlaneShape,
-        }:
-            paths, shape_specs = value
-            for xpath, shape_spec in zip(paths, shape_specs, strict=False):
-                if warn_invalid_desc(xpath, shape_spec):
-                    continue
-                path = str(xpath)
-                if any(re.match(p, path) for p in ignore_paths):
-                    continue
-                prim = stage.GetPrimAtPath(xpath)
-                collider_is_enabled = _is_enabled_collider(prim)
-                # Deformable-owned meshes never reach this loop: the scout excludes them
-                # from the native parse. A sim-API mesh seen here was deliberately left
-                # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
-                shape_already_added = path in path_shape_map
-                body_path = str(shape_spec.rigidBody)
-                if verbose:
-                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
-                body_id = path_body_map.get(body_path, -1)
-                scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
-                collision_group = builder.default_shape_cfg.collision_group
-                collision_groups = tuple(sorted(str(group) for group in shape_spec.collisionGroups))
-                material = material_specs[""]
-                has_shape_material = len(shape_spec.materials) >= 1
-                if has_shape_material:
-                    if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material = material_specs[str(shape_spec.materials[0])]
-                    if verbose:
-                        print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
-                        )
-                elif verbose:
-                    print(f"No material found for shape at '{path}'.")
-
-                # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
-                # Use per-shape physics material density when present; otherwise use default density.
-                if not collider_is_enabled:
-                    # Retain the disabled shape, but exclude it from builder mass aggregation.
-                    shape_density = 0.0
-                elif has_shape_material:
-                    shape_density = material.density
-                else:
-                    shape_density = default_shape_density
-                local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
-                if body_id == -1:
-                    shape_xform = incoming_world_xform * local_xform
-                else:
-                    shape_xform = local_xform
-                # Extract custom attributes for this shape
-                shape_custom_attrs = usd.get_custom_attribute_values(
-                    prim, builder_custom_attr_shape, context={"builder": builder}
-                )
-                if collect_schema_attrs:
-                    R.collect_prim_attrs(prim)
-
-                margin_val, gap_val = _resolve_shape_offsets(
-                    prim, R, builder.default_shape_cfg, legacy_margin_gap=legacy_margin_gap, verbose=verbose
-                )
-
-                has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
-                material_props = visuals.get_material_props_cached(prim)
-
-                # Explicit hide_collision_shapes overrides drawability:
-                # if the body already has visual shapes, hide its colliders unconditionally.
-                hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
-                # A collider is drawn when USD says it is drawn: ``purpose`` resolving to
-                # ``default``/``proxy`` and the prim not being invisible. Not because a
-                # render material happens to be bound, and not because nothing else in the
-                # scene is visible -- an asset whose geometry is all ``guide`` has no render
-                # geometry, and an empty viewport is the honest result of that. Reach for
-                # ``force_show_colliders`` to inspect such a scene.
-                collider_is_visible = (
-                    force_show_colliders or visuals.is_viewport_drawn(prim)
-                ) and not hide_collider_for_body
-                # Approximating a viewport-drawn collider splits off its authored topology
-                # as a visual shape (see the approximation pass below). That copy is subject
-                # to ``hide_collision_shapes`` as well, so that the flag does not turn into a
-                # no-op for exactly those colliders that carry ``physics:approximation``.
-                splits_off_visual_copy = (
-                    load_visual_shapes and visuals.is_viewport_drawn(prim) and not hide_collider_for_body
-                )
-
-                shape_contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
-                shape_ke = shape_contact["ke"]
-                shape_kd = shape_contact["kd"]
-                shape_kf = shape_contact["kf"]
-                shape_ka = shape_contact["ka"]
-
-                shape_color = material_props.get("color")
-                carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
-                if shape_color is None and not carries_texture and collider_is_visible:
-                    shape_color = _UNMATERIALED_VISUAL_COLOR
-
-                sdf = _resolve_shape_sdf(prim, R, builder.default_shape_cfg, verbose=verbose)
-                has_sdf_api = sdf.has_api
-                sdf_max_resolution = sdf.max_resolution
-                sdf_narrow_band_range = sdf.narrow_band_range
-                sdf_target_voxel_size = sdf.target_voxel_size
-                sdf_texture_format = sdf.texture_format
-                sdf_padding = sdf.padding
-                is_hydroelastic, kh = _resolve_shape_hydroelastic(
-                    prim,
-                    R,
-                    builder.default_shape_cfg,
-                    sdf,
-                    is_mesh=key == UsdPhysics.ObjectType.MeshShape,
-                    verbose=verbose,
-                )
-                shape_is_solid, inertia_margin, shell_thickness_val = _resolve_shape_shell(prim, R, margin_val)
-
-                if shape_already_added:
-                    builder.shape_collision_group[path_shape_map[path]] = collision_group
-                    imported_rigid_collider_groups[path] = collision_groups
-                    mass_properties.record_collider(
-                        path,
-                        prim,
-                        shape_spec,
-                        key,
-                        density=shape_density,
-                        is_solid=shape_is_solid,
-                        thickness=inertia_margin,
-                    )
-                    if verbose:
-                        print(f"Shape at {path} already added; skipping duplicate geometry.")
-                    continue
-
-                shape_params = {
-                    "body": body_id,
-                    "xform": shape_xform,
-                    "cfg": ModelBuilder.ShapeConfig(
-                        ke=shape_ke,
-                        kd=shape_kd,
-                        kf=shape_kf,
-                        ka=shape_ka,
-                        margin=inertia_margin,
-                        gap=gap_val,
-                        mu=material.dynamicFriction,
-                        restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
-                        density=shape_density,
-                        collision_group=collision_group,
-                        is_visible=collider_is_visible,
-                        has_shape_collision=collider_is_enabled,
-                        has_particle_collision=collider_is_enabled,
-                        sdf_max_resolution=sdf_max_resolution,
-                        sdf_narrow_band_range=sdf_narrow_band_range,
-                        sdf_target_voxel_size=sdf_target_voxel_size,
-                        sdf_texture_format=sdf_texture_format,
-                        sdf_padding=sdf_padding,
-                        is_hydroelastic=is_hydroelastic,
-                        kh=kh,
-                        is_solid=shape_is_solid,
-                    ),
-                    "label": path,
-                    "custom_attributes": shape_custom_attrs,
-                    "color": shape_color,
-                }
-                if collider_is_visible:
-                    if material_props.get("color") is not None and material_props.get("texture") is None:
-                        shape_params["color"] = material_props["color"]
-                    if material_props.get("opacity") is not None:
-                        shape_params["opacity"] = material_props["opacity"]
-                # print(path, shape_params)
-                if key == UsdPhysics.ObjectType.CubeShape:
-                    hx, hy, hz = shape_spec.halfExtents
-                    shape_id = builder.add_shape_box(
-                        **shape_params,
-                        hx=hx,
-                        hy=hy,
-                        hz=hz,
-                    )
-                elif key == UsdPhysics.ObjectType.SphereShape:
-                    if not _is_uniform_scale(scale):
-                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
-                    radius = shape_spec.radius
-                    shape_id = builder.add_shape_sphere(
-                        **shape_params,
-                        radius=radius,
-                    )
-                elif key == UsdPhysics.ObjectType.CapsuleShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_capsule(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.CylinderShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_cylinder(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.ConeShape:
-                    # Apply axis rotation to transform
-                    axis = int(shape_spec.axis)
-                    shape_params["xform"] = wp.transform(
-                        shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
-                    )
-                    radius = shape_spec.radius
-                    half_height = shape_spec.halfHeight
-                    shape_id = builder.add_shape_cone(
-                        **shape_params,
-                        radius=radius,
-                        half_height=half_height,
-                    )
-                elif key == UsdPhysics.ObjectType.MeshShape:
-                    # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    # The mesh needs its render material when anything will draw it: either
-                    # the collider itself is visible, or it is viewport geometry whose
-                    # authored topology is about to be split off as a visual shape.
-                    if collider_is_visible or splits_off_visual_copy:
-                        # Drawn colliders should render with the same visual material metadata
-                        # as visual-only mesh imports.
-                        mesh = visuals.get_mesh_with_visual_material(prim, path_name=path)
-                    else:
-                        # Not viewport-drawn, but the viewer still draws these under show_collision /
-                        # show_static. Mutating the shared cache entry is safe: both caches key on the
-                        # prim path, so every consumer resolves the same values.
-                        mesh = visuals.get_mesh_cached(prim)
-                        visuals.apply_visual_material(mesh, material_props)
-                    mesh.maxhullvert = R.get_value(
-                        prim,
-                        prim_type=PrimType.SHAPE,
-                        key="max_hull_vertices",
-                        default=mesh_maxhullvert,
-                        verbose=verbose,
-                    )
-                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
-                    # write the SDF intent to the builder lists, deferring the build to finalize().
-                    mesh_shape_params = dict(shape_params)
-                    mesh_shape_params["cfg"] = replace(
-                        shape_params["cfg"],
-                        sdf_max_resolution=None,
-                        sdf_target_voxel_size=None,
-                        sdf_narrow_band_range=(-0.1, 0.1),
-                        sdf_texture_format="uint16",
-                        sdf_padding=None,
-                        is_hydroelastic=False,
-                    )
-                    shape_id = builder.add_shape_mesh(
-                        scale=wp.vec3(*shape_spec.meshScale),
-                        mesh=mesh,
-                        **mesh_shape_params,
-                    )
-                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
-                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
-                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
-                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
-                    builder.shape_sdf_padding[shape_id] = sdf_padding
-                    # kh is a material param; persist regardless of hydro state.
-                    builder.shape_material_kh[shape_id] = kh
-                    if is_hydroelastic:
-                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                    if collider_is_enabled and not skip_mesh_approximation:
-                        approximation = usd.get_attribute(prim, "physics:approximation", None)
-                        if approximation is not None:
-                            if has_sdf_api and approximation.lower() != "none":
-                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
-                                # it has no meaning on a NewtonSDFCollisionAPI prim.
-                                warnings.warn(
-                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
-                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
-                                    stacklevel=2,
-                                )
-                            else:
-                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                                if remeshing_method is None:
-                                    if verbose:
-                                        print(
-                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                        )
-                                else:
-                                    if remeshing_method not in remeshing_queue:
-                                        remeshing_queue[remeshing_method] = []
-                                    remeshing_queue[remeshing_method].append(shape_id)
-                                    if splits_off_visual_copy:
-                                        approximated_viewport_shapes.add(shape_id)
-
-                elif key == UsdPhysics.ObjectType.PlaneShape:
-                    # Warp uses +Z convention for planes
-                    if shape_spec.axis != UsdPhysics.Axis.Z:
-                        xform = shape_params["xform"]
-                        axis_q = quat_between_axes(Axis.Z, usd_axis_to_axis[shape_spec.axis])
-                        shape_params["xform"] = wp.transform(xform.p, xform.q * axis_q)
-                    shape_id = builder.add_shape_plane(
-                        **shape_params,
-                        width=0.0,
-                        length=0.0,
-                    )
-                else:
-                    raise NotImplementedError(f"Shape type {key} not supported yet")
-
-                path_shape_map[path] = shape_id
-                path_shape_scale[path] = scale
-                imported_rigid_collider_groups[path] = collision_groups
-
-                # Restore the real collision margin when shell thickness was substituted.
-                # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
-                # so inertia thickness and collision margin don't share the same slot.
-                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
-                    builder.shape_margin[shape_id] = margin_val
-
-                mass_properties.record_collider(
-                    path,
-                    prim,
-                    shape_spec,
-                    key,
-                    density=shape_density,
-                    is_solid=shape_is_solid,
-                    thickness=inertia_margin,
-                    mesh_source=mesh if key == UsdPhysics.ObjectType.MeshShape else None,
-                )
-
-                _collect_filtered_pairs(prim, authored_filtered_path_pairs)
-
-    # Approximate meshes. ``physics:approximation`` belongs to
-    # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
-    # collide against, not which to draw. Approximating a prim that is viewport
-    # geometry therefore splits it in two -- an approximated collider and a visual
-    # carrying the authored topology -- rather than replacing what is drawn.
-    #
-    # Viewport geometry is decided by USD purpose and visibility alone. A prim whose
-    # purpose resolves to ``default`` is drawable whether that value was authored or
-    # inherited from the fallback, and whether or not a material is bound; the
-    # collider display policy that governs pure colliders does not apply to a prim
-    # that is also render geometry. ``approximate_meshes`` copies shapes carrying
-    # VISIBLE, so mark these before handing them over.
-    for remeshing_method, shape_ids in remeshing_queue.items():
-        drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
-        for shape_id in drawn:
-            builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
-        if drawn:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True)
-        # Colliders that are not render geometry keep no visual: there is nothing
-        # authored to preserve. If one is on screen it is because the collider
-        # display policy put it there, and what it should show is the collider.
-        rest = [s for s in shape_ids if s not in set(drawn)]
-        if rest:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=rest, keep_visual_shapes=False)
+    _parse_colliders(
+        builder=builder,
+        stage=stage,
+        xform_cache=xform_cache,
+        ret_dict=ret_dict,
+        R=R,
+        visuals=visuals,
+        mass_properties=mass_properties,
+        material_specs=material_specs,
+        default_shape_density=default_shape_density,
+        path_body_map=path_body_map,
+        path_shape_map=path_shape_map,
+        path_shape_scale=path_shape_scale,
+        builder_custom_attr_shape=builder_custom_attr_shape,
+        bodies_with_visual_shapes=bodies_with_visual_shapes,
+        incoming_world_xform=incoming_world_xform,
+        usd_axis_to_axis=usd_axis_to_axis,
+        imported_rigid_collider_groups=imported_rigid_collider_groups,
+        ignore_paths=ignore_paths,
+        load_visual_shapes=load_visual_shapes,
+        hide_collision_shapes=hide_collision_shapes,
+        force_show_colliders=force_show_colliders,
+        mesh_maxhullvert=mesh_maxhullvert,
+        skip_mesh_approximation=skip_mesh_approximation,
+        collect_schema_attrs=collect_schema_attrs,
+        legacy_margin_gap=legacy_margin_gap,
+        verbose=verbose,
+        warn_invalid_desc=warn_invalid_desc,
+        authored_filtered_path_pairs=authored_filtered_path_pairs,
+        _is_uniform_scale=_is_uniform_scale,
+        _UNMATERIALED_VISUAL_COLOR=_UNMATERIALED_VISUAL_COLOR,
+    )
 
     # Filtered pairs are applied after the deformable passes below, once every endpoint's
     # Newton shapes exist.
