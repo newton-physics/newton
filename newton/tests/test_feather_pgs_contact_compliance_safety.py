@@ -72,6 +72,7 @@ class TestContactComplianceSafety(unittest.TestCase):
             friction_anchor_beta=0.0,
             _friction_patches=object(),
             _contact_torsion_enabled=False,
+            _sparse_mass_matrix_size=None,
         )
         start_step(solver, self.contacts(), 0.005)
         solver.friction_anchor_beta = 0.2

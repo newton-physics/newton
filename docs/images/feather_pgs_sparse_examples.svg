@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1440" viewBox="0 0 1200 1440" role="img" aria-labelledby="title desc">
+  <title id="title">Why sparse FPGS saves different amounts of work on different robots</title>
+  <desc id="desc">Cause-and-effect examples, not just robot silhouettes. G1's full-width contact response can affect all 43 coordinates; leaf-first factor coordinates let an illustrated foot contact update only six base and six leg coordinates during PGS, then decode the coupled physical response once. KukaAllegro retains seven shared arm, four finger and six object coordinates, removing only the other twelve finger coordinates from that row. Kuka already used factor coordinates in main; compact storage and direct contact construction are new. Cassie's maximum row allocation remains eighteen, but its factor storage and intermediate work shrink. ANYmal flat and rough have the same topology; their measured total times show why more milliseconds saved need not mean a larger speedup. Allegro's joint-velocity-limit feature retains the old path. All timing gains are whole-PR measurements, not isolated attribution to one change.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", sans-serif; fill: #172b42; }
+      .title { font-size: 33px; font-weight: 700; letter-spacing: -.6px; }
+      .head { font-size: 25px; font-weight: 700; }
+      .body { font-size: 18px; }
+      .small { font-size: 15px; fill: #526579; }
+      .label { font-size: 16px; font-weight: 700; }
+      .eyebrow { font-size: 14px; font-weight: 700; letter-spacing: 1px; fill: #087f83; }
+      .gain { font-size: 21px; font-weight: 700; fill: #126862; }
+      .center { text-anchor: middle; }
+      .card { fill: #fff; stroke: #d5dee7; stroke-width: 1.5; }
+      .arrow { fill: none; stroke: #6f859b; stroke-width: 2; marker-end: url(#arrow); }
+      .tree { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 L7 4 L1 7" fill="none" stroke="#6f859b" stroke-width="1.8"/>
+    </marker>
+    <pattern id="slots" width="10" height="26" patternUnits="userSpaceOnUse">
+      <path d="M0 0 V26" stroke="#fff" stroke-width="2"/>
+    </pattern>
+    <pattern id="wide-slots" width="12" height="26" patternUnits="userSpaceOnUse">
+      <path d="M0 0 V26" stroke="#fff" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="1440" rx="20" fill="#fff"/>
+  <text x="40" y="38" class="eyebrow">TOPOLOGY → WORK REMOVED → MEASURED WHOLE-STEP BENEFIT</text>
+  <text x="40" y="81" class="title">Do less work per contact. Still move the whole robot.</text>
+  <text x="40" y="113" class="body">RTX PRO6000 · 16,384 environments · CUDA graphs on · video off</text>
+
+  <rect x="40" y="144" width="1120" height="389" rx="16" class="card"/>
+  <text x="64" y="177" class="eyebrow">G1 FLAT · MANY COORDINATES OUTSIDE ONE CONTACT PATH</text>
+  <text x="64" y="215" class="head">A foot touches the ground</text>
+  <rect x="816" y="162" width="320" height="62" rx="10" fill="#e7f4f1"/>
+  <text x="976" y="188" class="gain center">1.61× physics · 1.42× env</text>
+  <text x="976" y="211" class="small center">Physics: 27.32 → 17.01 ms</text>
+
+  <g transform="translate(88 257)" class="tree">
+    <path d="M80 8 V77 M80 30 L42 30 L11 64 M80 30 L119 30 L150 64 M80 77 L116 111 L133 157" stroke="#d7e0e8" stroke-width="7"/>
+    <path d="M80 77 L47 112 L31 157" stroke="#087f83" stroke-width="8"/>
+    <rect x="58" y="66" width="44" height="25" rx="7" fill="#304d70"/>
+    <circle cx="80" cy="-2" r="13" fill="#d7e0e8"/>
+    <circle cx="47" cy="112" r="5" fill="#fff" stroke="#087f83" stroke-width="2"/>
+    <path d="M10 162 H42 M123 162 H145 M0 178 H162" stroke="#b7c6d3" stroke-width="3"/>
+    <circle cx="22" cy="162" r="5" fill="#c56c30"/>
+  </g>
+  <text x="168" y="464" class="small center">6 base + 6 leg coordinates</text>
+
+  <text x="314" y="250" class="label">MAIN: full-width intermediates, 43 coordinates per row</text>
+  <text x="314" y="279" class="body">J</text>
+  <rect x="350" y="260" width="60" height="26" fill="#304d70"/>
+  <rect x="410" y="260" width="60" height="26" fill="#087f83"/>
+  <rect x="470" y="260" width="310" height="26" fill="#edf1f5"/>
+  <rect x="350" y="260" width="430" height="26" fill="url(#slots)"/>
+  <text x="800" y="279" class="small">31 structural zeros</text>
+  <text x="314" y="318" class="body">Y</text>
+  <rect x="350" y="299" width="430" height="26" fill="#7d96ae"/>
+  <rect x="350" y="299" width="430" height="26" fill="url(#slots)"/>
+  <text x="800" y="318" class="small">response can reach all limbs</text>
+  <text x="350" y="348" class="small">J = contact Jacobian; Y = mass-weighted physical velocity response.</text>
+
+  <text x="314" y="381" class="label">PR: keep the repeated PGS updates in compact factor coordinates</text>
+  <text x="314" y="415" class="body">Z</text>
+  <rect x="350" y="396" width="60" height="26" fill="#304d70"/>
+  <rect x="410" y="396" width="60" height="26" fill="#087f83"/>
+  <rect x="350" y="396" width="120" height="26" fill="url(#slots)"/>
+  <path d="M480 409 H522" class="arrow"/>
+  <rect x="532" y="390" width="185" height="38" rx="7" fill="#e7f4f1"/>
+  <text x="624" y="415" class="body center">PGS on this support</text>
+  <path d="M726 409 H758" class="arrow"/>
+  <rect x="768" y="390" width="156" height="38" rx="7" fill="#edf3f9"/>
+  <text x="846" y="415" class="body center">Decode once</text>
+  <path d="M932 409 H964" class="arrow"/>
+  <text x="978" y="403" class="body">All limbs</text>
+  <text x="978" y="426" class="body">can respond</text>
+  <text x="350" y="454" class="small">12 supported here; each row reserves 18 slots for the widest path. Shared base retained.</text>
+
+  <path d="M64 479 H1136" stroke="#e0e7ee"/>
+  <text x="64" y="509" class="body">Why it helps: skip unrelated branches in each row; pack each 43 × 43 factor into 434 structural entries.</text>
+
+  <rect x="40" y="551" width="1120" height="367" rx="16" class="card"/>
+  <text x="64" y="583" class="eyebrow">KUKAALLEGRO LIFT · MORE OF EACH CONTACT PATH MUST REMAIN</text>
+  <text x="64" y="621" class="head">A fingertip touches an object</text>
+  <rect x="816" y="570" width="320" height="62" rx="10" fill="#e7f4f1"/>
+  <text x="976" y="596" class="gain center">1.18× physics · 1.09× env</text>
+  <text x="976" y="619" class="small center">Physics: 26.42 → 22.44 ms</text>
+
+  <g transform="translate(73 653)" class="tree">
+    <rect x="9" y="133" width="57" height="14" rx="4" fill="#304d70"/>
+    <path d="M37 129 V104 L62 87 V56 L92 34 L121 47 L131 69" stroke="#304d70" stroke-width="8"/>
+    <path d="M131 69 L146 45 L167 30 L195 32 M131 69 L154 64 L181 64 L207 76 M131 69 L156 81 L182 91 L208 110" stroke="#d7e0e8" stroke-width="4"/>
+    <path d="M131 69 L144 94 L169 115 L187 120" stroke="#087f83" stroke-width="6"/>
+    <path d="M183 131 L199 120 L218 131 L200 143 Z M183 131 V152 L200 165 L218 153 V131 M200 143 V165" fill="#f9e8db" stroke="#c56c30" stroke-width="2"/>
+    <circle cx="190" cy="124" r="5" fill="#c56c30"/>
+  </g>
+  <text x="180" y="847" class="small center">7 arm + 4 finger + 6 object</text>
+
+  <text x="314" y="665" class="label">MAIN: 29-coordinate Jacobian staging → paired factor solve</text>
+  <rect x="348" y="685" width="84" height="26" fill="#304d70"/>
+  <rect x="432" y="685" width="48" height="26" fill="#087f83"/>
+  <rect x="480" y="685" width="144" height="26" fill="#edf1f5"/>
+  <rect x="624" y="685" width="72" height="26" fill="#c56c30"/>
+  <rect x="348" y="685" width="348" height="26" fill="url(#wide-slots)"/>
+  <text x="390" y="731" class="small center">arm</text>
+  <text x="390" y="750" class="small center">7</text>
+  <text x="456" y="731" class="small center">finger</text>
+  <text x="456" y="750" class="small center">4</text>
+  <text x="552" y="731" class="small center">other fingers</text>
+  <text x="552" y="750" class="small center">12</text>
+  <text x="663" y="731" class="small center">object</text>
+  <text x="663" y="750" class="small center">6</text>
+  <text x="744" y="693" class="body">The shared arm and object's</text>
+  <text x="744" y="719" class="body">mass response are necessary.</text>
+
+  <text x="314" y="773" class="label">PR: retain 17 entries; remove only the other 12 finger coordinates</text>
+  <rect x="348" y="792" width="84" height="26" fill="#304d70"/>
+  <rect x="432" y="792" width="48" height="26" fill="#087f83"/>
+  <rect x="480" y="792" width="72" height="26" fill="#c56c30"/>
+  <rect x="348" y="792" width="204" height="26" fill="url(#wide-slots)"/>
+  <path d="M563 805 H604" class="arrow"/>
+  <text x="619" y="799" class="body">Less removable support than G1's foot contact.</text>
+  <text x="619" y="827" class="small">Plus: direct row construction and shared normal/tangent work.</text>
+
+  <path d="M64 857 H1136" stroke="#e0e7ee"/>
+  <text x="64" y="883" class="body">Less to remove: the arm and free-body work stay; main already has a factor-coordinate solve.</text>
+  <text x="64" y="905" class="small">New savings are compact storage and construction, not the first use of factor coordinates. Ordinary row arrays: 1,392 → 492 MiB.</text>
+
+  <rect x="40" y="936" width="540" height="294" rx="16" class="card"/>
+  <text x="64" y="968" class="eyebrow">CASSIE FLAT · NARROWER ROWS ARE NOT THE ONLY WIN</text>
+  <text x="64" y="1003" class="head">Same maximum row width: 18</text>
+  <text x="64" y="1034" class="small">One factor's allocated scalar slots (not operation counts)</text>
+  <text x="64" y="1066" class="body">Main</text>
+  <rect x="125" y="1047" width="259" height="25" rx="4" fill="#a4b3c2"/>
+  <text x="398" y="1066" class="body">18² = 324</text>
+  <text x="64" y="1102" class="body">PR</text>
+  <rect x="125" y="1083" width="108" height="25" rx="4" fill="#087f83"/>
+  <text x="248" y="1102" class="body">135 packed entries</text>
+  <text x="64" y="1139" class="body">Less factor storage; no dense row staging.</text>
+  <text x="64" y="1165" class="body">Normal and tangent construction share loads.</text>
+  <rect x="64" y="1180" width="488" height="35" rx="7" fill="#e7f4f1"/>
+  <text x="308" y="1204" class="gain center">1.34× physics · 1.14× env FPS</text>
+
+  <rect x="620" y="936" width="540" height="294" rx="16" class="card"/>
+  <text x="644" y="968" class="eyebrow">ANYMAL-D · SAME TOPOLOGY, DIFFERENT TOTAL COST</text>
+  <text x="644" y="1003" class="head">More ms saved ≠ a larger speedup</text>
+  <text x="644" y="1034" class="small">Full physics time: main (gray) → PR (teal), same scale</text>
+  <text x="644" y="1067" class="body">Flat</text>
+  <rect x="710" y="1050" width="78.63" height="10" rx="2" fill="#a4b3c2"/>
+  <rect x="710" y="1066" width="59.43" height="10" rx="2" fill="#087f83"/>
+  <text x="810" y="1070" class="body">22.47 → 16.98 ms · 1.32×</text>
+  <text x="644" y="1109" class="body">Rough</text>
+  <rect x="710" y="1092" width="319.44" height="10" rx="2" fill="#a4b3c2"/>
+  <rect x="710" y="1108" width="289.24" height="10" rx="2" fill="#087f83"/>
+  <text x="710" y="1144" class="body">91.27 → 82.64 ms · 1.10×</text>
+  <text x="644" y="1178" class="body">Rough saves 8.63 ms vs 5.49 ms on flat,</text>
+  <text x="644" y="1204" class="body">but starts from a much longer physics step.</text>
+
+  <rect x="40" y="1248" width="1120" height="94" rx="14" fill="#f1f4f8"/>
+  <text x="64" y="1280" class="head">Allegro reorient: branching helps only if this path is selected</text>
+  <text x="64" y="1314" class="body">Joint-velocity limits enabled → existing path retained → no PR physics gain (1.00×).</text>
+
+  <text x="40" y="1372" class="small">Solid colors = retained support; pale = absent from this Jacobian row, not an inactive body. Schematics reorder coordinates for clarity.</text>
+  <text x="40" y="1396" class="small">Gains: main 5238407d → solver a25b4c45, one capture per arm. Whole-PR results; no isolated timing attribution or speedup from counts.</text>
+  <text x="40" y="1420" class="small">Row widths describe the illustrated contacts, not workload averages. ANYmal plots show total physics time, not a collision/solver breakdown.</text>
+</svg>

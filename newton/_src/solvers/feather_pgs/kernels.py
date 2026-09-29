@@ -4751,6 +4751,7 @@ def prepare_world_contact_rows(
     contact_art_a: wp.array[int],
     contact_art_b: wp.array[int],
     contact_path: wp.array[int],
+    contact_slots_needed: wp.array[int],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_v_s: wp.array[wp.spatial_vector],
@@ -4758,11 +4759,7 @@ def prepare_world_contact_rows(
     articulation_origin: wp.array[wp.vec3],
     shape_material_mu: wp.array[float],
     shape_material_restitution: wp.array[float],
-    enable_friction: int,
-    contact_friction_gap_threshold: float,
     contact_friction_shared_anchor: int,
-    contact_friction_articulation_pairs_only: int,
-    is_free_rigid: wp.array[int],
     contact_friction_scale: float,
     contact_shared_anchor: int,
     pgs_beta: float,
@@ -4823,16 +4820,12 @@ def prepare_world_contact_rows(
             mu /= float(material_count)
         restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
 
-        a_non_free = art_a >= 0 and is_free_rigid[art_a] == 0
-        b_non_free = art_b >= 0 and is_free_rigid[art_b] == 0
         friction_mu = mu * contact_friction_scale
 
         tangent0, tangent1 = contact_tangent_basis(normal)
-        add_friction = enable_friction != 0 and contact_friction_eligible(
-            phi, a_non_free, b_non_free, contact_friction_articulation_pairs_only, contact_friction_gap_threshold
-        )
-        if friction_patches.enabled != 0:
-            add_friction = add_friction and friction_patches.weight[c] > 0.0
+        # Allocation owns the row extent; recomputing eligibility can cross a
+        # floating-point threshold and overwrite the following contact.
+        add_friction = contact_slots_needed[c] >= 3
 
         contact_anchor_world = 0.5 * (point_a_world + point_b_world)
         point_a_normal = point_a_world
