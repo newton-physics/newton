@@ -2070,6 +2070,42 @@ MIMIC_URDF = """
 """
 
 
+class TestUrdfVelocityLimits(unittest.TestCase):
+    """Tests for imported URDF joint velocity limits."""
+
+    def test_velocity_limits_preserve_units_and_scale(self):
+        """Import angular limits unchanged and scale linear limits."""
+        urdf = """
+        <robot name="velocity">
+            <link name="base"/><link name="hinge_link"/>
+            <link name="slider_link"/><link name="default_link"/>
+            <joint name="hinge" type="revolute">
+                <parent link="base"/><child link="hinge_link"/>
+                <limit lower="-1" upper="1" velocity="2.5"/>
+            </joint>
+            <joint name="slider" type="prismatic">
+                <parent link="hinge_link"/><child link="slider_link"/>
+                <limit lower="-1" upper="1" velocity="0.4"/>
+            </joint>
+            <joint name="default" type="continuous">
+                <parent link="slider_link"/><child link="default_link"/>
+            </joint>
+        </robot>
+        """
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=scale)
+                limits = {
+                    label: builder.joint_velocity_limit[builder.joint_qd_start[i]]
+                    for i, label in enumerate(builder.joint_label)
+                    if builder.joint_qd_start[i] < len(builder.joint_velocity_limit)
+                }
+                self.assertAlmostEqual(limits["velocity/hinge"], 2.5)
+                self.assertAlmostEqual(limits["velocity/slider"], 0.4 * scale)
+                self.assertEqual(limits["velocity/default"], builder.default_joint_cfg.velocity_limit)
+
+
 class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
