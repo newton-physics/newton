@@ -9301,11 +9301,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
 
     def _update_tendon_limit_gains(self):
-        """Apply force gains using tendon inverse inertia refreshed by ``set_const_0``.
-
-        Native mode also reports equivalent force gains for readback. Force-gain
-        mode disables the limit at zero stiffness and supports zero damping.
-        """
+        """Apply force gains using tendon inverse inertia refreshed by ``set_const_0``."""
         if self.mjc_tendon_to_newton_tendon is None or self.mj_model.ntendon == 0:
             return
         if self.use_mujoco_cpu:
@@ -9600,20 +9596,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         if self.use_mujoco_cpu:
-            for name in (
-                "tendon_stiffness",
-                "tendon_damping",
-                "tendon_frictionloss",
-                "tendon_range",
-                "tendon_margin",
-                "tendon_solref_lim",
-                "tendon_solimp_lim",
-                "tendon_solref_fri",
-                "tendon_solimp_fri",
-                "tendon_armature",
-                "tendon_actfrcrange",
-            ):
-                getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
+            self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
+            self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
+            self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
+            self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
 
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
