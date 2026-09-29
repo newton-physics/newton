@@ -10,8 +10,6 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-import numpy as np
-
 from ..sim.enums import JointTargetMode
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
@@ -107,7 +105,7 @@ class _DofParams:
     target_vel: float
     target_ke: float
     target_kd: float
-    effort_limit: float
+    effort_limit: float | None
     actuator_mode: JointTargetMode
     initial_position: float | None
     initial_velocity: float | None
@@ -214,9 +212,9 @@ class _UsdJointProperties:
     ) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
-        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
-        and the initial state stay ``None`` when unauthored so callers can apply their
-        own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
+        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``,
+        ``effort_limit``, and the initial state stay ``None`` when unauthored so callers
+        can apply their own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
         """
         limit_gains_scaling = self.degrees_to_radian if is_revolute else 1.0
         armature = self.resolver.get_value(
@@ -268,7 +266,12 @@ class _UsdJointProperties:
         target_vel = jd.drive.targetVelocity if has_drive else 0.0
         target_ke = jd.drive.stiffness if has_drive else 0.0
         target_kd = jd.drive.damping if has_drive else 0.0
-        effort_limit = jd.drive.forceLimit if has_drive else np.inf
+        effort_limit = jd.drive.forceLimit if has_drive else None
+        # A joint-level limit such as MuJoCo's actuatorfrcrange bounds the same
+        # effort as the drive force limit, so keep the tighter one.
+        joint_effort_limit = self.resolver.get_value(jp_prim, PrimType.JOINT, "effort_limit")
+        if joint_effort_limit is not None:
+            effort_limit = joint_effort_limit if effort_limit is None else min(effort_limit, joint_effort_limit)
         if has_drive:
             actuator_mode = JointTargetMode.from_gains(
                 target_ke, target_kd, force_position_velocity_actuation, has_drive=True

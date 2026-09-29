@@ -581,6 +581,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:armature``
      - ``armature``
      - Direct mapping
+   * - ``mjc:actuatorfrcrange:min``, ``mjc:actuatorfrcrange:max``
+     - ``effort_limit``
+     - Revolute and prismatic joints: larger magnitude of the range. Ignored when ``mjc:actuatorfrclimited`` is ``"false"``, or ``"auto"`` with an empty range. A smaller drive ``maxForce`` takes precedence.
    * - ``mjc:margin``
      - ``margin``
      - Direct mapping (identity under MuJoCo 3.9+). Pass ``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_usd` for the pre-3.9 ``margin = mjc:margin - mjc:gap`` translation.

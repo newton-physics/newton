@@ -158,12 +158,12 @@ def parse_joint(
         joint_params["friction"] = dof.friction
         joint_params["damping"] = dof.damping
         joint_params["velocity_limit"] = dof.velocity_limit
+        joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
             joint_params["target_vel"] = dof.target_vel
             joint_params["target_pos"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
-            joint_params["effort_limit"] = dof.effort_limit
         joint_params["actuator_mode"] = dof.actuator_mode
 
         # Initial joint state, applied after creation (already in Newton units)
@@ -686,7 +686,7 @@ def parse_merged_joints(
             damping=dof.damping,
             armature=dof.armature,
             friction=dof.friction,
-            effort_limit=dof.effort_limit,
+            effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )
