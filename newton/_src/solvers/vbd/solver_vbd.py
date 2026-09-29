@@ -1160,16 +1160,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             joint_constraint_dim = self._init_joint_constraint_layout()
             self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model, joint_constraint_dim)
 
-            # Pack two vec3 and three mat33 fields (11 vec3-sized regions) for one clear.
-            # Each contiguous field is viewed as (body, lane).
+            # Pack two vec3 and three mat33 fields for one clear.
             body_count = model.body_count
-            lanes = _NUM_CONTACT_THREADS_PER_BODY
-            self._body_contact_scratch = wp.zeros((11, body_count, lanes, 3), dtype=float, device=self.device)
+            self._body_contact_scratch = wp.zeros((11, body_count, 3), dtype=float, device=self.device)
             self.body_forces = self._body_contact_scratch[0].view(wp.vec3)
             self.body_torques = self._body_contact_scratch[1].view(wp.vec3)
-            self.body_hessian_ll = self._body_contact_scratch[2:5].reshape((body_count, lanes, 3, 3)).view(wp.mat33)
-            self.body_hessian_al = self._body_contact_scratch[5:8].reshape((body_count, lanes, 3, 3)).view(wp.mat33)
-            self.body_hessian_aa = self._body_contact_scratch[8:11].reshape((body_count, lanes, 3, 3)).view(wp.mat33)
+            self.body_hessian_ll = self._body_contact_scratch[2:5].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_al = self._body_contact_scratch[5:8].reshape((body_count, 3, 3)).view(wp.mat33)
+            self.body_hessian_aa = self._body_contact_scratch[8:11].reshape((body_count, 3, 3)).view(wp.mat33)
 
             # Persistent scratch for joint_f accumulation
             self._body_f_for_integration = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=self.device)
