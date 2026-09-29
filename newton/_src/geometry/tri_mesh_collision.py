@@ -487,6 +487,10 @@ class TriMeshCollisionDetector:
         if collision_info is not None:
             self._validate_collision_info(collision_info)
         self.collision_info = collision_info
+        # bumped on every row replacement (growth or upgrade-on-bind) so owners
+        # of derived copies (e.g. SolverVBD's device-side struct copy) can
+        # detect staleness with one integer compare
+        self.storage_generation = 0
 
         self.lower_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
@@ -1002,6 +1006,7 @@ class TriMeshCollisionDetector:
         if self.record_triangle_contacting_vertices:
             info.triangle_colliding_vertices_count.zero_()
             info.triangle_colliding_vertices_offsets.zero_()
+        self.storage_generation += 1
 
     def check_and_grow_collision_buffers(self, warn: bool = True) -> bool:
         """Check the last detection's overflow flags and grow the result storage.

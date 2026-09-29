@@ -978,9 +978,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if particle_enable_self_contact:
             self._self_contact_edge_edge_parallel_epsilon = particle_edge_parallel_epsilon
 
-            if self.collision_pipeline is not None:
-                collision_info = self._pipeline_contacts.soft_self_contact_data
-            else:
+            if self.collision_pipeline is None:
                 self.trimesh_collision_detector = TriMeshCollisionDetector(
                     self.model,
                     init_collision_info=True,
@@ -991,11 +989,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                     external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
                     external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
                 )
-                collision_info = self.trimesh_collision_detector.collision_info
 
-            self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
-
-            self._update_self_contact_launch_size(collision_info)
+            # the device-side struct copy and the launch size are derived caches
+            # over the result struct; the accessor builds and heals them
+            self.trimesh_collision_info = None
+            self._self_contact_info_source = None
+            self._self_contact_storage_generation = -1
+            self.particle_self_contact_info()
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
 
@@ -1036,6 +1036,61 @@ class SolverVBD(SolverBase, CouplingInterface):
             occupancy_target = capacity
         self.particle_self_contact_evaluation_kernel_launch_size = min(capacity, occupancy_target)
 
+    def _self_contact_detector(self) -> TriMeshCollisionDetector:
+        """The detector serving this solver's self-contact detection."""
+        if self.collision_pipeline is not None:
+            return self.collision_pipeline._ensure_soft_self_contact_detector()
+        return self.trimesh_collision_detector
+
+    def particle_self_contact_info(self) -> TriMeshCollisionInfo | None:
+        """Return the live self-contact results, keeping the solver's device-side view in sync.
+
+        Resolves the result struct from whichever path owns it (the
+        solver-owned pipeline's ``contacts`` buffer, or the solver's standalone
+        detector). When the struct or its storage changed since the solver
+        last looked (storage growth, an automatic resize at bind, or a
+        replaced ``contacts`` buffer), this refreshes the two derived caches
+        the contact kernels rely on: the device-side struct copy and the
+        per-pair launch size. The refresh cannot run during CUDA graph
+        capture; a stale view there raises instead (synchronize once outside
+        capture by calling this method or stepping once, then re-create the
+        graph).
+
+        Returns:
+            The bound :class:`TriMeshCollisionInfo`, or ``None`` when
+            self-contact is disabled.
+        """
+        if not self.particle_enable_self_contact or self.model.particle_count == 0:
+            return None
+        if self.collision_pipeline is not None:
+            contacts = self._pipeline_contacts
+            info = contacts.soft_self_contact_data if contacts is not None else None
+        else:
+            info = self.trimesh_collision_detector.collision_info
+        if info is None:
+            return None
+        generation = self._self_contact_detector().storage_generation
+        if info is self._self_contact_info_source and generation == self._self_contact_storage_generation:
+            return info
+        if self.device.is_capturing:
+            raise RuntimeError(
+                "self-contact storage changed since the solver last synchronized its "
+                "device-side view, and the refresh cannot run during graph capture. "
+                "Synchronize once outside capture (call particle_self_contact_info() "
+                "or step once), then re-create the graph."
+            )
+        snapshot = wp.array([info], dtype=TriMeshCollisionInfo, device=self.device)
+        if self.trimesh_collision_info is None:
+            self.trimesh_collision_info = snapshot
+        else:
+            # in place: the kernels dereference the struct from this device
+            # array at run time, so its identity can stay stable
+            wp.copy(self.trimesh_collision_info, snapshot)
+        self._update_self_contact_launch_size(info)
+        self._self_contact_info_source = info
+        self._self_contact_storage_generation = generation
+        return info
+
     def check_and_grow_self_contact_buffers(self) -> bool:
         """Check self-contact overflow, grow the storage, refresh solver state.
 
@@ -1060,25 +1115,27 @@ class SolverVBD(SolverBase, CouplingInterface):
         silently produces stale results. Re-capture after growth.
 
         Returns:
-            True if the storage was reallocated.
+            True if the storage was reallocated: grown here, or automatically
+            resized when this solver's buffer was bound after an outside
+            growth (the device-side view was refreshed either way).
         """
         if not self.particle_enable_self_contact or self.model.particle_count == 0:
             return False
+        generation_before = self._self_contact_storage_generation
+        source_before = self._self_contact_info_source
         if self.collision_pipeline is not None:
+            # binding may auto-resize a buffer that predates an outside growth;
+            # that resize also clears the overflow counters, so the grow below
+            # may legitimately find nothing to do
             detector = self.collision_pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
         else:
             detector = self.trimesh_collision_detector
-        # overflow handling and resizing are the detector's job; growth is in
-        # place (same struct object), so the bound struct's owner stays valid
-        # (other Contacts buffers are auto-resized at their next bind) -- only
-        # the solver's DEVICE-SIDE copy of the struct and the launch size need
-        # a refresh
-        if not detector.check_and_grow_collision_buffers():
-            return False
-        collision_info = detector.collision_info
-        self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
-        self._update_self_contact_launch_size(collision_info)
-        return True
+        # overflow handling and resizing are the detector's job; the accessor
+        # heals the solver's derived caches (device-side struct copy, launch
+        # size) whatever the trigger was: growth here, or an upgrade at bind
+        detector.check_and_grow_collision_buffers()
+        info = self.particle_self_contact_info()
+        return info is not source_before or self._self_contact_storage_generation != generation_before
 
     def _init_rigid_system(
         self,
@@ -4520,6 +4577,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
                 min_distance_filtering_ref_pos=self.particle_q_rest,
             )
+        # a bind-time auto-resize or a replaced contacts buffer must reach the
+        # device-side struct copy before this step's contact kernels launch
+        self.particle_self_contact_info()
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.

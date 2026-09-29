@@ -1882,6 +1882,56 @@ def test_pipeline_growth_upgrades_stale_buffers(test, device):
         newton.CollisionPipeline(model, broad_phase="nxn").check_and_grow_soft_self_contact_buffers()
 
 
+def _build_pipeline_solver(model, budgets=(1, 1)):
+    """Solver sharing a pipeline, with undersized self-contact budgets."""
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = SolverVBD(
+        model=model,
+        iterations=2,
+        collision_pipeline=pipeline,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.02,
+        particle_self_contact_gap=0.01,
+        particle_vertex_contact_buffer_size=budgets[0],
+        particle_edge_contact_buffer_size=budgets[1],
+    )
+    return pipeline, solver
+
+
+def test_solver_device_view_refresh_after_external_growth(test, device):
+    """Refresh the solver's device-side collision view after an outside grow."""
+    model = _build_two_layer_cloth_model(device)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    # wrapper leg (the reviewer's trace): grow the shared budgets through a
+    # SECOND buffer, so the solver's own buffer is upgraded at its next bind
+    # with clean overflow counters
+    pipeline, solver = _build_pipeline_solver(model)
+    contacts_b = pipeline.contacts()
+    pipeline.collide(state_0, contacts_b, soft_self_contact=True)
+    with test.assertWarnsRegex(UserWarning, "overflowed"):
+        test.assertTrue(pipeline.check_and_grow_soft_self_contact_buffers())
+    launch_size_before = solver.particle_self_contact_evaluation_kernel_launch_size
+    with test.assertWarnsRegex(UserWarning, "automatic resizing"):
+        test.assertTrue(solver.check_and_grow_self_contact_buffers())
+    test.assertGreater(solver.particle_self_contact_evaluation_kernel_launch_size, launch_size_before)
+    test.assertFalse(solver.check_and_grow_self_contact_buffers())
+
+    # step leg: same outside grow on a fresh pair, then a plain step must heal
+    # the device-side view before its own contact kernels launch
+    pipeline2, solver2 = _build_pipeline_solver(model)
+    contacts_c = pipeline2.contacts()
+    pipeline2.collide(state_0, contacts_c, soft_self_contact=True)
+    with test.assertWarnsRegex(UserWarning, "overflowed"):
+        test.assertTrue(pipeline2.check_and_grow_soft_self_contact_buffers())
+    launch_size_before = solver2.particle_self_contact_evaluation_kernel_launch_size
+    with test.assertWarnsRegex(UserWarning, "automatic resizing"):
+        solver2.step(state_0, state_1, control, None, 1e-3)
+    wp.synchronize_device(wp.get_device(device))
+    test.assertGreater(solver2.particle_self_contact_evaluation_kernel_launch_size, launch_size_before)
+
+
 @wp.kernel
 def _accumulate_self_contact_reference_sequential(
     dt: float,
@@ -2175,6 +2225,12 @@ add_function_test(
     TestCollision,
     "test_pipeline_growth_upgrades_stale_buffers",
     test_pipeline_growth_upgrades_stale_buffers,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_solver_device_view_refresh_after_external_growth",
+    test_solver_device_view_refresh_after_external_growth,
     devices=devices,
 )
 add_function_test(
