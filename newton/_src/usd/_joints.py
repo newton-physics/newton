@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -15,22 +16,189 @@ import warp as wp
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
-from ._resolution_policy import (
-    _resolve_newton_limit_kd,
-    _resolve_newton_limit_ke,
-    _shift_joint_limits_for_reference,
-)
-from .schema_resolver import PrimType
+from ._resolution_policy import _UsdResolutionPolicy
 
 if TYPE_CHECKING:
     from pxr import Usd, UsdPhysics
 
     from ..core.types import Axis
-    from ._resolution_policy import _UsdJointProperties
-    from .schema_resolver import SchemaResolverManager
+    from .schema_resolver import SchemaResolver, SchemaResolverManager
 
 AttributeFrequency = Model.AttributeFrequency
+
+
+@dataclass
+class _DofParams:
+    """Resolved limits, drive, and initial state for one revolute/prismatic DOF, in Newton units."""
+
+    armature: float
+    friction: float
+    damping: float
+    velocity_limit: float
+    limit_lower: float
+    limit_upper: float
+    limit_ke: float
+    limit_kd: float
+    has_drive: bool
+    target_pos: float
+    target_vel: float
+    target_ke: float
+    target_kd: float
+    effort_limit: float
+    actuator_mode: JointTargetMode
+    initial_position: float | None
+    initial_velocity: float | None
+    limit_solref_mode: int
+
+
+def _shift_joint_limits_for_reference(dof: _DofParams, joint_custom_attrs: dict[str, Any]) -> None:
+    """Convert absolute MuJoCo joint limits to Newton joint coordinates."""
+    ref_key = "mujoco:dof_ref"
+    if ref_key not in joint_custom_attrs:
+        return
+    ref = float(joint_custom_attrs[ref_key])
+    dof.limit_lower -= ref
+    dof.limit_upper -= ref
+
+
+@dataclass
+class _UsdJointProperties:
+    """Resolve joint properties using defaults sampled at the start of one import."""
+
+    resolver: SchemaResolverManager
+    resolution: _UsdResolutionPolicy
+    degrees_to_radian: float
+    default_armature: float
+    default_friction: float
+    default_limit_ke: float
+    default_limit_kd: float
+    limit_gains_configured: bool
+    """Whether the sampled limit gains differ from the builder's standard defaults."""
+    mjc_resolver: SchemaResolver | None
+    verbose: bool
+
+    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
+    def _mjc_joint_limit_source(self, prim: Usd.Prim) -> Literal["mjc_authored", "mjc_default"] | None:
+        if self.mjc_resolver is None:
+            return None
+        solreflimit_attr = prim.GetAttribute("mjc:solreflimit")
+        if solreflimit_attr is not None and solreflimit_attr.HasAuthoredValue():
+            return "mjc_authored"
+        if prim and prim.IsValid() and usd.has_applied_api_schema(prim, "MjcJointAPI"):
+            return "mjc_default"
+        return None
+
+    def joint_limit_solref_mode(self, prim: Usd.Prim, ke_source: str, kd_source: str) -> int:
+        """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
+        mjc_source = self._mjc_joint_limit_source(prim)
+        if mjc_source is not None and self.mjc_resolver is not None:
+            self.resolver._collect_on_first_use(self.mjc_resolver, prim)
+        if mjc_source == "mjc_authored":
+            return SOLREF_MODE_RAW
+        if (
+            mjc_source == "mjc_default"
+            and ke_source == kd_source == "builder_default"
+            and not self.limit_gains_configured
+        ):
+            return SOLREF_MODE_MJCF_DEFAULT
+        return SOLREF_MODE_FORCE_SPACE
+
+    def resolve_dof_params(
+        self,
+        jp_prim: Usd.Prim,
+        jd: UsdPhysics.JointDesc,
+        is_revolute: bool,
+        *,
+        joint_drive_gains_scaling: float,
+        force_position_velocity_actuation: bool,
+    ) -> _DofParams:
+        """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
+
+        Returns values in Newton units (radians for revolute DOFs). Initial state
+        stays ``None`` when unauthored so callers can apply their own fallback;
+        drive targets/gains are zero when ``has_drive`` is False.
+        """
+        limit_gains_scaling = self.degrees_to_radian if is_revolute else 1.0
+        armature, friction = self.resolution.resolve_joint_passive_properties(
+            jp_prim,
+            default_armature=self.default_armature,
+            default_friction=self.default_friction,
+        )
+        damping = self.resolution.resolve_joint_damping(jp_prim, revolute=(is_revolute,))[0]
+        velocity_limit = self.resolution.resolve_joint_velocity_limits(jp_prim, revolute=(is_revolute,))[0]
+        limit_key = "limit_angular" if is_revolute else "limit_linear"
+        builder_limit_ke = self.default_limit_ke * limit_gains_scaling
+        builder_limit_kd = self.default_limit_kd * limit_gains_scaling
+        active_limit = self.resolution.resolve_joint_limits(
+            jp_prim,
+            {
+                limit_key: self.resolution.JointLimitDefaults(
+                    ke=builder_limit_ke,
+                    kd=builder_limit_kd,
+                )
+            },
+        )[limit_key]
+        limit_lower = jd.limit.lower
+        limit_upper = jd.limit.upper
+
+        has_drive = jd.drive.enabled
+        target_pos = jd.drive.targetPosition if has_drive else 0.0
+        target_vel = jd.drive.targetVelocity if has_drive else 0.0
+        target_ke = jd.drive.stiffness if has_drive else 0.0
+        target_kd = jd.drive.damping if has_drive else 0.0
+        effort_limit = jd.drive.forceLimit if has_drive else np.inf
+        if has_drive:
+            actuator_mode = JointTargetMode.from_gains(
+                target_ke, target_kd, force_position_velocity_actuation, has_drive=True
+            )
+        else:
+            actuator_mode = JointTargetMode.NONE
+
+        state_prefix = "angular" if is_revolute else "linear"
+        initial_position = self.resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_position")
+        initial_velocity = self.resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_velocity")
+        limit_ke = active_limit.ke
+        limit_kd = active_limit.kd
+
+        if is_revolute:
+            limit_lower *= self.degrees_to_radian
+            limit_upper *= self.degrees_to_radian
+            limit_ke /= self.degrees_to_radian
+            limit_kd /= self.degrees_to_radian
+            if has_drive:
+                target_pos *= self.degrees_to_radian
+                target_vel *= self.degrees_to_radian
+                target_ke /= self.degrees_to_radian / joint_drive_gains_scaling
+                target_kd /= self.degrees_to_radian / joint_drive_gains_scaling
+            if initial_position is not None:
+                initial_position *= self.degrees_to_radian
+
+        return _DofParams(
+            armature=armature,
+            friction=friction,
+            damping=damping,
+            velocity_limit=velocity_limit,
+            limit_lower=limit_lower,
+            limit_upper=limit_upper,
+            limit_ke=limit_ke,
+            limit_kd=limit_kd,
+            has_drive=has_drive,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            target_ke=target_ke,
+            target_kd=target_kd,
+            effort_limit=effort_limit,
+            actuator_mode=actuator_mode,
+            initial_position=initial_position,
+            initial_velocity=initial_velocity,
+            limit_solref_mode=self.joint_limit_solref_mode(
+                jp_prim,
+                active_limit.ke_source,
+                active_limit.kd_source,
+            ),
+        )
 
 
 def resolve_joint_parent_child(
@@ -175,8 +343,7 @@ def parse_joint(
         else:
             joint_index = builder.add_joint_prismatic(**joint_params)
     elif key == UsdPhysics.ObjectType.SphericalJoint:
-        _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
-        joint_params["damping"] = joint_damping
+        joint_params["damping"] = joint_properties.resolution.resolve_joint_damping(joint_prim, revolute=(True,))[0]
         joint_index = builder.add_joint_ball(**joint_params)
     elif key == UsdPhysics.ObjectType.D6Joint:
         unsupported_ref_keys = ("mujoco:dof_ref", "mujoco:dof_springref")
@@ -192,21 +359,58 @@ def parse_joint(
             )
             for attr_key in unsupported_ref_attrs:
                 del joint_custom_attrs[attr_key]
-        joint_armature = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        _trans_axes = {
+            UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
+            UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
+            UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
+        }
+        _trans_names = {
+            UsdPhysics.JointDOF.TransX: "transX",
+            UsdPhysics.JointDOF.TransY: "transY",
+            UsdPhysics.JointDOF.TransZ: "transZ",
+        }
+        _rot_axes = {
+            UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
+            UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
+            UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
+        }
+        _rot_names = {
+            UsdPhysics.JointDOF.RotX: "rotX",
+            UsdPhysics.JointDOF.RotY: "rotY",
+            UsdPhysics.JointDOF.RotZ: "rotZ",
+        }
+
+        def _resolve_d6_limit_bounds(limit):
+            lower = limit.second.lower if limit.second.enabled else builder.default_joint_cfg.limit_lower
+            upper = limit.second.upper if limit.second.enabled else builder.default_joint_cfg.limit_upper
+            return lower, upper, lower < upper
+
+        d6_free_dofs = []
+        for limit in joint_desc.jointLimits:
+            _, _, free_axis = _resolve_d6_limit_bounds(limit)
+            if free_axis and (limit.first in _trans_axes or limit.first in _rot_axes):
+                d6_free_dofs.append(limit.first)
+        d6_revolute = tuple(dof in _rot_axes for dof in d6_free_dofs)
+
+        joint_armature, joint_friction = joint_properties.resolution.resolve_joint_passive_properties(
+            joint_prim,
+            default_armature=default_joint_armature,
+            default_friction=default_joint_friction,
         )
-        joint_friction = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+        d6_damping = dict(
+            zip(
+                d6_free_dofs,
+                joint_properties.resolution.resolve_joint_damping(joint_prim, revolute=d6_revolute),
+                strict=True,
+            )
         )
-        joint_linear_damping, joint_angular_damping = joint_properties.resolve_joint_damping(joint_prim)
-        joint_velocity_limit = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+        d6_velocity_limits = dict(
+            zip(
+                d6_free_dofs,
+                joint_properties.resolution.resolve_joint_velocity_limits(joint_prim, revolute=d6_revolute),
+                strict=True,
+            )
         )
-        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if joint_velocity_limit == float("inf"):
-            joint_velocity_limit = None
-        limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
-        limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
         linear_axes = []
         angular_axes = []
         num_dofs = 0
@@ -217,6 +421,19 @@ def parse_joint(
         d6_dof_axes = []
         linear_solref_modes: list[int] = []
         angular_solref_modes: list[int] = []
+        d6_limit_keys = {
+            dof: f"limit_{_trans_names[dof] if dof in _trans_names else _rot_names[dof]}" for dof in d6_free_dofs
+        }
+        d6_limit_defaults = {
+            key: joint_properties.resolution.JointLimitDefaults(
+                ke=default_joint_limit_ke * (1.0 if dof in _trans_names else DegreesToRadian),
+                kd=default_joint_limit_kd * (1.0 if dof in _trans_names else DegreesToRadian),
+            )
+            for dof, key in d6_limit_keys.items()
+        }
+        resolved_d6_limits = joint_properties.resolution.resolve_joint_limits(joint_prim, d6_limit_defaults)
+        active_d6_limits = {dof: resolved_d6_limits[key] for dof, key in d6_limit_keys.items()}
+
         # print(joint_desc.jointLimits, joint_desc.jointDrives)
         # print(joint_desc.body0)
         # print(joint_desc.body1)
@@ -230,14 +447,7 @@ def parse_joint(
 
         for limit in joint_desc.jointLimits:
             dof = limit.first
-            if limit.second.enabled:
-                limit_lower = limit.second.lower
-                limit_upper = limit.second.upper
-            else:
-                limit_lower = builder.default_joint_cfg.limit_lower
-                limit_upper = builder.default_joint_cfg.limit_upper
-
-            free_axis = limit_lower < limit_upper
+            limit_lower, limit_upper, free_axis = _resolve_d6_limit_bounds(limit)
 
             def define_joint_targets(dof, joint_desc):
                 target_pos = (
@@ -267,82 +477,42 @@ def parse_joint(
                 dof, joint_desc
             )
 
-            _trans_axes = {
-                UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
-                UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
-                UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
-            }
-            _rot_axes = {
-                UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
-                UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
-                UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
-            }
-            _rot_names = {
-                UsdPhysics.JointDOF.RotX: "rotX",
-                UsdPhysics.JointDOF.RotY: "rotY",
-                UsdPhysics.JointDOF.RotZ: "rotZ",
-            }
             if free_axis and dof in _trans_axes:
                 # Per-axis translation names: transX/transY/transZ
-                trans_name = {
-                    UsdPhysics.JointDOF.TransX: "transX",
-                    UsdPhysics.JointDOF.TransY: "transY",
-                    UsdPhysics.JointDOF.TransZ: "transZ",
-                }[dof]
+                trans_name = _trans_names[dof]
                 # Store initial state for this axis
-                d6_initial_positions[trans_name] = R.get_value(
-                    joint_prim,
-                    PrimType.JOINT,
-                    f"{trans_name}_position",
-                    default=None,
-                    verbose=verbose,
+                d6_initial_positions[trans_name] = joint_properties.resolution.resolve_optional_joint_state(
+                    joint_prim, f"{trans_name}_position"
                 )
-                d6_initial_velocities[trans_name] = R.get_value(
-                    joint_prim,
-                    PrimType.JOINT,
-                    f"{trans_name}_velocity",
-                    default=None,
-                    verbose=verbose,
+                d6_initial_velocities[trans_name] = joint_properties.resolution.resolve_optional_joint_state(
+                    joint_prim, f"{trans_name}_velocity"
                 )
-                fallback_limit_ke, limit_ke_source = joint_properties.resolve_joint_limit_gain(
-                    joint_prim,
-                    f"limit_{trans_name}_ke",
-                    default_joint_limit_ke,
-                )
-                fallback_limit_kd, limit_kd_source = joint_properties.resolve_joint_limit_gain(
-                    joint_prim,
-                    f"limit_{trans_name}_kd",
-                    default_joint_limit_kd,
-                )
-                current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                    limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
-                )
-                current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                    limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd
-                )
+                current_limit = active_d6_limits[dof]
                 linear_axes.append(
                     ModelBuilder.JointDofConfig(
                         axis=_trans_axes[dof],
                         limit_lower=limit_lower,
                         limit_upper=limit_upper,
-                        limit_ke=current_joint_limit_ke,
-                        limit_kd=current_joint_limit_kd,
+                        limit_ke=current_limit.ke,
+                        limit_kd=current_limit.kd,
                         target_pos=target_pos,
                         target_vel=target_vel,
                         target_ke=target_ke,
                         target_kd=target_kd,
-                        damping=joint_linear_damping,
+                        damping=d6_damping[dof],
                         armature=joint_armature,
                         effort_limit=effort_limit,
-                        velocity_limit=joint_velocity_limit
-                        if joint_velocity_limit is not None
-                        else default_joint_velocity_limit,
+                        velocity_limit=d6_velocity_limits[dof],
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     )
                 )
                 linear_solref_modes.append(
-                    joint_properties.joint_limit_solref_mode(joint_prim, limit_ke_source, limit_kd_source)
+                    joint_properties.joint_limit_solref_mode(
+                        joint_prim,
+                        current_limit.ke_source,
+                        current_limit.kd_source,
+                    )
                 )
                 # Track that this axis was added as a DOF
                 d6_dof_axes.append(trans_name)
@@ -350,67 +520,39 @@ def parse_joint(
                 # Resolve per-axis rotational gains
                 rot_name = _rot_names[dof]
                 # Store initial state for this axis
-                d6_initial_positions[rot_name] = R.get_value(
-                    joint_prim,
-                    PrimType.JOINT,
-                    f"{rot_name}_position",
-                    default=None,
-                    verbose=verbose,
+                d6_initial_positions[rot_name] = joint_properties.resolution.resolve_optional_joint_state(
+                    joint_prim, f"{rot_name}_position"
                 )
-                d6_initial_velocities[rot_name] = R.get_value(
-                    joint_prim,
-                    PrimType.JOINT,
-                    f"{rot_name}_velocity",
-                    default=None,
-                    verbose=verbose,
+                d6_initial_velocities[rot_name] = joint_properties.resolution.resolve_optional_joint_state(
+                    joint_prim, f"{rot_name}_velocity"
                 )
-                fallback_limit_ke, limit_ke_source = joint_properties.resolve_joint_limit_gain(
-                    joint_prim,
-                    f"limit_{rot_name}_ke",
-                    default_joint_limit_ke * DegreesToRadian,
-                )
-                fallback_limit_kd, limit_kd_source = joint_properties.resolve_joint_limit_gain(
-                    joint_prim,
-                    f"limit_{rot_name}_kd",
-                    default_joint_limit_kd * DegreesToRadian,
-                )
-                current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                    limit_ke,
-                    fallback_limit_ke,
-                    limit_ke_source,
-                    default_joint_limit_ke * DegreesToRadian,
-                )
-                current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                    limit_ke,
-                    limit_kd,
-                    fallback_limit_kd,
-                    limit_kd_source,
-                    default_joint_limit_kd * DegreesToRadian,
-                )
+                current_limit = active_d6_limits[dof]
 
                 angular_axes.append(
                     ModelBuilder.JointDofConfig(
                         axis=_rot_axes[dof],
                         limit_lower=limit_lower * DegreesToRadian,
                         limit_upper=limit_upper * DegreesToRadian,
-                        limit_ke=current_joint_limit_ke / DegreesToRadian,
-                        limit_kd=current_joint_limit_kd / DegreesToRadian,
+                        limit_ke=current_limit.ke / DegreesToRadian,
+                        limit_kd=current_limit.kd / DegreesToRadian,
                         target_pos=target_pos * DegreesToRadian,
                         target_vel=target_vel * DegreesToRadian,
                         target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                         target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                        damping=joint_angular_damping,
+                        damping=d6_damping[dof],
                         armature=joint_armature,
                         effort_limit=effort_limit,
-                        velocity_limit=joint_velocity_limit * DegreesToRadian
-                        if joint_velocity_limit is not None
-                        else default_joint_velocity_limit,
+                        velocity_limit=d6_velocity_limits[dof],
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     )
                 )
                 angular_solref_modes.append(
-                    joint_properties.joint_limit_solref_mode(joint_prim, limit_ke_source, limit_kd_source)
+                    joint_properties.joint_limit_solref_mode(
+                        joint_prim,
+                        current_limit.ke_source,
+                        current_limit.kd_source,
+                    )
                 )
                 # Track that this axis was added as a DOF
                 d6_dof_axes.append(rot_name)

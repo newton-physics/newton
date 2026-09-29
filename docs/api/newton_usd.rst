@@ -19,6 +19,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    :nosignatures:
 
    PrimType
+   SchemaResolution
    SchemaResolver
    SchemaResolverMjc
    SchemaResolverNewton
