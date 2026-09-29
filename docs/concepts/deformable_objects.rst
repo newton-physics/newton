@@ -71,12 +71,16 @@ element ranges. Label prefixes also apply to deformable labels. Finalization
 retains the records on the model, but their storage and simulation ranges remain
 private. These identity lists do not provide a public state-selection API.
 
+After finalization, use the family-specific views described in
+:ref:`deformable-selection` to select deformable objects and access their state.
+
 Native rods and USD cables have different joint ranges. Native rod records
 include free-root joints created by the call. USD records retain the existing
 importer's joint span. For a single curve, it excludes root attachments. For a
 prim with multiple curves, the span can include free-root joints between those
 curves. A curve welded into a shared graph has an empty joint range because the
-graph owns those joints. These private spans are not a public joint-selection API.
+graph owns those joints. The curve view exposes these recorded spans through
+``ranges("joint")``; it does not change which joints each span contains.
 
 Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Complete
 curve records follow the remapped indices. If collapse removes part of a curve,
