@@ -80,6 +80,7 @@ def profile_search(directory: Path, output: Path, *, iterations: int = 10, repea
         config=Config(**baseline["simulation_config"]),
         settings=FitConfig(**baseline["fit_config"]),
         world_count=128,
+        friction_model=shoe["friction_model"],
     )
     engine.capture(np.repeat(initial.coefficients[None], 128, axis=0))
     wp.load_module(module=resident, device=engine.device)

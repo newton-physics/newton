@@ -124,6 +124,13 @@ unilateral support, symmetric neighbor coupling, passive balance and anchored
 bristle law. `runtime.py` and the differentiable adapters differ in state storage,
 not in their active material or friction equations.
 
+`FoundationConfig`, the impedance leg shoe and Cartesian engine default to
+`elastic_coulomb`: each column uses `G_eq A / L` stiffness with a Coulomb cap
+and no tangential damping. Explicit `maxwell` and `column_maxwell` modes remain
+available; see
+[`FRICTION_COLUMN.md`](FRICTION_COLUMN.md) for its equations, compatibility, and
+calibration limits.
+
 `rendering.py` reconstructs shared bench and carried-shoe endpoint geometry. It
 does not interpret a pressure reference or a friction anchor as a material-point
 displacement. The carried passive surround follows the shoe during flight.

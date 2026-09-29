@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for default Maxwell friction promotion and legacy compatibility."""
+"""Regression tests for elastic Coulomb default friction and legacy compatibility."""
 
 import unittest
 from types import SimpleNamespace
@@ -15,7 +15,7 @@ from projects.digital_shoe.runtime import FoundationConfig, MidsoleFoundation, S
 
 
 class TestDigitalShoeFrictionDefault(unittest.TestCase):
-    """Verify default Maxwell friction promotion, legacy compatibility, and adapter lifecycle."""
+    """Verify elastic Coulomb defaults, legacy compatibility, and adapter lifecycle."""
 
     @classmethod
     def setUpClass(cls):
@@ -75,10 +75,10 @@ class TestDigitalShoeFrictionDefault(unittest.TestCase):
             body_f=wp.zeros(1, dtype=wp.spatial_vector, device=device),
         )
 
-    def test_default_config_is_maxwell(self):
-        """Verify default FoundationConfig uses Maxwell friction and exposes model parameters."""
+    def test_default_config_is_elastic_coulomb(self):
+        """Verify default FoundationConfig selects area-scaled elastic Coulomb friction."""
         cfg = FoundationConfig()
-        self.assertEqual(cfg.friction_model, "maxwell")
+        self.assertEqual(cfg.friction_model, "elastic_coulomb")
         self.assertIsNone(cfg.friction_relaxation_time_s)
 
     def test_default_foundation_auto_installs_maxwell_adapter(self):

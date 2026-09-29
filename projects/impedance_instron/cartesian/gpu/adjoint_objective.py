@@ -23,6 +23,8 @@ def _residuals(
     targets: wp.array[wp.vec2d],
     weights: wp.array[wp.float64],
     scales: wp.array[wp.float64],
+    ground_angle: int,
+    ground_offset: wp.float64,
     residual: wp.array2d[wp.float64],
 ):
     """Evaluate the same native-grid sample pairs independently for reverse mode."""
@@ -41,6 +43,12 @@ def _residuals(
             coordinate = channel + 3
             block = 1
         predicted = states[lo, w][coordinate] * (wp.float64(1.0) - alpha) + states[hi, w][coordinate] * alpha
+        if block == 1 and channel == 1 and ground_angle != 0:
+            state_lo = states[lo, w]
+            state_hi = states[hi, w]
+            lo_pitch = ((state_lo[2] + state_lo[3]) + state_lo[4]) + ground_offset
+            hi_pitch = ((state_hi[2] + state_hi[3]) + state_hi[4]) + ground_offset
+            predicted = lo_pitch * (wp.float64(1.0) - alpha) + hi_pitch * alpha
     else:
         predicted = forces[lo, w][channel] * (wp.float64(1.0) - alpha) + forces[hi, w][channel] * alpha
     residual[k, w] = (predicted - targets[sample][channel]) / scales[block] * weights[sample]
@@ -111,6 +119,8 @@ class ObjectiveAdjoint:
                 s._targets,
                 s._residual_weights,
                 s._scales,
+                s.ground_angle,
+                wp.float64(s.ground_offset),
                 self.residual,
             ],
             device=s.device,

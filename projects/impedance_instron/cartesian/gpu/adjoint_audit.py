@@ -53,6 +53,7 @@ def audit(
         config=Config(**baseline["simulation_config"]),
         settings=FitConfig(**baseline["fit_config"]),
         world_count=1,
+        friction_model=shoe["friction_model"],
     )
     if start_step < 0 or start_step + steps > engine.steps:
         raise ValueError("The window must lie within the original stance")

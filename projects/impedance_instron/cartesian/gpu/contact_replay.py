@@ -302,7 +302,13 @@ def main(argv=None):
     q, qd = exact_cpu_poses(body, cpu, shoe_info["static_pitch_rad"])
     full_q, full_qd = exact_cpu_poses(body, full, shoe_info["static_pitch_rad"])
     pose_precompute_s = perf_counter() - started
-    shoe = Shoe(shoe_info["path"], shoe_info["mount_m"], shoe_info["static_pitch_rad"], device="cuda:0")
+    shoe = Shoe(
+        shoe_info["path"],
+        shoe_info["mount_m"],
+        shoe_info["static_pitch_rad"],
+        device="cuda:0",
+        friction_model=shoe_info["friction_model"],
+    )
     if shoe.metadata != shoe_info:
         raise ValueError("CUDA Shoe metadata differs from frozen CPU Shoe")
     runtime_options = wp.get_module_options(module=runtime)

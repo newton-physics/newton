@@ -1,0 +1,96 @@
+{
+  "schema": "cartesian_single_leg_1",
+  "hip_stiffness_n_m": [
+    8000.0,
+    12000.0
+  ],
+  "hip_damping_ns_m": [
+    80.0,
+    80.0
+  ],
+  "joint_stiffness_nm_rad": [
+    240.0,
+    180.0
+  ],
+  "joint_damping_nms_rad": [
+    12.0,
+    8.0
+  ],
+  "joint_lower_rad": [
+    -3.0,
+    -1.5
+  ],
+  "joint_upper_rad": [
+    0.0,
+    1.5
+  ],
+  "equilibrium_rate_limit": [
+    10.0,
+    10.0,
+    20.0,
+    20.0
+  ],
+  "equilibrium_acceleration_limit": [
+    200.0,
+    200.0,
+    400.0,
+    400.0
+  ],
+  "provenance": {
+    "inertial": "S001 model shape transferred and mass scaled to the F01 export; provisional assumption",
+    "impedance": "Selected Maxwell baseline gains from projects/impedance_instron/baseline.json; provisional transfer",
+    "limits": "Engineering envelope around F01 selected stance; provisional assumption",
+    "source_model": "projects/gait_c3d/assets/s001_base/model/subject.xml",
+    "model_mass_kg": 81.9312118,
+    "target_mass_kg": 70.0,
+    "mass_scale": 0.854375255316314,
+    "model_leg_segment_masses_kg": [
+      10.1387485,
+      4.04126368,
+      1.70763146
+    ],
+    "model_sagittal_inertias_kg_m2": [
+      0.198752538,
+      0.0490168595,
+      0.00716329796
+    ],
+    "com_policy": "Thigh and shank at 45% of measured segment length; foot [0.025,-0.047] m from ankle in foot frame",
+    "inertia_policy": "Scale model inertia by subject mass ratio and squared segment length ratio; foot by mass ratio only"
+  },
+  "masses_kg": [
+    8.662295838275396,
+    3.4527556884005466,
+    1.45895806462367
+  ],
+  "com_local_m": [
+    [
+      0.17227771334749734,
+      0.0
+    ],
+    [
+      0.16827859236059467,
+      0.0
+    ],
+    [
+      0.025,
+      -0.047
+    ]
+  ],
+  "inertias_kg_m2": [
+    0.13672781768617118,
+    0.0366021734877537,
+    0.006120144523481832
+  ],
+  "equilibrium_lower": [
+    0.015603009999999973,
+    0.27491575,
+    -2.138131480376347,
+    -1.7891914643768256
+  ],
+  "equilibrium_upper": [
+    1.9546962229999998,
+    1.34144288,
+    1.3563568971407254,
+    1.9135374849833393
+  ]
+}

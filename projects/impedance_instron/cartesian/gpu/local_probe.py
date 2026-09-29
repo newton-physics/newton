@@ -493,6 +493,7 @@ def probe_local_neighborhood(
         config=config,
         settings=settings,
         world_count=_WORLD_COUNT,
+        friction_model=fit_summary["shoe"]["friction_model"],
     )
     if engine.shoe.metadata != fit_summary["shoe"]:
         raise ValueError("GPU shoe metadata changed from the fitted controller bundle")

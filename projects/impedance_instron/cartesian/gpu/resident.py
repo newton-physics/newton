@@ -1522,6 +1522,24 @@ def fit_resident(
             if "maximum_error" in final_scores:
                 metrics[f"{name}_maximum_error_{unit}"] = np.asarray(final_scores["maximum_error"])[0, pair].tolist()
             costs[name] = float(final_scores["costs"][0, block])
+        diagnostic_names = (
+            "hip_velocity_rmse_x_m_s",
+            "hip_velocity_rmse_z_m_s",
+            "maximum_hip_speed_m_s",
+            "maximum_hip_spring_force_n",
+            "maximum_hip_damping_force_n",
+            "maximum_coulomb_equivalent_ratio",
+            "fraction_contact_samples_near_coulomb_limit",
+            "contact_sample_fraction",
+            "minimum_hip_spring_vertical_force_in_flight_n",
+            "hip_spring_work_in_flight_j",
+            "hip_damping_work_in_flight_j",
+        )
+        if "diagnostics" in final_scores:
+            diagnostics = np.asarray(final_scores["diagnostics"])[0]
+            metrics["rollout_diagnostics"] = {
+                name: float(value) for name, value in zip(diagnostic_names, diagnostics, strict=True)
+            }
     else:
         final_loss = float("inf")
 

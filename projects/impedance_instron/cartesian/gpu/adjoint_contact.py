@@ -11,7 +11,12 @@ import numpy as np
 import warp as wp
 
 from projects.digital_shoe.contact import bristle_step, contact_kinematics, normal_reaction, pasternak_flux
-from projects.digital_shoe.friction_maxwell import bristle_maxwell_step
+from projects.digital_shoe.friction_maxwell import (
+    bristle_elastic_coulomb_step,
+    bristle_maxwell_step,
+    column_maxwell_parameters,
+    elastic_coulomb_stiffness,
+)
 from projects.digital_shoe.material import maxwell_coefficients, maxwell_step
 from projects.digital_shoe.runtime import FoundationParams, _hyperfoam_pressure, _pasternak_coupling, _surround_balance
 
@@ -184,13 +189,39 @@ def _forces(
     flux = pasternak_flux(c, w * columns, compression, rest, neighbors, p.g_eq + p.g_eq2)
     point, _com, velocity, gap = contact_kinematics(body_q[w], body_qd[w], body_com[w], anchor[c], ground_height, 1)
     reaction = normal_reaction(compression[i], pressure[i], area[c], p.normal_damping, velocity[2], gap, 1)
-    if p.friction_model == 1:
+    if p.friction_model == 3:
+        shear_kt = elastic_coulomb_stiffness(p.g_eq + p.g_eq2, area[c], rest[c])
+        tangent, _jac, z, _q, next_stuck, next_dwell = bristle_elastic_coulomb_step(
+            wp.vec2(velocity[0], velocity[1]),
+            dt,
+            reaction,
+            shear_kt,
+            p.mu,
+            p.friction_release_dwell_s,
+            deflection_prev[i],
+            stuck_prev[i],
+            dwell_prev[i],
+        )
+        deflection_next[i] = z
+        maxwell_next[i] = wp.vec2(0.0)
+        next_anchor = wp.vec2(point[0], point[1]) + dt * wp.vec2(velocity[0], velocity[1]) - z
+    elif p.friction_model == 1 or p.friction_model == 2:
+        shear_kt = kt[c]
+        shear_kv = kv[c]
+        if p.friction_model == 2:
+            shear_kt, shear_kv = column_maxwell_parameters(
+                p.g_eq + p.g_eq2,
+                p.overstress,
+                area[c],
+                rest[c],
+                p.friction_relaxation_time_s,
+            )
         tangent, _jac, z, q, next_stuck, next_dwell = bristle_maxwell_step(
             wp.vec2(velocity[0], velocity[1]),
             dt,
             reaction,
-            kt[c],
-            kv[c],
+            shear_kt,
+            shear_kv,
             p.friction_relaxation_time_s,
             p.mu,
             p.friction_release_dwell_s,

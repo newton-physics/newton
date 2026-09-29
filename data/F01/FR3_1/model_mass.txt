@@ -1,0 +1,6 @@
+	C:\Users\jkuzm\OneDrive - University of Massachusetts\HRSL x UMILL-PUMA Fatigue - Fatigue\Data\F01\FR3_Metabolic1.c3d
+	MASS
+	METRIC
+	PROCESSED
+ITEM	X
+1	70.00000000

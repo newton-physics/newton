@@ -117,6 +117,10 @@ class _Objective:
             "incomplete_candidates": "completion priority only; no truncated measured fit score",
             "force_support": "native measured times within preintegration simulation support; no extrapolation",
         }
+        if "foot_ground_target_rad" in reference:
+            self.description["blocks"][1] = "knee_ground_foot_angle"
+            self.description["channel_order"][3] = "foot_ground"
+            self.description["angle_convention"] = "ground foot pitch; positive toe-up; fixed shoe frame"
 
     def evaluate(self, trace, summary):
         """Return the shared residual, measured metrics, and block costs."""
@@ -149,6 +153,11 @@ class _Objective:
             "joint": predicted[:, 3:5] - self.reference["joint_target_rad"],
             "force": _interpolate(np.asarray(trace["grf_n"]), self.force_map) - self.target_force,
         }
+        if "foot_ground_target_rad" in self.reference:
+            pitch = predicted[:, 2] + predicted[:, 3] + predicted[:, 4] + np.pi / 2
+            errors["joint"][:, 1] = (
+                pitch - self.reference["shoe_static_pitch_rad"] - self.reference["foot_ground_target_rad"]
+            )
         metrics, costs, residuals = {}, {}, []
         for name, unit, scale, weights in (
             ("hip", "m", self.settings.hip_tolerance_m, self.motion_weights),

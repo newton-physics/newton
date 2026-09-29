@@ -332,9 +332,10 @@ name = "Fixed"
 showcontent = true
 
 [tool.typos]
-files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]
+files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js", "*.v3s", "*.mdh", "/data"]
 
 [tool.typos.default.extend-words]
+Virual = "Virual"
 arange = "arange"
 precess = "precess"
 ba = "ba"

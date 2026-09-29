@@ -260,5 +260,9 @@ class FrictionAdapter:
         if getattr(self.foundation, "friction_solver", None) is self:
             self.foundation.friction_solver = None
             if restore_default and getattr(self.foundation, "config", None) is not None:
-                if getattr(self.foundation.config, "friction_model", "legacy") == "maxwell":
+                if getattr(self.foundation.config, "friction_model", "legacy") in (
+                    "elastic_coulomb",
+                    "maxwell",
+                    "column_maxwell",
+                ):
                     self.foundation._install_default_friction_adapter()

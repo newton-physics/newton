@@ -271,4 +271,8 @@ The controller, traces, qualification evidence, and verified spring replay are
 under `outputs/impedance_instron/speed_round2_qualified/`. Open
 `fit/report.html` to inspect the saved result.
 
-The current default contact law is Maxwell shear friction. Legacy fused friction remains an explicit compatibility mode. Default Maxwell currently uses the shared foundation launch path, including retained normal-surround optimization.
+The default contact law is area-scaled elastic Coulomb friction (`G_eq A / L`
+stiffness per column, no tangential damping). Maxwell and material-derived
+`column_maxwell` remain explicit options. Legacy fused friction remains an
+explicit compatibility mode. The default uses the shared foundation launch
+path, including retained normal-surround optimization.

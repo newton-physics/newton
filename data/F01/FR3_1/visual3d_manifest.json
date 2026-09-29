@@ -1,0 +1,16 @@
+{
+  "schema": "visual3d_export_manifest_1",
+  "point_rate_hz": 200.0,
+  "analog_rate_hz": 1000.0,
+  "marker_units": "m",
+  "force_units": "N",
+  "moment_units": "N*m",
+  "cop_units": "m",
+  "marker_time_file": "motion_time.txt",
+  "analog_time_file": "motion_analog_time.txt",
+  "time_units": "s",
+  "up_axis": "+Z",
+  "forward_axis": "+Y",
+  "belt_speed_m_s": 3.7,
+  "force_side": "left"
+}

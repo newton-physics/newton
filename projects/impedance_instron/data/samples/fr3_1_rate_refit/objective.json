@@ -1,0 +1,70 @@
+{
+  "schema": "cartesian_measured_six_channels_1",
+  "blocks": [
+    "hip_position",
+    "knee_ground_foot_angle",
+    "native_grf"
+  ],
+  "channel_counts": [
+    2,
+    2,
+    2
+  ],
+  "channel_order": [
+    "hip_x",
+    "hip_z",
+    "knee",
+    "foot_ground",
+    "force_x",
+    "force_z"
+  ],
+  "quadrature": "normalized trapezoidal weights on each recorded grid; equal block weights",
+  "scales": {
+    "hip_m": 0.02,
+    "joint_rad": 0.05,
+    "force_n": 100.0
+  },
+  "incomplete_candidates": "completion priority only; no truncated measured fit score",
+  "force_support": "native measured times within preintegration simulation support; no extrapolation",
+  "angle_convention": "ground foot pitch; positive toe-up; fixed shoe frame",
+  "motion_sample_count": 67,
+  "force_sample_count": 5280,
+  "force_interval_s": [
+    0.0,
+    0.329937490001894
+  ],
+  "native_force_samples_outside_simulated_support": 0,
+  "policy": "raw simulation at every timestep, pre-20Hz cleaned reference only interpolated",
+  "supplemental": "foot pitch(.05rad scale,.25weight), onset plane velocity(.5m/s scale,.1weight), phase impulses/peaks/centroids and early braking",
+  "effort_peak_bound": [
+    556.3153229669714,
+    1863.3710412395267,
+    219.42850310341132,
+    140.91866543156613
+  ],
+  "effort_rate_bound": [
+    40697.18704756689,
+    67566.96999013709,
+    5784.026446734035,
+    32898.83021605014
+  ],
+  "effort_guard_note": "1.5x peak and2x rate of old controller with this fixed contact model; additional engineering guards, not physiological limits",
+  "gains": "unchanged",
+  "early_end_s": 0.1,
+  "tracking_penalty_weight": 100.0,
+  "tracking_training_margin": 1.0,
+  "tracking_gate_note": "Quadratic hinge on training_margin times the original six RMSE thresholds. Original validation limits remain unchanged and are evaluated separately.",
+  "ap_force_rate_residual": {
+    "source": "prepared reference grf_target_n (native force samples; filter provenance unverified)",
+    "simulated_force": "unfiltered engine AP force sampled at the native GRF clock",
+    "target_rate": "first difference of adjacent supplied native AP GRF samples; not bandwidth-calibrated",
+    "time_support_s": [
+      0.0,
+      0.329
+    ],
+    "sample_count": 329,
+    "normalization_n_per_s": 5000.0,
+    "weight": "one time-normalized residual block over the full native force support",
+    "output_filter": null
+  }
+}

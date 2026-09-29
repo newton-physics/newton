@@ -1,0 +1,27 @@
+{
+  "schema": "visual3d_stance_selection_1",
+  "trial": "FR3_1",
+  "side": "left",
+  "subject_mass_kg": 70.0,
+  "belt_speed_m_s": 3.7,
+  "shoe_artifact": "../../../DigitalInstron/digital_shoe_showcase/digital_shoe.json",
+  "shoe_id": "puma_fast_r_nitro_elite_3_left",
+  "contact_detection": {
+    "signal": "FP1_Z",
+    "threshold_n": 50.0,
+    "touchdown_s": 29.87400055,
+    "toe_off_s": 30.12899971,
+    "peak_vertical_force_n": 1317.14697266
+  },
+  "selection": {
+    "point_frame_start_zero_based": 5965,
+    "point_frame_end_zero_based_inclusive": 6036,
+    "start_s": 29.82500076,
+    "end_s": 30.18000031,
+    "padding_point_frames_each_side": 10
+  },
+  "side_evidence": {
+    "midstance_cop_to_left_foot_m": 0.088,
+    "midstance_cop_to_right_foot_m": 0.346
+  }
+}

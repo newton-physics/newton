@@ -131,6 +131,7 @@ def benchmark(
         config=config,
         settings=settings,
         world_count=batch,
+        friction_model=shoe["friction_model"],
     )
     if engine.shoe.metadata != shoe:
         raise ValueError("GPU shoe metadata differs from frozen CPU registration/material metadata")

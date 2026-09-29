@@ -15,8 +15,10 @@ import warp as wp
 
 from projects.digital_shoe.runtime import FoundationConfig
 
+from ..diagnostics import summarize as summarize_diagnostics
 from ..fit import FitConfig
 from ..mechanics import Body
+from ..phase import hip_contact_gate
 from ..run import Config
 from ..shoe import Shoe
 from ..trajectory import Spline, basis
@@ -86,6 +88,7 @@ def _prepare_world(
     p: Params,
     cfg: _Settings,
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
@@ -118,9 +121,10 @@ def _prepare_world(
         for row in range(cfg.controls):
             for c in range(4):
                 eq[c] += basis_values[s, row] * coefficients[w, row, c]
+    gate = hip_gate[s]
     control = wp.vec4d(
-        cfg.stiffness[0] * (eq[0] - q[0]) - cfg.damping[0] * v[0],
-        cfg.stiffness[1] * (eq[1] - q[1]) - cfg.damping[1] * v[1],
+        gate * (cfg.stiffness[0] * (eq[0] - q[0]) - cfg.damping[0] * v[0]),
+        gate * (cfg.stiffness[1] * (eq[1] - q[1]) - cfg.damping[1] * v[1]),
         cfg.stiffness[2] * (eq[2] - q[3]) - cfg.damping[2] * v[3],
         cfg.stiffness[3] * (eq[3] - q[4]) - cfg.damping[3] * v[4],
     )
@@ -180,6 +184,7 @@ def _replay_prepare_world(
     p: Params,
     cfg: _Settings,
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
@@ -202,6 +207,7 @@ def _prepare(
     cfg: _Settings,
     clock: wp.array[int],
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
@@ -222,6 +228,7 @@ def _prepare(
         p,
         cfg,
         basis_values,
+        hip_gate,
         coefficients,
         states,
         velocities,
@@ -243,6 +250,7 @@ def _prepare_masked(
     cfg: _Settings,
     clock: wp.array[int],
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
@@ -265,6 +273,7 @@ def _prepare_masked(
         p,
         cfg,
         basis_values,
+        hip_gate,
         coefficients,
         states,
         velocities,
@@ -546,6 +555,7 @@ def _advance_prepare(
     enabled: wp.array[int],
     early_tick: int,
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     equilibrium: wp.array2d[wp.vec4d],
     body_q: wp.array[wp.transform],
@@ -609,6 +619,7 @@ def _advance_prepare(
         p,
         cfg,
         basis_values,
+        hip_gate,
         coefficients,
         states,
         velocities,
@@ -687,6 +698,7 @@ def _snapshot(
     maximum_error: wp.array2d[wp.float64],
     costs: wp.array2d[wp.float64],
     residual: wp.array2d[wp.float64],
+    diagnostics: wp.array2d[wp.float64],
     out_states: wp.array2d[Vec5],
     out_velocities: wp.array2d[Vec5],
     out_equilibrium: wp.array2d[wp.vec4d],
@@ -706,6 +718,7 @@ def _snapshot(
     out_maximum_error: wp.array2d[wp.float64],
     out_costs: wp.array2d[wp.float64],
     out_residual: wp.array2d[wp.float64],
+    out_diagnostics: wp.array2d[wp.float64],
 ):
     i = wp.tid()
     w = winner[0]
@@ -736,6 +749,8 @@ def _snapshot(
             out_maximum_error[0, ch] = maximum_error[w, ch]
         for ch in range(3):
             out_costs[0, ch] = costs[w, ch]
+        for ch in range(11):
+            out_diagnostics[0, ch] = diagnostics[w, ch]
 
 
 class Engine:
@@ -773,7 +788,7 @@ class Engine:
         world_count: int = 49,
         device: str = "cuda:0",
         chunk_steps: int = 32,
-        friction_model: str = "maxwell",
+        friction_model: str = "elastic_coulomb",
     ):
         started = perf_counter()
         self.device = wp.get_device(device)
@@ -783,6 +798,10 @@ class Engine:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         reference, profile = deepcopy(reference), deepcopy(profile)
+        if "shoe_static_pitch_rad" in reference and not np.isclose(
+            float(reference["shoe_static_pitch_rad"]), static_pitch_rad, rtol=0, atol=1e-12
+        ):
+            raise ValueError("Ground-angle reference and shoe use different fixed pitch frames")
         self.reference, self.profile = reference, profile
         self.config, self.settings = config, settings
         self.world_count, self.chunk_steps = world_count, chunk_steps
@@ -791,6 +810,11 @@ class Engine:
         self.steps = math.ceil(self.duration / config.dt_s)
         self.dt = self.duration / self.steps
         self.time_s = np.linspace(0.0, self.duration, self.steps + 1)
+        self.hip_gate_values = (
+            hip_contact_gate(reference, self.time_s, config.hip_flight_gate_ramp_s)
+            if config.hip_flight_gate_enabled
+            else np.ones_like(self.time_s)
+        )
         # Use the canonical adapter once for artifact registration and footprint selection.
         self.shoe = Shoe(artifact, mount_m, static_pitch_rad, device=str(self.device), friction_model=friction_model)
         if np.any(self.shoe.model.body_com.numpy()):
@@ -814,8 +838,10 @@ class Engine:
             FoundationConfig(
                 ground_height_m=0.0,
                 normal_damping=0.0,
-                friction_stiffness=10000.0 if friction_model == "legacy" else 1000.0,
-                friction=10.0,
+                friction_stiffness=10000.0
+                if friction_model == "legacy"
+                else (1000.0 if friction_model == "maxwell" else 0.0),
+                friction=10.0 if friction_model in ("legacy", "maxwell") else 0.0,
                 mu=0.8,
                 friction_model=friction_model,
             ),
@@ -839,6 +865,7 @@ class Engine:
         self.basis = wp.array(
             basis(self.time_s, self.duration, settings.control_count), dtype=wp.float64, device=self.device
         )
+        self.hip_gate = wp.array(self.hip_gate_values, dtype=wp.float64, device=self.device)
         self.states = wp.zeros((self.steps + 1, world_count), dtype=Vec5, device=self.device)
         self.velocities = wp.zeros_like(self.states)
         self.equilibrium = wp.zeros((self.steps + 1, world_count), dtype=wp.vec4d, device=self.device)
@@ -863,7 +890,17 @@ class Engine:
         )
         for name in ("integrated", "recorded", "failure", "failure_step", "range_step", "range_mask"):
             setattr(self, name, wp.zeros(world_count, dtype=wp.int32, device=self.device))
-        self.objective = MeasuredObjective(reference, settings, self.time_s, world_count, self.device)
+        self.objective = MeasuredObjective(
+            reference,
+            settings,
+            self.time_s,
+            world_count,
+            self.device,
+            profile["hip_damping_ns_m"],
+            self.shoe.metadata["friction_mu"],
+            self.dt,
+            self.hip_gate,
+        )
         self.graph = None
         self.tail_graph = None
         self.resident_graph = None
@@ -906,6 +943,7 @@ class Engine:
                 self.kernel_config,
                 self.clock,
                 self.basis,
+                self.hip_gate,
                 self.coefficients,
                 self.states,
                 self.velocities,
@@ -955,6 +993,7 @@ class Engine:
                     [
                         int(early_tick),
                         self.basis,
+                        self.hip_gate,
                         self.coefficients,
                         self.equilibrium,
                         self.carriers.body_q,
@@ -999,7 +1038,7 @@ class Engine:
         self.foundation.enabled.fill_(1)
         self._reset()
         self._step()
-        self.objective.launch(self.states, self.forces, self.integrated, self.failure)
+        self.objective.launch(self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure)
         self.objective.loss.numpy()
         with wp.ScopedCapture(device=self.device) as capture:
             for _ in range(min(self.chunk_steps, self.steps)):
@@ -1054,7 +1093,9 @@ class Engine:
             else:
                 for _ in range(self.steps):
                     self._step(staged=True)
-            self.objective.launch(self.states, self.forces, self.integrated, self.failure)
+            self.objective.launch(
+                self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure
+            )
         self.resident_graph = capture.graph
 
     def evaluate_device(self):
@@ -1107,7 +1148,7 @@ class Engine:
         "range_step",
         "range_mask",
     )
-    _SNAPSHOT_SCORES = ("loss", "rmse", "maximum_error", "costs", "residual")
+    _SNAPSHOT_SCORES = ("loss", "rmse", "maximum_error", "costs", "residual", "diagnostics")
 
     def create_snapshot(self):
         """Allocate one best-history buffer before search starts."""
@@ -1194,6 +1235,11 @@ class Engine:
         )
         q, v, eq, load = q.numpy(), v.numpy(), eq.numpy(), load.numpy()
         f, m, comp, cap = f.numpy()[:recorded], m.numpy()[:recorded], comp.numpy()[:recorded], cap.numpy()[:recorded]
+        gate = self.hip_gate_values[:recorded]
+        hip_stiffness = np.asarray(self.profile["hip_stiffness_n_m"], dtype=float)
+        hip_damping = np.asarray(self.profile["hip_damping_ns_m"], dtype=float)
+        spring_force = gate[:, None] * hip_stiffness * (eq[:recorded, :2] - q[:recorded, :2])
+        damping_force = -gate[:, None] * hip_damping * v[:recorded, :2]
         body = Body(
             self.reference["lengths_m"],
             self.reference["endpoint_local_m"],
@@ -1210,6 +1256,9 @@ class Engine:
             "joints_m": joints,
             "equilibrium": eq[:recorded],
             "hip_force_n": load[:recorded, :2],
+            "hip_spring_force_n": spring_force,
+            "hip_damping_force_n": damping_force,
+            "hip_gate": gate.copy(),
             "joint_torque_nm": load[:recorded, 2:],
             "grf_n": f,
             "ankle_contact_moment_nm": m,
@@ -1249,6 +1298,10 @@ class Engine:
             "body_count": 3,
             "shoe_count": 1,
             "actuated_channels": 4,
+            "hip_flight_gate_enabled": self.config.hip_flight_gate_enabled,
+            "hip_flight_gate_ramp_s": self.config.hip_flight_gate_ramp_s,
+            "hip_flight_gate_contact_threshold_n": 5.0,
+            "hip_flight_gate_reference_source": "grf_time_s/grf_target_n vertical force",
             "mechanics_backend": "Warp float64 CUDA; resident batched limb/contact/objective",
             "shoe_device": str(self.device),
             "actual_dt_s": self.dt,
@@ -1258,7 +1311,19 @@ class Engine:
             "terminal_state": q[integrated].tolist(),
             "terminal_velocity": v[integrated].tolist(),
             "leg_mass_kg": float(np.sum(body.masses_kg)),
-            "controller": "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot",
+            "segment_inertial_properties": {
+                "body_order": ["thigh", "shank", "foot"],
+                "masses_kg": np.asarray(self.profile["masses_kg"], dtype=float).tolist(),
+                "com_local_m": np.asarray(self.profile["com_local_m"], dtype=float).tolist(),
+                "sagittal_inertias_kg_m2": np.asarray(self.profile["inertias_kg_m2"], dtype=float).tolist(),
+                "provenance": self.profile["provenance"].get("inertial"),
+                "population_comparison": self.profile["provenance"].get("de_leva_1996_population_comparison"),
+            },
+            "controller": (
+                "Fhip = gate*(Khip*(p_eq-p)-Dhip*v); tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+                if self.config.hip_flight_gate_enabled
+                else "Fhip = Khip*(p_eq-p)-Dhip*v; tau = Kjoint*(theta_eq-theta)-Djoint*theta_dot"
+            ),
             "external_loads": "hip point force, gravity on three leg masses, and one shoe-ground wrench only",
             "initial_contact_state": "zero material/friction histories; not a settled or periodic contact state",
             "trace_sampling": "preintegration, one contact update per row; terminal state/velocity in summary",
@@ -1284,4 +1349,7 @@ class Engine:
             "The existing passive cap and footprint attachment approximation are unchanged. "
             "No trunk, opposite leg, upper-body weight, hip torque, or measured-force input is present.",
         }
+        summary["rollout_diagnostics"] = summarize_diagnostics(
+            trace, self.reference, float(self.shoe.metadata["friction_mu"])
+        )
         return trace, summary

@@ -5,20 +5,57 @@ with **12 cubic control points per equilibrium channel** (48 coefficients).
 One shared controller uses a fixed batch of **128 CUDA worlds**.
 There is no trunk, opposite leg, hip-angle motor, or added upper-body load.
 
+Small reference and rollout bundles for the recovered FR3_1 rate refit and the
+FR3_2 peak-to-peak window experiment are in [sample data](data/samples/README.md).
+The FR3_2 fit is exploratory and did not meet the measured-fit tolerances.
+
+## Import processed measurements
+
+Raw C3D and processed Visual3D exports use separate preparation paths. To audit
+the new F01 exports without guessing timing or physical metadata:
+
+```bash
+uv run --no-sync -m projects.impedance_instron visual3d inspect data/F01
+```
+
+See [Visual3D inputs](VISUAL3D_INPUTS.md) for the export scripts, manifest,
+normalization command, and Cartesian preparation requirements. All three F01
+trials now contain the required clocks, static measurements, joint centers, and
+force channels. Subject-specific inertias remain provisional. A baseline
+comparison also requires the baseline's exact shoe artifact and fixed
+foot-to-shoe registration.
+
+Subject-profile preparation now scales sagittal thigh and shank inertia by
+the square of the measured-to-model segment-length ratio. Foot and toes are
+combined about their shared COM, then scaled by the square of the endpoint
+ratio. Population radii of gyration from de Leva (1996) are recorded as a
+comparison; they do not replace subject-model segment masses or inertias.
+Source inertial-frame rotations remain recorded in provenance and need to be
+checked against the source model's frame convention before treating the
+inertias as validated.
+
+The GPU objective computes measured hip-velocity RMSE, maximum hip speed, peak
+hip spring and damping loads, and a Coulomb-equivalent force ratio for every
+candidate; the final selected candidate's diagnostics are saved in its fit
+summary. These are diagnostics only and do not enter the fitted loss. The ratio is
+`abs(GRF_x)/(mu*GRF_z)` where normal force exceeds 5 N; it is a proximity proxy,
+not the internal saturation state of the selected viscoelastic shoe model.
+
 ## Selected baseline
 
-`outputs/impedance_instron/baseline12_maxwell/` is the current baseline. Maxwell
-shear friction is selected automatically in the shared shoe, CPU leg and GPU leg
-paths. The leg-shoe defaults are mu 0.8, 1000 N/m equilibrium tangential stiffness
-per nominal 25 mm² column, 10 N s/m internal viscosity, and the effective material
-relaxation time. Normal material/contact mechanics are unchanged.
+`outputs/impedance_instron/baseline12_maxwell/` is the saved baseline. Its shoe
+uses the friction model recorded in its manifest (`maxwell`). New Cartesian
+shoe and GPU Engine instances default to `elastic_coulomb`, with per-column
+stiffness `G_eq A / L`, `mu = 0.8`, and no tangential damping. `maxwell` and
+`column_maxwell` remain available explicitly. Normal material/contact mechanics
+are unchanged.
 
 The gains remain those of the previous K2/D2 controller:
 
 - Hip stiffness [8000, 12000] N/m; joint stiffness [240, 180] N m/rad.
 - Hip damping [80, 80] N s/m; joint damping [12, 8] N m s/rad.
 - All twelve hip-Z equilibrium coefficients are shifted by +1.5 mm to restore
-  tracking margin under the new law. No other coefficients, gains, masses,
+  tracking margin under the saved Maxwell law. No other coefficients, gains, masses,
   initial conditions or normal parameters are changed.
 
 The previous accepted legacy-friction baseline is archived in

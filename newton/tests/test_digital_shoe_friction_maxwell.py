@@ -8,7 +8,39 @@ import unittest
 import numpy as np
 import warp as wp
 
-from projects.digital_shoe.friction_maxwell import bristle_maxwell_step
+from projects.digital_shoe.friction_maxwell import bristle_maxwell_step, column_maxwell_parameters
+
+
+@wp.kernel
+def _column_parameters(
+    equilibrium: wp.array[float],
+    overstress: wp.array[float],
+    area: wp.array[float],
+    rest: wp.array[float],
+    tau: float,
+    kt: wp.array[float],
+    kv: wp.array[float],
+):
+    i = wp.tid()
+    stiffness, viscosity = column_maxwell_parameters(equilibrium[i], overstress[i], area[i], rest[i], tau)
+    kt[i] = stiffness
+    kv[i] = viscosity
+
+
+@wp.kernel
+def _column_force(
+    equilibrium: wp.array[float],
+    overstress: wp.array[float],
+    area: wp.array[float],
+    rest: wp.array[float],
+    forces: wp.array[wp.vec2],
+):
+    i = wp.tid()
+    kt, kv = column_maxwell_parameters(equilibrium[i], overstress[i], area[i], rest[i], 0.005)
+    force, _jac, _z, _q, _stuck, _dwell = bristle_maxwell_step(
+        wp.vec2(0.01, 0.0), 0.001, 100.0, kt, kv, 0.005, 0.8, 0.0, wp.vec2(0.0), wp.vec2(0.0), 0, 0.0
+    )
+    forces[i] = force
 
 
 @wp.kernel
@@ -48,6 +80,41 @@ class TestFrictionMaxwell(unittest.TestCase):
             return out.numpy(), jac.numpy()[0], float(loss.numpy()[0]), pa.grad.numpy(), va.grad.numpy()[0]
         wp.launch(_eval, dim=1, inputs=[va, pa, dt, n, wp.vec2(*z), wp.vec2(*q), out, jac, loss], device=device)
         return out.numpy(), jac.numpy()[0], float(loss.numpy()[0])
+
+    def test_column_shear_parameters_scale_with_material_geometry(self):
+        """Derive shear stiffness and viscosity per column and preserve patch refinement."""
+        equilibrium = np.array([1200.0, 1200.0, 600.0], dtype=np.float32)
+        overstress = np.array([0.5, 0.5, 2.0], dtype=np.float32)
+        area = np.array([1.0e-4, 0.5e-4, 1.0e-4], dtype=np.float32)
+        rest = np.array([0.02, 0.02, 0.04], dtype=np.float32)
+        expected_kt = equilibrium * area / rest
+        expected_kv = equilibrium * overstress * area / rest * 0.005
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()]:
+            values = [wp.array(x, dtype=float, device=device) for x in (equilibrium, overstress, area, rest)]
+            kt = wp.zeros(3, dtype=float, device=device)
+            kv = wp.zeros(3, dtype=float, device=device)
+            wp.launch(_column_parameters, dim=3, inputs=[*values, 0.005, kt, kv], device=device)
+            np.testing.assert_allclose(kt.numpy(), expected_kt, rtol=2.0e-6)
+            np.testing.assert_allclose(kv.numpy(), expected_kv, rtol=2.0e-6)
+        # One patch and two half-area columns have identical summed stiffness.
+        self.assertAlmostEqual(float(expected_kt[0]), float(expected_kt[1] + expected_kt[1]), places=5)
+        self.assertAlmostEqual(float(expected_kv[0]), float(expected_kv[1] + expected_kv[1]), places=5)
+
+    def test_column_material_changes_force_for_same_slip(self):
+        """Apply a common unsaturated slip and scale force with column geometry."""
+        equilibrium = np.array([1200.0, 1200.0, 600.0], dtype=np.float32)
+        overstress = np.array([0.5, 0.5, 2.0], dtype=np.float32)
+        area = np.array([1.0e-4, 0.5e-4, 1.0e-4], dtype=np.float32)
+        rest = np.array([0.02, 0.02, 0.04], dtype=np.float32)
+        expected_ratio = (equilibrium * area / rest) * (1.0 + overstress * 0.005 / (0.005 + 0.001))
+        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()]:
+            inputs = [wp.array(x, dtype=float, device=device) for x in (equilibrium, overstress, area, rest)]
+            forces = wp.zeros(3, dtype=wp.vec2, device=device)
+            wp.launch(_column_force, dim=3, inputs=[*inputs, forces], device=device)
+            magnitude = -forces.numpy()[:, 0]
+            np.testing.assert_allclose(magnitude, 0.01 * 0.001 * expected_ratio, rtol=3e-5)
+            self.assertGreater(magnitude[0], magnitude[1])
+            self.assertAlmostEqual(float(magnitude[0]), float(2.0 * magnitude[1]), delta=1e-7)
 
     def test_velocity_step_has_no_finite_force_jump(self):
         """Make the force response to a velocity step vanish with timestep."""

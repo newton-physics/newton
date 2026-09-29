@@ -766,9 +766,10 @@ def _subject_profile(
         rel = (com - proximal)[[0, 2]]
         local = np.array([float(np.dot(x, rel)), float(np.dot(z, rel))])
         scale = static_length_m / axis_length
+        scaled_inertia = float(inertia[1] * scale**2)
         return (
             local * scale,
-            float(inertia[1]),
+            scaled_inertia,
             {
                 "mass_kg": mass,
                 "model_axis_length_m": axis_length,
@@ -776,6 +777,9 @@ def _subject_profile(
                 "proximal_local_xz": proximal[[0, 2]].tolist(),
                 "distal_local_xz": distal[[0, 2]].tolist(),
                 "scaled_com_local_m": (local * scale).tolist(),
+                "source_fullinertia_i_yy_component_kg_m2": float(inertia[1]),
+                "scaled_fullinertia_i_yy_component_kg_m2": scaled_inertia,
+                "inertia_scale_factor": scale**2,
                 "body_rotation_attributes": {
                     key: element.attrib[key]
                     for key in ("quat", "axisangle", "euler", "xyaxes", "zaxis")
@@ -828,17 +832,44 @@ def _subject_profile(
     endpoint_scale = endpoint_local_m[0] / model_endpoint_local[0]
     foot_com = foot_local * endpoint_scale
     foot_offsets = [foot_com_raw[[0, 2]] - combined_com[[0, 2]], toes_com_in_foot[[0, 2]] - combined_com[[0, 2]]]
-    foot_combined_inertia = float(
+    foot_combined_inertia_model = float(
         foot_inertia[1]
         + foot_mass * float(np.dot(foot_offsets[0], foot_offsets[0]))
         + toes_inertia[1]
         + toes_mass * float(np.dot(foot_offsets[1], foot_offsets[1]))
     )
+    foot_combined_inertia = foot_combined_inertia_model * endpoint_scale**2
+
+    segment_masses = [float(inertial(femur)[0]), float(inertial(tibia)[0])]
+    de_leva_i_yy_radius_fractions = {
+        "female": (0.364, 0.263),
+        "male": (0.329, 0.246),
+    }
+    de_leva_comparison = {
+        sex: {
+            name: {
+                "population_i_yy_kg_m2": float(mass * (radius_fraction * length) ** 2),
+                "scaled_subject_model_i_yy_component_kg_m2": float(inertia),
+                "component_to_population_i_yy_ratio_assuming_aligned_frames": float(
+                    inertia / (mass * (radius_fraction * length) ** 2)
+                ),
+            }
+            for name, mass, length, inertia, radius_fraction in zip(
+                ("thigh", "shank"),
+                segment_masses,
+                lengths_m,
+                (thigh_inertia, shank_inertia),
+                radius_fractions,
+                strict=True,
+            )
+        }
+        for sex, radius_fractions in de_leva_i_yy_radius_fractions.items()
+    }
 
     baseline = json.loads((baseline_bundle / "profile.json").read_text())
     profile = {
         "schema": "cartesian_single_leg_1",
-        "masses_kg": [float(inertial(femur)[0]), float(inertial(tibia)[0]), combined_mass],
+        "masses_kg": [*segment_masses, combined_mass],
         "com_local_m": [thigh_com.tolist(), shank_com.tolist(), foot_com.tolist()],
         "inertias_kg_m2": [thigh_inertia, shank_inertia, foot_combined_inertia],
         "hip_stiffness_n_m": baseline["hip_stiffness_n_m"],
@@ -852,7 +883,7 @@ def _subject_profile(
         "equilibrium_rate_limit": baseline["equilibrium_rate_limit"],
         "equilibrium_acceleration_limit": baseline["equilibrium_acceleration_limit"],
         "provenance": {
-            "inertial": "S014 left thigh/shank values come from the scaled subject model. Foot mass, COM, and sagittal inertia rigidly combine foot_left and toes_left, then re-express them in the reduced ankle-centered heel-to-MTH frame.",
+            "inertial": "S014 left thigh/shank fullinertia[1] components from the subject model are scaled by the square of the planar length scale; foot and toes are combined about their shared COM, then scaled by the square of the endpoint scale. Segment masses stay subject-model values. de Leva (1996) adjusted Zatsiorsky-Seluyanov parameters are recorded as population comparison values, not substituted for this subject model.",
             "impedance": baseline["provenance"]["impedance"],
             "limits": "Equilibrium bounds are selected raw target min/max plus/minus [0.5 m, 0.5 m, 1.5 rad, 1.5 rad]. Joint ranges and equilibrium rate/acceleration limits remain the frozen baseline engineering limits; no acceptance or screen limit is relaxed.",
             "source_subject_xml": {"file": str(subject_xml.resolve()), "sha256": _sha256(subject_xml)},
@@ -870,6 +901,8 @@ def _subject_profile(
                     "endpoint_scale": endpoint_scale,
                     "scaled_com_local_m": foot_com.tolist(),
                     "combined_sagittal_inertia_kg_m2": foot_combined_inertia,
+                    "combined_sagittal_inertia_before_endpoint_scaling_kg_m2": foot_combined_inertia_model,
+                    "inertia_scale_factor": endpoint_scale**2,
                     "parallel_axis_offsets_xz_m": [offset.tolist() for offset in foot_offsets],
                     "body_rotation_attributes": {
                         key: foot.attrib[key]
@@ -884,6 +917,16 @@ def _subject_profile(
                     "inertial_rotation_attributes": foot_inertial_orientation,
                     "inertial_rotation_attributes_toes": toes_inertial_orientation,
                 },
+            },
+            "de_leva_1996_population_comparison": {
+                "reference": "https://doi.org/10.1016/0021-9290(95)00178-6",
+                "parameter_convention": "I = m * (k * segment_length)^2; planar sagittal motion uses out-of-plane IYY",
+                "source_axis_assumption": "The profile currently selects fullinertia[1] as IYY without rotating the tensor into the planar frame. The recorded inertial-frame orientation must be verified against the source XML before interpreting these ratios.",
+                "thigh_i_yy_radius_of_gyration_fraction": {"female": 0.364, "male": 0.329},
+                "shank_i_yy_radius_of_gyration_fraction": {"female": 0.263, "male": 0.246},
+                "foot_i_yy_radius_of_gyration_fraction": {"female": 0.279, "male": 0.245},
+                "subject_model_thigh_shank_comparison": de_leva_comparison,
+                "note": "Population comparison only. Do not compare foot values directly because the reduced model uses ankle-to-MTH endpoint geometry.",
             },
             "scope": "three actual leg masses; subject mass context only; same engineering gains and bounds as the fixed-gain baseline",
         },
