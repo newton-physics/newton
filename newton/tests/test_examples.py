@@ -1303,9 +1303,7 @@ add_basic_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
     expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
-    allow_output_regexes=[
-        (_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr"),
-    ],
+    allow_output_regexes=[(_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr")],
 )
 
 
