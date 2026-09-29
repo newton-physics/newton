@@ -226,6 +226,48 @@ class TestDeformableObjects(unittest.TestCase):
                         self.assertEqual(builder.curve_label, [])
                         self.assertEqual(model._deformable_objects, ())
 
+    def test_empty_curve_joint_ranges_follow_retained_joints(self):
+        """Remap empty curve ranges before, between, and after retained joints in each world."""
+        cases = (
+            ((1, 3), (0, 0, 1, 1, 2, 2)),
+            ((), (0, 0, 0, 0, 0, 0)),
+            ((0, 1, 2, 3, 4), (0, 1, 2, 3, 4, 5)),
+        )
+        for retained, boundaries in cases:
+            with self.subTest(retained=retained):
+                prototype = newton.ModelBuilder()
+                for i in range(6):
+                    prototype.add_rod(
+                        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
+                        label=f"segment_{i}",
+                        wrap_in_articulation=False,
+                        body_frame_origin="com",
+                    )
+                    if i < 5:
+                        body = prototype.add_link()
+                        prototype.add_shape_sphere(body, radius=0.02)
+                        if i in retained:
+                            joint = prototype.add_joint_free(body)
+                        else:
+                            joint = prototype.add_joint_fixed(-1, body)
+                        prototype.add_articulation([joint])
+
+                scene = newton.ModelBuilder()
+                scene.replicate(prototype, 2, label_prefixes=["env_0", "env_1"])
+                scene.collapse_fixed_joints()
+                model = scene.finalize(device="cpu")
+                self.assertEqual(model.body_count, 2 * (6 + len(retained)))
+                self.assertEqual(model.joint_count, 2 * len(retained))
+                # Each segment was inserted just before joint i, or after the final joint.
+                self.assertEqual(
+                    [(record.label, record.world, record.ranges["joint"]) for record in model._deformable_objects],
+                    [
+                        (f"env_{world}/segment_{i}", world, (world * len(retained) + boundary,) * 2)
+                        for world in range(2)
+                        for i, boundary in enumerate(boundaries)
+                    ],
+                )
+
     def test_deprecated_curve_inputs_keep_recording(self):
         """Preserve recording through the supported deprecation period for old rod inputs."""
         points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]

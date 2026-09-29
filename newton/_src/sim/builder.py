@@ -14,6 +14,7 @@ import math
 import os
 import warnings
 import weakref
+from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -7089,9 +7090,10 @@ class ModelBuilder:
             if new_joints:
                 remapped_joint_range = (new_joints[0], new_joints[-1] + 1)
             else:
-                # A welded-graph curve owns no tree joints. Shift its empty insertion
-                # boundary by the number of retained joints below the old boundary.
-                new_boundary = sum(1 for old_joint in joint_remap if old_joint < joint_start)
+                # A welded-graph curve owns no tree joints. Unwrapped single segments
+                # can also have empty joint ranges. Shift each boundary by the count of
+                # earlier retained joints, using their sorted order to avoid a full scan.
+                new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 
             curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
