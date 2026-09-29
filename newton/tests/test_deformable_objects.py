@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.tests.unittest_utils import get_test_devices
 
 
 def _add_curve(builder, label=None, topology="chain"):
@@ -77,7 +78,7 @@ class TestDeformableObjects(unittest.TestCase):
             ("volume", {"particle": (0, 4), "tetrahedron": (0, 1)}, _add_volume, {}),
             ("volume", {"particle": (0, 8), "tetrahedron": (0, 5)}, _add_volume, {"grid": True}),
         )
-        for device in wp.get_devices():
+        for device in get_test_devices():
             for family, ranges, add, kwargs in constructors:
                 for label in (None, "asset"):
                     with self.subTest(device=device, family=family, constructor=kwargs, label=label):
