@@ -157,7 +157,7 @@ attributes you use in your pipeline and pass the numeric values into the matchin
    camera.update(state, camera_transforms, camera_rays, color_image=color)
 
 For OpenCV-calibrated pinhole cameras, call
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_pinhole_opencv` with the calibrated intrinsics and
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_pinhole_opencv` with the calibrated intrinsics and
 radial, tangential, and optional thin-prism coefficients.
 
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of

@@ -164,6 +164,7 @@ class TestSensorCamera(unittest.TestCase):
         sensor_helper_names = (
             "compute_camera_rays_pinhole",
             "compute_camera_rays_usd_pinhole",
+            "compute_camera_rays_pinhole_opencv",
             "compute_camera_rays_fisheye_opencv",
             "compute_camera_rays_fisheye_ftheta",
             "compute_camera_rays_fisheye_kannala_brandt",
@@ -198,6 +199,9 @@ class TestSensorCamera(unittest.TestCase):
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
                 device="cpu",
+            ),
+            SensorCamera.compute_camera_rays_pinhole_opencv(
+                width, height, fx=2.0, fy=4.0, cx=1.0, cy=2.0, device="cpu"
             ),
             SensorCamera.compute_camera_rays_fisheye_opencv(
                 width, height, fx=1.0, fy=1.0, cx=1.5, cy=1.5, device="cpu"

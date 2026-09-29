@@ -296,6 +296,85 @@ class SensorCamera:
         return out_rays
 
     @staticmethod
+    def compute_camera_rays_pinhole_opencv(
+        width: int,
+        height: int,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        *,
+        image_width: float | None = None,
+        image_height: float | None = None,
+        k1: float = 0.0,
+        k2: float = 0.0,
+        k3: float = 0.0,
+        k4: float = 0.0,
+        k5: float = 0.0,
+        k6: float = 0.0,
+        p1: float = 0.0,
+        p2: float = 0.0,
+        s1: float = 0.0,
+        s2: float = 0.0,
+        s3: float = 0.0,
+        s4: float = 0.0,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for one OpenCV pinhole camera.
+
+        Inverts OpenCV's rational radial, tangential, and thin-prism distortion
+        model with damped Newton iteration. The four- and five-coefficient
+        variants are represented by leaving unused coefficients at zero. Pixels
+        whose inverse cannot be verified within the solver tolerance receive a
+        zero direction.
+        """
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+
+        width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
+        image_width = float(width) if image_width is None else float(image_width)
+        image_height = float(height) if image_height is None else float(image_height)
+        if not (math.isfinite(fx) and math.isfinite(fy) and fx > 0.0 and fy > 0.0):
+            raise ValueError("fx and fy must be finite and positive.")
+        if not (
+            math.isfinite(image_width) and math.isfinite(image_height) and image_width > 0.0 and image_height > 0.0
+        ):
+            raise ValueError("image_width and image_height must be finite and positive.")
+        if not all(math.isfinite(value) for value in (cx, cy, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4)):
+            raise ValueError("cx, cy, and distortion coefficients must be finite.")
+
+        wp.launch(
+            kernel=camera_utils.compute_camera_rays_pinhole_opencv_kernel,
+            dim=(height, width),
+            inputs=[
+                width,
+                height,
+                image_width,
+                image_height,
+                fx,
+                fy,
+                cx,
+                cy,
+                k1,
+                k2,
+                k3,
+                k4,
+                k5,
+                k6,
+                p1,
+                p2,
+                s1,
+                s2,
+                s3,
+                s4,
+                out_rays,
+            ],
+            device=device,
+        )
+
+        return out_rays
+
+    @staticmethod
     def compute_camera_rays_fisheye_opencv(
         width: int,
         height: int,
