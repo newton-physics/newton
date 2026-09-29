@@ -1,593 +1,442 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Focused tests for the Kamino contact APGD engine."""
-
-from __future__ import annotations
+"""Independent contact-law and integration regressions for unilateral APGD."""
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.solvers.dvi.apgd import ContactAPGDOptions, ContactAPGDSolver
-from newton._src.solvers.kamino._src.solvers.dvi.apgd_kernels import (
-    _ACC_RESIDUAL_SQUARED,
-    _GDIFF,
-    _RESIDUAL_SQUARED,
-)
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
+from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
+from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
+from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
+from newton._src.solvers.kamino._src.solvers.dvi.apgd import UnilateralAPGD
+from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIStatus, convert_config_to_struct
+from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, DVIAPGDConfig, DVISolverConfig
+from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.utils import basics
 
 
-class TestDVIContactAPGD(unittest.TestCase):
-    """Validate associated contact APGD independently of solver dispatch."""
-
-    pass
-
-
-@wp.kernel
-def _increment_matvec_count(counter: wp.array[wp.int32]):
-    """Count a represented-operator invocation on the device."""
-    wp.atomic_add(counter, 0, 1)
+def _devices():
+    """Exercise CPU and the first CUDA device when available."""
+    return ["cpu"] + (["cuda:0"] if wp.is_cuda_available() else [])
 
 
-@wp.kernel
-def _identity_contact_matvec(
-    contact_count: wp.array[wp.int32],
-    contact_row_offset: wp.array[wp.int32],
-    world_mask: wp.array[bool],
-    x: wp.array[wp.float32],
-    y: wp.array[wp.float32],
-):
-    """Apply an identity operator to active compact contact rows."""
-    wid, local_row = wp.tid()
-    if world_mask[wid] and local_row < 3 * contact_count[wid]:
-        row = contact_row_offset[wid] + local_row
-        y[row] = x[row]
+def _problem(matrices, biases, families, friction, device, *, options=None, lower=None, upper=None, configs=None):
+    """Build independent small unilateral problems in the actual batched storage layout."""
+    sizes = [len(b) for b in biases]
+    offsets = np.cumsum([0, *[max(1, n) for n in sizes]])
+    matrix_offsets = np.cumsum([0, *[max(1, n * n) for n in sizes]])
+    bound_offsets = np.cumsum([0, *[f[0] for f in families]])
+    contact_offsets = np.cumsum([0, *[f[2] for f in families]])
 
+    def ints(values):
+        """Allocate layout metadata on the test device."""
+        return wp.array(values, dtype=wp.int32, device=device)
 
-def _project_coulomb(vector: np.ndarray, friction: float) -> np.ndarray:
-    """Return an independent double-precision projection in ``[t0,t1,n]`` order."""
-    tangent_norm = float(np.linalg.norm(vector[:2]))
-    normal = float(vector[2])
-    if friction * tangent_norm <= -normal:
-        return np.zeros(3, dtype=np.float64)
-    if tangent_norm <= friction * normal:
-        return vector.astype(np.float64, copy=True)
-    projected_normal = (friction * tangent_norm + normal) / (friction * friction + 1.0)
-    projected_tangent = friction * projected_normal * vector[:2] / tangent_norm
-    return np.array([projected_tangent[0], projected_tangent[1], projected_normal], dtype=np.float64)
+    def floats(values):
+        """Allocate numerical inputs on the test device."""
+        return wp.array(values, dtype=wp.float32, device=device)
 
-
-def _project_product(vector: np.ndarray, friction: np.ndarray) -> np.ndarray:
-    """Project a flat vector onto a product of associated Coulomb cones."""
-    return np.concatenate(
-        [_project_coulomb(vector[3 * cid : 3 * cid + 3], float(mu)) for cid, mu in enumerate(friction)]
+    matrix = np.zeros(matrix_offsets[-1])
+    velocity = np.zeros(offsets[-1])
+    for wid, (a, b) in enumerate(zip(matrices, biases, strict=True)):
+        matrix[matrix_offsets[wid] : matrix_offsets[wid] + sizes[wid] ** 2] = np.asarray(a).ravel()
+        velocity[offsets[wid] : offsets[wid] + sizes[wid]] = b
+    data = SimpleNamespace(
+        dim=ints(sizes),
+        vio=ints(offsets[:-1]),
+        mio=ints(matrix_offsets[:-1]),
+        njc=ints([0] * len(sizes)),
+        nbc=ints([f[0] for f in families]),
+        nl=ints([f[1] for f in families]),
+        nc=ints([f[2] for f in families]),
+        ccgo=ints([f[0] + f[1] for f in families]),
+        bcio=ints(bound_offsets[:-1]),
+        cio=ints(contact_offsets[:-1]),
+        mu=floats(friction),
+        D=floats(matrix),
+        v_f=floats(velocity),
+        bound_lower=floats(lower if lower is not None else []),
+        bound_upper=floats(upper if upper is not None else []),
     )
-
-
-def _solve_numpy_contact_qp(matrix: np.ndarray, rhs: np.ndarray, friction: np.ndarray) -> np.ndarray:
-    """Solve a small strongly-convex product-cone QP with plain projected gradient."""
-    solution = np.zeros_like(rhs, dtype=np.float64)
-    step = 1.0 / float(np.linalg.eigvalsh(matrix).max())
-    for _ in range(100_000):
-        solution_new = _project_product(solution - step * (matrix @ solution - rhs), friction)
-        if np.linalg.norm(solution_new - solution) <= 1.0e-13:
-            return solution_new
-        solution = solution_new
-    raise AssertionError("NumPy contact QP oracle failed to converge.")
-
-
-def _make_dense_fixture(
-    device: wp.DeviceLike,
-    matrices: list[np.ndarray],
-    free_velocities: list[np.ndarray],
-    contact_counts: list[int],
-    contact_group_offsets: list[int],
-    friction: np.ndarray,
-    *,
-    contact_capacities: list[int] | None = None,
-    represented_compliance: list[np.ndarray] | None = None,
-    full_solution: list[np.ndarray] | None = None,
-    config: ContactAPGDOptions | list[ContactAPGDOptions] | None = None,
-):
-    """Create an isolated packed dense problem and its APGD adapter."""
-    if contact_capacities is None:
-        contact_capacities = contact_counts
-    if represented_compliance is None:
-        represented_compliance = [np.zeros(matrix.shape[0], dtype=np.float32) for matrix in matrices]
-    if full_solution is None:
-        full_solution = [np.zeros(matrix.shape[0], dtype=np.float32) for matrix in matrices]
-
-    dimensions = [matrix.shape[0] for matrix in matrices]
-    matrix_offsets = np.cumsum([0, *(dimension * dimension for dimension in dimensions[:-1])])
-    vector_offsets = np.cumsum([0, *dimensions[:-1]])
-    contact_offsets = np.cumsum([0, *contact_capacities[:-1]])
-
-    solver = ContactAPGDSolver(contact_capacities, config, device=device)
-
-    def to_int(values) -> wp.array[wp.int32]:
-        """Copy integer fixture data to the selected device."""
-        return wp.array(np.asarray(values, dtype=np.int32), dtype=wp.int32, device=device)
-
-    def to_float(values) -> wp.array[wp.float32]:
-        """Copy floating-point fixture data to the selected device."""
-        return wp.array(np.asarray(values, dtype=np.float32), dtype=wp.float32, device=device)
-
-    operator = solver.make_dense_operator(
-        problem_dim=to_int(dimensions),
-        problem_mio=to_int(matrix_offsets),
-        problem_vio=to_int(vector_offsets),
-        problem_nc=to_int(contact_counts),
-        problem_cio=to_int(contact_offsets),
-        problem_ccgo=to_int(contact_group_offsets),
-        matrix=to_float(np.concatenate([matrix.astype(np.float32).ravel() for matrix in matrices])),
-        represented_compliance=to_float(np.concatenate(represented_compliance)),
-        free_velocity=to_float(np.concatenate(free_velocities)),
+    if configs is None:
+        configs = [DVISolverConfig(unilateral_solver="apgd", apgd=options or DVIAPGDConfig()) for _ in sizes]
+    size = SimpleNamespace(
+        num_worlds=len(sizes),
+        max_of_max_total_cts=max(1, *sizes),
+        max_of_num_bilateral_joint_cts=0,
+        sum_of_max_total_cts=int(offsets[-1]),
+        sum_of_num_bilateral_joint_cts=0,
     )
-    return (
-        solver,
-        operator,
-        to_float(friction),
-        to_float(np.concatenate(full_solution)),
-    )
-
-
-def test_associated_analytic_contact_modes(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Solve opening, frictionless, sticking, and sliding scalar-block contacts analytically."""
-    alphas = np.array([1.0, 2.0, 2.0, 2.0], dtype=np.float64)
-    right_hand_sides = np.array(
-        [
-            [0.2, -0.1, -1.0],
-            [7.0, -9.0, 2.0],
-            [0.2, -0.1, 2.0],
-            [4.0, 0.0, 2.0],
-        ],
-        dtype=np.float64,
-    )
-    friction_np = np.array([0.5, 0.0, 0.5, 0.5], dtype=np.float32)
-    config = ContactAPGDOptions(max_iterations=10, tolerance=2.0e-5, use_graph_conditionals=False)
-    solver, operator, friction, solution = _make_dense_fixture(
-        device,
-        [alpha * np.eye(3) for alpha in alphas],
-        [(-rhs).astype(np.float32) for rhs in right_hand_sides],
-        [1, 1, 1, 1],
-        [0, 0, 0, 0],
-        friction_np,
-        config=config,
-    )
-
-    solver.solve_dense(operator, friction, solution)
-    expected = np.concatenate(
-        [
-            _project_coulomb(rhs / alpha, float(mu))
-            for alpha, rhs, mu in zip(alphas, right_hand_sides, friction_np, strict=True)
-        ]
-    )
-    np.testing.assert_allclose(solution.numpy(), expected, rtol=2.0e-5, atol=2.0e-5)
-    status = solver.status.numpy()
-    # A zero opening impulse is a genuine KKT solution: its natural-map Res4
-    # vanishes, so it must stop just like the nonzero contact modes.
-    np.testing.assert_array_equal(status["converged"], np.ones(4, dtype=np.int32))
-    np.testing.assert_array_equal(status["iterations"], np.ones(4, dtype=np.int32))
-    test.assertTrue(np.all(status["residual"] <= config.tolerance))
-
-
-def test_dense_operator_offsets_rhs_and_compliance(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Check heterogeneous compact offsets, cross-family RHS, and one compliance contribution."""
-    rng = np.random.default_rng(712)
-    factor_0 = rng.normal(size=(5, 5))
-    factor_1 = rng.normal(size=(4, 4))
-    matrices = [factor_0.T @ factor_0 + np.eye(5), factor_1.T @ factor_1 + np.eye(4)]
-    free_velocities = [np.array([0.3, -0.2, 0.1, 0.4, -0.5]), np.array([-0.1, 0.2, -0.4, 0.7])]
-    compliance = [np.array([0.0, 0.0, 0.2, 0.3, 0.4]), np.array([0.0, 0.5, 0.6, 0.7])]
-    lambdas = [np.array([0.6, -0.3, 9.0, 8.0, 7.0]), np.array([-0.2, 6.0, 5.0, 4.0])]
-    solver, operator, _, full_solution = _make_dense_fixture(
-        device,
-        matrices,
-        free_velocities,
-        [1, 1],
-        [2, 1],
-        np.array([0.4, np.nan, 0.7], dtype=np.float32),
-        contact_capacities=[2, 1],
-        represented_compliance=compliance,
-        full_solution=lambdas,
-        config=ContactAPGDOptions(max_iterations=2, use_graph_conditionals=False),
-    )
-    mask = wp.ones(2, dtype=wp.bool, device=device)
-    compact_x_np = np.array([1.0, 2.0, 3.0, np.nan, np.nan, np.nan, 4.0, 5.0, 6.0], dtype=np.float32)
-    compact_x = wp.array(compact_x_np, dtype=wp.float32, device=device)
-    product = wp.full(9, -123.0, dtype=wp.float32, device=device)
-
-    operator.matvec(compact_x, product, mask)
-    operator.build_rhs(full_solution, solver.rhs, mask)
-    gathered = wp.full(9, np.nan, dtype=wp.float32, device=device)
-    operator.gather(full_solution, gathered, mask)
-
-    product_np = product.numpy()
-    rhs_np = solver.rhs.numpy()
-    gathered_np = gathered.numpy()
-    for matrix, velocity, diagonal, lambda_world, ccgo, compact_begin in zip(
-        matrices, free_velocities, compliance, lambdas, [2, 1], [0, 6], strict=True
-    ):
-        contact_slice = slice(ccgo, ccgo + 3)
-        compact_slice = slice(compact_begin, compact_begin + 3)
-        x_contact = compact_x_np[compact_slice]
-        expected_product = matrix[contact_slice, contact_slice] @ x_contact + diagonal[contact_slice] * x_contact
-        lambda_noncontact = lambda_world.copy()
-        lambda_noncontact[contact_slice] = 0.0
-        expected_rhs = -(velocity[contact_slice] + matrix[contact_slice] @ lambda_noncontact)
-        np.testing.assert_allclose(product_np[compact_slice], expected_product, rtol=1.0e-5, atol=1.0e-5)
-        np.testing.assert_allclose(rhs_np[compact_slice], expected_rhs, rtol=1.0e-5, atol=1.0e-5)
-        np.testing.assert_array_equal(gathered_np[compact_slice], lambda_world[contact_slice])
-
-    np.testing.assert_array_equal(solver.contact_offset.numpy(), np.array([0, 2, 3], dtype=np.int32))
-    np.testing.assert_array_equal(operator.problem_cio.numpy(), np.array([0, 2], dtype=np.int32))
-    test.assertTrue(np.all(product_np[3:6] == -123.0))
-    test.assertTrue(np.all(np.isnan(gathered_np[3:6])))
-
-
-def test_coupled_qp_and_represented_preconditioning(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Match a coupled NumPy oracle after cone-compatible represented-coordinate scaling."""
-    rng = np.random.default_rng(3)
-    factor = rng.normal(size=(6, 6))
-    matrix = factor.T @ factor + 2.0 * np.eye(6)
-    rhs = np.array([1.2, -0.5, 1.0, -0.2, 0.9, 1.5], dtype=np.float64)
-    friction_np = np.array([0.4, 0.7], dtype=np.float64)
-    expected = _solve_numpy_contact_qp(matrix, rhs, friction_np)
-
-    preconditioner = np.diag([0.25, 0.25, 0.25, 2.0, 2.0, 2.0])
-    represented_matrix = preconditioner @ matrix @ preconditioner
-    represented_rhs = preconditioner @ rhs
-    solver, operator, friction, solution = _make_dense_fixture(
-        device,
-        [represented_matrix],
-        [(-represented_rhs).astype(np.float32)],
-        [2],
-        [0],
-        friction_np.astype(np.float32),
-        config=ContactAPGDOptions(max_iterations=300, tolerance=5.0e-5, use_graph_conditionals=False),
-    )
-
-    solver.solve_dense(operator, friction, solution)
-    physical_solution = preconditioner @ solution.numpy()
-    np.testing.assert_allclose(physical_solution, expected, rtol=2.0e-4, atol=3.0e-5)
-    status = solver.status.numpy()[0]
-    test.assertEqual(int(status["converged"]), 1)
-    test.assertLessEqual(float(status["residual"]), 5.0e-5)
-
-
-def test_warmstart_reprojects_opening_and_changed_friction(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Ensure warm starts remain feasible when a contact opens or its friction drops."""
-    config = ContactAPGDOptions(max_iterations=20, tolerance=2.0e-5, use_graph_conditionals=False)
-    rhs = np.array([2.0, 0.0, 1.0], dtype=np.float32)
-    solver, operator, friction, solution = _make_dense_fixture(
-        device,
-        [np.eye(3)],
-        [-rhs],
-        [1],
-        [0],
-        np.array([1.0], dtype=np.float32),
-        config=config,
-    )
-    solver.solve_dense(operator, friction, solution)
-    high_friction_solution = solution.numpy().copy()
-    np.testing.assert_allclose(high_friction_solution, _project_coulomb(rhs, 1.0), atol=2.0e-5)
-
-    friction.assign(np.array([0.2], dtype=np.float32))
-    solver.solve_dense(operator, friction, solution)
-    np.testing.assert_allclose(solution.numpy(), _project_coulomb(rhs, 0.2), atol=2.0e-5)
-    test.assertLess(np.linalg.norm(solution.numpy()[:2]), np.linalg.norm(high_friction_solution[:2]))
-
-    operator.free_velocity.assign(np.array([0.0, 0.0, 1.0], dtype=np.float32))
-    solver.solve_dense(operator, friction, solution)
-    np.testing.assert_allclose(solution.numpy(), np.zeros(3), atol=2.0e-5)
-    opening_status = solver.status.numpy()[0]
-    test.assertEqual(int(opening_status["converged"]), 1)
-    test.assertEqual(int(opening_status["iterations"]), config.min_iterations)
-
-
-def test_backtracking_caps_and_actual_counters(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Count the initial descent check as the first backtracking pass."""
-    stiff_direction = np.array([1.0, -1.0, 0.0]) / np.sqrt(2.0)
-    matrix = np.eye(3) + 99.0 * np.outer(stiff_direction, stiff_direction)
-    rhs = np.array([100.0, -100.0, 20.0], dtype=np.float32)
-    configs = [
-        ContactAPGDOptions(
-            max_iterations=1,
-            max_backtrack_iterations=backtrack_cap,
-            tolerance=0.0,
-            early_exit=False,
-            use_graph_conditionals=False,
-        )
-        for backtrack_cap in range(4)
-    ]
-    solver, operator, friction, solution = _make_dense_fixture(
-        device,
-        [matrix] * 4,
-        [-rhs] * 4,
-        [1] * 4,
-        [0] * 4,
-        np.full(4, 10.0, dtype=np.float32),
+    owner = SimpleNamespace(
+        device=wp.get_device(device),
+        size=size,
         config=configs,
-    )
-
-    solver.solve_dense(operator, friction, solution)
-    status = solver.status.numpy()
-    np.testing.assert_array_equal(status["iterations"], np.ones(4, dtype=np.int32))
-    np.testing.assert_array_equal(status["backtracks"], np.arange(4, dtype=np.int32))
-    solutions = solution.numpy().reshape(4, 3)
-    # Pass zero disables the check. Pass one may double L, but (as in final
-    # newton-dvi) there is no second projection until pass two is permitted.
-    np.testing.assert_array_equal(solutions[1], solutions[0])
-    np.testing.assert_array_equal(solutions[2], 0.5 * solutions[1])
-    np.testing.assert_array_equal(solutions[3], 0.5 * solutions[2])
-
-
-def test_eager_conditionals_skip_predicated_work(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Use device conditionals eagerly instead of launching every masked pass."""
-    if device.is_cuda and not wp.is_conditional_graph_supported():
-        test.skipTest("CUDA graph conditional nodes are not supported on this device.")
-
-    max_iterations = 10
-    max_backtracks = 5
-
-    def solve_and_count(use_graph_conditionals: bool) -> tuple[int, np.void]:
-        config = ContactAPGDOptions(
-            max_iterations=max_iterations,
-            max_backtrack_iterations=max_backtracks,
-            tolerance=1.0e-6,
-            use_graph_conditionals=use_graph_conditionals,
-        )
-        solver, operator, friction, full_solution = _make_dense_fixture(
-            device,
-            [np.eye(3)],
-            [np.array([0.0, 0.0, -1.0], dtype=np.float32)],
-            [1],
-            [0],
-            np.array([0.5], dtype=np.float32),
-            config=config,
-        )
-        mask = wp.ones(1, dtype=wp.bool, device=device)
-        operator.build_rhs(full_solution, solver.rhs, mask)
-        operator.gather(full_solution, solver.solution, mask)
-        counter = wp.zeros(1, dtype=wp.int32, device=device)
-
-        def counted_matvec(x: wp.array, y: wp.array, world_mask: wp.array) -> None:
-            operator.matvec(x, y, world_mask)
-            wp.launch(_increment_matvec_count, dim=1, inputs=[counter], device=device)
-
-        solver.solve(
-            operator.problem_nc,
-            friction,
-            solver.rhs,
-            solver.solution,
-            counted_matvec,
-            phase_mask=mask,
-            contact_offset=operator.problem_cio,
-        )
-        return int(counter.numpy()[0]), solver.status.numpy()[0]
-
-    conditional_calls, conditional_status = solve_and_count(True)
-    fallback_calls, fallback_status = solve_and_count(False)
-    test.assertEqual(int(conditional_status["iterations"]), 1)
-    test.assertEqual(int(fallback_status["iterations"]), 1)
-    test.assertEqual(conditional_calls, 3)  # Rayleigh, A*y, and A*gamma_new.
-    test.assertEqual(fallback_calls, 1 + max_iterations * (max_backtracks + 1))
-
-
-def test_fixed_order_float64_reduction(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Preserve small contact partials accumulated after a large contribution."""
-    contact_capacity = 512
-    solver = ContactAPGDSolver(
-        [contact_capacity],
-        ContactAPGDOptions(max_iterations=1, use_graph_conditionals=False),
-        device=device,
-    )
-    partials = np.zeros(solver._partials.shape, dtype=np.float32)
-    partials[_ACC_RESIDUAL_SQUARED, :contact_capacity] = 1.0
-    partials[_ACC_RESIDUAL_SQUARED, 0] = 1.0e8
-    solver._partials.assign(partials)
-    contact_count = wp.array([contact_capacity], dtype=wp.int32, device=device)
-    mask = wp.ones(1, dtype=wp.bool, device=device)
-    solver._reduce_partials(
-        contact_count,
-        mask,
-        _ACC_RESIDUAL_SQUARED,
-        -1,
-        _RESIDUAL_SQUARED,
-        -1,
-    )
-
-    actual = solver._scalars.numpy()[0, _RESIDUAL_SQUARED]
-    expected = np.float32(np.sum(partials[_ACC_RESIDUAL_SQUARED], dtype=np.float64))
-    test.assertEqual(actual, expected)
-    test.assertGreater(actual, np.float32(1.0e8))
-
-
-def test_res4_step_avoids_large_contact_count_overflow(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Compute ``1 / (3*nc)^2`` without overflowing an int32 intermediate."""
-    contact_count_value = 15_447
-    row_count = 3 * contact_count_value
-    solver = ContactAPGDSolver(
-        [contact_count_value],
-        ContactAPGDOptions(
-            max_iterations=1,
-            max_backtrack_iterations=0,
-            tolerance=0.0,
-            early_exit=False,
-            use_graph_conditionals=False,
+        _use_schur_complement=False,
+        _bilateral_solver=None,
+        data=SimpleNamespace(
+            status=wp.zeros(len(sizes), dtype=DVIStatus, device=device),
+            config=wp.array([convert_config_to_struct(c) for c in configs], dtype=DVIConfigStruct, device=device),
+            solution=SimpleNamespace(lambdas=wp.zeros(int(offsets[-1]), device=device)),
         ),
-        device=device,
     )
-    contact_count = wp.array([contact_count_value], dtype=wp.int32, device=device)
-    friction = wp.zeros(contact_count_value, dtype=wp.float32, device=device)
-    rhs = wp.zeros(row_count, dtype=wp.float32, device=device)
-    solution = wp.zeros(row_count, dtype=wp.float32, device=device)
+    return UnilateralAPGD(owner), SimpleNamespace(data=data, sparse=False)
 
-    def identity_matvec(x: wp.array, y: wp.array, world_mask: wp.array) -> None:
-        wp.launch(
-            _identity_contact_matvec,
-            dim=(1, row_count),
-            inputs=[contact_count, solver.contact_row_offset, world_mask, x, y],
-            device=device,
+
+def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, iterations=24):
+    """Assemble an actual Kamino model with rigid, unpreconditioned dynamics."""
+    model = ModelKamino.from_newton(builder.finalize(device=device))
+    model, data, state, limits, detector, jacobians = make_containers(
+        model=model,
+        max_world_contacts=max_contacts,
+        sparse=sparse,
+        dt=0.001,
+    )
+    update_containers(model, data, state, limits, detector, jacobians)
+    problem = DualProblem(
+        model=model,
+        data=data,
+        limits=limits,
+        contacts=detector.contacts,
+        jacobians=jacobians,
+        sparse=sparse,
+        solver=None if sparse else LLTBlockedSolver,
+        config=DualProblem.Config(dynamics=ConstrainedDynamicsConfig(preconditioning=False)),
+    )
+    problem.build(model, data, jacobians, limits, detector.contacts)
+    solver = DVISolver(
+        model=model,
+        data=data,
+        limits=limits,
+        contacts=detector.contacts,
+        jacobians=jacobians,
+        problem=problem,
+        config=DVISolverConfig(
+            unilateral_solver="apgd",
+            use_schur_complement=schur,
+            max_alternating_iterations=iterations,
+            tolerance=1e-4,
+            apgd=DVIAPGDConfig(max_iterations=128, max_corrections=30, tolerance=1e-6),
+        ),
+        warmstart=WarmStartMode.NONE,
+    )
+    return solver, problem
+
+
+class TestDVIAPGD(unittest.TestCase):
+    """Check Coulomb impulses rather than only the inner cone-QP residual."""
+
+    def test_configuration_is_opt_in(self):
+        """Retain PGS defaults and accept the experimental APGD backend."""
+        self.assertEqual(DVISolverConfig().unilateral_solver, "pgs")
+        self.assertEqual(DVISolverConfig(unilateral_solver="apgd").unilateral_solver, "apgd")
+
+    def test_configuration_rejects_invalid_controls(self):
+        """Reject unusable budgets, damping, and tolerances before launching kernels."""
+        for field in ("max_iterations", "max_backtracks", "max_corrections"):
+            for value in (0, -1, True, 1.5):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    DVIAPGDConfig(**{field: value})
+        for options in (
+            {"tolerance": float("nan")},
+            {"tolerance": -1.0},
+            {"relaxation": 0.0},
+            {"relaxation": 1.1},
+            {"relaxation": float("inf")},
+            {"use_graph_conditionals": 1},
+        ):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                DVIAPGDConfig(**options)
+        with self.assertRaises(ValueError):
+            DVISolverConfig(unilateral_solver="unknown")
+
+    def test_de_saxce_sliding(self):
+        """Recover Coulomb normal impulse instead of the associated cone-QP solution."""
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem([np.eye(3)], [[10.0, 0.0, -1.0]], [(0, 0, 1)], [0.5], device)
+                solver.solve(problem)
+                impulses = solver.owner.data.solution.lambdas.numpy()
+                np.testing.assert_allclose(impulses, [-0.5, 0.0, 1.0], atol=2.0e-5, rtol=0.0)
+                velocity = impulses + np.array([10.0, 0.0, -1.0])
+                self.assertAlmostEqual(float(velocity[2]), 0.0, places=4)
+                self.assertLess(float(solver.owner.data.status.numpy()[0]["apgd_residual"]), 1.1e-5)
+                self.assertGreater(int(solver.owner.data.status.numpy()[0]["apgd_corrections"]), 1)
+
+    def test_contact_regimes_and_world_isolation(self):
+        """Resolve sticking, sliding, separation, and frictionless contacts in one batch."""
+        biases = [[0.1, -0.2, -1.0], [6.0, 8.0, -1.0], [1.0, 0.0, 2.0], [10.0, 2.0, -1.0], []]
+        expected = [(-0.1, 0.2, 1.0), (-0.3, -0.4, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem(
+                    [np.eye(3)] * 4 + [np.empty((0, 0))],
+                    biases,
+                    [(0, 0, 1)] * 4 + [(0, 0, 0)],
+                    [0.5, 0.5, 0.5, 0.0],
+                    device,
+                )
+                solver.solve(problem)
+                np.testing.assert_allclose(
+                    solver.owner.data.solution.lambdas.numpy()[:12], np.ravel(expected), atol=2e-5
+                )
+                info = solver.owner.data.status.numpy()
+                self.assertEqual(int(info[-1]["iterations"]), 0)
+                self.assertTrue(np.all(info["apgd_line_search_failed"] == 0))
+
+    def test_mixed_bounds_limits_and_contacts(self):
+        """Project boxes and limits independently of the contact correction."""
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem(
+                    [np.eye(5)],
+                    [[-4.0, -2.0, 10.0, 0.0, -1.0]],
+                    [(1, 1, 1)],
+                    [0.5],
+                    device,
+                    lower=[-0.25],
+                    upper=[0.25],
+                )
+                solver.solve(problem)
+                np.testing.assert_allclose(
+                    solver.owner.data.solution.lambdas.numpy(),
+                    [0.25, 2.0, -0.5, 0.0, 1.0],
+                    atol=2e-5,
+                )
+
+    def test_coupled_contact_oracle(self):
+        """Recover a prescribed sliding solution with off-diagonal Delassus coupling."""
+        rng = np.random.default_rng(7)
+        basis = rng.normal(size=(6, 6))
+        matrix = np.eye(6) + 0.04 * basis.T @ basis
+        expected = np.array([-0.3, -0.4, 1.0, 0.6, -0.8, 2.0])
+        velocity = np.array([3.0, 4.0, 0.0, -3.0, 4.0, 0.0])
+        bias = velocity - matrix @ expected
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem(
+                    [matrix],
+                    [bias],
+                    [(0, 0, 2)],
+                    [0.5, 0.5],
+                    device,
+                    options=DVIAPGDConfig(max_iterations=100, max_corrections=40, tolerance=2e-6),
+                )
+                solver.solve(problem)
+                np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
+
+    def test_exhausted_line_search_retains_finite_iterate(self):
+        """Reject an unverified step when the backtracking budget is exhausted."""
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem(
+                    [1000.0 * np.eye(3)],
+                    [[0.0, 0.0, -1.0]],
+                    [(0, 0, 1)],
+                    [0.5],
+                    device,
+                    options=DVIAPGDConfig(max_backtracks=1),
+                )
+                solver.solve(problem)
+                np.testing.assert_array_equal(solver.owner.data.solution.lambdas.numpy(), [0.0, 0.0, 0.0])
+                status = solver.owner.data.status.numpy()[0]
+                self.assertEqual(int(status["apgd_line_search_failed"]), 1)
+                self.assertEqual(int(status["iterations"]), 0)
+
+    def test_nonlinear_budget_does_not_hide_residual(self):
+        """Expose an unconverged contact law when only one correction is allowed."""
+        solver, problem = _problem(
+            [np.eye(3)],
+            [[10.0, 0.0, -1.0]],
+            [(0, 0, 1)],
+            [0.5],
+            "cpu",
+            options=DVIAPGDConfig(max_corrections=1),
         )
+        solver.solve(problem)
+        self.assertGreater(float(solver.owner.data.status.numpy()[0]["apgd_residual"]), 0.1)
 
-    solver.solve(contact_count, friction, rhs, solution, identity_matvec)
-    actual = solver._scalars.numpy()[0, _GDIFF]
-    expected = np.float32(1.0 / float(row_count * row_count))
-    np.testing.assert_allclose(actual, expected, rtol=2.0e-7, atol=0.0)
+    def test_warmstart_and_phase_masks(self):
+        """Project stale warmstarts and preserve worlds outside their alternating budget."""
+        for device in _devices():
+            configs = [DVISolverConfig(unilateral_solver="apgd", max_alternating_iterations=n) for n in (1, 2)]
+            solver, problem = _problem(
+                [np.eye(3)] * 2,
+                [[10.0, 0.0, -1.0]] * 2,
+                [(0, 0, 1)] * 2,
+                [0.5, 0.5],
+                device,
+                configs=configs,
+            )
+            stale = np.array([20.0, -10.0, -2.0] * 2, dtype=np.float32)
+            solver.owner.data.solution.lambdas.assign(stale)
+            solver.solve(problem, block_iteration=1)
+            result = solver.owner.data.solution.lambdas.numpy()
+            np.testing.assert_array_equal(result[:3], stale[:3])
+            np.testing.assert_allclose(result[3:], [-0.5, 0.0, 1.0], atol=2e-5)
+            solver.solve(problem)
+            np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), [-0.5, 0.0, 1.0] * 2, atol=2e-5)
 
+    def test_alternation_matches_schur(self):
+        """Converge existing bilateral alternation to the eliminated solution."""
+        for device in _devices():
+            for sparse in (False, True):
+                outputs = []
+                for schur in (False, True):
+                    solver, problem = _model_problem(
+                        basics.build_boxes_fourbar(limits=False, friction=0.0),
+                        device,
+                        sparse,
+                        schur=schur,
+                        iterations=64,
+                    )
+                    solver.coldstart()
+                    solver.solve(problem)
+                    n = int(problem.data.dim.numpy()[0])
+                    outputs.append(solver.data.solution.v_plus.numpy()[:n])
+                with self.subTest(device=device, sparse=sparse):
+                    np.testing.assert_allclose(outputs[0], outputs[1], atol=3e-4)
 
-def test_deterministic_reuse_and_best_res4(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Repeat a backtracking solve bit-for-bit while returning its minimum-Res4 iterate."""
-    matrix = np.diag([100.0, 1.0, 1.0])
-    rhs = np.array([100.0, 0.0, 20.0], dtype=np.float32)
-    config = ContactAPGDOptions(max_iterations=100, tolerance=1.0e-4, use_graph_conditionals=False)
-    solver, operator, friction, solution = _make_dense_fixture(
-        device,
-        [matrix],
-        [-rhs],
-        [1],
-        [0],
-        np.array([10.0], dtype=np.float32),
-        config=config,
-    )
+    def test_masked_fallback_matches_conditional_loops(self):
+        """Run identical bounded iterations with and without conditional graphs."""
+        for device in _devices():
+            results = []
+            for conditional in (False, True):
+                options = DVIAPGDConfig(
+                    max_iterations=3,
+                    max_backtracks=2,
+                    max_corrections=12,
+                    use_graph_conditionals=conditional,
+                )
+                solver, problem = _problem(
+                    [np.eye(3)], [[10.0, 0.0, -1.0]], [(0, 0, 1)], [0.5], device, options=options
+                )
+                solver.solve(problem)
+                results.append((solver.owner.data.solution.lambdas.numpy(), solver.owner.data.status.numpy()))
+            with self.subTest(device=device):
+                np.testing.assert_array_equal(results[0][0], results[1][0])
+                np.testing.assert_array_equal(results[0][1], results[1][1])
 
-    solutions = []
-    statuses = []
-    for _ in range(5):
-        solution.zero_()
-        solver.solve_dense(operator, friction, solution)
-        solutions.append(solution.numpy().copy())
-        statuses.append(solver.status.numpy().copy())
+    def test_dense_sparse_sphere(self):
+        """Solve actual dense and sparse contact operators to the same Coulomb impulses."""
+        for device in _devices():
+            outputs = []
+            for sparse in (False, True):
+                solver, problem = _model_problem(
+                    basics.build_sphere_on_plane(friction=0.5, use_custom_shape_cfg=True),
+                    device,
+                    sparse,
+                )
+                self.assertEqual(int(problem.data.nc.numpy()[0]), 1)
+                bias = problem.data.v_f.numpy()
+                row = int(problem.data.vio.numpy()[0] + problem.data.ccgo.numpy()[0])
+                bias[row : row + 3] = [10.0, 0.0, -1.0]
+                problem.data.v_f.assign(bias)
+                solver.coldstart()
+                solver.solve(problem)
+                outputs.append(solver.data.solution.lambdas.numpy()[row : row + 3])
+                status = solver.data.status.numpy()[0]
+                self.assertEqual(int(status["converged"]), 1, str(status))
+                np.testing.assert_allclose(outputs[-1], [-0.5, 0.0, 1.0], atol=2e-5)
+            with self.subTest(device=device):
+                np.testing.assert_allclose(outputs[0], outputs[1], atol=2e-5)
 
-    for repeated_solution, repeated_status in zip(solutions[1:], statuses[1:], strict=True):
-        np.testing.assert_array_equal(repeated_solution, solutions[0])
-        np.testing.assert_array_equal(repeated_status, statuses[0])
-    np.testing.assert_allclose(solutions[0], np.array([1.0, 0.0, 20.0]), rtol=1.0e-4, atol=1.0e-4)
-    terminal = statuses[0][0]
-    test.assertEqual(int(terminal["converged"]), 1)
-    test.assertLess(int(terminal["iterations"]), config.max_iterations)
-    test.assertGreater(int(terminal["backtracks"]), 0)
-    test.assertGreater(int(terminal["restarts"]), 0)
-    test.assertLessEqual(float(terminal["residual"]), config.tolerance)
+    def test_schur_operator_and_recovered_bilaterals(self):
+        """Match dense and sparse Schur solves and independently eliminate bilateral rows."""
+        for device in _devices():
+            outputs = []
+            for sparse in (False, True):
+                solver, problem = _model_problem(
+                    basics.build_boxes_fourbar(limits=False, friction=0.0),
+                    device,
+                    sparse,
+                    schur=True,
+                )
+                solver.coldstart()
+                solver.solve(problem)
+                data = problem.data
+                n = int(data.dim.numpy()[0])
+                nb = int(data.njc.numpy()[0])
+                self.assertGreater(nb, 0)
+                self.assertGreater(n, nb)
+                outputs.append((solver.data.solution.lambdas.numpy()[:n], solver.data.solution.v_plus.numpy()[:n]))
+                self.assertLess(float(np.max(np.abs(outputs[-1][1][:nb]))), 2e-4)
+                if not sparse:
+                    a = data.D.numpy()[: n * n].reshape(n, n).astype(np.float64)
+                    # Existing bilateral factorization regularizes after symmetric scaling.
+                    scale = solver.data.state.bilateral_preconditioner.numpy()[:nb].astype(np.float64)
+                    regularized_b = a[:nb, :nb] + np.diag(7e-7 / scale**2)
+                    x = np.zeros_like(solver._apgd.x.numpy())
+                    x[nb:n] = np.linspace(0.1, 1.0, n - nb)
+                    solver._apgd.x.assign(x)
+                    solver._apgd.matvec(solver._apgd.x, solver._apgd.product, solver.all_worlds_mask)
+                    actual = solver._apgd.product.numpy()[nb:n]
+                    expected = (a[nb:, nb:] - a[nb:, :nb] @ np.linalg.solve(regularized_b, a[:nb, nb:])) @ x[nb:n]
+                    np.testing.assert_allclose(actual, expected, atol=1e-4, rtol=1e-4)
+            with self.subTest(device=device):
+                np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=3e-4)
 
+    def test_heterogeneous_schur_worlds(self):
+        """Preserve padded bilateral offsets and inactive worlds in a mixed Schur batch."""
+        for device in _devices():
+            outputs = []
+            for sparse in (False, True):
+                builder = basics.build_sphere_on_plane()
+                basics.build_boxes_fourbar(builder=builder, limits=False, ground=False, z_offset=5.0, actuator_ids=[])
+                basics.build_boxes_fourbar(builder=builder, limits=False)
+                solver, problem = _model_problem(builder, device, sparse, schur=True)
+                self.assertEqual(int(problem.data.njc.numpy()[0]), 0)
+                self.assertEqual(int(problem.data.nc.numpy()[1]), 0)
+                self.assertEqual(int(problem.data.dim.numpy()[1]), int(problem.data.njc.numpy()[1]))
+                solver.coldstart()
+                solver.solve(problem)
+                velocity = solver.data.solution.v_plus.numpy()
+                dims, offsets = problem.data.dim.numpy(), problem.data.vio.numpy()
+                outputs.append(np.concatenate([velocity[o : o + n] for n, o in zip(dims, offsets, strict=True)]))
+                info = solver.data.status.numpy()
+                self.assertTrue(np.all(info["apgd_line_search_failed"] == 0))
+                self.assertEqual(int(info[1]["iterations"]), 0)
+                self.assertLess(float(np.max(info["r_b"])), 3e-4)
+            with self.subTest(device=device):
+                np.testing.assert_allclose(outputs[0], outputs[1], atol=3e-4)
 
-def test_nested_graph_conditionals_match_predicated_fallback(test: unittest.TestCase, device: wp.DeviceLike) -> None:
-    """Match fixed loops with nested captured outer/backtracking loops and reusable replay."""
-    if device.is_cuda and not wp.is_conditional_graph_supported():
-        test.skipTest("CUDA graph conditional nodes are not supported on this device.")
+    def test_contact_stack_support(self):
+        """Support a five-box stack using both operator representations."""
+        from newton.tests.kamino.test_kamino_solvers_dvi import _build_five_box_stack  # noqa: PLC0415
 
-    matrix = np.diag([100.0, 1.0, 1.0])
-    rhs = np.array([100.0, 0.0, 20.0], dtype=np.float32)
-    fallback_config = ContactAPGDOptions(max_iterations=100, tolerance=1.0e-4, use_graph_conditionals=False)
-    conditional_config = ContactAPGDOptions(max_iterations=100, tolerance=1.0e-4, use_graph_conditionals=True)
-    fallback, fallback_operator, fallback_friction, fallback_solution = _make_dense_fixture(
-        device,
-        [matrix],
-        [-rhs],
-        [1],
-        [0],
-        np.array([10.0], dtype=np.float32),
-        config=fallback_config,
-    )
-    conditional, conditional_operator, conditional_friction, conditional_solution = _make_dense_fixture(
-        device,
-        [matrix],
-        [-rhs],
-        [1],
-        [0],
-        np.array([10.0], dtype=np.float32),
-        config=conditional_config,
-    )
-    fallback.solve_dense(fallback_operator, fallback_friction, fallback_solution)
-    wp.synchronize_device(device)
+        for device in _devices():
+            for sparse in (False, True):
+                with self.subTest(device=device, sparse=sparse):
+                    solver, problem = _model_problem(_build_five_box_stack(), device, sparse)
+                    self.assertGreater(int(problem.data.nc.numpy()[0]), 4)
+                    solver.coldstart()
+                    solver.solve(problem)
+                    info = solver.data.status.numpy()[0]
+                    self.assertEqual(int(info["apgd_line_search_failed"]), 0, str(info))
+                    self.assertLess(float(info["r_d"]), 1e-4, str(info))
+                    self.assertLess(float(info["r_c"]), 1e-5, str(info))
 
-    conditional.solve_dense(conditional_operator, conditional_friction, conditional_solution)
-    wp.synchronize_device(device)
-    conditional_solution.zero_()
-    with wp.ScopedCapture(device) as capture:
-        conditional.solve_dense(conditional_operator, conditional_friction, conditional_solution)
-
-    captured_solutions = []
-    captured_statuses = []
-    for _ in range(2):
-        conditional_solution.zero_()
-        wp.capture_launch(capture.graph)
-        captured_solutions.append(conditional_solution.numpy().copy())
-        captured_statuses.append(conditional.status.numpy().copy())
-
-    np.testing.assert_array_equal(captured_solutions[0], fallback_solution.numpy())
-    np.testing.assert_array_equal(captured_statuses[0], fallback.status.numpy())
-    np.testing.assert_array_equal(captured_solutions[1], captured_solutions[0])
-    np.testing.assert_array_equal(captured_statuses[1], captured_statuses[0])
-    test.assertGreater(int(captured_statuses[0][0]["iterations"]), 1)
-    test.assertGreater(int(captured_statuses[0][0]["backtracks"]), 0)
-
-
-_DEVICES = get_test_devices(mode="basic")
-
-add_function_test(
-    TestDVIContactAPGD,
-    "test_associated_analytic_contact_modes",
-    test_associated_analytic_contact_modes,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_dense_operator_offsets_rhs_and_compliance",
-    test_dense_operator_offsets_rhs_and_compliance,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_coupled_qp_and_represented_preconditioning",
-    test_coupled_qp_and_represented_preconditioning,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_warmstart_reprojects_opening_and_changed_friction",
-    test_warmstart_reprojects_opening_and_changed_friction,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_backtracking_caps_and_actual_counters",
-    test_backtracking_caps_and_actual_counters,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_eager_conditionals_skip_predicated_work",
-    test_eager_conditionals_skip_predicated_work,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_fixed_order_float64_reduction",
-    test_fixed_order_float64_reduction,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_res4_step_avoids_large_contact_count_overflow",
-    test_res4_step_avoids_large_contact_count_overflow,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_deterministic_reuse_and_best_res4",
-    test_deterministic_reuse_and_best_res4,
-    devices=_DEVICES,
-)
-add_function_test(
-    TestDVIContactAPGD,
-    "test_nested_graph_conditionals_match_predicated_fallback",
-    test_nested_graph_conditionals_match_predicated_fallback,
-    devices=_DEVICES,
-)
+    def test_graph_replay_with_active_contact_changes(self):
+        """Replay a preallocated solve as a contact disappears and returns."""
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA graph replay requires a CUDA device")
+        solver, problem = _problem([np.eye(3)], [[10.0, 0.0, -1.0]], [(0, 0, 1)], [0.5], "cuda:0")
+        solver.solve(problem)
+        with wp.ScopedCapture(device="cuda:0") as capture:
+            solver.solve(problem)
+        for active in (False, True, True):
+            problem.data.dim.fill_(3 if active else 0)
+            problem.data.nc.fill_(1 if active else 0)
+            solver.owner.data.solution.lambdas.zero_()
+            solver.owner.data.status.zero_()
+            wp.capture_launch(capture.graph)
+            expected = [-0.5, 0.0, 1.0] if active else [0.0, 0.0, 0.0]
+            np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
 
 
 if __name__ == "__main__":

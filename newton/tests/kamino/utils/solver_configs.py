@@ -38,9 +38,8 @@ def make_single_iteration_config(
         )
     else:
         config.dvi = kamino_config.DVISolverConfig(
-            coupling_iterations=1,
-            limit_pgs_sweeps=1,
-            contact_pgs_sweeps=1,
+            max_alternating_iterations=1,
+            inequality_sweeps_per_iteration=1,
             tolerance=0.0,
             warmstart_mode=warmstart_mode,
         )

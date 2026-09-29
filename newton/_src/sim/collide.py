@@ -25,7 +25,7 @@ from ..geometry.contact_data import (
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
-from ..geometry.flags import ShapeFlags
+from ..geometry.flags import MeshProperties, ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -82,53 +82,14 @@ def _pair_requires_generic_convex_narrow_phase(
     return (type_a, type_b) not in _ANALYTIC_PRIMITIVE_PAIRS
 
 
-def _generic_convex_pair_requirements(
-    model: Model,
-    *,
-    broad_phase_mode: str,
-    shape_pairs_filtered: wp.array[wp.vec2i] | None,
-) -> list[bool] | None:
-    """Collect generic-convex requirements for possible shape-type pairs."""
-    shape_types_array = getattr(model, "shape_type", None)
-    if shape_types_array is None:
-        return None
-
-    shape_types = shape_types_array.numpy()
-    if broad_phase_mode == "explicit":
-        if shape_pairs_filtered is None:
-            return None
-        pairs = shape_pairs_filtered.numpy()
-        if pairs.size == 0:
-            return []
-        requirements = []
-        for shape_a, shape_b in pairs.reshape(-1, 2):
-            type_a = int(shape_types[shape_a])
-            type_b = int(shape_types[shape_b])
-            requirements.append(_pair_requires_generic_convex_narrow_phase(type_a, type_b))
-        return requirements
-
-    colliding_types = shape_types[_shape_collide_mask(model, len(shape_types))]
-    unique_types = np.unique(colliding_types)
-    return [
-        _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b))
-        for index, type_a in enumerate(unique_types)
-        for type_b in unique_types[index:]
-    ]
-
-
-def _has_generic_convex_pairs(
-    model: Model,
-    *,
-    broad_phase_mode: str,
-    shape_pairs_filtered: wp.array[wp.vec2i] | None,
-) -> bool:
-    """Conservatively prove whether any broad-phase pair can reach GJK/MPR."""
-    requirements = _generic_convex_pair_requirements(
-        model,
-        broad_phase_mode=broad_phase_mode,
-        shape_pairs_filtered=shape_pairs_filtered,
-    )
-    return True if requirements is None else any(requirements)
+# Indexed by raw shape type, so GeoType values must be their own positions.
+_GENERIC_CONVEX_PAIR_LOOKUP = np.array(
+    [
+        [_pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)) for type_b in GeoType]
+        for type_a in GeoType
+    ],
+    dtype=bool,
+)
 
 
 @wp.struct
@@ -287,6 +248,73 @@ def write_contact_speculative(
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
 
     _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
+
+
+@wp.func
+def _mesh_surface_velocity(
+    shape: int,
+    point_world: wp.vec3,
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+) -> wp.vec3:
+    """Interpolate a mesh shape's local surface velocity at a world-space point."""
+    if shape_type[shape] != GeoType.MESH or not (shape_mesh_properties[shape] & int(MeshProperties.SURFACE_VELOCITY)):
+        return wp.vec3(0.0)
+
+    mesh_id = shape_source_ptr[shape]
+    if mesh_id == wp.uint64(0):
+        return wp.vec3(0.0)
+
+    scale = shape_scale[shape]
+    X_ws = shape_transform[shape]
+    point_local = wp.cw_div(wp.transform_point(wp.transform_inverse(X_ws), point_world), scale)
+    query = wp.mesh_query_point_no_sign(mesh_id, point_local, 1.0e11)
+    if not query.result:
+        return wp.vec3(0.0)
+
+    velocity_local = wp.mesh_eval_velocity(mesh_id, query.face, query.u, query.v)
+    return wp.transform_vector(X_ws, wp.cw_mul(velocity_local, scale))
+
+
+@wp.kernel(enable_backward=False)
+def eval_rigid_contact_surface_velocities(
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_transform: wp.array[wp.transform],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[int],
+    contact_surface_velocity: wp.array[wp.vec3],
+):
+    """Evaluate world-space relative mesh surface velocity for active rigid contacts."""
+    tid = wp.tid()
+    if tid >= contact_count[0]:
+        return
+
+    shape0 = contact_shape0[tid]
+    shape1 = contact_shape1[tid]
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    X_wb0 = wp.transform_identity() if body0 < 0 else body_q[body0]
+    X_wb1 = wp.transform_identity() if body1 < 0 else body_q[body1]
+    point0_world = wp.transform_point(X_wb0, contact_point0[tid])
+    point1_world = wp.transform_point(X_wb1, contact_point1[tid])
+    velocity0_world = _mesh_surface_velocity(
+        shape0, point0_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    velocity1_world = _mesh_surface_velocity(
+        shape1, point1_world, shape_type, shape_scale, shape_transform, shape_source_ptr, shape_mesh_properties
+    )
+    contact_surface_velocity[tid] = velocity1_world - velocity0_world
 
 
 @wp.kernel(enable_backward=False)
@@ -874,32 +902,38 @@ _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 27_776
 _SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 65_536
 
 
-def _compute_generic_convex_pair_work_estimate(
+def _compute_generic_convex_pair_stats(
     model: Model,
     *,
     broad_phase_mode: str,
     shape_pairs_filtered: wp.array[wp.vec2i] | None,
     candidate_pair_work_estimate: int,
-) -> int:
-    """Estimate how much of the candidate-pair bound can reach GJK/MPR."""
+) -> tuple[bool, int]:
+    """Determine whether generic convex pairs exist and estimate their work."""
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
-        return candidate_pair_work_estimate
-
+        return True, candidate_pair_work_estimate
     shape_types = shape_types_array.numpy()
+
     if broad_phase_mode == "explicit":
-        requirements = _generic_convex_pair_requirements(
-            model,
-            broad_phase_mode=broad_phase_mode,
-            shape_pairs_filtered=shape_pairs_filtered,
+        if shape_pairs_filtered is None:
+            return True, candidate_pair_work_estimate
+        explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+        if len(explicit_pairs) == 0:
+            return False, 0
+        pair_types = shape_types[explicit_pairs]
+        generic_pair_count = int(
+            np.count_nonzero(
+                _GENERIC_CONVEX_PAIR_LOOKUP[
+                    pair_types[:, 0],
+                    pair_types[:, 1],
+                ]
+            )
         )
-        return (
-            candidate_pair_work_estimate
-            if requirements is None
-            else min(candidate_pair_work_estimate, sum(requirements))
-        )
+        return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
 
     colliding_mask = _shape_collide_mask(model, len(shape_types))
+    has_generic_convex_pairs = False
     generic_pair_bound = 0
     unique_types = np.unique(shape_types[colliding_mask])
     for index, type_a in enumerate(unique_types):
@@ -907,10 +941,11 @@ def _compute_generic_convex_pair_work_estimate(
         for type_b in unique_types[index:]:
             if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
                 continue
+            has_generic_convex_pairs = True
             second_mask = colliding_mask & (shape_types == type_b)
             generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
 
-    return min(candidate_pair_work_estimate, generic_pair_bound)
+    return has_generic_convex_pairs, min(candidate_pair_work_estimate, generic_pair_bound)
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -943,6 +978,11 @@ def _world_compatible_pairs(
     """Emit ``(feature, shape)`` index pairs whose worlds are compatible: same world, or either is
     global (``-1``). ``feature_world[i]`` / ``shape_world[s]`` give each entity's world (-1 == global).
 
+    Pairs are stably sorted by shape index so consecutive candidates process the same shape: on CUDA
+    a warp then reads one shape's transform/scale/SDF data and takes one type-dispatch branch. The
+    sort runs on the host at construction; each contact record stores its candidate tid, so
+    downstream mapping does not depend on candidate order.
+
     Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so this filtering is safe to
     precompute; mutable per-entity flags (ACTIVE / COLLIDE_PARTICLES) are deliberately left to the
     per-thread kernel. The compatibility predicate splits into three disjoint groups, each a
@@ -958,6 +998,9 @@ def _world_compatible_pairs(
         if shape_ok is not None and len(s_idx):
             keep = shape_ok[s_idx.astype(np.intp)]
             f_idx, s_idx = f_idx[keep], s_idx[keep]
+        if len(s_idx):
+            order = np.argsort(s_idx, kind="stable")
+            f_idx, s_idx = f_idx[order], s_idx[order]
         stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
         return wp.array(stacked, dtype=wp.vec2i, device=device)
 
@@ -1206,24 +1249,6 @@ class CollisionPipeline:
         workflow before relying on them in optimization loops.
     """
 
-    @dataclasses.dataclass(frozen=True)
-    class SpeculativeContactConfig:
-        """Configure velocity-adapted contact gaps for rigid contacts.
-
-        Approaching candidates are retained when their contact points can close
-        the current separation before the next collision update.
-        See :ref:`Speculative contacts <speculative-contacts>`.
-        """
-
-        max_speculative_extension: float = 0.1
-        """Upper bound on the velocity-based contact gap [m]. ``0.0`` disables velocity adaptation."""
-
-        def __post_init__(self):
-            """Validate the finite, non-negative extension limit."""
-            value = self.max_speculative_extension
-            if not np.isfinite(value) or value < 0.0:
-                raise ValueError(f"max_speculative_extension must be a non-negative finite number, got {value!r}")
-
     def __init__(
         self,
         model: Model,
@@ -1253,7 +1278,7 @@ class CollisionPipeline:
         contact_report: bool = False,
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
-        speculative_config: SpeculativeContactConfig | None = None,
+        speculative_contact_gap_max: float | None = None,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -1316,11 +1341,9 @@ class CollisionPipeline:
                 "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
                 and specialize internal buffers at construction, so do not modify or resize the
                 array while the pipeline is in use. Rebuild the pipeline after changing the pairs.
-            include_static_kinematic_pairs: Whether to generate contacts for
-                pairs where both shapes are immovable. Set to ``False`` to
-                filter static-static, static-kinematic, and
-                kinematic-kinematic pairs. Defaults to ``True`` for backward
-                compatibility.
+            include_static_kinematic_pairs: Whether to generate contacts for static-kinematic and
+                kinematic-kinematic pairs. Set to ``False`` to filter those pairs. Static-static pairs are
+                always filtered. Defaults to ``True`` for backward compatibility.
             sdf_hydroelastic_config: Configuration for hydroelastic collision
                 handling. Defaults to None.
             shape_pairs_max: Override for the broad-phase candidate-pair
@@ -1370,13 +1393,13 @@ class CollisionPipeline:
                 ``True``.  Overhead is one extra kernel launch per collision
                 pass; disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
-            speculative_config: Optional speculative-contact configuration.
-                ``None`` disables speculative contacts. When set, admits a
-                separated rigid-contact candidate if its normal-directed
-                contact-point velocity can close the separation within the
-                collision-update horizon. See
-                :ref:`Speculative contacts <speculative-contacts>` and
-                :class:`SpeculativeContactConfig`.
+            speculative_contact_gap_max: Cap on the velocity-derived rigid-contact
+                detection gap [m]. The effective gap is the larger of the authored
+                gap and the capped velocity-derived gap. Must be a non-negative
+                finite number or ``None``. ``None`` disables speculative contacts;
+                ``0.0`` enables them without enlarging authored gaps. Defaults to
+                ``None``. See
+                :ref:`Speculative contacts <speculative-contacts>`.
 
         .. experimental::
 
@@ -1400,6 +1423,13 @@ class CollisionPipeline:
         matching_sticky = contact_matching == "sticky"
         if contact_report and not matching_enabled:
             raise ValueError('contact_report=True requires contact_matching != "disabled"')
+        if speculative_contact_gap_max is not None and (
+            not np.isfinite(speculative_contact_gap_max) or speculative_contact_gap_max < 0.0
+        ):
+            raise ValueError(
+                "speculative_contact_gap_max must be a non-negative finite number or None, "
+                f"got {speculative_contact_gap_max!r}"
+            )
 
         # Any non-disabled matching mode implies deterministic sorting.
         if matching_enabled:
@@ -1414,6 +1444,11 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
+        shape_mesh_properties = getattr(model, "_shape_mesh_properties", None)
+        self._rigid_contact_surface_velocity = bool(
+            shape_mesh_properties is not None
+            and np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        )
         self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
@@ -1463,8 +1498,8 @@ class CollisionPipeline:
         self.reduce_contacts = reduce_contacts
         self.requires_grad = requires_grad
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
-        self.speculative_config = speculative_config
-        self._speculative_enabled = speculative_config is not None
+        self.speculative_contact_gap_max = speculative_contact_gap_max
+        self._speculative_enabled = speculative_contact_gap_max is not None
         contact_writer = write_contact_speculative if self._speculative_enabled else write_contact
 
         if using_expert_components:
@@ -1509,7 +1544,8 @@ class CollisionPipeline:
                 )
             if bool(getattr(narrow_phase, "speculative", False)) != self._speculative_enabled:
                 raise ValueError(
-                    "Provided narrow_phase speculative mode must match CollisionPipeline(speculative_config=...)."
+                    "Provided narrow_phase speculative mode must match "
+                    "CollisionPipeline(speculative_contact_gap_max=...)."
                 )
             if narrow_phase.max_candidate_pairs < self.shape_pairs_max:
                 raise ValueError(
@@ -1611,17 +1647,17 @@ class CollisionPipeline:
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
                     )
                     coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
-                    has_texture_sdf = np.array(
-                        [
-                            sdf_idx >= 0
-                            and coarse_textures is not None
-                            and sdf_idx < len(coarse_textures)
-                            and coarse_textures[sdf_idx] is not None
-                            for sdf_idx in shape_sdf_index
-                        ],
-                        dtype=bool,
-                    )
-                    mesh_sdf_texture_only = bool(np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes]))
+                    if coarse_textures is not None and len(coarse_textures) > 0:
+                        has_texture_sdf = np.array(
+                            [
+                                sdf_idx >= 0 and sdf_idx < len(coarse_textures) and coarse_textures[sdf_idx] is not None
+                                for sdf_idx in shape_sdf_index
+                            ],
+                            dtype=bool,
+                        )
+                        mesh_sdf_texture_only = bool(
+                            np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes])
+                        )
                     if mesh_sdf_texture_only:
                         texture_sdf_data = model._texture_sdf_data.numpy()
                         scale_baked = texture_sdf_data["scale_baked"]
@@ -1634,11 +1670,12 @@ class CollisionPipeline:
                 if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
                     # Explicit pair types are fixed at pipeline construction, including
                     # intentional cross-world pairs, so size only the stages they can reach.
-                    explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
-                    if len(explicit_pairs) == 0:
+                    # Both stages require a mesh or planar SDF, even in heightfield scenes.
+                    if not has_meshes or self.shape_pairs_max == 0:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
+                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
                         box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
@@ -1679,15 +1716,11 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
-            has_generic_convex_pairs = _has_generic_convex_pairs(
-                model,
-                broad_phase_mode=self.broad_phase_mode,
-                shape_pairs_filtered=self.shape_pairs_filtered,
-            )
-            candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
-            generic_convex_pair_work_estimate = _compute_generic_convex_pair_work_estimate(
+            else:
+                candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
+            has_generic_convex_pairs, generic_convex_pair_work_estimate = _compute_generic_convex_pair_stats(
                 model,
                 broad_phase_mode=self.broad_phase_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
@@ -1964,6 +1997,7 @@ class CollisionPipeline:
             requested_attributes=self.model.get_requested_contact_attributes(),
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
+            rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
@@ -2250,13 +2284,12 @@ class CollisionPipeline:
         else:
             soft_contact_gap = self.soft_contact_gap
         if self._speculative_enabled:
-            config = self.speculative_config
             if dt is None:
                 raise ValueError("dt must be provided when speculative contacts are enabled")
             collision_update_dt = dt
             if not np.isfinite(collision_update_dt) or collision_update_dt < 0.0:
                 raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
-            max_speculative_extension = config.max_speculative_extension
+            max_speculative_extension = float(self.speculative_contact_gap_max)
             speculative_active = collision_update_dt > 0.0 and max_speculative_extension > 0.0
             search_gap = self._shape_search_gap if speculative_active else model.shape_gap
         else:
@@ -2540,6 +2573,36 @@ class CollisionPipeline:
                 device=self.device,
             )
 
+        if self._rigid_contact_surface_velocity and contacts.rigid_contact_max > 0:
+            if (
+                contacts.rigid_contact_surface_velocity is None
+                or len(contacts.rigid_contact_surface_velocity) < contacts.rigid_contact_max
+            ):
+                raise ValueError(
+                    "contacts must allocate rigid surface velocities for this model; use CollisionPipeline.contacts()"
+                )
+            wp.launch(
+                kernel=eval_rigid_contact_surface_velocities,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    state.body_q,
+                    model.shape_body,
+                    model.shape_type,
+                    model.shape_scale,
+                    self.geom_transform,
+                    model.shape_source_ptr,
+                    model._shape_mesh_properties,
+                ],
+                outputs=[contacts.rigid_contact_surface_velocity],
+                device=self.device,
+                record_tape=False,
+            )
+
         # Build the contact report before saving state, because save
         # overwrites _prev_count and the report needs the old value.
         if self._contact_matcher is not None:
@@ -2633,8 +2696,8 @@ class CollisionPipeline:
             )
 
         # Full-surface EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
-        # the per-particle path cannot detect. Run after the legacy particle launch on the same stream;
-        # the particle records therefore occupy [0, particle_count) and the edge/face records append.
+        # the per-particle path cannot detect. Run after the particle launch on the same stream, so
+        # edge/face records append after the active particle-contact prefix.
         # The flag is fixed at construction because soft_contact_max headroom is sized there.
         if self.enable_rigid_soft_full_surface_contact and state.particle_q:
             launch_soft_ef_contacts(
@@ -2646,6 +2709,12 @@ class CollisionPipeline:
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
                 n_particle_pairs=self.soft_contact_pair_count,
+                # The AABB cull reads a persistent buffer rewritten every collide(); a tape
+                # backward replay would see the LAST step's bounds, changing which contact
+                # kernels early-return versus the forward pass. The cull is a pure optimization,
+                # so differentiable pipelines skip it (empty arrays disable the test in-kernel).
+                shape_aabb_lower=None if self.requires_grad else self.narrow_phase.shape_aabb_lower,
+                shape_aabb_upper=None if self.requires_grad else self.narrow_phase.shape_aabb_upper,
             )
 
         # Preserve the previous provenance if validation or collision setup fails.

@@ -23,12 +23,12 @@ from ..common import (
     warmstart_joint_constraints,
     warmstart_limit_constraints,
 )
-from .apgd import ContactAPGDOptions, ContactAPGDSolver, DenseContactOperator
+from .apgd import UnilateralAPGD
+from .apgd_kernels import guard_convergence
 from .kernels import (
-    _FUSED_SINGLE_FAMILY_BLOCK,
-    _INEQUALITY_FAMILY_CONTACTS,
-    _INEQUALITY_FAMILY_LIMITS,
-    _accumulate_dvi_apgd_status,
+    _FUSED_BILATERAL_BLOCK,
+    _FUSED_INEQUALITY_BLOCK,
+    _assemble_bilateral_contact_response,
     _build_bilateral_rhs,
     _compute_dvi_desaxce_corrections,
     _compute_dvi_solution_vectors,
@@ -41,12 +41,17 @@ from .kernels import (
     _scale_dvi_tangential_warmstart,
     _scatter_bilateral_solution,
     _set_dvi_bilateral_active_dim,
-    _set_dvi_contact_active_mask,
     _set_dvi_direct_status_iterations,
+    _solve_bilateral_contact_response,
     _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
 )
-from .sparse import SparseDVIPath
+from .sparse import (
+    SparseDVIPath,
+    _compute_sparse_solution_vectors,
+    _factor_sparse_bilateral_block,
+    _solve_sparse_bilateral_block,
+)
 from .sparse_kernels import (
     _color_mapped_dvi_inequalities,
     _map_active_contacts,
@@ -64,15 +69,14 @@ class DVISolver:
     """Solve Kamino dual problems with projected DVI iterations.
 
     For Kamino's dual system ``v_plus = D * lambda + v_f``, bilateral rows
-    enforce zero effective velocity, limit rows enforce nonnegative
-    complementarity in the effective velocity, and contact rows enforce a
-    selected Coulomb law. PGS uses the
-    non-associated De Saxce correction; APGD solves the associated cone QP.
+    enforce zero velocity, limit rows enforce nonnegative complementarity,
+    and contact rows enforce Coulomb-cone complementarity after the De Saxce
+    velocity correction.
 
-    Every coupling sweep evaluates limits, then the direct bilateral block,
-    then contacts (``L -> B -> C``), with an optional post-stabilization
-    bilateral refresh. Dense and matrix-free sparse problems share the same
-    solution, warm-start, status, and diagnostics contract.
+    Bilateral constraints are solved as a direct block when available, while
+    every limit and frictional contact uses one graph-colored projected
+    Gauss-Seidel schedule. Dense and matrix-free sparse problems share the
+    same solution, warm-start, status, and diagnostics contract.
     """
 
     Config = DVISolverConfig
@@ -109,26 +113,24 @@ class DVISolver:
         self._size: SizeKamino | None = None
         self._data: DVIData | None = None
         self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
-        self._contact_solver: str = "pgs"
-        self._contact_law: str = "de_saxce"
-        self._contact_apgd: ContactAPGDSolver | None = None
-        self._dense_contact_operator: DenseContactOperator | None = None
-        self._dense_contact_problem: DualProblem | None = None
-        self._max_coupling_iterations: int = 1
+        self._use_schur_complement: bool = False
+        self._max_alternating_iterations: int = 1
+        self._bilateral_solve_after_block: tuple[bool, ...] = ()
         self._has_unilateral_constraints: bool = False
-        self._has_limit_constraints: bool = False
-        self._has_contact_constraints: bool = False
-        self._has_post_stabilization_bilateral: bool = False
         self._limits: LimitsKamino | None = None
         self._contacts: ContactsKamino | None = None
         self._sparse_path: SparseDVIPath | None = None
         self._all_worlds_mask: wp.array[wp.bool] | None = None
         self._device: wp.DeviceLike = None
+        self._joint_rows_host: list[int] = []
+        self._unilateral_strides_host: list[int] = []
+        self._max_unilateral_rows: int = 0
         self._num_joints: int = 0
         self._joint_wid: wp.array[wp.int32] | None = None
         self._joint_bid_B: wp.array[wp.int32] | None = None
         self._joint_bid_F: wp.array[wp.int32] | None = None
         self._joint_bounded_cts_offset: wp.array[wp.int32] | None = None
+        self._body_inv_mass: wp.array[wp.float32] | None = None
 
         if model is not None:
             self.finalize(
@@ -205,27 +207,40 @@ class DVISolver:
         self._joint_bid_B = model.joints.bid_B
         self._joint_bid_F = model.joints.bid_F
         self._joint_bounded_cts_offset = model.joints.bounded_cts_offset
+        self._body_inv_mass = model.bodies.inv_m_i
         self._config = self._check_config(model, config)
-        contact_solvers = {c.contact_solver for c in self._config}
-        contact_laws = {c.resolved_contact_law for c in self._config}
-        if len(contact_solvers) != 1 or len(contact_laws) != 1:
-            raise ValueError("All worlds must use the same DVI contact solver and contact law.")
-        self._contact_solver = self._config[0].contact_solver
-        self._contact_law = self._config[0].resolved_contact_law
+        if len({c.unilateral_solver for c in self._config}) != 1:
+            raise ValueError("All worlds must use the same DVI unilateral solver.")
+        self._apgd = None
+        self._use_schur_complement = self._config[0].use_schur_complement
+        if any(c.use_schur_complement != self._use_schur_complement for c in self._config[1:]):
+            raise ValueError("All worlds must use the same DVI Schur-complement configuration.")
         self._warmstart = warmstart
         self._collect_info = collect_info
-        self._max_coupling_iterations = max(c.coupling_iterations for c in self._config)
-        self._has_limit_constraints = self._size.max_of_max_limits > 0 or self._size.max_of_num_bounded_joint_cts > 0
-        self._has_contact_constraints = self._size.max_of_max_contacts > 0
-        self._has_unilateral_constraints = self._has_limit_constraints or self._has_contact_constraints
-        self._has_post_stabilization_bilateral = any(c.post_stabilization_bilateral for c in self._config)
+        self._max_alternating_iterations = max(c.max_alternating_iterations for c in self._config)
+        self._bilateral_solve_after_block = self._make_bilateral_solve_schedule(self._config)
+        self._has_unilateral_constraints = (
+            self._size.max_of_max_limits > 0
+            or self._size.max_of_max_contacts > 0
+            or self._size.max_of_num_bounded_joint_cts > 0
+        )
         self._data = DVIData(size=self._size, collect_info=self._collect_info, device=self._device)
         self._all_worlds_mask = wp.ones(shape=(self._size.num_worlds,), dtype=wp.bool, device=self._device)
-        self._allocate_contact_solver(contacts, problem)
+        self._joint_rows_host = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
+        bounded_counts = model.info.num_joint_bounded_cts.numpy().astype(int).tolist()
+        max_limits = model.info.max_limits.numpy().astype(int).tolist()
+        max_contacts = model.info.max_contacts.numpy().astype(int).tolist()
+        self._unilateral_strides_host = [
+            bounded_count + limit_count + 3 * contact_count
+            for bounded_count, limit_count, contact_count in zip(bounded_counts, max_limits, max_contacts, strict=True)
+        ]
+        self._max_unilateral_rows = max(self._unilateral_strides_host, default=0)
         self._allocate_bilateral_solver(model)
         self._sparse_path = SparseDVIPath(
             device=self._device,
             size=self._size,
+            joint_rows_host=self._joint_rows_host,
+            unilateral_strides_host=self._unilateral_strides_host,
             data=self._data,
             model=model,
             model_data=data,
@@ -233,25 +248,50 @@ class DVISolver:
             contacts=contacts,
             jacobians=jacobians,
             bilateral_solver=self._bilateral_solver,
-            contact_solver=self._contact_solver,
-            contact_apgd=self._contact_apgd,
-            max_coupling_iterations=self._max_coupling_iterations,
+            use_schur_complement=self._use_schur_complement,
+            max_alternating_iterations=self._max_alternating_iterations,
+            max_inequality_sweeps_per_iteration=max(c.inequality_sweeps_per_iteration for c in self._config),
             has_unilateral_constraints=self._has_unilateral_constraints,
-            has_limit_constraints=self._has_limit_constraints,
-            has_contact_constraints=self._has_contact_constraints,
-            has_post_stabilization_bilateral=self._has_post_stabilization_bilateral,
             all_worlds_mask=self._all_worlds_mask,
+            should_solve_bilateral_after_block=self._should_solve_bilateral_after_block,
             set_bilateral_active_dim=self._set_bilateral_active_dim,
         )
         self._limits = limits
         self.set_contacts(contacts)
         self._validate_inequality_topology()
-        if problem is not None and problem.sparse:
-            self._sparse_path.prepare(problem)
+        if problem is not None:
+            self._allocate_projection_workspace(problem)
+            if problem.sparse:
+                self._sparse_path.prepare(problem)
 
         configs = [convert_config_to_struct(c) for c in self._config]
         with wp.ScopedDevice(self._device):
             self._data.config = wp.array(configs, dtype=DVIConfigStruct)
+        if self._config[0].unilateral_solver == "apgd":
+            self._apgd = UnilateralAPGD(self)
+
+    def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
+        """Return host-side repeated bilateral solve points for direct-block DVI."""
+        if self._use_schur_complement:
+            # Schur elimination incorporates the bilateral response into every
+            # unilateral update. Re-solving the bilateral block between
+            # projected sweeps defeats that elimination and makes
+            # bilateral_solve_interval affect a mode where its documented
+            # contract says it is ignored.
+            return (False,) * max(0, self._max_alternating_iterations - 1)
+        return tuple(
+            any(
+                next_block < c.max_alternating_iterations and next_block % c.bilateral_solve_interval == 0
+                for c in configs
+            )
+            for next_block in range(1, self._max_alternating_iterations)
+        )
+
+    def _should_solve_bilateral_after_block(self, block_iteration: int) -> bool:
+        """Whether the direct bilateral block should be re-solved after this block."""
+        if block_iteration < 0 or block_iteration >= len(self._bilateral_solve_after_block):
+            return False
+        return self._bilateral_solve_after_block[block_iteration]
 
     def _set_bilateral_active_dim(self, problem: DualProblem, block_iteration: int) -> None:
         """Select worlds whose bilateral block is active for a scheduled solve."""
@@ -268,57 +308,6 @@ class DVISolver:
                 self._data.state.bilateral_active_dim,
             ],
             device=self.device,
-        )
-
-    def _allocate_contact_solver(self, contacts: ContactsKamino | None, problem: DualProblem | None) -> None:
-        """Allocate the opt-in contact backend and all graph-time workspace."""
-        self._contact_apgd = None
-        self._dense_contact_operator = None
-        self._dense_contact_problem = None
-        if self._contact_solver != "apgd":
-            return
-
-        if contacts is None:
-            if self._size.max_of_max_contacts > 0:
-                raise ValueError("The APGD contact solver requires a ContactsKamino container.")
-            contact_capacities = [0] * self._size.num_worlds
-        else:
-            contact_capacities = contacts.world_max_contacts_host
-        if len(contact_capacities) != self._size.num_worlds:
-            raise ValueError("The APGD contact capacities must contain one entry per world.")
-
-        options = [
-            ContactAPGDOptions(
-                max_iterations=config.apgd.max_iterations,
-                max_backtrack_iterations=config.apgd.max_backtrack_iterations,
-                tolerance=config.apgd.tolerance,
-                min_iterations=config.apgd.min_iterations,
-                early_exit=config.apgd.early_exit,
-                use_graph_conditionals=config.apgd.use_graph_conditionals,
-            )
-            for config in self._config
-        ]
-        self._contact_apgd = ContactAPGDSolver(contact_capacities, options, device=self.device)
-        if problem is not None and not problem.sparse:
-            self._dense_contact_operator = self._make_dense_contact_operator(problem)
-            self._dense_contact_problem = problem
-
-    def _make_dense_contact_operator(self, problem: DualProblem) -> DenseContactOperator:
-        """Bind APGD to the represented dense contact block without copying it."""
-        if self._contact_apgd is None:
-            raise RuntimeError("The APGD contact solver has not been allocated.")
-        if problem.sparse or problem.data.D is None:
-            raise TypeError("Dense contact APGD requires a dense DualProblem.")
-        return self._contact_apgd.make_dense_operator(
-            problem_dim=problem.data.dim,
-            problem_mio=problem.data.mio,
-            problem_vio=problem.data.vio,
-            problem_nc=problem.data.nc,
-            problem_cio=problem.data.cio,
-            problem_ccgo=problem.data.ccgo,
-            matrix=problem.data.D,
-            represented_compliance=problem.data.E_hat,
-            free_velocity=problem.data.v_f,
         )
 
     def _allocate_bilateral_solver(self, model: ModelKamino):
@@ -386,11 +375,19 @@ class DVISolver:
             self._sparse_path.contacts = contacts
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
-        """Reset scratch state and cached solution data."""
+        """
+        Resets the persistent solution cache used for internal warm-starting, for all worlds
+        or the subset selected by `world_mask`.
+
+        This does not touch the scratch solver state (`self._data.state`) or the diagnostics
+        (`self._data.info`):
+        * `coldstart()`/`warmstart()` reinitialize `state` before every `solve()` call, except
+          for the large response matrices, which they deliberately skip because solves overwrite
+          their active entries before reading them.
+        * `info.status` is overwritten wholesale at the end of every `solve()` call if info
+          collection is enabled.
+        """
         if world_mask is None:
-            self._data.state.reset()
-            if self._data.info is not None:
-                self._data.info.zero()
             self._data.solution.zero()
         else:
             if problem is None:
@@ -410,7 +407,7 @@ class DVISolver:
 
     def coldstart(self):
         """Prepare a cold-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         self._data.solution.zero()
 
     def warmstart(
@@ -422,7 +419,7 @@ class DVISolver:
         contacts: ContactsKamino | None = None,
     ):
         """Prepare a warm-start solve."""
-        self._data.state.reset()
+        self._data.state.reset(clear_response=False)
         if limits is None:
             limits = self._limits
         else:
@@ -444,61 +441,76 @@ class DVISolver:
             case _:
                 raise ValueError(f"Invalid warmstart mode: {self._warmstart}")
 
+    def _allocate_projection_workspace(self, problem: DualProblem) -> None:
+        if self._config and self._config[0].unilateral_solver == "apgd":
+            return
+        with wp.ScopedDevice(self.device):
+            if problem.sparse:
+                bilateral_vector_size = (
+                    self._data.bilateral_operator.info.total_vec_size
+                    if self._data.bilateral_operator is not None
+                    else 0
+                )
+                self._data.state.allocate_sparse_projection(
+                    self._size,
+                    self._joint_rows_host,
+                    self._unilateral_strides_host,
+                    bilateral_vector_size,
+                    self._use_schur_complement,
+                )
+            elif self._use_schur_complement:
+                self._data.state.allocate_dense_projection(self._size)
+
     def solve(self, problem: DualProblem):
         """Solve the cone-complementarity problem defined by ``problem``.
 
-        Kamino supplies the represented constraint-space system
+        Kamino supplies the constraint-space system
 
         ``v_plus = D * lambda + v_f``,
 
-        where ``D`` is Kamino's preconditioned Delassus operator derived from
+        where ``D`` is Kamino's represented Delassus operator derived from
         ``J * M^-1 * J^T``, ``lambda`` contains joint, limit, and contact
         impulses, and ``v_f`` contains unconstrained motion, stabilization,
-        and restitution. For compliant constraints the solve uses
-        ``v_eff = D * lambda + v_f + E_hat * lambda``, where
-        ``E_hat = P * E * P`` is the compliance diagonal represented in solver
-        coordinates. The exported physical ``v_plus`` excludes this
-        constitutive compliance term. The bilateral equation includes its
-        configured constitutive diagonal while retaining ``b = -v_f``.
+        and restitution. The bilateral equation ``D * lambda = -v_f`` is the
+        standalone ``N * lambda = b`` formulation with ``b = -v_f``.
 
         Rows are ordered as bilateral joints, unilateral limits, and contact
-        triplets ``[t0, t1, n]``. The compatibility PGS path uses the
-        non-associated De Saxce velocity
-        ``v_aug = v_plus + [0, 0, mu * norm(v_t)]``; APGD instead uses the
-        associated contact velocity directly.
+        triplets ``[t0, t1, n]``. Contact rows use
+        ``v_aug = v_plus + [0, 0, mu * norm(v_t)]``.
 
-        The DVI solution satisfies zero effective constraint velocity on
-        bilateral rows, projected bounds and nonnegative complementarity in
-        the effective velocity on joint-side unilateral rows, and the selected
-        Coulomb-cone contact law. DVI
-        partitions these rows into ``L`` (bounded joint rows and joint limits),
-        ``B`` (bilateral joint rows), and ``C`` (contact triplets). When the
-        bilateral block is available, it is factored once and solved directly:
+        The DVI solution satisfies zero ``v_aug`` on bilateral rows,
+        nonnegative complementarity on limit rows, and Coulomb-cone
+        complementarity between contact impulses and augmented velocities. DVI
+        exploits this difference by partitioning the system into bilateral
+        impulses ``lambda_b`` and unilateral limit/contact impulses
+        ``lambda_u``. When the bilateral block is available, it is factored and
+        solved directly:
 
-        ``(D_bb + E_hat_bb) * lambda_b = -(v_f,b + D_bu * lambda_u)``.
+        ``D_bb * lambda_b = -(v_f,b + D_bu * lambda_u)``.
 
-        Every coupling sweep then executes ``L -> B -> C`` and skips empty
-        families. This retains all cross-family Delassus coupling while using a
-        solver suited to each constraint class. Repeating the schedule for
-        ``coupling_iterations`` drives the families toward a mutually
-        consistent solution. By default the terminal contact phase is freshest:
-        the final ``B`` solve includes the same-sweep ``L`` update but not the
-        final ``C`` increment. ``post_stabilization_bilateral=True`` adds an
-        optional terminal ``B`` refresh. When no bilateral block exists, the
-        projected ``L`` and ``C`` phases retain the same ordering and skip
-        ``B``.
+        The unilateral block is updated iteratively with projection onto the
+        nonnegative and Coulomb cones. By default, direct bilateral solves are
+        alternated with unilateral sweeps. The optional Schur path instead
+        eliminates the bilateral response through
+        ``D_uu - D_ub * D_bb^-1 * D_bu``. The dense path materializes this
+        operator for PGS, while sparse PGS applies a compact low-rank
+        correction. APGD applies the factored bilateral response in each
+        operator product. A final direct bilateral solve recovers consistent joint
+        impulses. When no bilateral block exists, the iteration schedule
+        applies to the original unilateral operator.
 
         This differs from Kamino's PADMM backend, which places all constraint
         rows in one proximal-ADMM iteration: it solves a regularized full
         Delassus system for the unconstrained primal update, then projects the
         unilateral components. DVI uses no ADMM penalty or auxiliary-variable
-        iteration; DVI instead uses explicit family phases. Dense and sparse
-        DVI paths implement the same schedule with different Delassus
-        representations.
+        iteration; its primary split is direct bilateral versus projected
+        iterative unilateral solves. Dense and sparse DVI paths implement the
+        same split with different Delassus representations.
 
         Args:
             problem: Unified Kamino dual problem to solve.
         """
+        self._allocate_projection_workspace(problem)
         wp.launch(
             kernel=_reset_dvi_status,
             dim=self._size.num_worlds,
@@ -513,13 +525,19 @@ class DVISolver:
                 self._sparse_path.prepare(problem)
             # Apply projected iterations through matrix-free products
             # D * lambda = J * (M^-1 * (J^T * lambda)) + R * lambda.
-            self._sparse_path.solve(problem)
+            if self._apgd is None:
+                self._sparse_path.solve(problem)
+            else:
+                self._solve_apgd(problem)
+                _compute_sparse_solution_vectors(self._sparse_path, problem)
 
         if not problem.sparse:
-            if self._bilateral_solver is not None and self._data.bilateral_operator is not None:
+            if self._apgd is not None:
+                self._solve_apgd(problem)
+            elif self._bilateral_solver is not None and self._data.bilateral_operator is not None:
                 self._solve_with_bilateral_direct_block(problem)
             elif self._can_use_dense_inequality_pgs():
-                self._solve_dense_family_pgs(problem)
+                self._solve_dense_inequality_pgs(problem)
 
             # Evaluate the physical post-event velocity v_plus = D * lambda + v_f.
             wp.launch(
@@ -530,7 +548,6 @@ class DVISolver:
                     problem.data.mio,
                     problem.data.vio,
                     problem.data.D,
-                    problem.data.E_hat,
                     problem.data.v_f,
                     self._data.state.s,
                     self._data.state.v_aug,
@@ -540,7 +557,7 @@ class DVISolver:
                 device=self.device,
             )
 
-        if self._size.max_of_max_contacts > 0 and self._contact_law == "de_saxce":
+        if self._size.max_of_max_contacts > 0:
             # Map physical contact velocity to the dual-cone variable
             # v_aug = v_plus + [0, 0, mu * norm(v_t)].
             wp.launch(
@@ -554,36 +571,18 @@ class DVISolver:
                     problem.data.mu,
                     self._data.state.s,
                     self._data.state.v_aug,
+                    self._data.solution.v_plus,
                 ],
                 device=self.device,
             )
 
-        # Convert represented solver values to physical constraint units before
-        # classifying convergence. Contact triplets use one common P entry, so
-        # both the associated velocity and the homogeneous De Saxce correction
-        # transform component-wise through this operation.
-        wp.launch(
-            kernel=_unprecondition_dvi_solution,
-            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
-            inputs=[
-                problem.data.dim,
-                problem.data.vio,
-                problem.data.P,
-                self._data.status,
-                self._data.state.s,
-                self._data.state.v_aug,
-                self._data.solution.lambdas,
-                self._data.solution.v_plus,
-            ],
-            device=self.device,
-        )
-
-        # Classify the final physical iterate using all DVI conditions. This
-        # replaces provisional iterate-change convergence from the dense
-        # fallback; direct and sparse paths reach this check after fixed counts.
+        # Classify the final iterate using all DVI conditions. This replaces
+        # provisional iterate-change convergence from the dense fallback;
+        # direct and sparse paths reach this check after fixed iteration counts.
+        residual_workers = 32 if self._device.is_cuda and self._size.num_worlds <= 16 else 1
         wp.launch(
             kernel=_compute_dvi_status_residuals,
-            dim=self._size.num_worlds,
+            dim=self._size.num_worlds * residual_workers,
             inputs=[
                 problem.data.dim,
                 problem.data.vio,
@@ -597,19 +596,69 @@ class DVISolver:
                 problem.data.bcio,
                 problem.data.cio,
                 problem.data.mu,
-                problem.data.P,
                 problem.data.bound_lower,
                 problem.data.bound_upper,
                 self._data.config,
                 self._data.state.v_aug,
                 self._data.solution.lambdas,
                 self._data.status,
+                residual_workers,
+                1 if self._apgd is None else 0,
             ],
             device=self.device,
         )
 
+        if self._apgd is not None:
+            wp.launch(guard_convergence, dim=self._size.num_worlds, inputs=[self._data.status], device=self.device)
+
         if self._collect_info:
             wp.copy(self._data.info.status, self._data.status)
+
+        wp.launch(
+            kernel=_unprecondition_dvi_solution,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                problem.data.dim,
+                problem.data.vio,
+                problem.data.P,
+                self._data.state.s,
+                self._data.state.v_aug,
+                self._data.solution.lambdas,
+                self._data.solution.v_plus,
+            ],
+            device=self.device,
+        )
+
+    def _solve_apgd(self, problem: DualProblem) -> None:
+        """Replace unilateral PGS phases while retaining the existing bilateral schedule."""
+        if self._bilateral_solver is None:
+            self._apgd.solve(problem)
+            return
+        if problem.sparse:
+            _factor_sparse_bilateral_block(self._sparse_path, problem)
+        else:
+            self._factor_bilateral_block(problem)
+
+        def solve_bilateral(active_dim=None):
+            """Refresh joint impulses using the existing factorization and row masks."""
+            if problem.sparse:
+                _solve_sparse_bilateral_block(self._sparse_path, problem, active_dim=active_dim)
+            else:
+                self._solve_bilateral_block(problem, active_dim=active_dim)
+
+        solve_bilateral()
+        if not self._has_unilateral_constraints:
+            return
+        if self._use_schur_complement:
+            self._apgd.solve(problem)
+        else:
+            for block in range(self._max_alternating_iterations):
+                self._apgd.solve(problem, block_iteration=block)
+                if self._should_solve_bilateral_after_block(block):
+                    self._set_bilateral_active_dim(problem, block)
+                    solve_bilateral(self._data.state.bilateral_active_dim)
+        self._set_bilateral_active_dim(problem, -1)
+        solve_bilateral(self._data.state.bilateral_active_dim)
 
     def _validate_inequality_topology(self) -> None:
         """Require the topology that graph-colored inequality solves consume.
@@ -651,6 +700,7 @@ class DVISolver:
                     limits.wid,
                     limits.lid,
                     limits.bids,
+                    self._body_inv_mass,
                     problem.data.lio,
                     problem.data.iio,
                     problem.data.nbc,
@@ -669,6 +719,7 @@ class DVISolver:
                     contacts.wid,
                     contacts.cid,
                     contacts.bid_AB,
+                    self._body_inv_mass,
                     problem.data.nbc,
                     problem.data.nl,
                     problem.data.cio,
@@ -700,8 +751,9 @@ class DVISolver:
     def _can_use_dense_inequality_pgs(self) -> bool:
         return self._has_unilateral_constraints and self._size.sum_of_num_bilateral_joint_cts == 0
 
-    def _initialize_projected_iterations(self, problem: DualProblem) -> None:
-        """Initialize status and graph coloring shared by projected schedules."""
+    def _solve_dense_inequality_pgs(self, problem: DualProblem) -> None:
+        """Solve an inequality-only dense problem through the unified path."""
+        state = self._data.state
         wp.launch(
             kernel=_initialize_dvi_status,
             dim=self._size.num_worlds,
@@ -709,9 +761,6 @@ class DVISolver:
             device=self.device,
         )
         self._prepare_inequality_coloring(problem)
-
-    def _refresh_dense_unilateral_velocities(self, problem: DualProblem) -> None:
-        """Evaluate all unilateral rows from the latest unified impulse vector."""
         wp.launch(
             kernel=_compute_dvi_unilateral_velocities,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
@@ -724,144 +773,60 @@ class DVISolver:
                 problem.data.nc,
                 problem.data.bcgo,
                 problem.data.D,
-                problem.data.E_hat,
                 problem.data.v_f,
                 self._data.solution.lambdas,
-                self._data.state.v_aug,
-            ],
-            device=self.device,
-        )
-
-    def _launch_dense_inequality_pgs(
-        self,
-        problem: DualProblem,
-        block_iteration: int,
-        inequality_family: int,
-    ) -> None:
-        """Launch one dense projected block for the selected row family."""
-        state = self._data.state
-        threads_per_world = 64 if self.device.is_cuda else 1
-        wp.launch(
-            kernel=_solve_dvi_inequalities_colored_pgs,
-            dim=self._size.num_worlds * threads_per_world,
-            inputs=[
-                problem.data.dim,
-                problem.data.mio,
-                problem.data.vio,
-                problem.data.njc,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.bcgo,
-                problem.data.lcgo,
-                problem.data.ccgo,
-                problem.data.bcio,
-                problem.data.cio,
-                problem.data.iio,
-                problem.data.mu,
-                problem.data.bound_lower,
-                problem.data.bound_upper,
-                problem.data.D,
-                problem.data.E_hat,
-                block_iteration,
-                inequality_family,
-                state.inequality_num_colors,
-                state.inequality_ids_by_color,
-                state.inequality_color_starts,
-                self._data.config,
                 state.v_aug,
-                self._data.solution.lambdas,
             ],
             device=self.device,
-            block_dim=threads_per_world,
         )
-
-    def _set_projected_iteration_status(self, problem: DualProblem) -> None:
-        """Record the configured projected work budget for each world."""
+        threads_per_world = 64 if self.device.is_cuda else 1
+        # Inequality-only solves need no host work between PGS blocks.
+        for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
+            wp.launch(
+                kernel=_solve_dvi_inequalities_colored_pgs,
+                dim=self._size.num_worlds * threads_per_world,
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nbc,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.bcgo,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.bcio,
+                    problem.data.cio,
+                    problem.data.iio,
+                    problem.data.mu,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
+                    problem.data.D,
+                    problem.data.P,
+                    problem.data.v_b,
+                    block_iteration,
+                    state.inequality_num_colors,
+                    state.inequality_ids_by_color,
+                    state.inequality_color_starts,
+                    self._data.config,
+                    False,
+                    self._data.status,
+                    state.scratch,
+                    state.v_aug,
+                    self._data.solution.lambdas,
+                ],
+                device=self.device,
+                block_dim=threads_per_world,
+            )
         wp.launch(
             kernel=_set_dvi_direct_status_iterations,
             dim=self._size.num_worlds,
-            inputs=[
-                problem.data.njc,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                self._data.config,
-                self._data.status,
-            ],
+            inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, self._data.config, False, self._data.status],
             device=self.device,
         )
-
-    def _solve_dense_limit_phase(self, problem: DualProblem, block_iteration: int) -> None:
-        """Solve bounded joint rows and joint limits from the latest iterate."""
-        self._refresh_dense_unilateral_velocities(problem)
-        self._launch_dense_inequality_pgs(problem, block_iteration, _INEQUALITY_FAMILY_LIMITS)
-
-    def _solve_dense_contact_phase(self, problem: DualProblem, block_iteration: int) -> None:
-        """Solve contact triplets from the latest iterate with the selected backend."""
-        if self._contact_solver == "apgd":
-            self._solve_dense_contact_apgd(problem, block_iteration)
-        else:
-            self._refresh_dense_unilateral_velocities(problem)
-            self._launch_dense_inequality_pgs(problem, block_iteration, _INEQUALITY_FAMILY_CONTACTS)
-
-    def _solve_dense_contact_apgd(self, problem: DualProblem, block_iteration: int) -> None:
-        """Solve the associated dense contact subproblem with L and B fixed."""
-        if self._contact_apgd is None:
-            raise RuntimeError("The APGD contact solver has not been allocated.")
-        if self._dense_contact_operator is None or self._dense_contact_problem is not problem:
-            self._dense_contact_operator = self._make_dense_contact_operator(problem)
-            self._dense_contact_problem = problem
-        wp.launch(
-            kernel=_set_dvi_contact_active_mask,
-            dim=self._size.num_worlds,
-            inputs=[
-                problem.data.njc,
-                problem.data.nbc,
-                problem.data.nl,
-                problem.data.nc,
-                problem.data.ccgo,
-                problem.data.vio,
-                problem.data.P,
-                block_iteration,
-                self._data.config,
-                self._data.status,
-                self._data.state.contact_active_mask,
-            ],
-            device=self.device,
-        )
-        apgd_status = self._contact_apgd.solve_dense(
-            self._dense_contact_operator,
-            problem.data.mu,
-            self._data.solution.lambdas,
-            phase_mask=self._data.state.contact_active_mask,
-        )
-        wp.launch(
-            kernel=_accumulate_dvi_apgd_status,
-            dim=self._size.num_worlds,
-            inputs=[apgd_status, self._data.state.contact_active_mask, self._data.status],
-            device=self.device,
-        )
-
-    def _solve_dense_family_pgs(self, problem: DualProblem) -> None:
-        """Apply explicit ``L -> C`` family coupling when no bilateral block exists."""
-        self._initialize_projected_iterations(problem)
-        single_family_phase = self._has_limit_constraints != self._has_contact_constraints
-        if single_family_phase:
-            if self._has_limit_constraints:
-                self._solve_dense_limit_phase(problem, _FUSED_SINGLE_FAMILY_BLOCK)
-            else:
-                self._solve_dense_contact_phase(problem, _FUSED_SINGLE_FAMILY_BLOCK)
-        else:
-            for block_iteration in range(self._max_coupling_iterations):
-                if self._has_limit_constraints:
-                    self._solve_dense_limit_phase(problem, block_iteration)
-                if self._has_contact_constraints:
-                    self._solve_dense_contact_phase(problem, block_iteration)
-        self._set_projected_iteration_status(problem)
 
     def _solve_bilateral_block(self, problem: DualProblem, active_dim: wp.array[wp.int32] | None = None):
-        """Solve ``(D_bb + E_hat_bb) * lambda_b = -(v_f,b + D_bu * lambda_u)``."""
+        """Solve ``D_bb * lambda_b = -(v_f,b + D_bu * lambda_u)``."""
         operator = self._data.bilateral_operator
         state = self._data.state
         wp.launch(
@@ -903,7 +868,7 @@ class DVISolver:
         )
 
     def _factor_bilateral_block(self, problem: DualProblem):
-        """Extract, symmetrically scale, and factor ``D_bb + E_hat_bb``."""
+        """Extract, symmetrically scale, and factor the bilateral block ``D_bb``."""
         operator = self._data.bilateral_operator
         operator.info.dim = operator.info.maxdim
         wp.launch(
@@ -915,10 +880,8 @@ class DVISolver:
             inputs=[
                 problem.data.dim,
                 problem.data.mio,
-                problem.data.vio,
                 problem.data.njc,
                 problem.data.D,
-                problem.data.E_hat,
                 operator.info.mio,
                 operator.info.vio,
                 operator.mat,
@@ -929,38 +892,250 @@ class DVISolver:
         self._bilateral_solver.compute(A=operator.mat)
 
     def _solve_with_bilateral_direct_block(self, problem: DualProblem):
-        """Factor the bilateral block once and execute ``L -> B -> C`` sweeps."""
+        """Solve coupled bilateral and unilateral constraint blocks."""
+        if not self._use_schur_complement:
+            self._solve_with_bilateral_alternation(problem)
+            return
+
+        self._solve_with_bilateral_schur_complement(problem)
+
+    def _solve_with_bilateral_alternation(self, problem: DualProblem) -> None:
+        """Alternate direct bilateral solves with projected unilateral sweeps."""
         self._factor_bilateral_block(problem)
+        self._solve_bilateral_block(problem)
         if not self._has_unilateral_constraints:
-            self._solve_bilateral_block(problem)
             return
 
-        self._initialize_projected_iterations(problem)
-        self._solve_explicit_family_coupling(problem)
-        self._set_projected_iteration_status(problem)
+        wp.launch(
+            kernel=_initialize_dvi_status,
+            dim=self._size.num_worlds,
+            inputs=[self._data.config, self._data.status],
+            device=self.device,
+        )
+        self._prepare_inequality_coloring(problem)
+        threads_per_world = 64 if self.device.is_cuda else 1
+        for block_iteration in range(self._max_alternating_iterations):
+            wp.launch(
+                kernel=_compute_dvi_unilateral_velocities,
+                dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nbc,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.bcgo,
+                    problem.data.D,
+                    problem.data.v_f,
+                    self._data.solution.lambdas,
+                    self._data.state.v_aug,
+                ],
+                device=self.device,
+            )
+            wp.launch(
+                kernel=_solve_dvi_inequalities_colored_pgs,
+                dim=self._size.num_worlds * threads_per_world,
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nbc,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.bcgo,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.bcio,
+                    problem.data.cio,
+                    problem.data.iio,
+                    problem.data.mu,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
+                    problem.data.D,
+                    problem.data.P,
+                    problem.data.v_b,
+                    block_iteration,
+                    self._data.state.inequality_num_colors,
+                    self._data.state.inequality_ids_by_color,
+                    self._data.state.inequality_color_starts,
+                    self._data.config,
+                    False,
+                    self._data.status,
+                    self._data.state.scratch,
+                    self._data.state.v_aug,
+                    self._data.solution.lambdas,
+                ],
+                device=self.device,
+                block_dim=threads_per_world,
+            )
+            if self._should_solve_bilateral_after_block(block_iteration):
+                self._set_bilateral_active_dim(problem, block_iteration)
+                self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
 
-    def _solve_explicit_family_coupling(self, problem: DualProblem) -> None:
-        """Apply exactly ``L -> B -> C`` per coupling sweep."""
-        for block_iteration in range(self._max_coupling_iterations):
-            if self._has_limit_constraints:
-                self._solve_dense_limit_phase(problem, block_iteration)
-
-            self._set_bilateral_active_dim(problem, block_iteration)
-            self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
-
-            if self._has_contact_constraints:
-                # B changed lambda_b, so C must rebuild its residual from the
-                # latest unified lambda rather than incrementing a pre-B value.
-                self._solve_dense_contact_phase(problem, block_iteration)
-
-        self._solve_post_stabilization_bilateral(problem)
-
-    def _solve_post_stabilization_bilateral(self, problem: DualProblem) -> None:
-        """Apply the configured optional terminal bilateral refresh."""
-        if not self._has_post_stabilization_bilateral:
-            return
         self._set_bilateral_active_dim(problem, -1)
         self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
+        wp.launch(
+            kernel=_set_dvi_direct_status_iterations,
+            dim=self._size.num_worlds,
+            inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, self._data.config, False, self._data.status],
+            device=self.device,
+        )
+
+    def _solve_with_bilateral_schur_complement(self, problem: DualProblem) -> None:
+        """Solve projected unilateral updates after eliminating bilateral rows.
+
+        The factorized bilateral block supplies the Schur-complement response
+        used by every colored unilateral sweep. A final bilateral solve then
+        recovers joint impulses consistent with the contact and limit solution.
+        CUDA's fused path adaptively stops and reports its completed projected
+        sweeps in :class:`DVIStatus`; CPU executes and reports the full configured
+        sweep budget.
+        """
+        self._factor_bilateral_block(problem)
+        self._solve_bilateral_block(problem)
+        if not self._has_unilateral_constraints:
+            return
+
+        operator = self._data.bilateral_operator
+        use_permutation = isinstance(self._bilateral_solver, LLTBlockedRCMSolver)
+        permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
+        unilateral_begin = 0
+        unilateral_count = self._max_unilateral_rows
+        wp.launch(
+            kernel=_solve_bilateral_contact_response,
+            dim=(self._size.num_worlds, unilateral_count),
+            inputs=[
+                problem.data.dim,
+                problem.data.mio,
+                problem.data.njc,
+                operator.info.mio,
+                operator.info.vio,
+                self._data.state.bilateral_preconditioner,
+                self._data.state.projected_mio,
+                problem.data.D,
+                self._bilateral_solver.L,
+                permutation,
+                use_permutation,
+                unilateral_begin,
+                self._data.state.projected_D,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            kernel=_assemble_bilateral_contact_response,
+            dim=(
+                self._size.num_worlds,
+                self._max_unilateral_rows,
+                self._max_unilateral_rows,
+            ),
+            inputs=[
+                problem.data.dim,
+                problem.data.mio,
+                problem.data.njc,
+                operator.info.vio,
+                self._data.state.bilateral_preconditioner,
+                self._data.state.projected_mio,
+                problem.data.D,
+                permutation,
+                use_permutation,
+                self._data.state.projected_D,
+            ],
+            device=self.device,
+        )
+
+        wp.launch(
+            kernel=_initialize_dvi_status,
+            dim=self._size.num_worlds,
+            inputs=[
+                self._data.config,
+                self._data.status,
+            ],
+            device=self.device,
+        )
+
+        self._prepare_inequality_coloring(problem)
+        threads_per_world = 64 if self.device.is_cuda else 1
+        wp.launch(
+            kernel=_compute_dvi_unilateral_velocities,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                problem.data.dim,
+                problem.data.mio,
+                problem.data.vio,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.D,
+                problem.data.v_f,
+                self._data.solution.lambdas,
+                self._data.state.v_aug,
+            ],
+            device=self.device,
+        )
+        has_intermediate_bilateral_solve = any(self._bilateral_solve_after_block)
+        block_iterations = (
+            range(self._max_alternating_iterations) if has_intermediate_bilateral_solve else (_FUSED_BILATERAL_BLOCK,)
+        )
+        for block_iteration in block_iterations:
+            wp.launch(
+                kernel=_solve_dvi_inequalities_colored_pgs,
+                dim=self._size.num_worlds * threads_per_world,
+                inputs=[
+                    problem.data.dim,
+                    self._data.state.projected_mio,
+                    problem.data.vio,
+                    problem.data.nbc,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.bcgo,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.bcio,
+                    problem.data.cio,
+                    problem.data.iio,
+                    problem.data.mu,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
+                    self._data.state.projected_D,
+                    problem.data.P,
+                    problem.data.v_b,
+                    block_iteration,
+                    self._data.state.inequality_num_colors,
+                    self._data.state.inequality_ids_by_color,
+                    self._data.state.inequality_color_starts,
+                    self._data.config,
+                    wp.bool(self.device.is_cuda and not has_intermediate_bilateral_solve),
+                    self._data.status,
+                    self._data.state.scratch,
+                    self._data.state.v_aug,
+                    self._data.solution.lambdas,
+                ],
+                device=self.device,
+                block_dim=threads_per_world,
+            )
+
+            if has_intermediate_bilateral_solve and self._should_solve_bilateral_after_block(block_iteration):
+                self._set_bilateral_active_dim(problem, block_iteration)
+                self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
+
+        self._set_bilateral_active_dim(problem, -1)
+        self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
+
+        wp.launch(
+            kernel=_set_dvi_direct_status_iterations,
+            dim=self._size.num_worlds,
+            inputs=[
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                self._data.config,
+                wp.bool(self.device.is_cuda and not has_intermediate_bilateral_solve),
+                self._data.status,
+            ],
+            device=self.device,
+        )
 
     def _warmstart_from_solution(self, problem: DualProblem):
         wp.launch(

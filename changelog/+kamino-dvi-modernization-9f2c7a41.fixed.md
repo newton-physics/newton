@@ -1,1 +1,0 @@
-Expose public DVI preconditioning with terminal residuals evaluated in physical constraint units, reject invalid APGD contact scaling without applying stale impulses, and keep DVI metrics and backend-native contact-law reporting correct under preconditioning and solver reuse.

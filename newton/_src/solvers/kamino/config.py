@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from numbers import Real
 from typing import Any, Literal
 
 import warp as wp
@@ -261,85 +260,6 @@ class ConstraintStabilizationConfig(ConfigBase):
     Defaults to `1.0e-6`.
     """
 
-    joint_compliance: float = 0.0
-    """
-    Global physical compliance of kinematic bilateral-joint rows. The value is
-    inverse constraint stiffness, with row-dependent units of [m/N] for
-    translational rows and [rad/(N·m)] for rotational rows. A positive value
-    adds ``joint_compliance / (dt * (dt + joint_stabilization_time))`` to the
-    corresponding DVI operator diagonal. Dynamic actuator rows are unaffected.
-    Must be non-negative and requires an explicit
-    :attr:`joint_stabilization_time`. Defaults to ``0.0`` (rigid joints).
-    """
-
-    joint_stabilization_time: float | None = None
-    """
-    Bilateral-joint stabilization time constant [s]. When set, kinematic
-    joint drift uses ``error / (dt + joint_stabilization_time)`` instead of
-    the dimensionless :attr:`alpha` rule. ``None`` preserves the existing
-    rule. Must be non-negative when specified. Defaults to ``None``.
-    """
-
-    joint_recovery_speed: float | None = None
-    """
-    Maximum bilateral-joint drift-recovery speed [m/s or rad/s]. The bound is
-    applied symmetrically to positive and negative correction velocities.
-    ``None`` leaves recovery unbounded. Must be positive when specified.
-    Defaults to ``None``.
-    """
-
-    joint_limit_compliance: float = 0.0
-    """
-    Global physical joint-limit compliance, expressed as inverse stiffness in
-    the units conjugate to each joint DoF. A positive value adds
-    ``joint_limit_compliance / (dt * (dt + joint_limit_stabilization_time))``
-    to each active joint-limit row of the DVI operator. Bounded joint-friction
-    and actuator-effort rows are unaffected. Must be non-negative and requires
-    an explicit :attr:`joint_limit_stabilization_time`. Defaults to ``0.0``
-    (rigid joint limits).
-    """
-
-    joint_limit_stabilization_time: float | None = None
-    """
-    Joint-limit stabilization time constant [s]. When set, active limit drift
-    uses ``error / (dt + joint_limit_stabilization_time)`` instead of the
-    dimensionless :attr:`beta` rule. ``None`` preserves the existing rule.
-    Must be non-negative when specified. Defaults to ``None``.
-    """
-
-    joint_limit_recovery_speed: float | None = None
-    """
-    Maximum joint-limit drift-recovery speed [m/s or rad/s]. The bound applies
-    only to the negative stabilization velocity of an active unilateral row.
-    ``None`` leaves recovery unbounded. Must be positive when specified.
-    Defaults to ``None``.
-    """
-
-    contact_compliance: float = 0.0
-    """
-    Global contact compliance [m/N]. A positive value adds the physical
-    contact-operator diagonal
-    ``contact_compliance / (dt * (dt + contact_stabilization_time))``.
-    Must be non-negative and requires an explicit
-    :attr:`contact_stabilization_time`. Defaults to ``0.0`` (rigid contact).
-    """
-
-    contact_stabilization_time: float | None = None
-    """
-    Contact stabilization time constant [s]. When set, contact stabilization
-    uses the contact-margin-adjusted signed gap divided by
-    ``dt + contact_stabilization_time`` instead of the dimensionless
-    :attr:`gamma` rule. ``None`` preserves the existing rule. Must be
-    non-negative when specified. Defaults to ``None``.
-    """
-
-    contact_recovery_speed: float | None = None
-    """
-    Maximum penetration-recovery speed [m/s]. The bound applies only to the
-    negative contact stabilization velocity. ``None`` leaves recovery
-    unbounded. Must be positive when specified. Defaults to ``None``.
-    """
-
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -431,100 +351,6 @@ class ConstraintStabilizationConfig(ConfigBase):
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
         if self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
-        if self.joint_stabilization_time is not None and (
-            not isinstance(self.joint_stabilization_time, Real)
-            or isinstance(self.joint_stabilization_time, bool)
-            or not math.isfinite(self.joint_stabilization_time)
-            or self.joint_stabilization_time < 0.0
-        ):
-            raise ValueError(
-                "Invalid joint_stabilization_time: "
-                f"{self.joint_stabilization_time}. Must be a real, finite, non-negative number when specified."
-            )
-        if self.joint_recovery_speed is not None and (
-            not isinstance(self.joint_recovery_speed, Real)
-            or isinstance(self.joint_recovery_speed, bool)
-            or not math.isfinite(self.joint_recovery_speed)
-            or self.joint_recovery_speed <= 0.0
-        ):
-            raise ValueError(
-                f"Invalid joint_recovery_speed: {self.joint_recovery_speed}. "
-                "Must be a real, finite, positive number when specified."
-            )
-        if self.joint_limit_stabilization_time is not None and (
-            not isinstance(self.joint_limit_stabilization_time, Real)
-            or isinstance(self.joint_limit_stabilization_time, bool)
-            or not math.isfinite(self.joint_limit_stabilization_time)
-            or self.joint_limit_stabilization_time < 0.0
-        ):
-            raise ValueError(
-                "Invalid joint_limit_stabilization_time: "
-                f"{self.joint_limit_stabilization_time}. "
-                "Must be a real, finite, non-negative number when specified."
-            )
-        if self.joint_limit_recovery_speed is not None and (
-            not isinstance(self.joint_limit_recovery_speed, Real)
-            or isinstance(self.joint_limit_recovery_speed, bool)
-            or not math.isfinite(self.joint_limit_recovery_speed)
-            or self.joint_limit_recovery_speed <= 0.0
-        ):
-            raise ValueError(
-                f"Invalid joint_limit_recovery_speed: {self.joint_limit_recovery_speed}. "
-                "Must be a real, finite, positive number when specified."
-            )
-        for name, compliance in (
-            ("joint_compliance", self.joint_compliance),
-            ("joint_limit_compliance", self.joint_limit_compliance),
-            ("contact_compliance", self.contact_compliance),
-        ):
-            if (
-                not isinstance(compliance, Real)
-                or isinstance(compliance, bool)
-                or not math.isfinite(compliance)
-                or compliance < 0.0
-            ):
-                raise ValueError(f"Invalid {name}: {compliance}. Must be a real, finite, non-negative number.")
-        if self.contact_stabilization_time is not None and (
-            not isinstance(self.contact_stabilization_time, Real)
-            or isinstance(self.contact_stabilization_time, bool)
-            or not math.isfinite(self.contact_stabilization_time)
-            or self.contact_stabilization_time < 0.0
-        ):
-            raise ValueError(
-                "Invalid contact_stabilization_time: "
-                f"{self.contact_stabilization_time}. Must be a real, finite, non-negative number when specified."
-            )
-        if self.contact_recovery_speed is not None and (
-            not isinstance(self.contact_recovery_speed, Real)
-            or isinstance(self.contact_recovery_speed, bool)
-            or not math.isfinite(self.contact_recovery_speed)
-            or self.contact_recovery_speed <= 0.0
-        ):
-            raise ValueError(
-                f"Invalid contact_recovery_speed: {self.contact_recovery_speed}. "
-                "Must be a real, finite, positive number when specified."
-            )
-        compliance_time_pairs = (
-            ("joint_compliance", self.joint_compliance, "joint_stabilization_time", self.joint_stabilization_time),
-            (
-                "joint_limit_compliance",
-                self.joint_limit_compliance,
-                "joint_limit_stabilization_time",
-                self.joint_limit_stabilization_time,
-            ),
-            (
-                "contact_compliance",
-                self.contact_compliance,
-                "contact_stabilization_time",
-                self.contact_stabilization_time,
-            ),
-        )
-        for compliance_name, compliance, time_name, stabilization_time in compliance_time_pairs:
-            if compliance > 0.0 and stabilization_time is None:
-                raise ValueError(
-                    f"Nonzero {compliance_name} requires an explicit {time_name} so the physical "
-                    "diagonal uses an unambiguous time scale."
-                )
 
     @override
     def __post_init__(self):
@@ -968,72 +794,50 @@ class PADMMSolverConfig:
         self.validate()
 
 
-@dataclass
+@dataclass(kw_only=True)
 class DVIAPGDConfig:
-    """Controls for the associated-contact APGD phase of the DVI solver.
+    """Controls for the APGD unilateral subsolver.
 
-    APGD always uses the full Res4 stopping residual and deterministic staged
-    reductions. Those are solver invariants rather than selectable modes.
+    .. experimental::
+
+        This configuration and the APGD mode may change without prior notice.
+        These runtime solver controls are Python-only; they do not author a
+        material model or add USD schema attributes.
     """
 
-    max_iterations: int = 20
-    """Maximum APGD iterations in each contact-family phase. Defaults to ``20``."""
+    max_iterations: int = 64
+    """Maximum accelerated iterations per frozen-correction quadratic solve."""
 
-    max_backtrack_iterations: int = 20
-    """Backtracking passes per APGD iteration, including the initial check.
+    max_backtracks: int = 24
+    """Maximum trial steps per iteration, including the initial trial."""
 
-    A value of zero disables the descent check. Defaults to ``20``.
-    """
+    max_corrections: int = 20
+    """Maximum De Saxce fixed-point iterations per unilateral phase."""
 
-    tolerance: float = 1.0e-3
-    """Absolute tolerance on the running minimum full Res4 norm. Defaults to ``1e-3``."""
+    tolerance: float = 1.0e-5
+    """Absolute infinity-norm tolerance on inner and nonlinear natural maps."""
 
-    min_iterations: int = 1
-    """Minimum completed APGD iterations before early exit. Defaults to ``1``."""
-
-    early_exit: bool = True
-    """Whether converged worlds stop participating in the contact phase. Defaults to ``True``."""
+    relaxation: float = 1.0
+    """Damping of each De Saxce impulse update, in ``(0, 1]``."""
 
     use_graph_conditionals: bool = True
-    """Use nested device-conditional loops when supported. Defaults to ``True``."""
+    """Stop device loops early when supported; otherwise use masked fixed loops."""
 
     def validate(self) -> None:
-        """Validate APGD iteration budgets and stopping controls."""
-        if (
-            not isinstance(self.max_iterations, int)
-            or isinstance(self.max_iterations, bool)
-            or self.max_iterations <= 0
-        ):
-            raise ValueError(f"Invalid APGD maximum iterations: {self.max_iterations}. Must be a positive integer.")
-        if (
-            not isinstance(self.max_backtrack_iterations, int)
-            or isinstance(self.max_backtrack_iterations, bool)
-            or self.max_backtrack_iterations < 0
-        ):
-            raise ValueError(
-                "Invalid APGD maximum backtrack iterations: "
-                f"{self.max_backtrack_iterations}. Must be a non-negative integer."
-            )
-        if (
-            not isinstance(self.min_iterations, int)
-            or isinstance(self.min_iterations, bool)
-            or not 1 <= self.min_iterations <= self.max_iterations
-        ):
-            raise ValueError(f"Invalid APGD minimum iterations: {self.min_iterations}. Must be in [1, max_iterations].")
-        if (
-            not isinstance(self.tolerance, Real)
-            or isinstance(self.tolerance, bool)
-            or not math.isfinite(self.tolerance)
-            or self.tolerance < 0.0
-        ):
-            raise ValueError(f"Invalid APGD tolerance: {self.tolerance}. Must be a real, finite, non-negative number.")
-        if not isinstance(self.early_exit, bool):
-            raise TypeError(f"Invalid APGD early_exit: {self.early_exit}. Must be a bool.")
+        """Reject non-finite tolerances and invalid nonlinear or inner budgets."""
+        for name in ("max_iterations", "max_backtracks", "max_corrections"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"`{name}` must be a positive integer.")
+        if isinstance(self.tolerance, bool) or not math.isfinite(self.tolerance) or self.tolerance < 0.0:
+            raise ValueError("`tolerance` must be finite and non-negative.")
+        if isinstance(self.relaxation, bool) or not math.isfinite(self.relaxation) or not 0.0 < self.relaxation <= 1.0:
+            raise ValueError("`relaxation` must be finite and in (0, 1].")
         if not isinstance(self.use_graph_conditionals, bool):
-            raise TypeError(f"Invalid APGD use_graph_conditionals: {self.use_graph_conditionals}. Must be a bool.")
+            raise ValueError("`use_graph_conditionals` must be a boolean.")
 
     def __post_init__(self) -> None:
-        """Validate values immediately after construction."""
+        """Validate constructor arguments."""
         self.validate()
 
 
@@ -1043,17 +847,31 @@ class DVISolverConfig:
     A container to hold configurations for the DVI forward dynamics solver.
     """
 
+    unilateral_solver: Literal["pgs", "apgd"] = field(default="pgs", kw_only=True)
+    """Backend for bounded rows, limits, and contacts. Defaults to ``pgs``.
+
+    .. experimental::
+
+        The opt-in ``apgd`` mode uses frozen De Saxce corrections around
+        accelerated cone-QP solves. It preserves the Coulomb contact law and
+        the existing bilateral coupling controls, but its API and behavior
+        may change without prior notice. Nonlinear convergence is not
+        guaranteed for every frictional contact problem.
+    """
+
+    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig, kw_only=True)
+    """APGD iteration controls; unused by the default PGS backend."""
+
     tolerance: float = 1e-5
     """
-    Terminal convergence tolerance for the full DVI bilateral, primal, dual,
-    and complementarity residuals. The PGS family phases use a fixed sweep
-    budget; APGD has its own inner tolerance. Must be non-negative. Defaults
-    to `1e-5`.
+    The convergence tolerance on the projected update size.
+    Must be non-negative. Defaults to `1e-5`.
     """
 
     regularization: float = 1e-6
     """
-    Diagonal regularization added to each projected update denominator.
+    Diagonal regularization added to each PGS projected update denominator.
+    Unused by APGD, which uses backtracking on the existing dual operator.
     Must be positive. Defaults to `1e-6`.
     """
 
@@ -1063,59 +881,42 @@ class DVISolverConfig:
     Must be in the range `(0, 2]`. Defaults to `1.0`.
     """
 
-    contact_solver: Literal["pgs", "apgd"] = "pgs"
+    max_alternating_iterations: int = 24
     """
-    Backend used for the contact family. ``pgs`` retains Kamino's split
-    normal/tangent contact update. ``apgd`` solves the associated Coulomb-cone
-    contact QP with accelerated projected gradient descent. APGD remains
-    opt-in while robot-scale outer-family convergence is evaluated. Defaults
-    to ``pgs``.
-    """
-
-    contact_law: Literal["de_saxce", "associated_at"] | None = None
-    """
-    Contact-law formulation. ``None`` selects the backend-native law:
-    ``de_saxce`` for PGS and ``associated_at`` for APGD. Crossed combinations
-    are rejected because they are different physical models, not numerical
-    tuning aliases. Defaults to ``None``.
+    Maximum number of outer DVI iterations alternating direct bilateral
+    solves with projected inequality solves. Must be greater than zero.
+    This schedule is also used when no bilateral constraints are present;
+    in that case, the bilateral solve is skipped. APGD uses its own iteration
+    budgets when no bilateral rows are present or Schur elimination is enabled.
+    Defaults to `24`.
     """
 
-    apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig)
-    """Configuration of the APGD contact phase."""
-
-    @property
-    def resolved_contact_law(self) -> Literal["de_saxce", "associated_at"]:
-        """Return the explicit law or the current backend's native law."""
-        if self.contact_law is not None:
-            return self.contact_law
-        return "associated_at" if self.contact_solver == "apgd" else "de_saxce"
-
-    coupling_iterations: int = 2
+    inequality_sweeps_per_iteration: int = 2
     """
-    Number of ``L -> B -> C`` coupling sweeps. ``L`` contains bounded
-    joint rows and joint limits, ``B`` contains bilateral joint rows, and ``C``
-    contains contact triplets. Empty families are skipped. Must be greater than
-    zero. Defaults to `2`.
+    Number of projected Gauss-Seidel sweeps used for unilateral inequalities
+    during each alternating DVI iteration. Contacts use graph-colored sweeps
+    on CUDA. Unused by APGD. Must be greater than zero. Defaults to `2`.
     """
 
-    limit_pgs_sweeps: int = 48
+    use_schur_complement: bool = False
     """
-    Number of projected Gauss-Seidel sweeps in each bounded-joint and joint-limit
-    ``L`` phase. Must be greater than zero. Defaults to `48`.
+    Whether to eliminate bilateral rows from the unilateral solve through a Schur complement.
+
+    .. experimental::
+
+        The ``True`` mode may change without prior notice. It requires the same
+        setting in every world. PGS adds response-matrix setup and storage;
+        APGD applies the response using the factored bilateral operator.
+
+    Defaults to ``False``.
     """
 
-    contact_pgs_sweeps: int = 48
+    bilateral_solve_interval: int = 1
     """
-    Number of graph-colored projected Gauss-Seidel sweeps in each contact ``C``
-    phase when :attr:`contact_solver` is ``pgs``. Must be greater than zero.
-    Defaults to `48`.
-    """
-
-    post_stabilization_bilateral: bool = False
-    """
-    Whether to solve the bilateral block once more after the final contact
-    phase. This optional refresh makes bilateral rows the freshest family but
-    can make the final contact residual stale. Defaults to ``False``.
+    Number of alternating DVI iterations between repeated direct bilateral solves.
+    This controls coupling when :attr:`use_schur_complement` is ``False``.
+    Larger values trade coupling accuracy for fewer direct solves. Must be greater
+    than zero. Defaults to `1`.
     """
 
     tangential_warmstart_scale: float = 0.97
@@ -1163,25 +964,27 @@ class DVISolverConfig:
     def register_custom_attributes(builder: ModelBuilder) -> None:
         """Register DVI custom attributes supported by the Kamino USD schema.
 
-        DVI-specific tuning options are currently Python-only. In particular,
-        the shared ``max_solver_iterations`` attribute registered by
-        :class:`PADMMSolverConfig` is a local-solver budget and must not be
-        interpreted as the number of DVI family-coupling sweeps.
+        DVI-specific tuning options are currently Python-only. The shared
+        ``max_solver_iterations`` attribute is registered by
+        :class:`PADMMSolverConfig` and parsed by both dynamics solvers.
         """
 
     @override
     @staticmethod
     def from_model(model: Model, **kwargs: dict[str, Any]) -> DVISolverConfig:
-        """Create a :class:`DVISolverConfig` from Python keyword arguments.
-
-        DVI scheduling controls do not currently have dedicated model/USD
-        attributes. The generic PADMM iteration attribute is deliberately
-        ignored because it is not a family-coupling budget.
+        """Creates a :class:`DVISolverConfig` from model attributes if available.
 
         Args:
-            model: The Newton model; retained for the common config factory API.
+            model: The Newton model from which to parse configurations.
         """
-        return DVISolverConfig(**kwargs)
+        cfg = DVISolverConfig(**kwargs)
+        kamino_attrs = getattr(model, "kamino", None)
+        if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
+            max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_alternating_iterations >= 0:
+                cfg.max_alternating_iterations = max_alternating_iterations
+        cfg.validate()
+        return cfg
 
     @override
     def validate(self) -> None:
@@ -1189,67 +992,34 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
-        if (
-            not isinstance(self.tolerance, Real)
-            or isinstance(self.tolerance, bool)
-            or not math.isfinite(self.tolerance)
-            or self.tolerance < 0.0
-        ):
-            raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be a real, finite, non-negative number.")
-        if (
-            not isinstance(self.regularization, Real)
-            or isinstance(self.regularization, bool)
-            or not math.isfinite(self.regularization)
-            or self.regularization <= 0.0
-        ):
-            raise ValueError(
-                f"Invalid regularization: {self.regularization}. Must be a real, finite number greater than zero."
-            )
-        if (
-            not isinstance(self.omega, Real)
-            or isinstance(self.omega, bool)
-            or not math.isfinite(self.omega)
-            or self.omega <= 0.0
-            or self.omega > 2.0
-        ):
-            raise ValueError(f"Invalid omega: {self.omega}. Must be a real, finite number in the range (0, 2].")
-        if self.contact_solver not in {"pgs", "apgd"}:
-            raise ValueError(f"Invalid DVI contact solver: {self.contact_solver}. Must be one of ['apgd', 'pgs'].")
-        if self.contact_law is not None and self.contact_law not in {"de_saxce", "associated_at"}:
-            raise ValueError(
-                f"Invalid DVI contact law: {self.contact_law}. Must be one of ['associated_at', 'de_saxce']."
-            )
-        expected_contact_law = "associated_at" if self.contact_solver == "apgd" else "de_saxce"
-        if self.contact_law is not None and self.contact_law != expected_contact_law:
-            raise ValueError(
-                f"DVI contact solver '{self.contact_solver}' requires contact_law='{expected_contact_law}', "
-                f"not '{self.contact_law}'."
-            )
+        if self.unilateral_solver not in {"pgs", "apgd"}:
+            raise ValueError("`unilateral_solver` must be 'pgs' or 'apgd'.")
         if not isinstance(self.apgd, DVIAPGDConfig):
-            raise TypeError(f"Invalid APGD config: Expected DVIAPGDConfig, got {type(self.apgd)}.")
+            raise TypeError("`apgd` must be a DVIAPGDConfig.")
         self.apgd.validate()
-        integer_controls = (
-            ("coupling iterations", self.coupling_iterations),
-            ("limit PGS sweeps", self.limit_pgs_sweeps),
-            ("contact PGS sweeps", self.contact_pgs_sweeps),
-        )
-        for name, value in integer_controls:
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"Invalid {name}: {value}. Must be a positive integer.")
-        if not isinstance(self.post_stabilization_bilateral, bool):
-            raise TypeError(
-                f"Invalid post_stabilization_bilateral: {self.post_stabilization_bilateral}. Must be a bool."
-            )
-        if (
-            not isinstance(self.tangential_warmstart_scale, Real)
-            or isinstance(self.tangential_warmstart_scale, bool)
-            or not math.isfinite(self.tangential_warmstart_scale)
-            or self.tangential_warmstart_scale < 0.0
-            or self.tangential_warmstart_scale > 1.0
-        ):
+        if self.tolerance < 0.0:
+            raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
+        if self.regularization <= 0.0:
+            raise ValueError(f"Invalid regularization: {self.regularization}. Must be greater than zero.")
+        if self.omega <= 0.0 or self.omega > 2.0:
+            raise ValueError(f"Invalid omega: {self.omega}. Must be in the range (0, 2].")
+        if self.max_alternating_iterations <= 0:
             raise ValueError(
-                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. "
-                "Must be a real, finite number in the range [0, 1]."
+                f"Invalid maximum alternating iterations: {self.max_alternating_iterations}. "
+                "Must be a positive integer."
+            )
+        if self.inequality_sweeps_per_iteration <= 0:
+            raise ValueError(
+                f"Invalid inequality sweeps per iteration: {self.inequality_sweeps_per_iteration}. "
+                "Must be a positive integer."
+            )
+        if self.bilateral_solve_interval <= 0:
+            raise ValueError(
+                f"Invalid bilateral solve interval: {self.bilateral_solve_interval}. Must be a positive integer."
+            )
+        if self.tangential_warmstart_scale < 0.0 or self.tangential_warmstart_scale > 1.0:
+            raise ValueError(
+                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
             )
         if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
             raise ValueError(
@@ -1282,61 +1052,41 @@ class ForwardKinematicsSolverConfig:
     A container to hold configurations for the Gauss-Newton forward kinematics solver used for state resets.
     """
 
-    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
+    tolerance: float = 1e-6
     """
-    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled
-    Changing this setting after the solver's initialization leads to undefined behavior.
-    Defaults to `jacobi_block_diagonal`.
+    Maximal absolute kinematic constraint value that is acceptable at the solution.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `1e-6`.
     """
 
     max_newton_iterations: int = 30
     """
     Maximal number of Gauss-Newton iterations.
-    Changes to this setting after the solver's initialization will have no effect.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `30`.
     """
 
     max_line_search_iterations: int = 20
     """
     Maximal line search iterations in the inner loop.
-    Changes to this setting after the solver's initialization will have no effect.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `20`.
-    """
-
-    tolerance: float = 1e-6
-    """
-    Maximal absolute kinematic constraint value that is acceptable at the solution.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `1e-6`.
-    """
-
-    use_sparsity: bool = False
-    """
-    Whether to use sparse Jacobian and solver; otherwise, dense versions are used.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
-    Defaults to `False`.
-    """
-
-    use_adaptive_cg_tolerance: bool = True
-    """
-    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
-    is enabled, which reduces the number of CG iterations in most cases.
-    Changes to this setting after graph capture will have no effect.
-    Defaults to `True`.
     """
 
     reset_state: bool = True
     """
-    Whether to reset the state to initial states, to use as initial guess.
-    Changes to this setting after graph capture will have no effect.
+    Whether to reset the state before the FK solve, using the reference state of the system as initial guess.
+    If False, the current body poses are used as initial guess, which often leads to faster convergence
+    when solving forward kinematics along a trajectory (as opposed to isolated poses).
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `True`.
     """
 
     add_axis_joints: bool = True
     """
-    Whether to automatically add axis joints to take out superfluous DoFs at tie rods,
+    Whether to automatically add axis joints to take out superfluous DoFs at tie rods (i.e. bodies
+    between two passive spherical or gimbal joints, that may rotate freely about the connecting axis),
     that otherwise render the FK problem ill-posed.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `True`.
     """
 
@@ -1344,7 +1094,6 @@ class ForwardKinematicsSolverConfig:
     """
     Whether to automatically split large steps in actuator coordinates into smaller steps
     in the FK solve, to improve the solver's robustness for a mild added cost.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `True`.
     """
 
@@ -1352,7 +1101,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in linear actuator coordinates
     per solver iteration, in meters. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `0.05`.
     """
 
@@ -1360,7 +1108,6 @@ class ForwardKinematicsSolverConfig:
     """
     If incremental solve is enabled, maximal allowed step in angular actuator coordinates
     per solver iteration, in radians. A lower value results in more incremental steps.
-    Changes to this setting after the solver's initialization will have no effect.
     Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
@@ -1376,15 +1123,34 @@ class ForwardKinematicsSolverConfig:
     For systems that are only underactuated due to tie rods being free to rotate about their own axis,
     enabling `add_axis_joints` is recommended instead.
 
-    Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `False`.
     """
 
     regularization_weight: float = 1e-5
     """
     Weight applied to the rigid body pose least-squares regularizer, if regularization is enabled.
-    Changes to this setting after the solver's initialization lead to undefined behavior.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
     Defaults to `1e-5`.
+    """
+
+    use_sparsity: bool = False
+    """
+    Whether to use sparse Jacobian and solver; else dense versions are used (recommended for most systems).
+    Defaults to `False`.
+    """
+
+    preconditioner: Literal["none", "jacobi_diagonal", "jacobi_block_diagonal"] = "jacobi_block_diagonal"
+    """
+    Preconditioner to use for the Conjugate Gradient solver if sparsity is enabled.
+    Defaults to `jacobi_block_diagonal`.
+    """
+
+    use_adaptive_cg_tolerance: bool = True
+    """
+    Whether to use an adaptive tolerance strategy for the Conjugate Gradient solver if sparsity
+    is enabled, which reduces the number of CG iterations in most cases.
+    This setting can be altered after the solver's construction (but will get baked in captured graphs).
+    Defaults to `True`.
     """
 
     @override

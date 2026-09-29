@@ -1,681 +1,552 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warp kernels for the Kamino contact APGD backend."""
-
-from __future__ import annotations
+"""Device operations for unilateral APGD with frozen De Saxce corrections."""
 
 import warp as wp
 
 from ..padmm.math import project_to_coulomb_cone
+from .types import DVIConfigStruct, DVIStatus
 
 wp.set_module_options({"enable_backward": False})
 
-float32 = wp.float32
-int32 = wp.int32
-vec3f = wp.vec3f
 
+@wp.struct
+class APGDConfig:
+    """Per-world budgets and tolerances for the nested solve."""
 
-# Per-world scalar workspace columns.
-_L = 0
-_T = 1
-_THETA = 2
-_BETA = 3
-_BEST_RESIDUAL = 4
-_OBJ_CANDIDATE = 5
-_OBJ_MODEL = 6
-_RESIDUAL_SQUARED = 7
-_RESTART_DOT = 8
-_GDIFF = 9
-_GAMMA_NORM_SQUARED = 10
-_RAYLEIGH_NORM_SQUARED = 11
-_RAYLEIGH_PRODUCT_NORM_SQUARED = 12
-_NUM_APGD_SCALARS = 13
-
-# Per-world integer workspace columns.
-_UPDATE_BEST = 0
-_RESTART = 1
-_BACKTRACKS_THIS_ITERATION = 2
-_NUM_APGD_FLAGS = 3
-
-# Per-contact partials used by the fixed-order scalar reductions.  APGD's
-# Rayleigh, objective, restart, and Res4 sums span a wide dynamic range, so a
-# single float32 accumulator is not sufficiently robust for large worlds.
-_ACC_RAYLEIGH_NORM_SQUARED = 0
-_ACC_RAYLEIGH_PRODUCT_NORM_SQUARED = 1
-_ACC_OBJ_CANDIDATE = 2
-_ACC_OBJ_MODEL = 3
-_ACC_RESIDUAL_SQUARED = 4
-_ACC_RESTART_DOT = 5
-_ACC_GAMMA_NORM_SQUARED = 6
-_NUM_APGD_ACCUMULATORS = 7
-
-# Match the deterministic two-level reduction used by the final newton-dvi
-# APGD.  Each block owns a fixed contiguous contact range, and one world thread
-# combines the fixed block order.  Integer scheduling therefore cannot change
-# the reduction order.
-_NUM_APGD_REDUCTION_BLOCKS = 256
+    max_iterations: wp.int32
+    max_backtracks: wp.int32
+    max_corrections: wp.int32
+    tolerance: wp.float32
+    relaxation: wp.float32
 
 
 @wp.struct
-class ContactAPGDConfigStruct:
-    """Device-side controls for one world's contact APGD solve."""
+class APGDState:
+    """Per-world acceleration and termination state."""
 
-    max_iterations: int32
-    max_backtrack_iterations: int32
-    tolerance: float32
-    min_iterations: int32
-    early_exit: int32
-
-
-@wp.struct
-class ContactAPGDStatus:
-    """Device-resident result of one contact APGD phase."""
-
-    converged: int32
-    iterations: int32
-    backtracks: int32
-    restarts: int32
-    residual: float32
+    lipschitz: wp.float32
+    theta: wp.float32
+    iterations: wp.int32
+    corrections: wp.int32
+    backtracks: wp.int32
+    failed: wp.int32
 
 
-@wp.kernel
-def reduce_apgd_partials_to_blocks(
-    contact_count: wp.array[int32],
-    contact_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    num_blocks: int32,
-    slot_a: int32,
-    slot_b: int32,
-    partials: wp.array2d[float32],
-    block_sums: wp.array2d[float32],
-):
-    """Reduce fixed contact chunks with float64 accumulators.
-
-    ``block_sums`` has two rows per world. ``slot_b < 0`` requests a
-    single-output reduction and leaves the second row unused.
-    """
-    wid, block = wp.tid()
-    if not world_mask[wid]:
-        return
-
-    count = contact_count[wid]
-    chunk = (count + num_blocks - int32(1)) / num_blocks
-    start = block * chunk
-    end = wp.min(start + chunk, count)
-    partial_offset = contact_offset[wid]
-    sum_a = wp.float64(0.0)
-    sum_b = wp.float64(0.0)
-    for cid in range(start, end):
-        sum_a += wp.float64(partials[slot_a, partial_offset + cid])
-        if slot_b >= int32(0):
-            sum_b += wp.float64(partials[slot_b, partial_offset + cid])
-
-    block_sums[int32(2) * wid, block] = float32(sum_a)
-    if slot_b >= int32(0):
-        block_sums[int32(2) * wid + int32(1), block] = float32(sum_b)
+@wp.func
+def project_unilateral(
+    row: wp.int32,
+    nbc: wp.int32,
+    nl: wp.int32,
+    bcio: wp.int32,
+    cio: wp.int32,
+    mu: wp.array[wp.float32],
+    lower: wp.array[wp.float32],
+    upper: wp.array[wp.float32],
+    value: wp.vec3f,
+) -> wp.vec3f:
+    """Project a scalar bound/limit or a complete contact triplet."""
+    if row < nbc:
+        return wp.vec3f(wp.clamp(value.x, lower[bcio + row], upper[bcio + row]), 0.0, 0.0)
+    if row < nbc + nl:
+        return wp.vec3f(wp.max(value.x, 0.0), 0.0, 0.0)
+    return project_to_coulomb_cone(value, mu[cio + (row - nbc - nl) // 3])
 
 
 @wp.kernel
-def combine_apgd_block_sums(
-    world_mask: wp.array[bool],
-    num_blocks: int32,
-    slot_b_valid: int32,
-    scalar_a: int32,
-    scalar_b: int32,
-    block_sums: wp.array2d[float32],
-    scalars: wp.array2d[float32],
+def initialize_phase(
+    dim: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    config: wp.array[DVIConfigStruct],
+    block_iteration: wp.int32,
+    phase: wp.array[wp.bool],
+    active: wp.array[wp.bool],
+    state: wp.array[APGDState],
+    condition: wp.array[wp.int32],
 ):
-    """Combine block partials in fixed order with float64 accumulators."""
+    """Select the worlds participating in this unilateral phase."""
     wid = wp.tid()
-    if not world_mask[wid]:
-        return
-
-    sum_a = wp.float64(0.0)
-    sum_b = wp.float64(0.0)
-    for block in range(num_blocks):
-        sum_a += wp.float64(block_sums[int32(2) * wid, block])
-        if slot_b_valid != int32(0):
-            sum_b += wp.float64(block_sums[int32(2) * wid + int32(1), block])
-
-    scalars[wid, scalar_a] = float32(sum_a)
-    if slot_b_valid != int32(0):
-        scalars[wid, scalar_b] = float32(sum_b)
+    enabled = dim[wid] > njc[wid] and (block_iteration < 0 or block_iteration < config[wid].max_alternating_iterations)
+    phase[wid] = enabled
+    active[wid] = enabled
+    entry = APGDState()
+    entry.lipschitz = 1.0
+    state[wid] = entry
+    if enabled:
+        wp.atomic_add(condition, 0, 1)
 
 
 @wp.kernel
-def initialize_apgd_worlds(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    phase_mask: wp.array[bool],
-    config: wp.array[ContactAPGDConfigStruct],
-    scalars: wp.array2d[float32],
-    flags: wp.array2d[int32],
-    outer_mask: wp.array[bool],
-    backtrack_mask: wp.array[bool],
-    outer_continue: wp.array[int32],
-    status: wp.array[ContactAPGDStatus],
+def copy_unilateral(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    source: wp.array[wp.float32],
+    target: wp.array[wp.float32],
 ):
-    """Initialize per-world APGD state and the outer loop condition."""
+    """Copy active unilateral entries and zero bilateral entries."""
+    wid, row = wp.tid()
+    if row < dim[wid]:
+        i = vio[wid] + row
+        target[i] = source[i] if row >= njc[wid] else 0.0
+
+
+@wp.kernel
+def build_phase_bias(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    full_product: wp.array[wp.float32],
+    free_velocity: wp.array[wp.float32],
+    unilateral_product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+):
+    """Hold the current bilateral contribution fixed, or eliminate it through Schur."""
+    wid, row = wp.tid()
+    if njc[wid] <= row and row < dim[wid]:
+        i = vio[wid] + row
+        bias[i] = full_product[i] + free_velocity[i] - unilateral_product[i]
+
+
+@wp.kernel
+def begin_correction(
+    active: wp.array[wp.bool],
+    state: wp.array[APGDState],
+    inner: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
+):
+    """Restart acceleration for a new frozen-correction QP."""
     wid = wp.tid()
-    capacity = (contact_row_offset[wid + 1] - contact_row_offset[wid]) / int32(3)
-    count = contact_count[wid]
-    assert count >= int32(0)
-    assert count <= capacity
-
-    active = phase_mask[wid] and count > int32(0) and config[wid].max_iterations > int32(0)
-    outer_mask[wid] = active
-    backtrack_mask[wid] = False
-
-    for column in range(_NUM_APGD_SCALARS):
-        scalars[wid, column] = float32(0.0)
-    scalars[wid, _THETA] = float32(1.0)
-    scalars[wid, _BEST_RESIDUAL] = float32(3.0e38)
-    rows = float32(3.0) * float32(count)
-    scalars[wid, _GDIFF] = float32(1.0) / wp.max(rows * rows, float32(1.0))
-
-    for column in range(_NUM_APGD_FLAGS):
-        flags[wid, column] = int32(0)
-
-    world_status = ContactAPGDStatus()
-    world_status.converged = int32(not active)
-    world_status.iterations = int32(0)
-    world_status.backtracks = int32(0)
-    world_status.restarts = int32(0)
-    world_status.residual = float32(0.0) if not active else float32(3.0e38)
-    status[wid] = world_status
-
-    if active:
-        wp.atomic_add(outer_continue, 0, int32(1))
+    inner[wid] = active[wid]
+    if active[wid]:
+        entry = state[wid]
+        entry.theta = 1.0
+        entry.iterations = 0
+        entry.corrections += 1
+        state[wid] = entry
+        wp.atomic_add(condition, 0, 1)
 
 
 @wp.kernel
-def initialize_apgd_vectors(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    phase_mask: wp.array[bool],
-    solution: wp.array[float32],
-    y: wp.array[float32],
-    gamma: wp.array[float32],
-    gamma_new: wp.array[float32],
-    gamma_best: wp.array[float32],
-    rayleigh_vector: wp.array[float32],
+def freeze_correction(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    ccgo: wp.array[wp.int32],
+    cio: wp.array[wp.int32],
+    mu: wp.array[wp.float32],
+    active: wp.array[wp.bool],
+    product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    shift: wp.array[wp.float32],
+    y: wp.array[wp.float32],
 ):
-    """Seed APGD iterates from the incoming warm start and build Rayleigh data."""
-    wid, cid = wp.tid()
-    row_offset = contact_row_offset[wid]
-    capacity = (contact_row_offset[wid + 1] - row_offset) / int32(3)
-    if cid >= capacity:
+    """Freeze mu times tangential speed on each normal row."""
+    wid, row = wp.tid()
+    if not active[wid] or row < njc[wid] or row >= dim[wid]:
         return
-
-    active = phase_mask[wid] and cid < contact_count[wid]
-    row = row_offset + int32(3) * cid
-    for component in range(3):
-        value = float32(0.0)
-        rayleigh_value = float32(0.0)
-        if active:
-            value = solution[row + component]
-            # Match the Project DVI/Chrono APGD seed gamma_0 - gamma_hat_0.
-            rayleigh_value = float32(-1.0)
-        y[row + component] = value
-        gamma[row + component] = value
-        gamma_new[row + component] = value
-        gamma_best[row + component] = value
-        rayleigh_vector[row + component] = rayleigh_value
+    i = vio[wid] + row
+    value = wp.float32(0.0)
+    if row >= ccgo[wid] and (row - ccgo[wid]) % 3 == 2:
+        vt = wp.vec2f(product[i - 2] + bias[i - 2], product[i - 1] + bias[i - 1])
+        value = mu[cio[wid] + (row - ccgo[wid]) // 3] * wp.length(vt)
+    shift[i] = value
+    y[i] = x[i]
 
 
 @wp.kernel
-def write_rayleigh_partials(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    contact_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    rayleigh_vector: wp.array[float32],
-    rayleigh_product: wp.array[float32],
-    partials: wp.array2d[float32],
+def begin_iteration(
+    inner: wp.array[wp.bool],
+    state: wp.array[APGDState],
+    searching: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
 ):
-    """Write one contact's Rayleigh norm contributions."""
-    wid, cid = wp.tid()
-    if not world_mask[wid] or cid >= contact_count[wid]:
-        return
-
-    row = contact_row_offset[wid] + int32(3) * cid
-    norm_w_squared = float32(0.0)
-    norm_aw_squared = float32(0.0)
-    for component in range(3):
-        w = rayleigh_vector[row + component]
-        aw = rayleigh_product[row + component]
-        norm_w_squared += w * w
-        norm_aw_squared += aw * aw
-    partial = contact_offset[wid] + cid
-    partials[_ACC_RAYLEIGH_NORM_SQUARED, partial] = norm_w_squared
-    partials[_ACC_RAYLEIGH_PRODUCT_NORM_SQUARED, partial] = norm_aw_squared
-
-
-@wp.kernel
-def finalize_rayleigh_estimate(
-    world_mask: wp.array[bool],
-    scalars: wp.array2d[float32],
-):
-    """Finalize the reduced per-world Rayleigh Lipschitz estimate."""
+    """Start a backtracking search for each active QP."""
     wid = wp.tid()
-    if not world_mask[wid]:
-        return
-
-    lipschitz = float32(1.0e-12)
-    norm_w_squared = scalars[wid, _RAYLEIGH_NORM_SQUARED]
-    norm_aw_squared = scalars[wid, _RAYLEIGH_PRODUCT_NORM_SQUARED]
-    if norm_w_squared > float32(0.0):
-        lipschitz = wp.max(wp.sqrt(norm_aw_squared / norm_w_squared), lipschitz)
-    scalars[wid, _L] = lipschitz
-    scalars[wid, _T] = float32(1.0) / lipschitz
+    searching[wid] = inner[wid]
+    if inner[wid]:
+        entry = state[wid]
+        entry.backtracks = 0
+        state[wid] = entry
+        wp.atomic_add(condition, 0, 1)
 
 
 @wp.kernel
-def prepare_apgd_iteration(
-    outer_mask: wp.array[bool],
-    scalars: wp.array2d[float32],
-    flags: wp.array2d[int32],
-    backtrack_mask: wp.array[bool],
+def projected_step(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    nbc: wp.array[wp.int32],
+    nl: wp.array[wp.int32],
+    bcio: wp.array[wp.int32],
+    cio: wp.array[wp.int32],
+    mu: wp.array[wp.float32],
+    lower: wp.array[wp.float32],
+    upper: wp.array[wp.float32],
+    searching: wp.array[wp.bool],
+    state: wp.array[APGDState],
+    y: wp.array[wp.float32],
+    product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+    shift: wp.array[wp.float32],
+    candidate: wp.array[wp.float32],
 ):
-    """Clear the accumulators and transient flags for one APGD iteration."""
+    """Take a projected gradient step for the frozen quadratic objective."""
+    wid, row = wp.tid()
+    nu = dim[wid] - njc[wid]
+    scalar_rows = nbc[wid] + nl[wid]
+    if not searching[wid] or row >= nu or (row >= scalar_rows and (row - scalar_rows) % 3 != 0):
+        return
+    count = 1 if row < scalar_rows else 3
+    i = vio[wid] + njc[wid] + row
+    value = wp.vec3f(0.0)
+    for j in range(count):
+        value[j] = y[i + j] - (product[i + j] + bias[i + j] + shift[i + j]) / state[wid].lipschitz
+    value = project_unilateral(row, nbc[wid], nl[wid], bcio[wid], cio[wid], mu, lower, upper, value)
+    for j in range(count):
+        candidate[i + j] = value[j]
+
+
+@wp.kernel
+def check_descent(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    config: wp.array[APGDConfig],
+    y: wp.array[wp.float32],
+    product_y: wp.array[wp.float32],
+    candidate: wp.array[wp.float32],
+    product_candidate: wp.array[wp.float32],
+    state: wp.array[APGDState],
+    searching: wp.array[wp.bool],
+    inner: wp.array[wp.bool],
+    active: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
+    status: wp.array[DVIStatus],
+):
+    """Accept only steps satisfying quadratic majorization; reject exhausted searches."""
     wid = wp.tid()
-    backtrack_mask[wid] = False
-    if not outer_mask[wid]:
+    if not searching[wid]:
         return
-    scalars[wid, _OBJ_CANDIDATE] = float32(0.0)
-    scalars[wid, _OBJ_MODEL] = float32(0.0)
-    scalars[wid, _RESIDUAL_SQUARED] = float32(0.0)
-    scalars[wid, _RESTART_DOT] = float32(0.0)
-    scalars[wid, _GAMMA_NORM_SQUARED] = float32(0.0)
-    flags[wid, _UPDATE_BEST] = int32(0)
-    flags[wid, _RESTART] = int32(0)
-    flags[wid, _BACKTRACKS_THIS_ITERATION] = int32(0)
+    curvature = wp.float64(0.0)
+    norm = wp.float64(0.0)
+    for row in range(njc[wid], dim[wid]):
+        i = vio[wid] + row
+        delta = wp.float64(candidate[i] - y[i])
+        curvature += delta * wp.float64(product_candidate[i] - product_y[i])
+        norm += delta * delta
+    entry = state[wid]
+    bound = wp.float64(entry.lipschitz) * norm
+    accepted = curvature <= bound + wp.float64(1.0e-6) * wp.max(wp.abs(curvature), bound) + wp.float64(1.0e-20)
+    searching[wid] = False
+    if not accepted:
+        info = status[wid]
+        info.apgd_backtracks += 1
+        status[wid] = info
+        entry.backtracks += 1
+        entry.lipschitz *= 2.0
+        if entry.backtracks >= config[wid].max_backtracks or not wp.isfinite(curvature):
+            entry.failed = 1
+            inner[wid] = False
+            active[wid] = False
+        else:
+            searching[wid] = True
+            wp.atomic_add(condition, 0, 1)
+    state[wid] = entry
+
+
+@wp.func
+def natural_residual(
+    dim: wp.int32,
+    vio: wp.int32,
+    njc: wp.int32,
+    nbc: wp.int32,
+    nl: wp.int32,
+    bcio: wp.int32,
+    cio: wp.int32,
+    mu: wp.array[wp.float32],
+    lower: wp.array[wp.float32],
+    upper: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+    shift: wp.array[wp.float32],
+    nonlinear: wp.bool,
+) -> wp.float32:
+    """Evaluate the complete box/limit/contact natural map with unit step."""
+    residual = wp.float32(0.0)
+    row = wp.int32(0)
+    while row < dim - njc:
+        count = 1 if row < nbc + nl else 3
+        i = vio + njc + row
+        impulse = wp.vec3f(0.0)
+        velocity = wp.vec3f(0.0)
+        for j in range(count):
+            impulse[j] = x[i + j]
+            velocity[j] = product[i + j] + bias[i + j]
+            if not nonlinear:
+                velocity[j] += shift[i + j]
+        if nonlinear and count == 3:
+            velocity.z += mu[cio + (row - nbc - nl) // 3] * wp.length(wp.vec2f(velocity.x, velocity.y))
+        projected = project_unilateral(row, nbc, nl, bcio, cio, mu, lower, upper, impulse - velocity)
+        for j in range(count):
+            difference = wp.abs(impulse[j] - projected[j])
+            if not wp.isfinite(difference):
+                difference = 3.0e38
+            residual = wp.max(residual, difference)
+        row += count
+    return residual
 
 
 @wp.kernel
-def compute_apgd_gradient(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    operator_product: wp.array[float32],
-    rhs: wp.array[float32],
-    gradient: wp.array[float32],
+def accept_iteration(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    nbc: wp.array[wp.int32],
+    nl: wp.array[wp.int32],
+    bcio: wp.array[wp.int32],
+    cio: wp.array[wp.int32],
+    mu: wp.array[wp.float32],
+    lower: wp.array[wp.float32],
+    upper: wp.array[wp.float32],
+    config: wp.array[APGDConfig],
+    product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+    shift: wp.array[wp.float32],
+    candidate: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+    state: wp.array[APGDState],
+    inner: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
+    status: wp.array[DVIStatus],
 ):
-    """Compute the contact objective gradient ``A*y - b``."""
-    wid, local_row = wp.tid()
-    if not world_mask[wid] or local_row >= int32(3) * contact_count[wid]:
+    """Accept the step, restart unhelpful momentum, and test the inner QP residual."""
+    wid = wp.tid()
+    if not inner[wid]:
         return
-    row = contact_row_offset[wid] + local_row
-    gradient[row] = operator_product[row] - rhs[row]
-
-
-@wp.kernel
-def project_apgd_step(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    contact_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    friction: wp.array[float32],
-    y: wp.array[float32],
-    gradient: wp.array[float32],
-    scalars: wp.array2d[float32],
-    gamma_new: wp.array[float32],
-):
-    """Apply one associated Coulomb-cone projected-gradient step."""
-    wid, cid = wp.tid()
-    if not world_mask[wid] or cid >= contact_count[wid]:
-        return
-
-    row = contact_row_offset[wid] + int32(3) * cid
-    step = scalars[wid, _T]
-    candidate = vec3f(
-        y[row] - step * gradient[row],
-        y[row + int32(1)] - step * gradient[row + int32(1)],
-        y[row + int32(2)] - step * gradient[row + int32(2)],
+    entry = state[wid]
+    restart = wp.float64(0.0)
+    for row in range(njc[wid], dim[wid]):
+        i = vio[wid] + row
+        restart += wp.float64(y[i] - candidate[i]) * wp.float64(candidate[i] - x[i])
+    theta = 0.5 * (1.0 + wp.sqrt(1.0 + 4.0 * entry.theta * entry.theta))
+    beta = (entry.theta - 1.0) / theta
+    if restart > wp.float64(0.0):
+        theta = 1.0
+        beta = 0.0
+    for row in range(njc[wid], dim[wid]):
+        i = vio[wid] + row
+        y[i] = candidate[i] + beta * (candidate[i] - x[i])
+        x[i] = candidate[i]
+    entry.theta = theta
+    entry.iterations += 1
+    state[wid] = entry
+    info = status[wid]
+    info.iterations += 1
+    status[wid] = info
+    residual = natural_residual(
+        dim[wid],
+        vio[wid],
+        njc[wid],
+        nbc[wid],
+        nl[wid],
+        bcio[wid],
+        cio[wid],
+        mu,
+        lower,
+        upper,
+        x,
+        product,
+        bias,
+        shift,
+        False,
     )
-    mu = wp.max(friction[contact_offset[wid] + cid], float32(0.0))
-    projected = project_to_coulomb_cone(candidate, mu)
-    gamma_new[row] = projected[0]
-    gamma_new[row + int32(1)] = projected[1]
-    gamma_new[row + int32(2)] = projected[2]
+    inner[wid] = residual > config[wid].tolerance and entry.iterations < config[wid].max_iterations
+    if inner[wid]:
+        wp.atomic_add(condition, 0, 1)
 
 
 @wp.kernel
-def reduce_apgd_objectives(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    contact_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    rhs: wp.array[float32],
-    y: wp.array[float32],
-    gradient: wp.array[float32],
-    gamma_new: wp.array[float32],
-    operator_gamma_new: wp.array[float32],
-    scalars: wp.array2d[float32],
-    partials: wp.array2d[float32],
+def relax_correction(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    active: wp.array[wp.bool],
+    config: wp.array[APGDConfig],
+    previous: wp.array[wp.float32],
+    x: wp.array[wp.float32],
 ):
-    """Write one contact's objective and backtracking-model contributions."""
-    wid, cid = wp.tid()
-    if not world_mask[wid] or cid >= contact_count[wid]:
-        return
-
-    row = contact_row_offset[wid] + int32(3) * cid
-    lipschitz = scalars[wid, _L]
-    objective = float32(0.0)
-    model = float32(0.0)
-    for component in range(3):
-        vector_row = row + component
-        candidate = gamma_new[vector_row]
-        momentum = y[vector_row]
-        b = rhs[vector_row]
-        grad = gradient[vector_row]
-        ay = grad + b
-        difference = candidate - momentum
-        objective += float32(0.5) * candidate * operator_gamma_new[vector_row] - candidate * b
-        model += (
-            float32(0.5) * momentum * ay
-            - momentum * b
-            + grad * difference
-            + float32(0.5) * lipschitz * difference * difference
-        )
-    partial = contact_offset[wid] + cid
-    partials[_ACC_OBJ_CANDIDATE, partial] = objective
-    partials[_ACC_OBJ_MODEL, partial] = model
+    """Damp the nonlinear fixed-point update without leaving the convex feasible set."""
+    wid, row = wp.tid()
+    if active[wid] and njc[wid] <= row and row < dim[wid]:
+        i = vio[wid] + row
+        x[i] = previous[i] + config[wid].relaxation * (x[i] - previous[i])
 
 
 @wp.kernel
-def update_backtracking_condition(
-    world_mask: wp.array[bool],
-    config: wp.array[ContactAPGDConfigStruct],
-    scalars: wp.array2d[float32],
-    flags: wp.array2d[int32],
-    backtrack_mask: wp.array[bool],
-    backtrack_continue: wp.array[int32],
-    status: wp.array[ContactAPGDStatus],
+def finish_correction(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    nbc: wp.array[wp.int32],
+    nl: wp.array[wp.int32],
+    bcio: wp.array[wp.int32],
+    cio: wp.array[wp.int32],
+    mu: wp.array[wp.float32],
+    lower: wp.array[wp.float32],
+    upper: wp.array[wp.float32],
+    config: wp.array[APGDConfig],
+    x: wp.array[wp.float32],
+    product: wp.array[wp.float32],
+    bias: wp.array[wp.float32],
+    shift: wp.array[wp.float32],
+    state: wp.array[APGDState],
+    active: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
+    status: wp.array[DVIStatus],
 ):
-    """Grow ``L`` for violated descent bounds and update the inner-loop mask."""
+    """Stop only on the recomputed nonlinear residual or an explicit work limit."""
     wid = wp.tid()
-    needs_backtrack = False
-    if world_mask[wid]:
-        objective = scalars[wid, _OBJ_CANDIDATE]
-        model = scalars[wid, _OBJ_MODEL]
-        scale = wp.max(wp.abs(objective), wp.abs(model))
-        comparison_tolerance = float32(1.0e-6) * scale + float32(1.0e-12)
-        world_status = status[wid]
-        violated = not wp.isfinite(objective) or not wp.isfinite(model) or objective > model + comparison_tolerance
-        backtracks = flags[wid, _BACKTRACKS_THIS_ITERATION]
-        max_backtracks = config[wid].max_backtrack_iterations
-        if violated and backtracks < max_backtracks:
-            backtracks += int32(1)
-            flags[wid, _BACKTRACKS_THIS_ITERATION] = backtracks
-            world_status.backtracks += int32(1)
-            lipschitz = wp.max(float32(2.0) * scalars[wid, _L], float32(1.0e-12))
-            scalars[wid, _L] = lipschitz
-            scalars[wid, _T] = float32(1.0) / lipschitz
-            status[wid] = world_status
-            # The initial descent check is pass one, matching final
-            # newton-dvi.  A doubling on the last allowed pass updates L for
-            # the next outer iteration but does not launch another projection.
-            needs_backtrack = backtracks < max_backtracks
-
-    backtrack_mask[wid] = needs_backtrack
-    if needs_backtrack:
-        wp.atomic_add(backtrack_continue, 0, int32(1))
-
-
-@wp.kernel
-def reduce_restart_and_res4(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    partial_contact_offset: wp.array[int32],
-    contact_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    friction: wp.array[float32],
-    rhs: wp.array[float32],
-    gamma: wp.array[float32],
-    gamma_new: wp.array[float32],
-    gradient: wp.array[float32],
-    operator_gamma_new: wp.array[float32],
-    scalars: wp.array2d[float32],
-    partials: wp.array2d[float32],
-):
-    """Write one contact's restart, Res4, and iterate-norm contributions."""
-    wid, cid = wp.tid()
-    if not world_mask[wid] or cid >= contact_count[wid]:
+    if not active[wid]:
         return
-
-    row = contact_row_offset[wid] + int32(3) * cid
-    gdiff = scalars[wid, _GDIFF]
-    inv_gdiff = float32(1.0) / gdiff
-    grad_new = vec3f(
-        operator_gamma_new[row] - rhs[row],
-        operator_gamma_new[row + int32(1)] - rhs[row + int32(1)],
-        operator_gamma_new[row + int32(2)] - rhs[row + int32(2)],
+    residual = natural_residual(
+        dim[wid],
+        vio[wid],
+        njc[wid],
+        nbc[wid],
+        nl[wid],
+        bcio[wid],
+        cio[wid],
+        mu,
+        lower,
+        upper,
+        x,
+        product,
+        bias,
+        shift,
+        True,
     )
-    candidate = vec3f(gamma_new[row], gamma_new[row + int32(1)], gamma_new[row + int32(2)])
-    mu = wp.max(friction[contact_offset[wid] + cid], float32(0.0))
-    projected = project_to_coulomb_cone(candidate - gdiff * grad_new, mu)
-    residual_vector = inv_gdiff * (candidate - projected)
-
-    old = vec3f(gamma[row], gamma[row + int32(1)], gamma[row + int32(2)])
-    grad_at_y = vec3f(gradient[row], gradient[row + int32(1)], gradient[row + int32(2)])
-    partial = partial_contact_offset[wid] + cid
-    partials[_ACC_RESIDUAL_SQUARED, partial] = wp.dot(residual_vector, residual_vector)
-    partials[_ACC_RESTART_DOT, partial] = wp.dot(grad_at_y, candidate - old)
-    partials[_ACC_GAMMA_NORM_SQUARED, partial] = wp.dot(candidate, candidate)
+    info = status[wid]
+    info.apgd_residual = residual
+    info.apgd_corrections += 1
+    status[wid] = info
+    active[wid] = residual > config[wid].tolerance and state[wid].corrections < config[wid].max_corrections
+    if active[wid]:
+        wp.atomic_add(condition, 0, 1)
 
 
 @wp.kernel
-def update_apgd_worlds(
-    outer_mask: wp.array[bool],
-    config: wp.array[ContactAPGDConfigStruct],
-    scalars: wp.array2d[float32],
-    flags: wp.array2d[int32],
-    status: wp.array[ContactAPGDStatus],
+def scatter_solution(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    phase: wp.array[wp.bool],
+    x: wp.array[wp.float32],
+    solution: wp.array[wp.float32],
 ):
-    """Advance Nesterov state, latch convergence, and recover the step size."""
+    """Export unilateral impulses while preserving bilateral and masked-world entries."""
+    wid, row = wp.tid()
+    if phase[wid] and njc[wid] <= row and row < dim[wid]:
+        i = vio[wid] + row
+        solution[i] = x[i]
+
+
+@wp.kernel
+def finish_phase(phase: wp.array[wp.bool], state: wp.array[APGDState], status: wp.array[DVIStatus]):
+    """Expose line-search failure even when the previous iterate was feasible."""
     wid = wp.tid()
-    if not outer_mask[wid]:
-        return
-
-    world_status = status[wid]
-    world_status.iterations += int32(1)
-    residual = wp.sqrt(scalars[wid, _RESIDUAL_SQUARED])
-    best_residual = scalars[wid, _BEST_RESIDUAL]
-    if wp.isfinite(residual) and residual < best_residual:
-        best_residual = residual
-        scalars[wid, _BEST_RESIDUAL] = residual
-        flags[wid, _UPDATE_BEST] = int32(1)
-    world_status.residual = best_residual
-
-    if world_status.iterations >= config[wid].min_iterations and best_residual <= config[wid].tolerance:
-        world_status.converged = int32(1)
-
-    restart = scalars[wid, _RESTART_DOT] > float32(0.0)
-    if restart:
-        flags[wid, _RESTART] = int32(1)
-        world_status.restarts += int32(1)
-
-    theta = scalars[wid, _THETA]
-    theta_new = float32(0.5) * (-theta * theta + theta * wp.sqrt(theta * theta + float32(4.0)))
-    beta = theta * (float32(1.0) - theta) / (theta * theta + theta_new)
-    if restart:
-        theta_new = float32(1.0)
-        beta = float32(0.0)
-    scalars[wid, _THETA] = theta_new
-    scalars[wid, _BETA] = beta
-
-    lipschitz = wp.max(float32(0.9) * scalars[wid, _L], float32(1.0e-12))
-    scalars[wid, _L] = lipschitz
-    scalars[wid, _T] = float32(1.0) / lipschitz
-    status[wid] = world_status
+    if phase[wid] and state[wid].failed != 0:
+        info = status[wid]
+        info.apgd_line_search_failed = 1
+        info.apgd_residual = 3.0e38
+        status[wid] = info
 
 
 @wp.kernel
-def update_apgd_vectors(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    outer_mask: wp.array[bool],
-    scalars: wp.array2d[float32],
-    flags: wp.array2d[int32],
-    gamma_new: wp.array[float32],
-    y: wp.array[float32],
-    gamma: wp.array[float32],
-    gamma_best: wp.array[float32],
-):
-    """Store the best iterate and apply Nesterov momentum or restart."""
-    wid, local_row = wp.tid()
-    if not outer_mask[wid] or local_row >= int32(3) * contact_count[wid]:
-        return
-
-    row = contact_row_offset[wid] + local_row
-    candidate = gamma_new[row]
-    if flags[wid, _UPDATE_BEST] != int32(0):
-        gamma_best[row] = candidate
-
-    previous = gamma[row]
-    if flags[wid, _RESTART] != int32(0):
-        y[row] = candidate
-    else:
-        y[row] = candidate + scalars[wid, _BETA] * (candidate - previous)
-    gamma[row] = candidate
-
-
-@wp.kernel
-def update_outer_condition(
-    phase_mask: wp.array[bool],
-    config: wp.array[ContactAPGDConfigStruct],
-    outer_mask: wp.array[bool],
-    outer_continue: wp.array[int32],
-    status: wp.array[ContactAPGDStatus],
-):
-    """Update per-world activity and the batch APGD loop condition."""
+def guard_convergence(status: wp.array[DVIStatus]):
+    """Prevent a failed APGD line search from being reported as converged."""
     wid = wp.tid()
-    world_status = status[wid]
-    active = (
-        phase_mask[wid]
-        and (config[wid].early_exit == int32(0) or world_status.converged == int32(0))
-        and world_status.iterations < config[wid].max_iterations
-    )
-    outer_mask[wid] = active
-    if active:
-        wp.atomic_add(outer_continue, 0, int32(1))
+    info = status[wid]
+    if info.apgd_line_search_failed != 0:
+        info.converged = 0
+    status[wid] = info
 
 
 @wp.kernel
-def copy_best_to_solution(
-    contact_count: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    phase_mask: wp.array[bool],
-    gamma_best: wp.array[float32],
-    solution: wp.array[float32],
+def dense_matvec(
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    matrix: wp.array[wp.float32],
+    mask: wp.array[wp.bool],
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
 ):
-    """Copy the minimum-Res4 contact iterate to the caller-owned solution."""
-    wid, local_row = wp.tid()
-    if not phase_mask[wid] or local_row >= int32(3) * contact_count[wid]:
+    """Apply the existing dense Delassus matrix to active worlds."""
+    wid, row = wp.tid()
+    if not mask[wid] or row >= dim[wid]:
         return
-    row = contact_row_offset[wid] + local_row
-    solution[row] = gamma_best[row]
+    value = wp.float32(0.0)
+    for column in range(dim[wid]):
+        value += matrix[mio[wid] + row * dim[wid] + column] * x[vio[wid] + column]
+    y[vio[wid] + row] = value
 
 
 @wp.kernel
-def dense_contact_matvec(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    matrix: wp.array[float32],
-    represented_compliance: wp.array[float32],
-    x: wp.array[float32],
-    y: wp.array[float32],
+def copy_active(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+    source: wp.array[wp.float32],
+    target: wp.array[wp.float32],
 ):
-    """Apply the represented dense contact block ``D_CC + E_hat_CC``."""
-    wid, local_row = wp.tid()
-    row_count = int32(3) * problem_nc[wid]
-    if not world_mask[wid] or local_row >= row_count:
-        return
-
-    dimension = problem_dim[wid]
-    matrix_offset = problem_mio[wid]
-    contact_group_offset = problem_ccgo[wid]
-    compact_offset = contact_row_offset[wid]
-    full_row = contact_group_offset + local_row
-    value = float32(0.0)
-    for local_column in range(row_count):
-        full_column = contact_group_offset + local_column
-        value += matrix[matrix_offset + dimension * full_row + full_column] * x[compact_offset + local_column]
-    value += represented_compliance[problem_vio[wid] + full_row] * x[compact_offset + local_row]
-    y[compact_offset + local_row] = value
+    """Preserve completed worlds when a sparse product clears its output buffer."""
+    wid, row = wp.tid()
+    if mask[wid] and row < dim[wid]:
+        i = vio[wid] + row
+        target[i] = source[i]
 
 
 @wp.kernel
-def build_dense_contact_rhs(
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    matrix: wp.array[float32],
-    free_velocity: wp.array[float32],
-    full_solution: wp.array[float32],
-    rhs: wp.array[float32],
+def build_response_rhs(
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    bvio: wp.array[wp.int32],
+    scale: wp.array[wp.float32],
+    product: wp.array[wp.float32],
+    mask: wp.array[wp.bool],
+    rhs: wp.array[wp.float32],
+    active_dim: wp.array[wp.int32],
 ):
-    """Build ``b_C = -(v_f,C + D_C,notC*lambda_notC)`` exactly once."""
-    wid, local_row = wp.tid()
-    contact_row_count = int32(3) * problem_nc[wid]
-    if not world_mask[wid] or local_row >= contact_row_count:
-        return
-
-    dimension = problem_dim[wid]
-    matrix_offset = problem_mio[wid]
-    vector_offset = problem_vio[wid]
-    contact_begin = problem_ccgo[wid]
-    contact_end = contact_begin + contact_row_count
-    full_row = contact_begin + local_row
-    value = free_velocity[vector_offset + full_row]
-    for column in range(dimension):
-        if column < contact_begin or column >= contact_end:
-            value += matrix[matrix_offset + dimension * full_row + column] * full_solution[vector_offset + column]
-    rhs[contact_row_offset[wid] + local_row] = -value
+    """Build the scaled bilateral response to a unilateral search vector."""
+    wid, row = wp.tid()
+    if row == 0:
+        active_dim[wid] = njc[wid] if mask[wid] else 0
+    if row < njc[wid]:
+        i = bvio[wid] + row
+        rhs[i] = -scale[i] * product[vio[wid] + row] if mask[wid] else 0.0
 
 
 @wp.kernel
-def gather_dense_contact_solution(
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    full_solution: wp.array[float32],
-    compact_solution: wp.array[float32],
+def assemble_response(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    bvio: wp.array[wp.int32],
+    scale: wp.array[wp.float32],
+    response: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    full: wp.array[wp.float32],
 ):
-    """Gather contact rows from Kamino's unified impulse vector."""
-    wid, local_row = wp.tid()
-    if not world_mask[wid] or local_row >= int32(3) * problem_nc[wid]:
-        return
-    full_row = problem_vio[wid] + problem_ccgo[wid] + local_row
-    compact_solution[contact_row_offset[wid] + local_row] = full_solution[full_row]
-
-
-@wp.kernel
-def scatter_dense_contact_solution(
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    contact_row_offset: wp.array[int32],
-    world_mask: wp.array[bool],
-    compact_solution: wp.array[float32],
-    full_solution: wp.array[float32],
-):
-    """Scatter solved contact rows into Kamino's unified impulse vector."""
-    wid, local_row = wp.tid()
-    if not world_mask[wid] or local_row >= int32(3) * problem_nc[wid]:
-        return
-    full_row = problem_vio[wid] + problem_ccgo[wid] + local_row
-    full_solution[full_row] = compact_solution[contact_row_offset[wid] + local_row]
+    """Combine unilateral input with its eliminated bilateral response."""
+    wid, row = wp.tid()
+    if row < dim[wid]:
+        value = x[vio[wid] + row]
+        if row < njc[wid]:
+            i = bvio[wid] + row
+            value = scale[i] * response[i]
+        full[vio[wid] + row] = value

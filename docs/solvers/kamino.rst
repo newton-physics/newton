@@ -25,6 +25,18 @@ See the :class:`~newton.solvers.SolverKamino` API reference for construction
 and configuration details. Runnable workflows are available in the
 `Kamino examples <https://github.com/newton-physics/newton/tree/main/newton/examples/kamino>`_.
 
+Body acceleration
+-----------------
+
+Kamino populates :attr:`~newton.State.body_qdd` when the extended state
+attribute is requested. Values are center-of-mass spatial accelerations in the
+world frame, with linear acceleration followed by angular acceleration. For a
+step of duration ``dt``, Kamino reports the discrete step average
+``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
+velocity impulse divided by ``dt`` rather than a continuous midpoint
+acceleration. Resetting a state clears the requested acceleration in each reset
+world.
+
 Choosing a dynamics solver
 --------------------------
 
@@ -34,14 +46,12 @@ Kamino provides two forward-dynamics backends:
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
 * ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics
-  with the RCM-reordered blocked LLT solver, and the Euler integrator. Its
-  coupling sweeps use the explicit ``L -> B -> C`` schedule: projected bounded
-  joint and joint-limit rows, a direct bilateral-joint solve, then a projected
-  contact solve. The contact phase supports De Saxce PGS and an opt-in
-  associated-contact APGD solver. It is generally faster than PADMM, but can
-  solve large active inequality sets less accurately. Dual preconditioning is
-  supported as an opt-in setting through
-  ``config.dynamics.preconditioning=True``.
+  with the RCM-reordered blocked LLT solver, and the Euler integrator. It is
+  generally faster, but approximates the coupled problem by alternating between
+  a direct solve for equality constraints and projected iterations for
+  inequality constraints. As a rule of thumb, DVI solves inequality constraints
+  less accurately than PADMM, particularly as the number of active inequalities
+  grows. Dual preconditioning is not supported.
 
 Select the backend when constructing the configuration so dependent defaults
 initialize consistently:
@@ -49,23 +59,7 @@ initialize consistently:
 .. code-block:: python
 
    config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
-   config.dvi.coupling_iterations = 2
-   config.dvi.limit_pgs_sweeps = 48
-   config.dvi.contact_pgs_sweeps = 48
    solver = newton.solvers.SolverKamino(model, config=config)
-
-``coupling_iterations`` controls complete ``L -> B -> C`` passes. The two PGS
-sweep settings are independent local budgets for the ``L`` and ``C`` phases;
-APGD contacts instead use ``config.dvi.apgd.max_iterations``. A world with only
-one active family executes that family once, including inside a heterogeneous
-batch. Coupling passes are a fixed block-Gauss--Seidel budget rather than a
-guarantee that the full terminal residual reaches ``config.dvi.tolerance``;
-increase them for problems that need a tighter cross-family fixed point.
-
-The interim DVI controls ``max_alternating_iterations`` and
-``inequality_sweeps_per_iteration`` have been replaced by these three explicit
-settings. ``bilateral_solve_interval`` has been removed because the canonical
-schedule always visits ``B`` between ``L`` and ``C``.
 
 DVI is best suited to performance-sensitive rigid mechanisms with relatively
 few active contacts; PADMM remains the safer and more broadly validated choice.
@@ -88,44 +82,54 @@ The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
 
-DVI physical compliance
------------------------
+DVI APGD unilateral subsolver
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The DVI backend provides independent physical-compliance controls through
-``config.constraints`` for three constraint families:
+.. experimental::
 
-* ``joint_compliance`` applies to kinematic bilateral-joint rows.
-* ``joint_limit_compliance`` applies to active unilateral joint-limit rows.
-* ``contact_compliance`` applies isotropically to the two tangential rows and
-  normal row of each active contact.
+   The opt-in DVI APGD mode and its ``config.dvi.apgd`` configuration may
+   change without prior notice. Nonlinear convergence and performance should
+   be evaluated on the intended workload before selecting this mode.
 
-All three values default to zero, which preserves rigid-constraint behavior.
-Each nonzero compliance must be paired with its corresponding stabilization
-time: ``joint_stabilization_time``, ``joint_limit_stabilization_time``, or
-``contact_stabilization_time``. For family ``f``, timestep ``dt``, physical
-compliance ``c_f``, and stabilization time ``tau_f``, Kamino forms
+Set ``config.dvi.unilateral_solver = "apgd"`` to solve bounded joint rows,
+joint limits, and contact cones with accelerated projected gradient steps.
+The default remains ``"pgs"``. APGD supports dense and sparse operators and
+``config.dvi.use_schur_complement``. It retains the existing bilateral/
+unilateral split and rigid-constraint model.
 
-.. math::
+.. code-block:: python
 
-   E_f = \frac{c_f}{dt\,(dt + \tau_f)}
+   config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
+   config.dvi.unilateral_solver = "apgd"
+   config.dvi.apgd.max_iterations = 64
+   config.dvi.apgd.max_corrections = 20
+   config.dvi.apgd.tolerance = 1.0e-5
+   solver = newton.solvers.SolverKamino(model, config=config)
 
-and adds this diagonal to that family's DVI operator. Compliance is inverse
-stiffness. Its units follow the constrained coordinate: [m/N] for a
-translational row, [rad/(N·m)] for a rotational row, and [m/N] for contact.
+APGD solves a sequence of convex cone quadratic programs. Between programs it
+recomputes the De Saxce normal-velocity correction ``mu * norm(v_t)``; that
+correction remains fixed during each inner solve and its backtracking search.
+The stopping condition evaluates the nonlinear Coulomb natural map with the
+updated velocity. This avoids treating convergence of an associated cone QP
+as convergence of Coulomb friction.
 
-Joint compliance deliberately excludes dynamic actuator rows. Joint-limit
-compliance likewise excludes the bounded joint-friction and actuator-effort
-rows (the internal ``nbc`` family). Those rows already have their own dynamic
-or bound semantics and are not modeled as compliant positional constraints.
+``apgd.max_iterations`` bounds inner accelerated steps,
+``apgd.max_backtracks`` bounds each line search, and
+``apgd.max_corrections`` bounds nonlinear correction iterations per unilateral
+phase. ``apgd.relaxation`` can damp the nonlinear update. These controls are
+runtime Python settings and do not add USD material attributes.
+``max_alternating_iterations`` and ``bilateral_solve_interval`` continue to
+control the existing alternating path; Schur mode eliminates the bilateral
+rows during the unilateral solve and recovers their impulses afterward.
 
-``E`` and its represented counterpart ``E_hat = P E P = P^2 E`` are internal
-solver storage, where ``P`` is the diagonal dual preconditioner. Users set only
-the physical per-family compliance and stabilization-time fields. The
-constitutive term ``E lambda`` participates in the effective constraint
-velocity and solver residuals; the exported physical post-constraint velocity
-continues to represent ``N lambda + v_f`` without that constitutive term, where
-``N`` is the physical Delassus operator and ``v_f`` is the free constraint
-velocity.
+The APGD status reports accepted inner ``iterations``, ``apgd_corrections``,
+``apgd_backtracks``, and the last phase's ``apgd_residual``. Budget exhaustion
+can leave a nonzero residual. An exhausted or non-finite line search sets
+``apgd_line_search_failed`` and cannot report convergence. The existing
+terminal full-system status also checks joint and contact conditions after
+bilateral recovery. APGD does not apply PGS's heuristic reduction of the
+friction load for penetration recovery; it uses the full Coulomb cone and
+the existing stabilized free velocity.
 
 Inspecting terminal status
 --------------------------
