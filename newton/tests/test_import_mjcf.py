@@ -1196,6 +1196,52 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
 
+class TestMjcfSlideCoordinateScale(unittest.TestCase):
+    """Tests for scale applied to MJCF slide coordinates."""
+
+    def test_slide_range_and_ref_scale_together(self):
+        """Scale slide range and reference while retaining angular ranges."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="slider">
+                    <joint name="slide" type="slide" range="-0.3 0.3" ref="0.1"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body name="hinge_body">
+                        <joint name="hinge" type="hinge" range="-60 60" ref="10"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, scale=scale)
+                np.testing.assert_allclose(builder.joint_limit_lower[:2], [-0.4 * scale, np.deg2rad(-70)])
+                np.testing.assert_allclose(builder.joint_limit_upper[:2], [0.2 * scale, np.deg2rad(50)])
+
+    def test_slide_ref_and_springref_metadata_scale(self):
+        """Keep MuJoCo slide reference metadata in scaled coordinates."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="slider">
+                    <joint name="slide" type="slide" range="-0.3 0.3"
+                           ref="0.1" springref="0.15"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_ref"].values[0], 0.2)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_springref"].values[0], 0.3)
+
+
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
 
