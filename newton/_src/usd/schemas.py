@@ -393,6 +393,7 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.BODY: {
             # Rigid body damping
+            "disable_gravity": SchemaAttribute("physxRigidBody:disableGravity", False),
             "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
             "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
         },

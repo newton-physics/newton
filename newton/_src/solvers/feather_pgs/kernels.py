@@ -1242,6 +1242,8 @@ def finalize_body_dynamics(
     articulation_origin: wp.array[wp.vec3],
     materialize_all_body_inertia: int,
     materialize_body_inertia_terms: int,
+    body_world: wp.array[int],
+    body_disable_gravity: wp.array[bool],
     gravity: wp.array[wp.vec3],
     body_v_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
@@ -1286,7 +1288,9 @@ def finalize_body_dynamics(
     a_s = body_a_s[body]
     coriolis = spatial_cross_dual(v_s, mul_com_spatial_inertia(mass, com, inertia_origin, v_s))
     f_b_s = mul_com_spatial_inertia(mass, com, inertia_origin, a_s) + coriolis
-    f_g = mass * gravity[0]
+    f_g = wp.vec3()
+    if not body_disable_gravity[body]:
+        f_g = mass * gravity[body_world[body]]
     body_f_s[body] = f_b_s - wp.spatial_vector(f_g, wp.cross(com, f_g))
 
     com_world = wp.transform_point(body_q[body], body_com[body])
@@ -1318,6 +1322,8 @@ def eval_rigid_fk_id(
     materialize_all_body_inertia: int,
     materialize_body_inertia_terms: int,
     reuse_cached: int,
+    body_world: wp.array[int],
+    body_disable_gravity: wp.array[bool],
     gravity: wp.array[wp.vec3],
     # outputs
     body_q: wp.array[wp.transform],
@@ -1363,7 +1369,6 @@ def eval_rigid_fk_id(
             origin = wp.transform_point(body_q[root_body], body_com[root_body])
     articulation_origin[index] = origin
 
-    gravity_s = gravity[0]
     write_body_inertia = materialize_all_body_inertia
     if is_free_rigid[index] != 0:
         write_body_inertia = 1
@@ -1373,6 +1378,9 @@ def eval_rigid_fk_id(
     for i in range(start, end):
         parent = joint_parent[i]
         child = joint_child[i]
+        gravity_s = wp.vec3()
+        if not body_disable_gravity[child]:
+            gravity_s = gravity[body_world[child]]
         parent_v_s = wp.spatial_vector()
         parent_a_s = wp.spatial_vector()
         if parent >= 0:
@@ -1535,6 +1543,8 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
         materialize_all_body_inertia: int,
         materialize_body_inertia_terms: int,
         reuse_cached: int,
+        body_world: wp.array[int],
+        body_disable_gravity: wp.array[bool],
         gravity: wp.array[wp.vec3],
         body_q: wp.array[wp.transform],
         body_q_com: wp.array[wp.transform],
@@ -1635,6 +1645,9 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                                 body_q_com,
                             )
                         if wp.static(compute_dynamics):
+                            gravity_s = wp.vec3()
+                            if not body_disable_gravity[child]:
+                                gravity_s = gravity[body_world[child]]
                             parent_v_s, parent_a_s = compute_link_velocity(
                                 joint,
                                 parent,
@@ -1642,7 +1655,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                                 parent_v_s,
                                 parent_a_s,
                                 origin,
-                                gravity[0],
+                                gravity_s,
                                 joint_type,
                                 joint_qd_start,
                                 joint_qd,
@@ -1754,6 +1767,8 @@ def eval_rigid_id(
     body_q_com: wp.array[wp.transform],
     joint_X_p: wp.array[wp.transform],
     articulation_origin: wp.array[wp.vec3],
+    body_world: wp.array[int],
+    body_disable_gravity: wp.array[bool],
     gravity: wp.array[wp.vec3],
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
@@ -1770,7 +1785,6 @@ def eval_rigid_id(
     # Tree prefix only: trailing loop-closing joints carry no motion subspaces.
     end = articulation_joint_end[index]
     origin = articulation_origin[index]
-    gravity_s = gravity[0]
     write_body_inertia = materialize_all_body_inertia
     if is_free_rigid[index] != 0:
         write_body_inertia = 1
@@ -1782,6 +1796,9 @@ def eval_rigid_id(
     for i in range(start, end):
         parent = joint_parent[i]
         child = joint_child[i]
+        gravity_s = wp.vec3()
+        if not body_disable_gravity[child]:
+            gravity_s = gravity[body_world[child]]
         parent_v_s = wp.spatial_vector()
         parent_a_s = wp.spatial_vector()
         if parent >= 0:

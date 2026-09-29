@@ -651,6 +651,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         state_aug.body_q_com,
                         model.joint_X_p,
                         model.body_world,
+                        model.body_disable_gravity,
                         model.gravity,
                     ],
                     outputs=[

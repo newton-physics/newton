@@ -279,6 +279,7 @@ class Model:
         "body_inertia": AttributeSpec(AttributeFrequency.BODY),
         "body_inv_inertia": AttributeSpec(AttributeFrequency.BODY),
         "body_mass": AttributeSpec(AttributeFrequency.BODY),
+        "body_disable_gravity": AttributeSpec(AttributeFrequency.BODY),
         "body_inv_mass": AttributeSpec(AttributeFrequency.BODY),
         "body_flags": AttributeSpec(AttributeFrequency.BODY),
         "body_f": AttributeSpec(AttributeFrequency.BODY),
@@ -913,6 +914,11 @@ class Model:
         """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_mass: wp.array[wp.float32] | None = None
         """Rigid body mass [kg], shape [body_count], float."""
+        self.body_disable_gravity: wp.array[wp.bool] | None = None
+        """Per-body gravity exclusion, shape [body_count], bool; supported by FeatherPGS and Featherstone.
+
+        After editing, notify the solver with :attr:`ModelFlags.BODY_PROPERTIES`.
+        """
         self.body_inv_mass: wp.array[wp.float32] | None = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
         self.body_flags: wp.array[wp.int32] | None = None

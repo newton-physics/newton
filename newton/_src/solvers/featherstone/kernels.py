@@ -896,6 +896,7 @@ def compute_link_velocity(
     body_q_com: wp.array[wp.transform],
     joint_X_p: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
+    body_disable_gravity: wp.array[bool],
     gravity: wp.array[wp.vec3],
     # outputs
     body_qd: wp.array[wp.spatial_vector],
@@ -964,6 +965,8 @@ def compute_link_velocity(
 
     world_idx = body_world[child]
     world_g = gravity[world_idx]
+    if body_disable_gravity[child]:
+        world_g = wp.vec3()
     f_g = m * world_g
     f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
 
@@ -1374,6 +1377,7 @@ def eval_rigid_id(
     body_q_com: wp.array[wp.transform],
     joint_X_p: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
+    body_disable_gravity: wp.array[bool],
     gravity: wp.array[wp.vec3],
     # outputs
     body_qd: wp.array[wp.spatial_vector],
@@ -1423,6 +1427,7 @@ def eval_rigid_id(
             body_q_com,
             joint_X_p,
             body_world,
+            body_disable_gravity,
             gravity,
             body_qd,
             joint_S_s,

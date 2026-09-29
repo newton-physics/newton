@@ -1772,6 +1772,8 @@ class ModelBuilder:
         # rigid bodies
         self.body_mass: list[float] = []
         """Body masses [kg] accumulated for :attr:`Model.body_mass`."""
+        self.body_disable_gravity: list[bool] = []
+        """Gravity exclusions accumulated for :attr:`Model.body_disable_gravity`."""
         self.body_inertia: list[Mat33] = []
         """Body inertia tensors accumulated for :attr:`Model.body_inertia`."""
         self.body_inv_mass: list[float] = []
@@ -5064,6 +5066,7 @@ class ModelBuilder:
         lock_inertia: bool = False,
         is_kinematic: bool = False,
         custom_attributes: dict[str, Any] | None = None,
+        disable_gravity: bool = False,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -5084,6 +5087,7 @@ class ModelBuilder:
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
                 Only root bodies (bodies whose joint parent is ``-1``) may be kinematic.
+            disable_gravity: Exclude this body's gravitational wrench in FeatherPGS and Featherstone.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -5108,6 +5112,7 @@ class ModelBuilder:
         # body data
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
+        self.body_disable_gravity.append(disable_gravity)
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
         self.body_flags.append(int(BodyFlags.KINEMATIC) if is_kinematic else int(BodyFlags.DYNAMIC))
@@ -5149,6 +5154,7 @@ class ModelBuilder:
         lock_inertia: bool = False,
         is_kinematic: bool = False,
         custom_attributes: dict[str, Any] | None = None,
+        disable_gravity: bool = False,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -5173,6 +5179,7 @@ class ModelBuilder:
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
             is_kinematic: If True, the body is kinematic and does not respond to forces.
+            disable_gravity: Exclude this body's gravitational wrench in FeatherPGS and Featherstone.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -5187,6 +5194,7 @@ class ModelBuilder:
             label=label,
             lock_inertia=lock_inertia,
             is_kinematic=is_kinematic,
+            disable_gravity=disable_gravity,
             custom_attributes=custom_attributes,
         )
 
@@ -6615,6 +6623,7 @@ class ModelBuilder:
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
+                "disable_gravity": self.body_disable_gravity[i],
                 "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
@@ -6781,7 +6790,10 @@ class ModelBuilder:
                         stacklevel=3,
                     )
 
-            if joint["type"] == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
+            gravity_differs = last_dynamic_body >= 0 and (
+                body_data[child_body]["disable_gravity"] != body_data[last_dynamic_body]["disable_gravity"]
+            )
+            if joint["type"] == JointType.FIXED and not (should_skip_merge or joint_in_keep_list or gravity_differs):
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
@@ -6946,6 +6958,7 @@ class ModelBuilder:
         self.body_q.clear()
         self.body_qd.clear()
         self.body_mass.clear()
+        self.body_disable_gravity.clear()
         self.body_inertia.clear()
         self.body_com.clear()
         self.body_lock_inertia.clear()
@@ -6967,6 +6980,7 @@ class ModelBuilder:
             m = body["mass"]
             inertia = body["inertia"]
             self.body_mass.append(m)
+            self.body_disable_gravity.append(body["disable_gravity"])
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
             self.body_lock_inertia.append(body["lock_inertia"])
@@ -13846,6 +13860,7 @@ class ModelBuilder:
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
             m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
+            m.body_disable_gravity = wp.array(self.body_disable_gravity, dtype=wp.bool)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors

@@ -437,6 +437,8 @@ class FrequencyLayout:
         indices: list[int],
         device,
         model_starts: list[list[int]] | None = None,
+        *,
+        model_indices: list[list[list[int]]] | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
@@ -444,6 +446,7 @@ class FrequencyLayout:
         self.value_count = value_count
         self._selected_indices = indices
         self._model_starts = model_starts
+        self._model_indices = model_indices
         self._device = device
         self._model_index_cache = {}
         self.slice = None
@@ -457,7 +460,7 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None
+        return self.slice is not None and self._model_indices is None
 
     @property
     def selected_value_count(self):
@@ -469,7 +472,7 @@ class FrequencyLayout:
     @property
     def uses_explicit_model_indices(self):
         """Whether attributes require gather/scatter through absolute model indices."""
-        return self._model_starts is not None
+        return self._model_starts is not None or self._model_indices is not None
 
     def get_model_indices(self, value_slice: Slice | int | None = None):
         """Return absolute model indices for a sparse/non-uniform view layout."""
@@ -498,7 +501,17 @@ class FrequencyLayout:
         else:
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(value_slice)}")
 
-        if squeeze_value_axis:
+        if self._model_indices is not None:
+            if squeeze_value_axis:
+                host_indices = [
+                    [indices[local_indices[0]] for indices in world_indices] for world_indices in self._model_indices
+                ]
+            else:
+                host_indices = [
+                    [[indices[local_index] for local_index in local_indices] for indices in world_indices]
+                    for world_indices in self._model_indices
+                ]
+        elif squeeze_value_axis:
             host_indices = [[start + local_indices[0] for start in world_starts] for world_starts in self._model_starts]
         else:
             host_indices = [
@@ -844,6 +857,8 @@ class ArticulationView:
         link_counts = list_of_lists(world_count)
         shape_starts = list_of_lists(world_count)
         shape_counts = list_of_lists(world_count)
+        shape_model_indices = list_of_lists(world_count)
+        shapes_have_gaps = False
         for world_id in range(world_count):
             for arti_id in articulation_ids[world_id]:
                 # joints
@@ -879,6 +894,9 @@ class ArticulationView:
                 link_starts[world_id].append(min(link_ids))
                 link_counts[world_id].append(len(link_ids))
                 num_shapes = len(shape_ids)
+                shape_ids.sort()
+                shape_model_indices[world_id].append(shape_ids)
+                shapes_have_gaps |= not is_contiguous_slice(shape_ids)
                 if num_shapes > 0:
                     shape_starts[world_id].append(min(shape_ids))
                 else:
@@ -1166,6 +1184,7 @@ class ArticulationView:
                 selected_shape_indices,
                 self.device,
                 shape_starts if use_explicit_model_indices else None,
+                model_indices=shape_model_indices if shapes_have_gaps else None,
             ),
         }
 
@@ -1267,7 +1286,9 @@ class ArticulationView:
         # retain the sentinel world ``-1``.
         self.world_ids = wp.array(selected_world_ids, dtype=int, device=self.device)
         self.is_sparse = selected_world_ids not in ([-1], list(range(model.world_count)))
-        self.uses_explicit_model_indices = use_explicit_model_indices
+        self.uses_explicit_model_indices = any(
+            layout.uses_explicit_model_indices for layout in self.frequency_layouts.values()
+        )
 
         # default mask includes all articulations in all worlds
         self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)

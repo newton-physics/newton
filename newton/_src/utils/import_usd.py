@@ -1115,6 +1115,7 @@ def parse_usd(
             xform=xform,
             label=label,
             is_kinematic=is_kinematic,
+            disable_gravity=R.get_value(prim, prim_type=PrimType.BODY, key="disable_gravity", default=False),
             custom_attributes=body_custom_attrs,
         )
         builder.body_qd[b] = body_qd
