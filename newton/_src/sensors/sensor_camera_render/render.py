@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -85,6 +85,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
     def render_megakernel(
         # Model and Config
         view_count: wp.int32,
+        world_count: wp.int32,
         light_count: wp.int32,
         img_width: wp.int32,
         img_height: wp.int32,
@@ -156,24 +157,28 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         pixels_per_view = img_width * img_height
         out_index = view_index * pixels_per_view + py * img_width + px
 
-        # With an explicit mapping, a non-negative entry is the world index to
-        # render for this view and a negative entry is a disable sentinel (see
-        # WorldRenderFlag). Without one (``world_indices is None``), each view
-        # renders its own world (``world_index == view_index``).
+        # With an explicit mapping, a valid entry is a world index in
+        # ``[0, world_count)``. ``DISABLE_PRESERVE`` leaves the outputs untouched;
+        # every other out-of-range value -- ``DISABLE_CLEAR``, ``-1`` (reserved
+        # for future global-world rendering), or an index ``>= world_count`` --
+        # clears the outputs, which also avoids reading past the group-root arrays.
+        # Without a mapping (``world_indices is None``), each view renders its own
+        # world (``world_index == view_index``).
         if wp.static(state.has_world_indices):
             world_index = world_indices[view_index]
-            if world_index < 0:
-                if world_index == wp.static(int(WorldRenderFlag.DISABLE_CLEAR)):
-                    write_clear_outputs(
-                        out_index,
-                        out_color,
-                        out_depth,
-                        out_forward_depth,
-                        out_shape_index,
-                        out_normal,
-                        out_albedo,
-                        out_hdr_color,
-                    )
+            if world_index == wp.static(int(WorldRenderFlag.DISABLE_PRESERVE)):
+                return
+            if world_index < 0 or world_index >= world_count:
+                write_clear_outputs(
+                    out_index,
+                    out_color,
+                    out_depth,
+                    out_forward_depth,
+                    out_shape_index,
+                    out_normal,
+                    out_albedo,
+                    out_hdr_color,
+                )
                 return
         else:
             world_index = view_index
@@ -318,7 +323,6 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
                 shaded_color = wp.cw_mul(albedo_color, ambient_color * ambient_intensity)
 
-            # Apply lighting and shadows
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
                     world_index,

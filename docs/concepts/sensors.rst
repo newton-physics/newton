@@ -125,13 +125,13 @@ Camera Rays from USD and Calibration Data
 :class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
 :meth:`~newton.sensors.SensorCamera.update`. The caller owns the camera-space rays and the per-view transforms.
 The ray bundle for a standard USD pinhole camera can be built directly with
-:meth:`~newton.sensors.SensorCamera.compute_camera_rays_usd_pinhole`; the world-space pose is composed by the caller
-(for example from the USD camera's world transform). For lens models without standard USD attributes, read the
-attributes you use in your pipeline and pass the numeric values into the matching helper:
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_usd_pinhole`, and the matching world-space per-view
+transforms with :meth:`~newton.sensors.SensorCamera.compute_camera_transforms_usd` (which converts the USD stage's
+up axis to the model's and composes an optional import ``xform``). For lens models without standard USD attributes,
+read the attributes you use in your pipeline and pass the numeric values into the matching helper:
 
 .. code-block:: python
 
-   import warp as wp
    from pxr import Usd
 
    from newton.sensors import SensorCamera
@@ -145,15 +145,14 @@ attributes you use in your pipeline and pass the numeric values into the matchin
    # Camera-space rays for one 640x480 pinhole camera, on the model device.
    camera_rays = SensorCamera.compute_camera_rays_usd_pinhole(640, 480, usd_camera, device=model.device)
 
-   # One world-space camera pose per view; the caller supplies these.
-   camera_transforms = wp.array([camera_pose], dtype=wp.transformf, device=model.device)
+   # World-space transform per view, read from the USD camera(s).
+   camera_transforms = camera.compute_camera_transforms_usd(usd_camera)
    view_count = camera_transforms.shape[0]
 
    color = camera.create_color_image_output(view_count, 640, 480)
 
-   # Synchronize render-only state (deformable meshes) before each frame that
-   # changed geometry, then render.
-   camera.sync_transforms(state)
+   # update() syncs deformable-mesh points from state by default; refit the
+   # shape/particle BVHs first on any frame whose geometry moved.
    camera.update(state, camera_transforms, camera_rays, color_image=color)
 
 For OpenCV-calibrated pinhole cameras, call

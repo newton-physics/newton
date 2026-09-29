@@ -101,11 +101,6 @@ def fill_body_camera_transforms(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
-        # Opt into the coordinate-layout joint targets before building the model;
-        # the scattered free-floating bodies otherwise trip the legacy-layout
-        # DeprecationWarning (which CI escalates to an error).
-        newton.use_coord_layout_targets = True
-
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -125,8 +120,6 @@ class Example:
         fov = 45.0
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
-        # The camera rays only depend on the image model; the SensorCameras are
-        # constructed once the render context exists (see below).
         self.observer_camera_fov = math.radians(fov)
         self.robot_camera_fov = math.radians(75.0)
 
@@ -248,23 +241,21 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Construct the SensorCameras for the model (each owns an internal
-        # renderer) and configure their scene lighting and render settings.
+        # One SensorCamera renders both the observer and the robot view: the
+        # rays and transforms are per-update() arguments, so a single internal
+        # renderer (lights, materials, textures, BVH state) serves both.
         view_count = self.world_count_total
         W = self.sensor_render_width
         H = self.sensor_render_height
         self.sensor_camera = SensorCamera(self.model)
-        self.robot_sensor_camera = SensorCamera(self.model)
-        for sensor_camera in (self.sensor_camera, self.robot_sensor_camera):
-            sensor_camera.create_default_light(enable_shadows=True)
-            sensor_camera.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
-            sensor_camera.default_render_config.enable_shadows = True
-            sensor_camera.default_render_config.enable_textures = True
-            sensor_camera.default_clear_data = SensorCamera.ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
+        self.sensor_camera.create_default_light(enable_shadows=True)
+        self.sensor_camera.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
+        self.sensor_camera.default_render_config.enable_shadows = True
+        self.sensor_camera.default_render_config.enable_textures = True
+        self.sensor_camera.default_clear_data = SensorCamera.ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
-        # The caller owns the camera-space rays and the per-view world-space camera
-        # transforms passed to SensorCamera.update(); the observer camera is world-
-        # fixed, the robot camera is mounted on a link (see _update_camera_transforms).
+        # Observer rays are world-fixed; the robot rays are for a link-mounted
+        # camera (see _update_camera_transforms).
         self.sensor_camera_rays = SensorCamera.compute_camera_rays_pinhole(
             W, H, camera_fov=self.observer_camera_fov, device=self.model.device
         )
@@ -331,14 +322,13 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self) -> bool:
-        sensor_camera = self.robot_sensor_camera if self.show_robot_camera else self.sensor_camera
         rays = self.robot_sensor_camera_rays if self.show_robot_camera else self.sensor_camera_rays
-        camera_transforms = self._update_camera_transforms(sensor_camera)
+        camera_transforms = self._update_camera_transforms()
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
-        sensor_camera.sync_transforms(self.state)
         self._update_world_indices()
-        sensor_camera.update(
+        # update() syncs deformable-mesh points from state by default.
+        self.sensor_camera.update(
             self.state,
             camera_transforms,
             rays,
@@ -349,13 +339,14 @@ class Example:
             shape_index_image=self.sensor_camera_shape_index_image,
             world_indices=self.world_indices,
         )
-        utils = sensor_camera.utils(self.world_count_total)
-        color_rgba = utils.to_rgba_from_color(self.sensor_camera_color_image)
-        albedo_rgba = utils.to_rgba_from_color(self.sensor_camera_albedo_image)
-        utils.to_rgba_from_depth(self.sensor_camera_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba)
-        utils.to_rgba_from_normal(self.sensor_camera_normal_image, out_buffer=self.normal_rgba)
-        utils.to_rgba_from_shape_index(self.sensor_camera_shape_index_image, out_buffer=self.shape_rgba)
-        utils.to_rgba_from_shape_index(
+        color_rgba = SensorCamera.Utils.to_rgba_from_color(self.sensor_camera_color_image)
+        albedo_rgba = SensorCamera.Utils.to_rgba_from_color(self.sensor_camera_albedo_image)
+        SensorCamera.Utils.to_rgba_from_depth(
+            self.sensor_camera_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba
+        )
+        SensorCamera.Utils.to_rgba_from_normal(self.sensor_camera_normal_image, out_buffer=self.normal_rgba)
+        SensorCamera.Utils.to_rgba_from_shape_index(self.sensor_camera_shape_index_image, out_buffer=self.shape_rgba)
+        SensorCamera.Utils.to_rgba_from_shape_index(
             self.sensor_camera_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
@@ -363,10 +354,10 @@ class Example:
         self.viewer.log_image("color", color_rgba)
         if sensor_image_is_main_view:
             # Flatten the per-world color views into one full-window image.
-            color_main_rgba = utils.flatten_color_image_to_rgba(
+            color_main_rgba = SensorCamera.Utils.flatten_color_image_to_rgba(
                 self.sensor_camera_color_image,
                 out_buffer=self.color_main_rgba,
-                worlds_per_row=self.worlds_per_row,
+                views_per_row=self.worlds_per_row,
             )
             self.viewer.log_image("color", color_main_rgba, fullscreen=True)
 
@@ -377,8 +368,8 @@ class Example:
         self.viewer.log_image("semantic", self.semantic_rgba)
         return sensor_image_is_main_view
 
-    def _update_camera_transforms(self, sensor_camera):
-        if sensor_camera is self.robot_sensor_camera:
+    def _update_camera_transforms(self):
+        if self.show_robot_camera:
             camera_transforms = self.robot_sensor_camera_transforms
             wp.launch(
                 fill_body_camera_transforms,
@@ -442,7 +433,7 @@ class Example:
             self.sensor_color_as_main_view = True
             assert self.render_sensors() is False
 
-        expected_shape = (24, self.sensor_render_height, self.sensor_render_width)
+        expected_shape = (self.world_count_total, self.sensor_render_height, self.sensor_render_width)
 
         color_image = self.sensor_camera_color_image.numpy()
         assert color_image.shape == expected_shape
@@ -459,7 +450,7 @@ class Example:
         assert albedo_image.dtype == np.uint32
 
         normal_image = self.sensor_camera_normal_image.numpy()
-        assert normal_image.shape == (24, self.sensor_render_height, self.sensor_render_width, 3)
+        assert normal_image.shape == (*expected_shape, 3)
         assert normal_image.dtype == np.float32
 
         shape_index_image = self.sensor_camera_shape_index_image.numpy()
@@ -540,9 +531,7 @@ class Example:
         if changed:
             self._world_indices_dirty = True
 
-        render_config = (
-            self.robot_sensor_camera if self.show_robot_camera else self.sensor_camera
-        ).default_render_config
+        render_config = self.sensor_camera.default_render_config
 
         if ui.radio_button(
             "Gaussians: Fast",

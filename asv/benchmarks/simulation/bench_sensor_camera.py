@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Rendering benchmarks for the site-backed camera sensor.
@@ -294,8 +294,9 @@ class _SensorCameraSceneRig:
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
-        # Static benchmark scene: synchronize render-only state once up front.
-        self.sensor.sync_transforms(self.state)
+        # Static benchmark scene: synchronize render-only state once up front and
+        # let render() skip the per-frame sync so it measures rendering only.
+        self.sensor.sync_deformable_meshes(self.state)
 
     def render(self, color: bool = True, depth: bool = True):
         self.sensor.update(
@@ -304,6 +305,7 @@ class _SensorCameraSceneRig:
             self.rays,
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
+            sync_deformables=False,
             kernel_block_dim=KERNEL_BLOCK_DIM,
         )
 
@@ -379,12 +381,10 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     written = []
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
-            worlds_per_row = math.isqrt(world_count)
-            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
+            views_per_row = math.isqrt(world_count)
+            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // views_per_row, RENDER_ORDER)
             rig.render(color=True, depth=False)
-            rgba = rig.sensor.utils(world_count).flatten_color_image_to_rgba(
-                rig.color_image, worlds_per_row=worlds_per_row
-            )
+            rgba = SensorCamera.Utils.flatten_color_image_to_rgba(rig.color_image, views_per_row=views_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
             # Drop alpha: background pixels have alpha 0 and would turn transparent.
             Image.fromarray(rgba.numpy()[..., :3]).save(path)

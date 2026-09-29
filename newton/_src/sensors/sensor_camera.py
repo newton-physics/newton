@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     ClearData,
     GaussianRenderMode,
-    LightType,
     RenderConfig,
     RenderOrder,
     TextureProjectionMode,
@@ -26,7 +25,6 @@ from .sensor_camera_render.types import (
 if TYPE_CHECKING:
     from ..sim.model import Model
     from ..sim.state import State
-    from .sensor_camera_render.render_context import RenderContext
 
 # Enable NVTX ranges / timing around SensorCamera.update() when NEWTON_PROFILE is set.
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
@@ -86,15 +84,36 @@ class SensorCamera:
     output image buffers to :meth:`update`; the number of views is inferred from
     the leading dimension of the camera transforms.
 
+    Camera frame convention: each camera looks along its local ``-Z`` axis, with
+    ``+Y`` up and ``+X`` right (the USD/OpenGL convention). The per-view
+    ``camera_transforms`` place that camera frame in world space, and the
+    ``camera_rays`` bundle stores per-pixel origins in ``[..., 0]`` and
+    directions in ``[..., 1]``, both expressed in camera space.
+
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
     ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
     ``newton`` namespace.
+
+    Example::
+
+        import warp as wp
+        import newton
+        from newton.sensors import SensorCamera
+
+        camera = SensorCamera(model)
+        camera.create_default_light()
+
+        width, height = 640, 480
+        camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=model.device)
+        camera_transforms = wp.array([wp.transform_identity()], dtype=wp.transformf, device=model.device)
+        color = camera.create_color_image_output(camera_transforms.shape[0], width, height)
+
+        camera.update(state, camera_transforms, camera_rays, color_image=color)
     """
 
     ClearData = ClearData
     GaussianRenderMode = GaussianRenderMode
-    LightType = LightType
     RenderConfig = RenderConfig
     RenderOrder = RenderOrder
     TextureProjectionMode = TextureProjectionMode
@@ -103,7 +122,7 @@ class SensorCamera:
 
     def __init__(
         self,
-        model: Model | None = None,
+        model: Model,
         *,
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
@@ -112,8 +131,8 @@ class SensorCamera:
         """Construct a camera sensor for a model.
 
         Args:
-            model: Newton simulation model to render. The sensor builds its
-                internal renderer for the model. :meth:`update` requires a model.
+            model: Newton simulation model to render. The sensor builds and owns
+                its internal renderer for this model.
             default_clear_data: Clear values used by :meth:`update` when its
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
@@ -130,27 +149,14 @@ class SensorCamera:
         )
         """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
-        self._render_context = None
-        if model is not None:
-            from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
+        from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-            self._render_context = RenderContext(model, load_textures=load_textures)
+        self._render_context = RenderContext(model, load_textures=load_textures)
 
     @property
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
-        return self._get_render_context().model.device
-
-    def utils(self, view_count: int) -> Utils:
-        """Return post-processing helpers (``to_rgba``/``flatten``/depth conversion) for ``view_count`` views.
-
-        Args:
-            view_count: Number of views the processed images carry (their leading dimension).
-
-        Returns:
-            A :class:`~newton.sensors.SensorCamera.Utils` bound to ``view_count`` and the model device.
-        """
-        return Utils(view_count=int(view_count), device=self.device)
+        return self._render_context.model.device
 
     def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Create an output image array with shape ``(view_count, height, width)``."""
@@ -188,8 +194,8 @@ class SensorCamera:
     def compute_camera_rays_pinhole(
         width: int,
         height: int,
-        camera_fov: float | None = None,
         *,
+        camera_fov: float | None = None,
         focal_length: float | None = None,
         horizontal_aperture: float | None = None,
         vertical_aperture: float | None = None,
@@ -208,7 +214,7 @@ class SensorCamera:
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fov: Horizontal field of view [rad], in ``(0, pi)``. Mutually
+            camera_fov: Vertical field of view [rad], in ``(0, pi)``. Mutually
                 exclusive with the aperture parameters.
             focal_length: Lens focal length; must be positive.
             horizontal_aperture: Horizontal sensor aperture; must be positive.
@@ -281,7 +287,28 @@ class SensorCamera:
         out_rays: wp.array3d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
-        """Compute camera-space rays for one USD pinhole camera."""
+        """Compute camera-space rays for one USD pinhole camera.
+
+        Reads the perspective intrinsics (focal length and aperture) from a USD
+        camera and builds the matching pinhole ray bundle.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera: A ``UsdGeom.Camera`` or a ``Usd.Prim`` that is a camera. Its
+                projection must be ``perspective``.
+            time: USD time to sample the camera attributes at (a
+                ``Usd.TimeCode`` or a frame number). If ``None``, the default
+                time code is used.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of
+                ``vec3f``. If ``None``, a new one is allocated.
+            device: Device for the ray bundle. Defaults to the current Warp
+                device.
+
+        Returns:
+            Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
+            ``(height, width, 2)`` of ``vec3f``.
+        """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
@@ -393,7 +420,37 @@ class SensorCamera:
         out_rays: wp.array3d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
-        """Compute camera-space rays for one OpenCV fisheye camera."""
+        """Compute camera-space rays for one OpenCV fisheye camera.
+
+        Inverts the OpenCV fisheye radius polynomial
+        ``r = theta (1 + k1 theta^2 + k2 theta^4 + k3 theta^6 + k4 theta^8)``,
+        which must be monotonic over ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            fx: Horizontal focal length [px].
+            fy: Vertical focal length [px].
+            cx: Principal point x-coordinate [px].
+            cy: Principal point y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *height*.
+            k1: First OpenCV fisheye distortion coefficient.
+            k2: Second OpenCV fisheye distortion coefficient.
+            k3: Third OpenCV fisheye distortion coefficient.
+            k4: Fourth OpenCV fisheye distortion coefficient.
+            max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
+                exceeds ``max_fov / 2`` receive a zero ray.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of
+                ``vec3f``. If ``None``, a new one is allocated.
+            device: Device for the ray bundle. Defaults to the current Warp
+                device.
+
+        Returns:
+            Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
+            ``(height, width, 2)`` of ``vec3f``.
+        """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
@@ -444,7 +501,41 @@ class SensorCamera:
         out_rays: wp.array3d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
-        """Compute camera-space rays for one F-theta fisheye camera."""
+        """Compute camera-space rays for one F-theta fisheye camera.
+
+        Inverts the F-theta radius polynomial
+        ``r = k0 + k1 theta + k2 theta^2 + k3 theta^3 + k4 theta^4``, which must
+        be monotonic over ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            optical_center_x: Optical center x-coordinate [px].
+            optical_center_y: Optical center y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width* using F-theta terminology. If
+                both are given they must match.
+            nominal_height: Alias for *image_height* using F-theta terminology.
+                If both are given they must match.
+            k0: Constant F-theta polynomial coefficient [px].
+            k1: Linear F-theta polynomial coefficient [px/rad].
+            k2: Quadratic F-theta polynomial coefficient [px/rad^2].
+            k3: Cubic F-theta polynomial coefficient [px/rad^3].
+            k4: Quartic F-theta polynomial coefficient [px/rad^4].
+            max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
+                exceeds ``max_fov / 2`` receive a zero ray.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of
+                ``vec3f``. If ``None``, a new one is allocated.
+            device: Device for the ray bundle. Defaults to the current Warp
+                device.
+
+        Returns:
+            Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
+            ``(height, width, 2)`` of ``vec3f``.
+        """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
@@ -493,7 +584,40 @@ class SensorCamera:
         out_rays: wp.array3d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
-        """Compute camera-space rays for one Kannala-Brandt fisheye camera."""
+        """Compute camera-space rays for one Kannala-Brandt fisheye camera.
+
+        Inverts the Kannala-Brandt radius polynomial
+        ``r = k0 theta + k1 theta^3 + k2 theta^5 + k3 theta^7``, which must be
+        monotonic over ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            optical_center_x: Optical center x-coordinate [px].
+            optical_center_y: Optical center y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width*. If both are given they must
+                match.
+            nominal_height: Alias for *image_height*. If both are given they
+                must match.
+            k0: First Kannala-Brandt polynomial coefficient [px/rad].
+            k1: Second Kannala-Brandt polynomial coefficient [px/rad^3].
+            k2: Third Kannala-Brandt polynomial coefficient [px/rad^5].
+            k3: Fourth Kannala-Brandt polynomial coefficient [px/rad^7].
+            max_fov: Maximum field of view [rad]. Pixels whose undistorted angle
+                exceeds ``max_fov / 2`` receive a zero ray.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of
+                ``vec3f``. If ``None``, a new one is allocated.
+            device: Device for the ray bundle. Defaults to the current Warp
+                device.
+
+        Returns:
+            Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
+            ``(height, width, 2)`` of ``vec3f``.
+        """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
@@ -522,20 +646,58 @@ class SensorCamera:
 
         return out_rays
 
-    def _get_render_context(self) -> RenderContext:
-        if self._render_context is None:
-            raise RuntimeError("SensorCamera has no model; construct it with SensorCamera(model).")
-        return self._render_context
+    def compute_camera_transforms_usd(
+        self,
+        cameras: Any,
+        *,
+        time: Any | None = None,
+        xform: Any | None = None,
+    ) -> wp.array[wp.transformf]:
+        """Read world-space camera transforms from one USD camera per view.
+
+        Converts each camera pose from its USD stage up axis to the rendered
+        model's up axis, then composes an optional scene *xform* (e.g. the
+        transform passed to ``ModelBuilder.add_usd``). Use the result as the
+        ``camera_transforms`` argument to :meth:`update`.
+
+        Args:
+            cameras: A single ``UsdGeom.Camera``/``Usd.Prim`` (one view) or a
+                sequence of them (one per view, in view order).
+            time: USD time to sample the camera poses at (a ``Usd.TimeCode`` or a
+                frame number). If ``None``, the default time code is used.
+            xform: Optional scene transform ``(pos, quat)`` applied on top of the
+                up-axis conversion, matching the pose used when importing the
+                stage.
+
+        Returns:
+            World-space camera transforms, shape ``(view_count,)`` of
+            ``transformf``, on the model device.
+        """
+        from ..core import Axis  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
+
+        model = self._render_context.model
+        return camera_utils.compute_camera_transforms_usd(
+            cameras,
+            device=model.device,
+            target_up_axis=Axis(int(model.up_axis)),
+            time=time,
+            xform=xform,
+        )
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
         """Create a default directional light for the rendered scene.
 
         Args:
-            enable_shadows: Enable shadow casting for this light.
+            enable_shadows: Enable shadow casting for this light. Shadows are
+                only rendered when the render config also enables them, i.e.
+                ``enable_shadows=True`` here **and**
+                ``render_config.enable_shadows=True`` (the latter defaults to
+                ``False``); both switches must be set.
             direction: Normalized light direction. If ``None``, defaults to
                 normalized ``(-1, 1, -1)``.
         """
-        self._get_render_context().create_default_light(enable_shadows=enable_shadows, direction=direction)
+        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction)
 
     def assign_checkerboard_material(
         self,
@@ -551,23 +713,24 @@ class SensorCamera:
             resolution: Texture resolution [px] (square texture).
             checker_size: Size of each checkerboard square [px].
         """
-        self._get_render_context().assign_checkerboard_material(
+        self._render_context.assign_checkerboard_material(
             shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
         )
 
-    def sync_transforms(self, state: State) -> None:
-        """Synchronize render-only state (deformable triangle meshes) from *state*.
+    def sync_deformable_meshes(self, state: State) -> None:
+        """Synchronize render-only deformable triangle-mesh points from *state*.
 
-        Call this before :meth:`update` on any frame whose geometry changed; the
-        ray tracer reads the synchronized mesh points. Rigid-only scenes need no
-        sync (this is a no-op for them). Shape and particle BVHs are refit
-        separately via :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`update` calls this by default (pass ``sync_deformables=False`` to
+        skip it when you already synced). Call it explicitly only when you opt
+        out of the automatic sync. It syncs deformable mesh points (rigid-only
+        scenes are a no-op) but does not touch transforms; shape and particle
+        BVHs are refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
             state: Current simulation state with particle positions.
         """
-        self._get_render_context().update(state)
+        self._render_context.update(state)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -594,6 +757,7 @@ class SensorCamera:
         world_indices: wp.array[wp.int32] | None = None,
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
+        sync_deformables: bool = True,
         kernel_block_dim: int = 64,
     ) -> None:
         """Render this camera sensor.
@@ -602,13 +766,17 @@ class SensorCamera:
         non-``None`` output arrays must have shape ``(view_count, height, width)``
         matching the ``camera_rays`` image dimensions.
 
-        Before calling this on any frame whose geometry moved, call
-        :meth:`sync_transforms` to synchronize render-only state (deformable
-        triangle meshes) from *state*, and refit the model's shape and particle
+        On any frame whose geometry moved, refit the model's shape and particle
         BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
-        :meth:`~newton.ModelBuilder.finalize`); otherwise the render reads stale
-        points and bounds.
+        :meth:`~newton.ModelBuilder.finalize`) before calling this; otherwise the
+        render reads stale bounds. Deformable triangle-mesh points are synced from
+        *state* automatically (see ``sync_deformables``).
+
+        The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
+        right (the USD/OpenGL convention); ``camera_transforms`` place that frame
+        in world space. ``camera_rays[..., 0]`` are per-pixel ray origins and
+        ``camera_rays[..., 1]`` are ray directions, both in camera space.
 
         Args:
             state: Simulation state with body and particle transforms.
@@ -625,19 +793,27 @@ class SensorCamera:
             hdr_color_image: Output linear HDR color buffer.
             world_indices: Optional per-view world selector, shape
                 ``(view_count,)``. Defaults to the identity mapping (view ``i``
-                renders world ``i``). A non-negative entry is the world index
-                rendered for that view; a negative
+                renders world ``i``). A valid entry is a world index in
+                ``[0, model.world_count)``. A
                 :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
-                disables it (``DISABLE_CLEAR`` clears the outputs,
-                ``DISABLE_PRESERVE`` leaves them unchanged).
+                disables the view (``DISABLE_CLEAR`` clears the outputs,
+                ``DISABLE_PRESERVE`` leaves them unchanged). Any other value,
+                including ``-1`` (reserved for future global-world rendering) and
+                indices ``>= model.world_count``, is treated as ``DISABLE_CLEAR``.
             clear_data: Clear values for this call. Defaults to
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
+            sync_deformables: Sync deformable triangle-mesh points from *state*
+                before rendering (a no-op for rigid-only scenes). Set ``False``
+                if you already called :meth:`sync_deformable_meshes` this frame.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``.
         """
-        render_context = self._get_render_context()
+        render_context = self._render_context
         model = render_context.model
+
+        if sync_deformables:
+            render_context.update(state)
 
         self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
         if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:

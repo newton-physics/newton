@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -403,6 +403,7 @@ class RenderContext:
                 inputs=[
                     # Model and config
                     view_count,
+                    model.world_count,
                     self.light_count,
                     width,
                     height,

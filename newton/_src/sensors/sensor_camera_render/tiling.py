@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 import warp as wp
@@ -18,7 +18,7 @@ def tid_to_coord_tiled(
     num_pixels_per_view = num_tiles_per_row * num_tiles_per_col * num_pixels_per_tile
 
     pixel_idx = tid % num_pixels_per_view
-    world_index = tid // num_pixels_per_view
+    view_index = tid // num_pixels_per_view
 
     tile_idx = pixel_idx // num_pixels_per_tile
     tile_pixel_idx = pixel_idx % num_pixels_per_tile
@@ -29,7 +29,7 @@ def tid_to_coord_tiled(
     py = tile_y * tile_height + tile_pixel_idx // tile_width
     px = tile_x * tile_width + tile_pixel_idx % tile_width
 
-    return world_index, py, px
+    return view_index, py, px
 
 
 @wp.func
@@ -48,12 +48,12 @@ def tid_to_coord_view_priority(tid: wp.int32, width: wp.int32, height: wp.int32)
     num_pixels_per_view = width * height
 
     pixel_idx = tid % num_pixels_per_view
-    world_index = tid // num_pixels_per_view
+    view_index = tid // num_pixels_per_view
 
     py = pixel_idx // width
     px = pixel_idx % width
 
-    return world_index, py, px
+    return view_index, py, px
 
 
 @wp.func

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import warp as wp
@@ -18,6 +19,11 @@ else:
     UsdTime: TypeAlias = Any
 
 UsdCameraInput: TypeAlias = UsdCameraLike
+UsdCameraSequenceInput: TypeAlias = UsdCameraInput | Sequence[UsdCameraInput]
+
+
+def _is_camera_sequence(cameras: Any) -> bool:
+    return isinstance(cameras, Sequence) and not isinstance(cameras, (str, bytes, bytearray))
 
 
 def _coerce_usd_time(time: Any) -> Any:
@@ -90,6 +96,52 @@ def compute_camera_rays_usd_pinhole(
     )
 
     return out_rays
+
+
+def compute_camera_transforms_usd(
+    cameras: UsdCameraSequenceInput,
+    *,
+    device: wp.Device,
+    target_up_axis: Any | None = None,
+    time: UsdTime | None = None,
+    xform: Any | None = None,
+) -> wp.array[wp.transformf]:
+    """Read world-space camera transforms from one USD camera per view.
+
+    Returns a ``(view_count,)`` array of ``transformf``, converting each camera
+    pose from its stage up axis to *target_up_axis* and composing an optional
+    scene *xform*.
+    """
+    try:
+        from pxr import UsdGeom
+    except ImportError as e:
+        raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
+
+    from ...core import Axis, quat_between_axes  # noqa: PLC0415
+    from ...usd.utils import get_transform  # noqa: PLC0415
+
+    camera_items = list(cameras) if _is_camera_sequence(cameras) else [cameras]
+    if not camera_items:
+        raise ValueError("At least one USD camera is required.")
+    usd_cameras = [_normalize_usd_camera(camera) for camera in camera_items]
+
+    time_code = _coerce_usd_time(time)
+    xform_cache = UsdGeom.XformCache(time_code)
+    scene_xform = wp.transform(*xform) if xform is not None else None
+
+    transforms = []
+    for usd_camera in usd_cameras:
+        prim = usd_camera.GetPrim()
+        transform = get_transform(prim, local=False, xform_cache=xform_cache)
+        if target_up_axis is not None:
+            stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(prim.GetStage())))
+            axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, target_up_axis))
+            transform = axis_xform * transform
+        if scene_xform is not None:
+            transform = scene_xform * transform
+        transforms.append(transform)
+
+    return wp.array(transforms, dtype=wp.transformf, device=device)
 
 
 @wp.func

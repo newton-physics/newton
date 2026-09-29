@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ def flatten_color_image(
     buffer: wp.array3d[wp.uint8],
     width: wp.int32,
     height: wp.int32,
-    worlds_per_row: wp.int32,
+    views_per_row: wp.int32,
 ):
     world_id, y, x = wp.tid()
 
-    row = world_id // worlds_per_row
-    col = world_id % worlds_per_row
+    row = world_id // views_per_row
+    col = world_id % views_per_row
 
     px = col * width + x
     py = row * height + y
@@ -44,12 +44,12 @@ def flatten_normal_image(
     buffer: wp.array3d[wp.uint8],
     width: wp.int32,
     height: wp.int32,
-    worlds_per_row: wp.int32,
+    views_per_row: wp.int32,
 ):
     world_id, y, x = wp.tid()
 
-    row = world_id // worlds_per_row
-    col = world_id % worlds_per_row
+    row = world_id // views_per_row
+    col = world_id % views_per_row
 
     px = col * width + x
     py = row * height + y
@@ -79,12 +79,12 @@ def flatten_depth_image(
     depth_range: wp.array[wp.float32],
     width: wp.int32,
     height: wp.int32,
-    worlds_per_row: wp.int32,
+    views_per_row: wp.int32,
 ):
     world_id, y, x = wp.tid()
 
-    row = world_id // worlds_per_row
-    col = world_id % worlds_per_row
+    row = world_id // views_per_row
+    col = world_id % views_per_row
 
     px = col * width + x
     py = row * height + y
@@ -246,35 +246,24 @@ class Utils:
     Converts raw render buffers into display-ready RGBA (``to_rgba_*``), tiles
     per-view images into a single grid buffer (``flatten_*_to_rgba``), and
     projects ray-distance depth onto the camera forward axis
-    (``convert_ray_depth_to_forward_depth``). Obtain one via
-    :meth:`SensorCamera.utils`; it validates that image leading dimensions match
-    ``view_count`` and that arrays live on ``device``.
+    (``convert_ray_depth_to_forward_depth``). All helpers are
+    :func:`staticmethod`\\ s reached as ``SensorCamera.Utils.<helper>(...)``; the
+    view count and device are read from the passed image (its leading dimension
+    and device).
     """
 
-    def __init__(self, view_count: int, device: wp.Device):
-        """Create post-processing helpers for ``view_count`` views on ``device``.
+    @staticmethod
+    def _image_shape(name: str, image: wp.array[Any]) -> tuple[int, int, int]:
+        if image.ndim < 3:
+            raise ValueError(f"{name}: image must have shape (view_count, height, width), got {tuple(image.shape)}")
+        return image.shape[0], image.shape[1], image.shape[2]
 
-        Args:
-            view_count: Number of views the processed images carry (their leading dimension).
-            device: Device the render outputs and produced buffers live on.
-        """
-        self.__view_count = int(view_count)
-        self.__device = device
-
-    def __image_shape(self, name: str, image: wp.array[Any]) -> tuple[int, int, int]:
-        view_count = self.__view_count
-        device = self.__device
-        if image.shape[0] != view_count:
-            raise ValueError(f"{name}: image leading dimension {image.shape[0]} must match the view count {view_count}")
-        if image.device != device:
-            raise ValueError(f"{name}: image is on {image.device} but SensorCamera is on {device}")
-        return view_count, image.shape[1], image.shape[2]
-
+    @staticmethod
     def convert_ray_depth_to_forward_depth(
-        self,
         depth_image: wp.array3d[wp.float32],
         camera_transforms: wp.array[wp.transformf],
         camera_rays: wp.array3d[wp.vec3f],
+        *,
         out_depth: wp.array3d[wp.float32] | None = None,
     ) -> wp.array3d[wp.float32]:
         """Convert ray-distance depth to forward (planar) depth.
@@ -300,8 +289,8 @@ class Utils:
         Returns:
             Forward (planar) depth array, same shape as *depth_image* [m].
         """
-        view_count, height, width = self.__image_shape("convert_ray_depth_to_forward_depth", depth_image)
-        device = self.__device
+        view_count, height, width = Utils._image_shape("convert_ray_depth_to_forward_depth", depth_image)
+        device = depth_image.device
 
         # The kernel indexes camera_transforms[world] and camera_rays[py, px, 1]
         # directly; validate on the host to avoid out-of-bounds device reads.
@@ -329,11 +318,12 @@ class Utils:
 
         return out_depth
 
+    @staticmethod
     def flatten_color_image_to_rgba(
-        self,
         image: wp.array3d[wp.uint32],
+        *,
         out_buffer: wp.array3d[wp.uint8] | None = None,
-        worlds_per_row: int | None = None,
+        views_per_row: int | None = None,
     ) -> wp.array3d[wp.uint8]:
         """Flatten rendered color image to a tiled RGBA buffer.
 
@@ -344,12 +334,14 @@ class Utils:
         Args:
             image: Color output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
+            views_per_row: Views per row in the grid. If None, picks a square-ish layout.
         """
-        view_count, height, width = self.__image_shape("flatten_color_image_to_rgba", image)
-        device = self.__device
+        view_count, height, width = Utils._image_shape("flatten_color_image_to_rgba", image)
+        device = image.device
 
-        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(width, height, out_buffer, worlds_per_row)
+        out_buffer, views_per_row = Utils._reshape_buffer_for_flatten(
+            view_count, device, width, height, out_buffer, views_per_row
+        )
 
         wp.launch(
             flatten_color_image,
@@ -363,14 +355,14 @@ class Utils:
                 out_buffer,
                 width,
                 height,
-                worlds_per_row,
+                views_per_row,
             ],
             device=device,
         )
         return out_buffer
 
+    @staticmethod
     def to_rgba_from_color(
-        self,
         image: wp.array3d[wp.uint32],
     ) -> wp.array4d[wp.uint8]:
         """Reinterpret packed ``uint32`` RGBA color sensor output as ``uint8`` RGBA.
@@ -392,12 +384,13 @@ class Utils:
             Array of shape ``(view_count, H, W, 4)``,
             dtype ``uint8``, aliasing *image*.
         """
-        view_count, h, w = self.__image_shape("to_rgba_from_color", image)
+        view_count, h, w = Utils._image_shape("to_rgba_from_color", image)
         return image.view(wp.vec4ub).reshape((view_count, h, w)).view(wp.uint8)
 
+    @staticmethod
     def to_rgba_from_normal(
-        self,
         image: wp.array3d[wp.vec3f],
+        *,
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
         """Convert vec3 normal sensor output to ``uint8`` RGBA.
@@ -411,8 +404,8 @@ class Utils:
             Array of shape ``(view_count, H, W, 4)``, dtype
             ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
         """
-        view_count, h, w = self.__image_shape("to_rgba_from_normal", image)
-        device = self.__device
+        view_count, h, w = Utils._image_shape("to_rgba_from_normal", image)
+        device = image.device
 
         if out_buffer is None:
             out_buffer = wp.empty((view_count, h, w, 4), dtype=wp.uint8, device=device)
@@ -428,9 +421,10 @@ class Utils:
         )
         return out_buffer
 
+    @staticmethod
     def to_rgba_from_depth(
-        self,
         image: wp.array3d[wp.float32],
+        *,
         depth_range: wp.array[wp.float32] | tuple[float, float] | None = None,
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
@@ -455,8 +449,8 @@ class Utils:
             Array of shape ``(view_count, H, W, 4)``, dtype
             ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
         """
-        view_count, h, w = self.__image_shape("to_rgba_from_depth", image)
-        device = self.__device
+        view_count, h, w = Utils._image_shape("to_rgba_from_depth", image)
+        device = image.device
 
         if depth_range is None:
             depth_range_arr = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
@@ -485,9 +479,10 @@ class Utils:
         )
         return out_buffer
 
+    @staticmethod
     def to_rgba_from_shape_index(
-        self,
         image: wp.array3d[wp.uint32],
+        *,
         colors: wp.array2d[wp.uint8] | None = None,
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
@@ -509,8 +504,8 @@ class Utils:
             Array of shape ``(view_count, H, W, 4)``, dtype
             ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
         """
-        view_count, h, w = self.__image_shape("to_rgba_from_shape_index", image)
-        device = self.__device
+        view_count, h, w = Utils._image_shape("to_rgba_from_shape_index", image)
+        device = image.device
 
         if out_buffer is None:
             out_buffer = wp.empty((view_count, h, w, 4), dtype=wp.uint8, device=device)
@@ -543,11 +538,12 @@ class Utils:
             )
         return out_buffer
 
+    @staticmethod
     def flatten_normal_image_to_rgba(
-        self,
         image: wp.array3d[wp.vec3f],
+        *,
         out_buffer: wp.array3d[wp.uint8] | None = None,
-        worlds_per_row: int | None = None,
+        views_per_row: int | None = None,
     ) -> wp.array3d[wp.uint8]:
         """Flatten rendered normal image to a tiled RGBA buffer.
 
@@ -558,12 +554,14 @@ class Utils:
         Args:
             image: Normal output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
+            views_per_row: Views per row in the grid. If None, picks a square-ish layout.
         """
-        view_count, height, width = self.__image_shape("flatten_normal_image_to_rgba", image)
-        device = self.__device
+        view_count, height, width = Utils._image_shape("flatten_normal_image_to_rgba", image)
+        device = image.device
 
-        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(width, height, out_buffer, worlds_per_row)
+        out_buffer, views_per_row = Utils._reshape_buffer_for_flatten(
+            view_count, device, width, height, out_buffer, views_per_row
+        )
 
         wp.launch(
             flatten_normal_image,
@@ -577,17 +575,18 @@ class Utils:
                 out_buffer,
                 width,
                 height,
-                worlds_per_row,
+                views_per_row,
             ],
             device=device,
         )
         return out_buffer
 
+    @staticmethod
     def flatten_depth_image_to_rgba(
-        self,
         image: wp.array3d[wp.float32],
+        *,
         out_buffer: wp.array3d[wp.uint8] | None = None,
-        worlds_per_row: int | None = None,
+        views_per_row: int | None = None,
         depth_range: wp.array[wp.float32] | None = None,
     ) -> wp.array3d[wp.uint8]:
         """Flatten rendered depth image to a tiled RGBA buffer.
@@ -599,13 +598,15 @@ class Utils:
         Args:
             image: Depth output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
+            views_per_row: Views per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
         """
-        view_count, height, width = self.__image_shape("flatten_depth_image_to_rgba", image)
-        device = self.__device
+        view_count, height, width = Utils._image_shape("flatten_depth_image_to_rgba", image)
+        device = image.device
 
-        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(width, height, out_buffer, worlds_per_row)
+        out_buffer, views_per_row = Utils._reshape_buffer_for_flatten(
+            view_count, device, width, height, out_buffer, views_per_row
+        )
 
         if depth_range is None:
             depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
@@ -624,35 +625,36 @@ class Utils:
                 depth_range,
                 width,
                 height,
-                worlds_per_row,
+                views_per_row,
             ],
             device=device,
         )
         return out_buffer
 
-    def __reshape_buffer_for_flatten(
-        self,
+    @staticmethod
+    def _reshape_buffer_for_flatten(
+        view_count: int,
+        device: wp.Device,
         width: int,
         height: int,
         out_buffer: wp.array | None = None,
-        worlds_per_row: int | None = None,
+        views_per_row: int | None = None,
     ) -> tuple[wp.array3d[wp.uint8], int]:
-        view_count = self.__view_count
-        if worlds_per_row is None:
-            worlds_per_row = math.ceil(math.sqrt(view_count))
-        elif worlds_per_row < 1:
-            raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")
-        worlds_per_col = math.ceil(view_count / worlds_per_row)
+        if views_per_row is None:
+            views_per_row = math.ceil(math.sqrt(view_count))
+        elif views_per_row < 1:
+            raise ValueError(f"views_per_row must be >= 1, got {views_per_row}")
+        views_per_col = math.ceil(view_count / views_per_row)
 
         if out_buffer is None:
             return wp.empty(
                 (
-                    worlds_per_col * height,
-                    worlds_per_row * width,
+                    views_per_col * height,
+                    views_per_row * width,
                     4,
                 ),
                 dtype=wp.uint8,
-                device=self.__device,
-            ), worlds_per_row
+                device=device,
+            ), views_per_row
 
-        return out_buffer.reshape((worlds_per_col * height, worlds_per_row * width, 4)), worlds_per_row
+        return out_buffer.reshape((views_per_col * height, views_per_row * width, 4)), views_per_row

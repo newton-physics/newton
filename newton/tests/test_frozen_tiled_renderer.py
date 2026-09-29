@@ -18,7 +18,7 @@ _FROZEN_DIR = Path(newton.__file__).resolve().parent / "_src" / "sensors" / "war
 # out of date, someone edited (or added/removed) a file they most likely should not have.
 _FROZEN_MANIFEST = {
     "__init__.py": "2db0e00de28786b0dd6e8b192fea6f9c12cafde351d92f736f3fbd468a534205",
-    "camera_utils.py": "1b79ef43498b269aa03ab78f10a392fc82f0e2b263415bcaefc18546f4c779ab",
+    "camera_utils.py": "b929e6e78070cf647a56a5e3fcfac098d93106320277b416ecf670d0ba963fe9",
     "gaussians.py": "5647dac21aa74d329d83bcc0a062b4b75ad9ecf1590450fad123f754e72b8cf7",
     "lighting.py": "c4091ad05a472c210573092435b0162fc092be09afc28029e80fb28e06d3c73a",
     "raytrace.py": "030a1864880af530ccf47f50fcbf2642303c8f8db8ab1e58c2ee3f2f528281cd",
@@ -27,7 +27,7 @@ _FROZEN_MANIFEST = {
     "textures.py": "0f12c8e515c267f0962f340234d9114ff4a6b564234cc18f11ae3d24571c821c",
     "tiling.py": "299deed013bf215bd0c693d904cd9320795cfc8cbb4bc4bf71954288fe4122d0",
     "types.py": "b6fc4eabded2380665f7e71ddfb2f7ad0c465e216d11567f3f9d7dec0e798d49",
-    "utils.py": "152fc260e24aa329afb8ad8dcaf07dd07052388da5a68102ca83437dcd6bc667",
+    "utils.py": "9b2cb23ba60f56eb45cf696dd2774bf10811ee3829cdef3948c40f537d84b51e",
 }
 
 

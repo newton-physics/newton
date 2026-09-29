@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
@@ -74,7 +74,7 @@ class RenderConfig:
     enable_textures: bool = False
     """Enable texture-mapped rendering for shapes."""
 
-    texture_projection_mode: int = TextureProjectionMode.CUBIC
+    texture_projection_mode: TextureProjectionMode = TextureProjectionMode.CUBIC
     """Projection mode for texture-mapped shapes without UVs."""
 
     enable_shadows: bool = False
@@ -104,7 +104,7 @@ class RenderConfig:
     ``ColorSpace.LINEAR`` for linear RGB bytes.
     """
 
-    render_order: int = RenderOrder.PIXEL_PRIORITY
+    render_order: RenderOrder = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""
 
     tile_width: int = 16
@@ -116,7 +116,7 @@ class RenderConfig:
     max_distance: float = 1000.0
     """Maximum ray distance [m]."""
 
-    gaussians_mode: int = GaussianRenderMode.FAST
+    gaussians_mode: GaussianRenderMode = GaussianRenderMode.FAST
     """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
 
     gaussians_min_transmittance: float = 0.49

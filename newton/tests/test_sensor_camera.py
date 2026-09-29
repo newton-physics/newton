@@ -25,7 +25,7 @@ class TestSensorCamera(unittest.TestCase):
     @staticmethod
     def _rays(width: int, height: int, fov: float = math.radians(45.0), device: str = "cpu") -> wp.array3d[wp.vec3f]:
         """Camera-space pinhole rays, shape ``(height, width, 2)``."""
-        return SensorCamera.compute_camera_rays_pinhole(width, height, fov, device=device)
+        return SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=fov, device=device)
 
     @staticmethod
     def _sphere_world_builder() -> newton.ModelBuilder:
@@ -40,7 +40,6 @@ class TestSensorCamera(unittest.TestCase):
         cls,
         *,
         world_count: int = 1,
-        assign_render_context: bool = True,
     ) -> tuple[newton.Model, SensorCamera]:
         if world_count == 1:
             builder = cls._sphere_world_builder()
@@ -50,7 +49,7 @@ class TestSensorCamera(unittest.TestCase):
                 builder.add_world(cls._sphere_world_builder())
 
         model = builder.finalize(device="cpu")
-        camera = SensorCamera(model if assign_render_context else None)
+        camera = SensorCamera(model)
         return model, camera
 
     @staticmethod
@@ -90,7 +89,6 @@ class TestSensorCamera(unittest.TestCase):
         render_types = (
             "ClearData",
             "GaussianRenderMode",
-            "LightType",
             "RenderConfig",
             "RenderOrder",
             "TextureProjectionMode",
@@ -101,13 +99,15 @@ class TestSensorCamera(unittest.TestCase):
             self.assertNotIn(type_name, newton.__all__)
             self.assertTrue(hasattr(SensorCamera, type_name), type_name)
             self.assertIs(getattr(SensorCamera, type_name), getattr(internal_render, type_name))
+        # LightType is intentionally not exposed on SensorCamera (no public API accepts it yet).
+        self.assertFalse(hasattr(SensorCamera, "LightType"))
         # The post-processing Utils and the gray clear preset are nested on SensorCamera.
         self.assertIs(SensorCamera.Utils, Utils)
         self.assertFalse(hasattr(geometry, "SensorCamera"))
 
         # The caller owns the rays, transforms, and output buffers; the sensor holds
         # none of them, and is not attached to model sites.
-        camera = SensorCamera()
+        _, camera = self._build_sphere_scene()
         for attr in (
             "rays",
             "view_count",
@@ -137,27 +137,6 @@ class TestSensorCamera(unittest.TestCase):
         self.assertFalse(hasattr(SensorCamera.WorldRenderFlag, "ENABLE"))
         self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), -101)
         self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), -102)
-
-    def test_constructor_without_model_is_inert(self) -> None:
-        """Verify a model-less SensorCamera owns only render settings and rejects rendering."""
-        camera = SensorCamera()
-
-        # Only render settings; no render context, rays, dimensions, or buffers.
-        self.assertFalse(hasattr(camera, "render_context"))
-        self.assertIsInstance(camera.default_render_config, SensorCamera.RenderConfig)
-        self.assertIsInstance(camera.default_clear_data, SensorCamera.ClearData)
-
-        state = self._sphere_world_builder().finalize(device="cpu").state()
-        camera_transforms = self._identity_transforms(1)
-        rays = self._rays(4, 4)
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.update(state, camera_transforms, rays)
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            _ = camera.device
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.create_color_image_output(1, 4, 4)
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.utils(1)
 
     def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
         """Verify camera ray helpers live on SensorCamera."""
@@ -191,7 +170,7 @@ class TestSensorCamera(unittest.TestCase):
 
         width, height = 3, 3
         rays = [
-            SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), device="cpu"),
+            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), device="cpu"),
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
@@ -224,7 +203,7 @@ class TestSensorCamera(unittest.TestCase):
         out_rays = wp.zeros((height, width, 2), dtype=wp.vec3f, device="cpu")
 
         rays = SensorCamera.compute_camera_rays_pinhole(
-            width, height, math.radians(45.0), out_rays=out_rays, device="cpu"
+            width, height, camera_fov=math.radians(45.0), out_rays=out_rays, device="cpu"
         )
 
         self.assertIs(rays, out_rays)
@@ -238,7 +217,7 @@ class TestSensorCamera(unittest.TestCase):
             SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
-                math.radians(45.0),
+                camera_fov=math.radians(45.0),
                 focal_length=1.0,
                 horizontal_aperture=2.0,
                 vertical_aperture=2.0,
@@ -246,7 +225,7 @@ class TestSensorCamera(unittest.TestCase):
             )
 
         with self.assertRaises(TypeError):
-            SensorCamera.compute_camera_rays_pinhole(width, height, [math.radians(45.0)], device="cpu")
+            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=[math.radians(45.0)], device="cpu")
 
         with self.assertRaises(TypeError):
             SensorCamera.compute_camera_rays_pinhole(
@@ -260,14 +239,14 @@ class TestSensorCamera(unittest.TestCase):
 
         out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device="cpu")
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
-            SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), out_rays=out_rays)
+            SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=math.radians(45.0), out_rays=out_rays)
 
     def test_pinhole_rays_reject_out_of_range_parameters(self) -> None:
         """Verify pinhole ray generation rejects non-positive focal length and out-of-range fov."""
         width, height = 4, 3
         for bad_fov in (0.0, math.pi, -0.1, math.pi + 0.1):
             with self.assertRaisesRegex(ValueError, r"camera_fov must be in \(0, pi\)"):
-                SensorCamera.compute_camera_rays_pinhole(width, height, bad_fov, device="cpu")
+                SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=bad_fov, device="cpu")
         with self.assertRaisesRegex(ValueError, "must be positive"):
             SensorCamera.compute_camera_rays_pinhole(
                 width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device="cpu"
@@ -292,8 +271,8 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaises(TypeError):
             camera.update(state, camera_transforms, np.zeros((height, width, 2), dtype=np.float32))
 
-    def test_sync_transforms_is_explicit_and_not_called_by_update(self) -> None:
-        """Verify update() no longer synchronizes render state; sync_transforms does it explicitly."""
+    def test_update_syncs_deformables_by_default(self) -> None:
+        """Verify update() syncs deformable meshes by default and skips it with sync_deformables=False."""
         width, height = 8, 6
         model, camera = self._build_sphere_scene()
         state = model.state()
@@ -301,51 +280,31 @@ class TestSensorCamera(unittest.TestCase):
         transforms = self._identity_transforms(model.world_count)
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
-        # A model-less camera cannot sync.
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            SensorCamera().sync_transforms(state)
-
         # Spy on the internal render-context sync to observe who triggers it.
         calls = []
         real_update = camera._render_context.update
         camera._render_context.update = calls.append
         try:
             camera.update(state, transforms, rays, depth_image=depth)
-            self.assertEqual(calls, [], "update() must not synchronize render state")
+            self.assertEqual(len(calls), 1, "update() must sync deformable meshes by default")
 
-            camera.sync_transforms(state)
-            self.assertEqual(len(calls), 1, "sync_transforms() must synchronize render state")
+            camera.update(state, transforms, rays, depth_image=depth, sync_deformables=False)
+            self.assertEqual(len(calls), 1, "sync_deformables=False must skip the sync")
+
+            camera.sync_deformable_meshes(state)
+            self.assertEqual(len(calls), 2, "sync_deformable_meshes() must sync explicitly")
         finally:
             camera._render_context.update = real_update
 
         # The render still produced a valid frame (rigid scene needs no sync).
         self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
-    def test_model_required_for_outputs_and_utils(self) -> None:
-        """Verify output and utility helpers require a model, and report the model device."""
-        # A camera without a model cannot produce buffers or utils.
-        camera = SensorCamera()
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.create_image_output(1, 4, 3, wp.float32)
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.utils(1)
-
-        model, camera = self._build_sphere_scene(world_count=2)
-        self.assertEqual(camera.device, model.device)
-        self.assertFalse(hasattr(model, "render_context"))
-        self.assertFalse(hasattr(camera, "render_context"))
-
-    def test_utils_and_scene_config_from_model(self) -> None:
-        """Verify a model-backed SensorCamera exposes utils, output buffers, and scene config."""
+    def test_scene_config_from_model(self) -> None:
+        """Verify a model-backed SensorCamera exposes output buffers, static utils, and scene config."""
         width, height = 4, 3
         model, camera = self._build_sphere_scene()
         view_count = model.world_count
 
-        utils = camera.utils(view_count)
-
-        self.assertIsInstance(utils, Utils)
-        self.assertIsNot(camera.utils(view_count), utils)
-        self.assertFalse(hasattr(utils, "_Utils__sensor_camera"))
         self.assertFalse(hasattr(model, "render_context"))
         self.assertFalse(hasattr(camera, "render_context"))
         self.assertEqual(camera.device, model.device)
@@ -366,7 +325,7 @@ class TestSensorCamera(unittest.TestCase):
                 self.assertEqual(output.shape, (view_count, height, width))
                 self.assertEqual(output.dtype, dtype)
                 self.assertEqual(output.device, model.device)
-        color_rgba = utils.to_rgba_from_color(camera.create_color_image_output(view_count, width, height))
+        color_rgba = SensorCamera.Utils.to_rgba_from_color(camera.create_color_image_output(view_count, width, height))
         self.assertEqual(color_rgba.shape, (view_count, height, width, 4))
         # Scene configuration is surfaced on the camera; the render context is private.
         camera.create_default_light(enable_shadows=True)
@@ -451,20 +410,32 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(float(depth_np[1, height // 2, width // 2]), -2.0)
         self.assertEqual(int(shape_index_np[1, height // 2, width // 2]), 123)
 
-    def test_update_requires_model(self) -> None:
-        """Verify SensorCamera rendering requires a model given at construction."""
-        width, height = 8, 6
-        model, camera = self._build_sphere_scene(assign_render_context=False)
+    def test_update_clears_reserved_and_out_of_range_world_indices(self) -> None:
+        """Verify -1 (reserved global) and out-of-range world indices clear, not preserve."""
+        width, height = 16, 12
+        model, camera = self._build_sphere_scene(world_count=2)
         state = model.state()
-        depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
+        rays = self._rays(width, height)
+        view_count = model.world_count
 
-        with self.assertRaisesRegex(RuntimeError, "no model"):
-            camera.update(
-                state,
-                self._identity_transforms(model.world_count),
-                self._rays(width, height),
-                depth_image=depth,
-            )
+        camera.default_clear_data = SensorCamera.ClearData(clear_depth=-2.0)
+        # View 0: -1 is reserved for future global-world rendering (unsupported);
+        # view 1: an index >= world_count. Neither is a sentinel, so both clear.
+        world_indices = wp.array([-1, model.world_count], dtype=wp.int32, device="cpu")
+        depth = wp.full((view_count, height, width), value=42.0, dtype=wp.float32, device="cpu")
+
+        camera.update(
+            state,
+            self._identity_transforms(view_count),
+            rays,
+            depth_image=depth,
+            world_indices=world_indices,
+        )
+
+        depth_np = depth.numpy()
+        # Both views are cleared to the clear value, not left at the 42.0 prefill.
+        np.testing.assert_allclose(depth_np[0], -2.0)
+        np.testing.assert_allclose(depth_np[1], -2.0)
 
     def test_update_respects_disable_preserve_flag(self) -> None:
         """Verify SensorCamera preserves output images for DISABLE_PRESERVE worlds."""
@@ -830,19 +801,18 @@ class TestSensorCamera(unittest.TestCase):
             shape_index_image=shape_index,
         )
 
-        utils = camera.utils(view_count)
         for rgba in (
-            utils.to_rgba_from_color(color),
-            utils.to_rgba_from_depth(depth, depth_range=(0.0, 10.0)),
-            utils.to_rgba_from_normal(normal),
-            utils.to_rgba_from_shape_index(shape_index),
+            SensorCamera.Utils.to_rgba_from_color(color),
+            SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(0.0, 10.0)),
+            SensorCamera.Utils.to_rgba_from_normal(normal),
+            SensorCamera.Utils.to_rgba_from_shape_index(shape_index),
         ):
             self.assertEqual(rgba.shape, (view_count, height, width, 4))
             self.assertEqual(rgba.dtype, wp.uint8)
 
     def test_utils_postprocessing_helpers(self) -> None:
         """Verify forward-depth conversion, normal/depth flatten, palette colorize, and depth-range branches."""
-        width, height, worlds_per_row = 6, 4, 2
+        width, height, views_per_row = 6, 4, 2
         model, camera = self._build_sphere_scene(world_count=4)
         state = model.state()
         rays = self._rays(width, height)
@@ -855,51 +825,46 @@ class TestSensorCamera(unittest.TestCase):
             state, camera_transforms, rays, depth_image=depth, normal_image=normal, shape_index_image=shape_index
         )
 
-        utils = camera.utils(view_count)
         center = (0, height // 2, width // 2)
         self.assertGreater(float(depth.numpy()[center]), 0.0)
 
         # Ray-distance depth -> forward (planar) depth; must not exceed ray depth.
-        forward = utils.convert_ray_depth_to_forward_depth(depth, camera_transforms, rays)
+        forward = SensorCamera.Utils.convert_ray_depth_to_forward_depth(depth, camera_transforms, rays)
         self.assertEqual(forward.shape, depth.shape)
         self.assertEqual(forward.dtype, wp.float32)
         self.assertLessEqual(float(forward.numpy()[center]), float(depth.numpy()[center]) + 1.0e-4)
 
         # Flatten normal/depth into one tiled (rows*H, cols*W, 4) grid buffer.
-        worlds_per_col = -(-view_count // worlds_per_row)
+        views_per_col = -(-view_count // views_per_row)
         for flat in (
-            utils.flatten_normal_image_to_rgba(normal, worlds_per_row=worlds_per_row),
-            utils.flatten_depth_image_to_rgba(depth, worlds_per_row=worlds_per_row),
+            SensorCamera.Utils.flatten_normal_image_to_rgba(normal, views_per_row=views_per_row),
+            SensorCamera.Utils.flatten_depth_image_to_rgba(depth, views_per_row=views_per_row),
         ):
-            self.assertEqual(flat.shape, (worlds_per_col * height, worlds_per_row * width, 4))
+            self.assertEqual(flat.shape, (views_per_col * height, views_per_row * width, 4))
             self.assertEqual(flat.dtype, wp.uint8)
 
         # Shape-index colorized via a caller palette (out-of-range indices -> black).
         palette = wp.array(np.array([[10, 20, 30]], dtype=np.uint8), dtype=wp.uint8, device="cpu")
-        colored = utils.to_rgba_from_shape_index(shape_index, colors=palette)
+        colored = SensorCamera.Utils.to_rgba_from_shape_index(shape_index, colors=palette)
         self.assertEqual(colored.shape, (view_count, height, width, 4))
 
         # to_rgba_from_depth: on-device auto range (depth_range=None) and the near<far guard.
-        auto = utils.to_rgba_from_depth(depth)
+        auto = SensorCamera.Utils.to_rgba_from_depth(depth)
         self.assertEqual(auto.shape, (view_count, height, width, 4))
         with self.assertRaisesRegex(ValueError, "near < far"):
-            utils.to_rgba_from_depth(depth, depth_range=(5.0, 1.0))
+            SensorCamera.Utils.to_rgba_from_depth(depth, depth_range=(5.0, 1.0))
 
     def test_utils_shape_index_hash_colors_differ_by_index(self) -> None:
-        """Verify the shape-index hash palette assigns distinct colors (uint32 hash)."""
-        width, height = 8, 6
-        model, camera = self._build_sphere_scene()
-        state = model.state()
-        rays = self._rays(width, height)
-        view_count = model.world_count
-        shape_index = camera.create_shape_index_image_output(view_count, width, height)
-        camera.update(state, self._identity_transforms(view_count), rays, shape_index_image=shape_index)
-        rgba = camera.utils(view_count).to_rgba_from_shape_index(shape_index).numpy()
-        colors = {tuple(c) for c in rgba.reshape(-1, 4)[:, :3]}
-        self.assertGreater(len(colors), 1)
+        """Verify the shape-index hash palette maps two distinct valid indices to distinct colors."""
+        # One view, one row, two pixels holding shape indices 0 and 1.
+        shape_index = wp.array(np.array([[[0, 1]]], dtype=np.uint32), dtype=wp.uint32, device="cpu")
+        rgba = SensorCamera.Utils.to_rgba_from_shape_index(shape_index).numpy()
+        color_0 = tuple(int(c) for c in rgba[0, 0, 0, :3])
+        color_1 = tuple(int(c) for c in rgba[0, 0, 1, :3])
+        self.assertNotEqual(color_0, color_1)
 
-    def test_utils_flatten_rejects_worlds_per_row_below_one(self) -> None:
-        """Verify the flatten helpers reject a non-positive ``worlds_per_row``."""
+    def test_utils_flatten_rejects_views_per_row_below_one(self) -> None:
+        """Verify the flatten helpers reject a non-positive ``views_per_row``."""
         width, height = 4, 3
         model, camera = self._build_sphere_scene()
         state = model.state()
@@ -907,8 +872,8 @@ class TestSensorCamera(unittest.TestCase):
         view_count = model.world_count
         color = camera.create_color_image_output(view_count, width, height)
         camera.update(state, self._identity_transforms(view_count), rays, color_image=color)
-        with self.assertRaisesRegex(ValueError, "worlds_per_row"):
-            camera.utils(view_count).flatten_color_image_to_rgba(color, worlds_per_row=0)
+        with self.assertRaisesRegex(ValueError, "views_per_row"):
+            SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)
 
 
 if __name__ == "__main__":
