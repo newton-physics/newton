@@ -1754,11 +1754,11 @@ def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
+    articulation_joints = []
     if parent_kinematic:
-        parent_link = builder.add_body(xform=wp.transform_identity())
+        parent_link = builder.add_link(xform=wp.transform_identity(), is_kinematic=True)
         builder.add_shape_box(parent_link, hx=0.05, hy=0.05, hz=0.05)
-        # Replace the default DYNAMIC flag with KINEMATIC.
-        builder.body_flags[parent_link] = int(newton.BodyFlags.KINEMATIC)
+        articulation_joints.append(builder.add_joint_free(child=parent_link))
     else:
         parent_link = -1
 
@@ -1793,7 +1793,8 @@ def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity
     else:
         raise ValueError(f"Unsupported joint kind: {joint_kind}")
 
-    builder.add_articulation([joint])
+    articulation_joints.append(joint)
+    builder.add_articulation(articulation_joints)
     return builder, child_link
 
 

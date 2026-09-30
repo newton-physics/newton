@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest import mock
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
@@ -73,6 +74,33 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
         self._add_group(stage, "GroupB", (shapes["B"],))
 
         self._assert_filtered_pairs(stage, shapes, ())
+
+    def test_ungrouped_import_skips_stage_group_table(self):
+        """Skip stage-wide group work when imported colliding shapes have no memberships."""
+        from pxr import UsdPhysics
+
+        stage, shapes = self._make_stage(("Imported/A", "Imported/B", "Imported/Disabled", "Outside"))
+        UsdPhysics.CollisionAPI(shapes["Imported/Disabled"].GetPrim()).GetCollisionEnabledAttr().Set(False)
+        self._add_group(stage, "InvertedGroup", (shapes["Imported/Disabled"], shapes["Outside"]), inverted=True)
+        shapes["Imported/A"].GetPrim().CreateRelationship("physics:filteredPairs").AddTarget(
+            shapes["Imported/B"].GetPath()
+        )
+
+        builder = newton.ModelBuilder()
+        with mock.patch.object(
+            UsdPhysics.CollisionGroup,
+            "ComputeCollisionGroupTable",
+            wraps=UsdPhysics.CollisionGroup.ComputeCollisionGroupTable,
+        ) as compute_table:
+            builder.add_usd(stage, root_path="/Imported", load_visual_shapes=False)
+        compute_table.assert_not_called()
+        self.assertEqual(builder.shape_count, 3)
+        shape_ids = {name: builder.shape_label.index(f"/Imported/{name}") for name in ("A", "B", "Disabled")}
+        self.assertFalse(builder.shape_flags[shape_ids["Disabled"]] & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertEqual(
+            set(builder.shape_collision_filter_pairs),
+            {tuple(sorted((shape_ids["A"], shape_ids["B"])))},
+        )
 
     def test_nonpositive_builder_collision_groups(self):
         """Preserve non-positive builder collision defaults on imported shapes."""

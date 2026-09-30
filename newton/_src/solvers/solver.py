@@ -420,7 +420,6 @@ class SolverBase:
             world_mask,
             world_count=int(self.model.world_count),
             device=self.model.device,
-            allow_legacy=True,
         )
 
     @property
@@ -557,11 +556,6 @@ class SolverBase:
                 local worlds by index, and the final entry selects global entities
                 whose world is ``-1``. If ``None``, all local and global entities
                 are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
