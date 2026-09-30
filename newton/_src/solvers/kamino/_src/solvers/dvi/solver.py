@@ -260,6 +260,13 @@ class DVISolver:
 
     def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
         """Return host-side repeated bilateral solve points for direct-block DVI."""
+        if self._use_schur_complement:
+            # Schur elimination incorporates the bilateral response into every
+            # unilateral update. Re-solving the bilateral block between
+            # projected sweeps defeats that elimination and makes
+            # bilateral_solve_interval affect a mode where its documented
+            # contract says it is ignored.
+            return (False,) * max(0, self._max_alternating_iterations - 1)
         return tuple(
             any(
                 next_block < c.max_alternating_iterations and next_block % c.bilateral_solve_interval == 0
@@ -551,9 +558,10 @@ class DVISolver:
         # Classify the final iterate using all DVI conditions. This replaces
         # provisional iterate-change convergence from the dense fallback;
         # direct and sparse paths reach this check after fixed iteration counts.
+        residual_workers = 32 if self._device.is_cuda and self._size.num_worlds <= 16 else 1
         wp.launch(
             kernel=_compute_dvi_status_residuals,
-            dim=self._size.num_worlds,
+            dim=self._size.num_worlds * residual_workers,
             inputs=[
                 problem.data.dim,
                 problem.data.vio,
@@ -573,6 +581,7 @@ class DVISolver:
                 self._data.state.v_aug,
                 self._data.solution.lambdas,
                 self._data.status,
+                residual_workers,
             ],
             device=self.device,
         )
