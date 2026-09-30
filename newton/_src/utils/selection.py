@@ -2271,11 +2271,10 @@ class _DeformableViewBase:
         hand per-instance offsets to a renderer sync or to custom kernels. See
         :meth:`elements_per_deformable_object` for the valid ``kind`` values.
 
-        Native rod joint ranges include any free-root joints created by the rod
-        call. A single USD curve excludes its root attachment from its joint span;
-        a multi-curve USD prim can include root joints between its curves. Welded
-        USD curves have empty joint ranges because their joints belong to a shared
-        graph. See :ref:`deformable-objects` for joint-range ownership.
+        Native and non-welded USD curves include their construction-time root
+        joints. Welded USD curves have empty joint ranges because their joints
+        belong to a shared graph. See :ref:`deformable-objects` for joint-range
+        ownership and the distinction from returned rod-joint lists.
 
         Args:
             kind: Element kind recorded by every selected deformable object.

@@ -12,6 +12,8 @@ import unittest
 
 import newton
 from newton.selection import DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
+from newton.solvers import SolverSemiImplicit
+from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -21,7 +23,7 @@ from newton.tests._usd_deformable_test_utils import (
     _deformable_stage,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
 
@@ -41,7 +43,7 @@ class TestUSDDeformableObjects(unittest.TestCase):
         cable = DeformableCurveView(model, "/World/CableA/sim")
         self.assertEqual(cable.count, 1)
         self.assertEqual(cable.bodies_per_deformable_object, 3)
-        self.assertEqual(cable.elements_per_deformable_object("joint"), 2)  # open 3-segment chain
+        self.assertEqual(cable.elements_per_deformable_object("joint"), 3)  # free root and two rod joints
         cloth = DeformableSurfaceView(model, "/World/Cloth/sim")
         self.assertEqual(cloth.particles_per_deformable_object, 4)
         self.assertEqual(cloth.ranges("triangle"), [(0, 2)])
@@ -104,6 +106,8 @@ class TestUSDDeformableObjects(unittest.TestCase):
                 self.assertEqual(source.curve_label, ["/World/Cable"])
                 self.assertEqual(len(bodies), 3)
                 self.assertEqual(len(joints), 2)
+                root = 0 if attached_point is None else 1
+                self.assertEqual(joints, [root + 1, root + 2])
                 if attached_point is not None:
                     (attachment,) = result["path_attachment_map"]["/World/Attachment"]
                     plug_body = result["path_body_map"]["/World/Plug"]
@@ -122,8 +126,41 @@ class TestUSDDeformableObjects(unittest.TestCase):
                 )
                 self.assertEqual(
                     view.ranges("joint"),
-                    [(joints[0] + w * source.joint_count, joints[-1] + 1 + w * source.joint_count) for w in range(2)],
+                    [(root + w * source.joint_count, root + 3 + w * source.joint_count) for w in range(2)],
                 )
+
+    def test_compact_cable_requires_its_generated_root(self):
+        """Keep a complete USD cable, but omit its identity when the root is not selected."""
+        stage = _deformable_stage()
+        _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
+        builder = newton.ModelBuilder()
+        builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background", body_frame_origin="com")
+        result = builder.add_usd(stage, return_deformable_results=True)
+        bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
+        self.assertEqual(rod_joints, [4, 5])
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            cable = DeformableCurveView(model, "/World/Cable")
+            self.assertEqual(cable.ranges("joint"), [(3, 6)])
+            for include_root in (False, True):
+                with self.subTest(device=device, include_root=include_root):
+                    joints = list(range(3, 6)) if include_root else rod_joints
+                    coupled = SolverCoupled(
+                        model,
+                        entries=[
+                            SolverCoupled.Entry(name="cable", solver=SolverSemiImplicit, bodies=bodies, joints=joints)
+                        ],
+                    )
+                    compact = coupled.view("cable")
+                    self.assertEqual(compact.body_count, 3)
+                    self.assertEqual(compact.joint_count, len(joints))
+                    self.assertEqual(compact.curve_count, int(include_root))
+                    self.assertEqual(compact.curve_label, ["/World/Cable"] if include_root else [])
+                    if include_root:
+                        selected = DeformableCurveView(compact, "/World/Cable")
+                        self.assertEqual(selected.ranges("body"), [(0, 3)])
+                        self.assertEqual(selected.ranges("joint"), [(0, 3)])
+                    self.assertEqual(cable.ranges("joint"), [(3, 6)])
 
     def test_heterogeneous_worlds_resolve_with_world_tags(self):
         """Worlds holding different deformables each resolve with the right world tag."""

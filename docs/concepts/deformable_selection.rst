@@ -255,12 +255,10 @@ cables' body ranges even though their selected deformable object indices are con
 ``elements_per_deformable_object(kind)`` returns a common element count or raises when the
 sizes differ. Raw ranges remain available for deformable objects with different sizes.
 
-Joint ranges depend on how a cable was created. Native rod calls include any
-free-root joints they create. For a single USD curve, the recorded joint span
-excludes its root attachment. A USD prim containing several curves can include
-root joints between those curves in its span. Curves welded into a shared rod
-graph have empty joint ranges because those joints belong to the shared graph.
-Do not infer the joint count from the segment count. See :ref:`deformable-objects`.
+Joint ranges include the joints created with the cable, including generated
+roots. They are not the rod-joint lists returned by
+:meth:`~newton.ModelBuilder.add_rod` or USD's ``path_cable_map``. See
+:ref:`deformable-objects` for shared graphs and later attachments.
 
 Recording labels does not prevent fixed-joint collapse. A deformable curve is omitted
 with a warning if collapse removes one of its bodies or joints. Preserve required

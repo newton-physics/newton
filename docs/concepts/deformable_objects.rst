@@ -162,6 +162,18 @@ lists remain private; use the public model arrays to inspect finalized ranges.
 After finalization, use the family-specific views described in
 :ref:`deformable-selection` to select deformable objects and access their state.
 
+Curve joint ranges include the joints created with the deformable object.
+Native rods and non-welded USD cables include each generated free root or the
+attachment root created in its place. Earlier rigid-body joints and independent
+attachments added later are outside the range. These complete ranges differ
+from the rod-joint lists returned by :meth:`~newton.ModelBuilder.add_rod` and
+USD's ``path_cable_map``, which exclude roots.
+
+A USD curve welded into a shared graph has an empty joint range because the
+graph owns those joints. A native call that creates the whole graph records
+the graph's joints. The curve view exposes the recorded range through
+``ranges("joint")``.
+
 Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Complete
 curve records follow the remapped indices. If collapse removes part of a curve,
 Newton warns and omits its incomplete record. Use ``joints_to_keep`` to preserve
