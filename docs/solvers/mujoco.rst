@@ -535,6 +535,7 @@ and inertia are not padded or modified.
        use_mujoco_cpu=False,
        use_mujoco_contacts=False,
        allow_heterogeneous_shapes=True,
+       include_sites=False,
    )
    pipeline = newton.CollisionPipeline(model)
    contacts = pipeline.contacts()
@@ -543,10 +544,12 @@ and inertia are not padded or modified.
 
 Body counts, joint counts, types, degrees of freedom, and parent/child layouts
 must match across worlds. Multiple worlds require ``separate_worlds=True``.
-Sites, spatial tendons, explicit MuJoCo contact pairs, and fluid density or
-viscosity are unsupported and rejected. Native MuJoCo collision detection is
-not supported with this opt-in; the default homogeneous mode retains both
-contact generators.
+Use ``include_sites=False`` to omit sites from the MuJoCo export. They remain
+in the Newton model and available to Newton's sensors. Exporting sites,
+actuators that require sites, spatial tendons, explicit MuJoCo contact pairs,
+and fluid density or viscosity are unsupported and rejected. Native MuJoCo
+collision detection is not supported with this opt-in; the default homogeneous
+mode retains both contact generators and its existing site handling.
 
 Slots are grouped by corresponding body, geometry type, contact dimension, and
 priority. Their count grows with the largest group of each kind across worlds.
@@ -568,8 +571,14 @@ this mode supports differing collider geometry on those roots, but does not
 add per-world fixed-root placement.
 
 MuJoCo exports one representative shape per internal slot for body and
-contact-property lookup. Its viewer and MJCF export therefore do not reproduce
-each world's geometry; use the original Newton model for geometry inspection.
+contact-property lookup. Mesh assets and compiler-derived bounds and transforms
+(``geom_rbound``, ``geom_dataid``, ``mesh_pos``, and ``mesh_quat``) retain the
+representative's values. Mesh ``geom_pos`` and ``geom_quat`` combine each world's
+Newton shape pose with the representative mesh's compiler transform.
+MuJoCo-side geometry queries, ray casts, geometry-based sensors, its viewer,
+and MJCF export therefore do not reproduce each world's mesh geometry.
+Newton-generated contacts use the original shapes; use the Newton model and
+state for per-world geometry inspection.
 Padding still incurs geometry storage and pose-update
 work. Benchmark representative scenes when choosing between one heterogeneous
 batch and several homogeneous batches. This mode does not enable arbitrary

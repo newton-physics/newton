@@ -3802,7 +3802,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, generate contacts with MuJoCo. If False, pass Newton-generated contacts to :meth:`step`. Both modes use MuJoCo for dynamics and contact forces.
-            allow_heterogeneous_shapes: Allow different collider counts and geometry across worlds with identical body and joint layouts. Requires ``use_mujoco_contacts=False`` and the MuJoCo Warp backend. Sites, spatial tendons, explicit contact pairs, and fluid forces are not supported in this mode. Newton shapes remain unchanged; the solver allocates internal geom slots for the largest per-body shape groups.
+            allow_heterogeneous_shapes: Allow different collider counts and geometry across worlds with identical body and joint layouts. Requires ``use_mujoco_contacts=False`` and the MuJoCo Warp backend. Sites may remain in the Newton model with ``include_sites=False``. Site export, actuators requiring sites, spatial tendons, explicit contact pairs, and fluid forces are not supported in this mode. Newton shapes remain unchanged; the solver allocates internal geom slots for the largest per-body shape groups.
 
                 .. experimental::
 
@@ -6258,6 +6258,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     model,
                     shape_condim,
                     shape_priority,
+                    include_sites=include_sites,
                     skip_visual_only_geoms=skip_visual_only_geoms,
                 )
             )
@@ -9673,6 +9674,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_condim: np.ndarray | None,
         shape_priority: np.ndarray | None,
         *,
+        include_sites: bool,
         skip_visual_only_geoms: bool,
     ) -> tuple[np.ndarray, dict[int, list[int]], dict[int, np.ndarray]]:
         """Build bounded geom slots without padding or mutating Newton shapes.
@@ -9682,8 +9684,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dimension. Other contact properties are synchronized per world.
         """
         shape_flags = model.shape_flags.numpy()
-        if np.any(shape_flags & ShapeFlags.SITE):
-            raise ValueError("allow_heterogeneous_shapes=True does not support sites.")
+        site_mask = (shape_flags & ShapeFlags.SITE) != 0
+        if include_sites and np.any(site_mask):
+            raise ValueError(
+                "allow_heterogeneous_shapes=True does not support MuJoCo site export. "
+                "Set include_sites=False to omit sites not required by actuators or spatial tendons."
+            )
         if model.custom_frequency_counts.get("mujoco:pair", 0):
             raise ValueError("allow_heterogeneous_shapes=True does not support explicit MuJoCo contact pairs.")
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -9691,6 +9697,43 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             attr = getattr(mujoco_attrs, name, None)
             if attr is not None and np.any(attr.numpy() >= 0):
                 raise ValueError("allow_heterogeneous_shapes=True does not support spatial tendons.")
+
+        # Check every world before filtering sites; missing site mappings can
+        # otherwise cause _init_actuators to silently omit required actuation.
+        actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
+        actuator_trnid = getattr(mujoco_attrs, "actuator_trnid", None)
+        if actuator_count and actuator_trnid is not None:
+            targets = actuator_trnid.numpy()
+            trntype = getattr(mujoco_attrs, "actuator_trntype", None)
+            trntype = trntype.numpy() if trntype is not None else None
+            ctrl_source = getattr(mujoco_attrs, "ctrl_source", None)
+            ctrl_source = ctrl_source.numpy() if ctrl_source is not None else None
+            labels = getattr(mujoco_attrs, "actuator_target_label", None)
+            site_labels = {model.shape_label[i] for i in np.flatnonzero(site_mask)}
+            non_site_labels = set()
+            for name in ("joint_dof_label", "tendon_label"):
+                values = getattr(mujoco_attrs, name, None)
+                if isinstance(values, list):
+                    non_site_labels.update(values)
+            for i in range(actuator_count):
+                if ctrl_source is not None and ctrl_source[i] == SolverMuJoCo.CtrlSource.JOINT_TARGET:
+                    continue
+                transmission = int(trntype[i]) if trntype is not None else int(SolverMuJoCo.TrnType.JOINT)
+                target = int(targets[i, 0])
+                if transmission == SolverMuJoCo.TrnType.TENDON and target < 0 and targets[i, 1] >= 0:
+                    target = int(targets[i, 1])
+                # Match deferred resolution in _init_actuators: joint/tendon
+                # labels take precedence over sites, including legacy targets.
+                if target < 0 and isinstance(labels, list) and i < len(labels) and labels[i]:
+                    if labels[i] in non_site_labels:
+                        continue
+                    if labels[i] in site_labels:
+                        transmission = int(SolverMuJoCo.TrnType.SITE)
+                if transmission in (SolverMuJoCo.TrnType.SITE, SolverMuJoCo.TrnType.SLIDERCRANK):
+                    raise ValueError(
+                        "allow_heterogeneous_shapes=True does not support actuators that require sites "
+                        f"(actuator {i}). Use homogeneous mode for site-dependent actuation."
+                    )
 
         shape_world = model.shape_world.numpy()
         shape_body = model.shape_body.numpy()
@@ -9701,6 +9744,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_shapes: dict[int, list[int]] = {}
         shape_columns: dict[int, np.ndarray] = {}
         for shape in range(model.shape_count):
+            if site_mask[shape]:
+                continue
             if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                 continue
             world = int(shape_world[shape])
@@ -9729,6 +9774,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     [shapes[slot] if slot < len(shapes) else -1 for shapes in worlds],
                     dtype=np.int32,
                 )
+                # Mesh assets and compiler-derived metadata remain representative;
+                # Newton contacts supply each world's actual collision geometry.
                 representative = int(column[column >= 0][0])
                 selected_shapes.append(representative)
                 body_shapes.setdefault(key[0], []).append(representative)
