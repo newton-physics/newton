@@ -51,6 +51,7 @@ from .particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
     make_solve_elasticity_tile,
     reset_particle_state,
+    scatter_particle_body_contact_force_and_hessian,
     solve_elasticity,
     update_velocity,
 )
@@ -98,6 +99,17 @@ from .vbd_coupling_kernels import (
 __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+
+
+def _particle_contact_scatter_worker_count(soft_contact_max: int, particle_count: int, device) -> int:
+    """Return the host-static worker grid for the per-record body-particle contact accumulation.
+
+    Enough workers to fill the device (two 256-thread blocks per SM) or one per particle, whichever
+    is larger, but never more than the contact capacity. Each worker strides over the active contact
+    prefix, so the launch size is fixed for CUDA-graph capture while the work follows the active count.
+    """
+    sm_count = device.sm_count if device.is_cuda else 1
+    return max(1, min(soft_contact_max, max(2 * 256 * sm_count, particle_count)))
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
@@ -598,7 +610,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
-                ``wp.config.deterministic`` mode.
+                ``wp.config.deterministic`` mode. Body-particle contact forces
+                are accumulated per contact record with atomics in
+                ``NOT_GUARANTEED`` mode and gathered per particle without
+                atomics in every other mode.
 
             Collision pipeline ownership:
 
@@ -808,6 +823,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         # set_collision_frequency() changes take effect at the next step.
         self._self_contact_mode_this_step, self._self_contact_freq_this_step = self._resolve_self_contact_schedule()
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        # Body-particle contact accumulation: per-record atomics over the active prefix by default;
+        # deterministic modes use the per-particle gather, which needs no atomics.
+        self._particle_contact_use_gather = effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
@@ -1267,6 +1285,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._particle_contact_head = wp.full(model.particle_count, -1, dtype=wp.int32, device=self.device)
         self._particle_contact_next = wp.empty(0, dtype=wp.int32, device=self.device)
         self._particle_contact_adjacency_initialized = False
+        self._particle_contact_worker_count = 0
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
@@ -1662,6 +1681,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self._particle_contact_next = wp.empty(3 * soft_contact_max, dtype=wp.int32, device=self.device)
         self._particle_contact_adjacency_initialized = False
+        self._particle_contact_worker_count = _particle_contact_scatter_worker_count(
+            soft_contact_max, self.model.particle_count, self.device
+        )
 
     def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
         """Allocate fresh contact-history buffers."""
@@ -3276,20 +3298,21 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         if model.particle_count > 0:
-            self._particle_contact_head.fill_(-1)
-            if contacts.soft_contact_max > 0:
-                wp.launch(
-                    kernel=build_particle_body_contact_adjacency_active,
-                    dim=contacts.soft_contact_max,
-                    inputs=[
-                        contacts.soft_contact_indices,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
-                    ],
-                    device=self.device,
-                )
+            if self._particle_contact_use_gather:
+                self._particle_contact_head.fill_(-1)
+                if contacts.soft_contact_max > 0:
+                    wp.launch(
+                        kernel=build_particle_body_contact_adjacency_active,
+                        dim=contacts.soft_contact_max,
+                        inputs=[
+                            contacts.soft_contact_indices,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self._particle_contact_head,
+                            self._particle_contact_next,
+                        ],
+                        device=self.device,
+                    )
             self._particle_contact_adjacency_initialized = True
 
     def _step_body_body_contact_frame(
@@ -3591,42 +3614,74 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Iterate over color groups
         for color in range(len(self.model.particle_color_groups)):
             if contacts is not None and contacts.soft_contact_max > 0:
-                wp.launch(
-                    kernel=gather_particle_body_contact_force_and_hessian,
-                    dim=self.model.particle_color_groups[color].size,
-                    block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
-                    inputs=[
-                        dt,
-                        self.model.particle_color_groups[color],
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        self.friction_epsilon,
-                        self.rigid_soft_contact_use_log_barrier,
-                        model.particle_radius,
-                        contacts.soft_contact_indices,
-                        self._particle_contact_head,
-                        self._particle_contact_next,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        model.shape_body,
-                        body_q_for_particles,
-                        body_q_prev_for_particles,
-                        body_qd_for_particles,
-                        model.body_com,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_body_vel,
-                        contacts.soft_contact_normal,
-                        model.shape_margin,
-                        contacts.soft_contact_barycentric,
-                    ],
-                    outputs=[
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
-                    device=self.device,
-                )
+                contact_material_and_body_inputs = [
+                    self.body_particle_contact_penalty_k,
+                    self.body_particle_contact_material_kd,
+                    self.body_particle_contact_material_mu,
+                    model.shape_body,
+                    body_q_for_particles,
+                    body_q_prev_for_particles,
+                    body_qd_for_particles,
+                    model.body_com,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    model.shape_margin,
+                    contacts.soft_contact_barycentric,
+                ]
+                if self._particle_contact_use_gather:
+                    # Deterministic modes: one thread per colored particle, no output atomics.
+                    wp.launch(
+                        kernel=gather_particle_body_contact_force_and_hessian,
+                        dim=self.model.particle_color_groups[color].size,
+                        block_dim=_PARTICLE_CONTACT_GATHER_BLOCK_DIM,
+                        inputs=[
+                            dt,
+                            self.model.particle_color_groups[color],
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.friction_epsilon,
+                            self.rigid_soft_contact_use_log_barrier,
+                            model.particle_radius,
+                            contacts.soft_contact_indices,
+                            self._particle_contact_head,
+                            self._particle_contact_next,
+                            *contact_material_and_body_inputs,
+                        ],
+                        outputs=[
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        device=self.device,
+                    )
+                else:
+                    # Default: one record per thread over the active prefix, atomics into the
+                    # active color's corners. The worker grid is host-static (graph-safe).
+                    wp.launch(
+                        kernel=scatter_particle_body_contact_force_and_hessian,
+                        dim=self._particle_contact_worker_count,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_colors,
+                            self.friction_epsilon,
+                            self.rigid_soft_contact_use_log_barrier,
+                            model.particle_radius,
+                            contacts.soft_contact_indices,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self._particle_contact_worker_count,
+                            *contact_material_and_body_inputs,
+                        ],
+                        outputs=[
+                            self.particle_forces,
+                            self.particle_hessians,
+                        ],
+                        device=self.device,
+                    )
 
             if model.spring_count:
                 wp.launch(
