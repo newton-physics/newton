@@ -15,6 +15,7 @@
    api/newton_selection
    api/newton_sensors
    api/newton_solvers
+   api/newton_tuning
    api/newton_usd
    api/newton_utils
    api/newton_viewer
