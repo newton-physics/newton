@@ -439,7 +439,7 @@ class TestDeformableSelection(unittest.TestCase):
         state = model.state()
 
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         moved = before[[1]].copy()
         moved[..., 2] += 5.0
         cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), deformable_object_indices=[1])
@@ -711,20 +711,20 @@ class TestDeformableSelection(unittest.TestCase):
         for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
             with self.subTest(invalid_indices=invalid_indices):
                 state = model.state()
-                before = cloth.get_particle_positions(state).numpy()
+                before = cloth.get_particle_positions(state).numpy().copy()
                 with self.assertRaisesRegex(TypeError, "deformable_object_indices"):
                     cloth.set_particle_positions(state, values, deformable_object_indices=invalid_indices)
                 np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
         state = model.state()
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         cloth.set_particle_positions(state, values, deformable_object_indices=[np.int64(1)])
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_array_equal(after[1], np.full_like(after[1], 9.0))
 
         state = model.state()
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         empty_values = wp.empty((0, cloth.particles_per_deformable_object), dtype=wp.vec3, device="cpu")
         cloth.set_particle_positions(state, empty_values, deformable_object_indices=[])
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
@@ -734,7 +734,7 @@ class TestDeformableSelection(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         values = np.full((1, cloth.particles_per_deformable_object, 3), 17.0, dtype=np.float32)
 
         cloth.set_particle_positions(
@@ -875,7 +875,7 @@ class TestDeformableSelection(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         values = np.empty((2, cloth.particles_per_deformable_object, 3), dtype=np.float32)
         values[0].fill(3.0)
         values[1].fill(8.0)
@@ -895,7 +895,7 @@ class TestDeformableSelection(unittest.TestCase):
         model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableSurfaceView(model, "/World/Cloth")
-        before = cloth.get_particle_positions(state).numpy()
+        before = cloth.get_particle_positions(state).numpy().copy()
         moved = before[[2]].copy()
         moved[..., 2] += 4.0
 
@@ -946,10 +946,10 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         self.assertEqual(soft.get_particle_positions(state).shape, (1, 4))
         self.assertEqual(cable.ranges("body"), [(cable_bodies[0] - 1, cable_bodies[-1])])
 
-        rigid_values = rigid.get_root_transforms(state).numpy()
-        cable_values = cable.get_body_transforms(state).numpy()
-        cloth_values = cloth.get_particle_positions(state).numpy()
-        soft_values = soft.get_particle_positions(state).numpy()
+        rigid_values = rigid.get_root_transforms(state).numpy().copy()
+        cable_values = cable.get_body_transforms(state).numpy().copy()
+        cloth_values = cloth.get_particle_positions(state).numpy().copy()
+        soft_values = soft.get_particle_positions(state).numpy().copy()
 
         moved_rigid = rigid_values.copy()
         moved_rigid[..., 0] += 1.0
@@ -1010,7 +1010,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
 
         rigid_before = rigid.get_root_transforms(state).numpy().copy()
         soft_before = soft.get_particle_positions(state).numpy().copy()
-        cloth_values = cloth.get_particle_positions(state).numpy()
+        cloth_values = cloth.get_particle_positions(state).numpy().copy()
         cloth_values[1, :, 2] += 2.0
         cloth.set_particle_positions(state, wp.array(cloth_values, dtype=wp.vec3, device=model.device))
         np.testing.assert_array_equal(rigid.get_root_transforms(state).numpy(), rigid_before)
@@ -1379,7 +1379,7 @@ class TestDeformableBuilderObjects(unittest.TestCase):
 
         # State access round-trips through the offset ranges.
         positions = soft.get_particle_positions(state)
-        lifted = positions.numpy()
+        lifted = positions.numpy().copy()
         lifted[1, :, 2] += 3.0
         soft.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
         np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), lifted, atol=1e-6)
