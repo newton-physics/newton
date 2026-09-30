@@ -444,6 +444,22 @@ class TestViewerRTXRendering(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_resizing_line_batch_after_first_frame(self):
+        """Resize a line batch created before the first frame once rendering has started."""
+        viewer = ViewerRTX(headless=True, async_rendering=False)
+        try:
+            for frame, count in enumerate((2, 2, 5)):
+                viewer.begin_frame(frame / 60.0)
+                viewer.log_lines(
+                    "/resized_lines",
+                    wp.array([wp.vec3(float(i), 0.0, 0.0) for i in range(count)], dtype=wp.vec3),
+                    wp.array([wp.vec3(float(i), 0.0, 1.0) for i in range(count)], dtype=wp.vec3),
+                    (0.0, 1.0, 0.0),
+                )
+                viewer.end_frame()
+        finally:
+            viewer.close()
+
 
 class TestViewerRTXMeshUpdates(unittest.TestCase):
     def _make_runtime_viewer(self):

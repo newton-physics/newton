@@ -1192,7 +1192,8 @@ void main() {
             else:
                 self._rtx.remove_usd(handle)
         elif path in self._runtime_prim_paths:
-            self._write_runtime_attribute([path], "visibility", ["invisible"])
+            # Stage writes belong to end_frame(), after any in-flight render.
+            self._pending_hidden_prim_paths.add(path)
         # OVRTX rejects references at existing prim paths. Keep the original
         # build-phase batch hidden and publish replacements at fresh sibling paths.
         self._runtime_prim_serial += 1
@@ -2310,7 +2311,13 @@ void main() {
                         mapping.unmap(stream=matrices.device.stream.cuda_stream)
 
     def _update_ovrtx_instance_visibility(self):
-        if self._rtx is None or not self._pending_instance_visibility:
+        if self._rtx is None:
+            return
+        if self._pending_hidden_prim_paths:
+            hidden = sorted(self._pending_hidden_prim_paths)
+            self._write_runtime_attribute(hidden, "visibility", ["invisible"] * len(hidden))
+            self._pending_hidden_prim_paths.clear()
+        if not self._pending_instance_visibility:
             return
 
         for name, visible in self._pending_instance_visibility.items():
@@ -2741,6 +2748,7 @@ void main() {
 
         self._pending_xforms = {}
         self._pending_instance_visibility = {}
+        self._pending_hidden_prim_paths = set()
         self._pending_mesh_points = {}
         self._pending_mesh_normals = {}
         self._pending_mesh_topology = {}
