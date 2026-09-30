@@ -98,6 +98,11 @@ class ViewerViser(ViewerBase):
             # work through the callback argument.
             self.is_available = False
 
+        def __getattr__(self, name: str) -> Any:
+            raise AttributeError(
+                f"ViewerViser UI adapter does not support {name!r}; use viewer.server.gui for native Viser widgets"
+            )
+
         def begin_callback(self, callback_id: int) -> None:
             self._callback_id = callback_id
             self._widget_index = 0
@@ -400,7 +405,9 @@ class ViewerViser(ViewerBase):
 
                 cls._viser_module = viser
             except ImportError as e:
-                raise ImportError("viser package is required for ViewerViser. Install with: pip install viser") from e
+                raise ImportError(
+                    "viser package is required for ViewerViser. Install with: pip install viser==1.1.1"
+                ) from e
         return cls._viser_module
 
     @staticmethod
@@ -842,12 +849,15 @@ class ViewerViser(ViewerBase):
         return self._server
 
     @property
-    def ui(self) -> _ImmediateGuiAdapter:
+    def ui(self) -> Any:
         """Return the example-GUI compatibility adapter.
 
         The adapter intentionally reports ``is_available = False`` because it
         is not a full ImGui context, while callbacks passed directly to
-        :meth:`register_ui_callback` can use its supported common controls.
+        :meth:`register_ui_callback` can use buttons, checkboxes, radio buttons,
+        float/int sliders, float inputs, text, separators, disabled scopes, and
+        button hold state. See that method for the complete supported subset.
+        Use :attr:`server` for native Viser widgets beyond this subset.
         """
         return self._example_gui_adapter
 
@@ -873,8 +883,23 @@ class ViewerViser(ViewerBase):
         positions are accepted for API compatibility and rendered together in
         the ``Example Options`` folder.
 
+        Supported methods are ``button``, ``checkbox``, ``radio_button``,
+        ``slider_float``, ``slider_int``, ``input_float``, ``text``, ``separator``,
+        ``begin_disabled``, ``end_disabled``, and ``is_item_active`` (button hold
+        state). These accept the signatures used by Newton examples, not every
+        ImGui overload. ``same_line``, ``set_next_window_pos``,
+        ``set_next_window_size``, ``set_cursor_pos``, ``begin``, and ``end`` are
+        layout no-ops; ``begin`` always returns True. ``ImVec2``, an approximate
+        ``calc_text_size``, and ``WindowFlags_`` (``no_title_bar``,
+        ``no_mouse_inputs``, ``no_scrollbar``) support existing overlay callbacks.
+
+        Callbacks run on the simulation thread even though the adapter's
+        ``is_available`` is False: that flag indicates a full ImGui context.
+        Unsupported attributes raise :class:`AttributeError`. For richer
+        interfaces, use the native GUI API through :attr:`server`.
+
         Args:
-            callback: Function receiving an ImGui-compatible control adapter.
+            callback: Function receiving the limited control adapter described above.
             position: ViewerGL callback position retained for compatibility.
         """
         if not callable(callback):
@@ -989,7 +1014,7 @@ class ViewerViser(ViewerBase):
             except Exception:
                 pass
 
-    def configure_example_browser(
+    def _configure_example_browser(
         self,
         tree: dict[str, list[tuple[str, str]]],
         callback: Callable[[str], None],
@@ -2536,13 +2561,17 @@ class ViewerViser(ViewerBase):
             if self._packed_shape_opacities_device is None:
                 self._packed_shape_opacities_device = wp.empty_like(self.model_shape_opacity)
             wp.copy(self._packed_shape_opacities_device, self.model_shape_opacity)
+        packed_colors = self._packed_shape_colors_host
         packed_opacities = self._packed_shape_opacities_host
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
             visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
             xforms = packed_xforms[offset : offset + count]
-            colors = packed_colors[offset : offset + count] if packed_colors is not None and colors_changed else None
+            handle = self._scene_handles.get(self._qualify(shapes.name))
+            # A newly shown batch may have missed earlier color updates.
+            send_colors = colors_changed or handle is None or not handle.visible
+            colors = packed_colors[offset : offset + count] if packed_colors is not None and send_colors else None
             # Keep explicit opacities on unchanged frames instead of falling back to mesh opacity.
             opacities = packed_opacities[offset : offset + count] if packed_opacities is not None else None
             materials = shapes.materials if self.model_changed else None

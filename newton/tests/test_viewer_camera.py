@@ -9,7 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.camera import Camera
-from newton.viewer import ViewerGL, ViewerNull
+from newton.viewer import ViewerGL, ViewerNull, ViewerRTX
 
 
 def _as_np(value):
@@ -122,17 +122,40 @@ class TestViewerCameraOrbit(unittest.TestCase):
 
 
 class TestViewerCameraLookAtValidation(unittest.TestCase):
+    def test_rtx_look_at_preserves_projection_and_orbit_target(self):
+        """Apply example camera presets to RTX's real camera, including its orbit pivot."""
+        viewer = object.__new__(ViewerRTX)
+        viewer.model = None
+        for up_axis in ("X", "Y", "Z"):
+            with self.subTest(up_axis=up_axis):
+                viewer.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis=up_axis)
+                viewer._camera_dirty = False
+                viewer.set_camera_look_at(wp.vec3(5.0, 6.0, 7.0), wp.vec3(-1.0, 2.0, 3.0), fov=32.0)
+                _assert_vec_close(self, viewer.camera.pos, (5.0, 6.0, 7.0))
+                _assert_vec_close(self, viewer.camera.pivot, (-1.0, 2.0, 3.0))
+                self.assertEqual(viewer.camera.fov, 32.0)
+                self.assertTrue(viewer._camera_dirty)
+                direction = (_as_np(viewer.camera.pivot) - _as_np(viewer.camera.pos)) / viewer.camera.pivot_distance
+                np.testing.assert_allclose(_as_np(viewer.camera.get_front()), direction, atol=1.0e-6)
+                viewer.set_camera_look_at(wp.vec3(4.0, 5.0, 6.0), wp.vec3(0.0))
+                self.assertEqual(viewer.camera.fov, 32.0)
+
     def test_reject_invalid_fov_before_mutation(self):
         """Reject invalid projection angles consistently before changing camera state."""
         gl = object.__new__(ViewerGL)
         gl.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
-        for viewer in (ViewerNull(num_frames=1), gl):
+        rtx = object.__new__(ViewerRTX)
+        rtx.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
+        rtx._camera_dirty = False
+        for viewer in (ViewerNull(num_frames=1), gl, rtx):
             for fov in (float("nan"), float("inf"), 0.0, -1.0, 180.0):
                 with self.subTest(viewer=type(viewer).__name__, fov=fov):
                     with self.assertRaises(ValueError):
                         viewer.set_camera_look_at(wp.vec3(5.0), wp.vec3(0.0), fov=fov)
-        np.testing.assert_array_equal(_as_np(gl.camera.pos), (1.0, 2.0, 3.0))
-        self.assertEqual(gl.camera.fov, Camera.DEFAULT_FOV)
+        for viewer in (gl, rtx):
+            np.testing.assert_array_equal(_as_np(viewer.camera.pos), (1.0, 2.0, 3.0))
+            self.assertEqual(viewer.camera.fov, Camera.DEFAULT_FOV)
+        self.assertFalse(rtx._camera_dirty)
 
     def test_base_rejects_nonfinite_coordinates(self):
         """Reject non-finite coordinates in the shared viewer API."""
@@ -145,20 +168,20 @@ class TestViewerCameraLookAtValidation(unittest.TestCase):
             with self.subTest(pos=pos, target=target), self.assertRaisesRegex(ValueError, "must be finite"):
                 viewer.set_camera_look_at(pos, target)
 
-    def test_viewer_gl_rejects_nonfinite_coordinates_before_mutation(self):
-        """Keep the GL camera unchanged when a look-at request is invalid."""
-        viewer = object.__new__(ViewerGL)
-        viewer.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
-
-        for pos, target in (
-            (wp.vec3(float("nan"), 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)),
-            (wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, float("inf"), 0.0)),
-        ):
-            with self.subTest(pos=pos, target=target):
-                initial_position = _as_np(viewer.camera.pos)
-                with self.assertRaisesRegex(ValueError, "must be finite"):
-                    viewer.set_camera_look_at(pos, target)
-                np.testing.assert_allclose(_as_np(viewer.camera.pos), initial_position)
+    def test_rendered_camera_rejects_nonfinite_coordinates_before_mutation(self):
+        """Keep GL and RTX cameras unchanged when a look-at request is invalid."""
+        for backend in (ViewerGL, ViewerRTX):
+            viewer = object.__new__(backend)
+            viewer.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
+            for pos, target in (
+                (wp.vec3(float("nan"), 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)),
+                (wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, float("inf"), 0.0)),
+            ):
+                with self.subTest(backend=backend.__name__, pos=pos, target=target):
+                    initial_position = _as_np(viewer.camera.pos)
+                    with self.assertRaisesRegex(ValueError, "must be finite"):
+                        viewer.set_camera_look_at(pos, target)
+                    np.testing.assert_allclose(_as_np(viewer.camera.pos), initial_position)
 
 
 def _build_viewer_model(z: float, up_axis: newton.Axis = newton.Axis.Z) -> newton.Model:

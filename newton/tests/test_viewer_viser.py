@@ -117,6 +117,30 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertIs(self.viewer._scene_handles[name], handles[name])
             np.testing.assert_array_equal(self.viewer._scene_handles[name].batched_colors, colors)
 
+    def test_revealed_collision_shapes_use_current_colors(self):
+        """Keep model colors when collision batches first appear or change while hidden."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        builder.add_shape_sphere(body, radius=0.2, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False))
+        model = builder.finalize(device="cpu")
+        self.viewer.activate("collision")
+        self.viewer.set_model(model)
+        state = model.state()
+        for color in ((0.8, 0.2, 0.1), (0.1, 0.4, 0.9)):
+            with self.subTest(color=color):
+                self.viewer.show_collision = False
+                self.viewer.log_state(state)
+                model.shape_color.assign([color])
+                self.viewer.log_state(state)
+                self.viewer.log_state(state)
+                self.viewer.show_collision = True
+                self.viewer.log_state(state)
+                handles = [h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_colors")]
+                self.assertEqual(len(handles), 1)
+                self.assertTrue(handles[0].visible)
+                expected = (model.shape_color.numpy() * 255).astype(np.uint8)
+                np.testing.assert_array_equal(handles[0].batched_colors, expected)
+
     def test_clear_releases_hidden_mesh_assets(self):
         """Release cached model geometry after clearing the scene for an example switch."""
         model = self.make_model()
@@ -141,7 +165,7 @@ class TestViewerViserInteraction(unittest.TestCase):
         """Apply browser pause, single-step, reset and example-selection commands."""
         selected = []
         resets = []
-        self.viewer.configure_example_browser({"basic": [("A", "module.a"), ("B", "module.b")]}, selected.append)
+        self.viewer._configure_example_browser({"basic": [("A", "module.a"), ("B", "module.b")]}, selected.append)
         self.viewer.set_reset_callback(lambda: resets.append(True))
         self.update_gui(self.viewer._simulation_gui_handles["pause"], True)
         self.wait_for(self.viewer.is_paused)

@@ -362,8 +362,8 @@ class _ExampleBrowser:
             tree[category].append((name, module_path))
         self._tree = dict(sorted(tree.items()))
 
-        if hasattr(viewer, "configure_example_browser"):
-            viewer.configure_example_browser(
+        if hasattr(viewer, "_configure_example_browser"):
+            viewer._configure_example_browser(
                 self._tree,
                 lambda module_path: setattr(self, "switch_target", module_path),
             )

@@ -633,7 +633,14 @@ For application-specific panels, lighting, or scene tools, use the read-only
 The viewer owns this server and stops it when closed. Native Viser callbacks
 run asynchronously; enqueue changes to simulation state and consume them on
 the simulation thread before stepping. The common ImGui-style callback adapter
-is intentionally limited; use the native API for richer interfaces.
+supports buttons, checkboxes, radio buttons, float/int sliders, float inputs,
+text, separators, disabled scopes, and button hold state. Window and inline
+layout helpers are no-ops. See
+:meth:`~newton.viewer.ViewerViser.register_ui_callback` for the complete subset.
+The adapter reports ``is_available = False`` because no full ImGui context is
+present; registered callbacks still run. Unsupported calls raise an
+``AttributeError`` directing you to ``viewer.server.gui``. Use that native API
+for richer interfaces.
 
 Bind each layer's model with ``activate()`` and ``set_model()`` before capturing
 its CUDA graph, and call ``apply_forces(state)`` for that active layer during
