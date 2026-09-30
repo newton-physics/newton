@@ -51,12 +51,17 @@ from .wind import Wind
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 
+def _version_prefix(version: str, package: str) -> tuple[int, int]:
+    """Return the ``(major, minor)`` prefix of a package version."""
+    match = re.match(r"^(\d+)\.(\d+)", version)
+    if match is None:
+        raise RuntimeError(f"Unable to determine {package} compatibility from version {version!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
 def _uses_ovstage(ovrtx_version: str) -> bool:
     """Return whether an OVRTX release uses the OVStage scene interface."""
-    match = re.match(r"^(\d+)\.(\d+)", ovrtx_version)
-    if match is None:
-        raise RuntimeError(f"Unable to determine OVRTX compatibility from version {ovrtx_version!r}")
-    return (int(match.group(1)), int(match.group(2))) >= (0, 4)
+    return _version_prefix(ovrtx_version, "OVRTX") >= (0, 4)
 
 
 @wp.kernel(enable_backward=False)
@@ -209,9 +214,8 @@ class ViewerRTX(ViewerUSD):
                 and lifetime; the viewer only writes transforms of the prims
                 bound in :meth:`set_model` and adds its camera, render
                 product, and debug geometry under ``/__newton_viewer``.
-                ``environment`` is ignored. Requires OVRTX 0.4 or newer and
-                a stage created with GPU hierarchy computation, so that
-                descendants of bound prims follow the written transforms.
+                ``environment`` is ignored. Requires OVRTX 0.4 and OVStage 0.2
+                or newer, and a stage created with GPU hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}``.
@@ -232,7 +236,7 @@ class ViewerRTX(ViewerUSD):
         self._use_ovstage = _uses_ovstage(ovrtx.__version__)
         if self._use_ovstage:
             try:
-                import ovstage  # noqa: F401
+                import ovstage
             except ImportError as e:
                 raise ImportError(
                     "ovstage package is required for ViewerRTX with OVRTX 0.4 or newer. "
@@ -246,6 +250,11 @@ class ViewerRTX(ViewerUSD):
         if stage is not None:
             if not self._use_ovstage:
                 raise ValueError("ViewerRTX(stage=...) requires OVRTX 0.4 or newer")
+            import ovstage
+
+            # Older OVStage misplaces prims under GPU hierarchy computation.
+            if _version_prefix(ovstage.__version__, "OVStage") < (0, 2):
+                raise ValueError("ViewerRTX(stage=...) requires OVStage 0.2 or newer")
             if scaling != 1.0:
                 raise ValueError("ViewerRTX(stage=...) does not support scaling")
             self._root_path = "/__newton_viewer"

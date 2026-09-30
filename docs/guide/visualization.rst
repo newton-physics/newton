@@ -391,7 +391,7 @@ lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_backg
     )
     viewer.add_background_usd("lighting.usda")
 
-**Rendering an existing USD scene**: With OVRTX 0.4 or newer, ViewerRTX can render a populated ``ovstage.Stage``
+**Rendering an existing USD scene**: With OVStage 0.2 or newer, ViewerRTX can render a populated ``ovstage.Stage``
 with its authored materials and lights, writing only the transforms of prims bound to bodies (``Model.body_label`` by
 default). The viewer keeps its own prims under ``/__newton_viewer`` and never clears the stage. The model's initial
 body poses must match the stage's placement, and the stage needs GPU hierarchy computation:

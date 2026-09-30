@@ -57,6 +57,19 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         ):
             ViewerRTX(headless=True)
 
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_requires_ovstage_0_2(self):
+        """Reject a borrowed stage on OVStage 0.1, whose GPU hierarchy computation misplaces prims."""
+        import ovrtx
+        import ovstage
+
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.4.1"),
+            mock.patch.object(ovstage, "__version__", "0.1.1.355824"),
+            self.assertRaisesRegex(ValueError, "OVStage 0.2 or newer"),
+        ):
+            ViewerRTX(headless=True, stage=object())
+
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXWindowCleanup(unittest.TestCase):
