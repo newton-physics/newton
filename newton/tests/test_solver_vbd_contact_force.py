@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the rigid-soft contact force export of :class:`newton.solvers.SolverVBD`.
+"""Tests for the contact force export of :class:`newton.solvers.SolverVBD`.
 
-``SolverVBD.update_contacts`` writes the soft-contact rows of ``Contacts.force`` (particle, edge, and
-face records against rigid shapes). Every row holds the force on the contacted shape's body and its
-torque about that body's center of mass (world origin for static shapes), evaluated at the final
-configuration of the preceding step with the solver's own contact law.
+``SolverVBD.update_contacts`` writes ``Contacts.force``: the rigid-contact rows with the body-body wrenches
+when VBD integrates the rigid bodies, and the soft-contact rows with the rigid-soft wrenches (particle, edge,
+and face records against rigid shapes). Every row holds the force on body 0 (the contacted shape's body for
+soft records) and its torque about that body's center of mass (world origin for static shapes), evaluated at
+the final configuration of the preceding step with the solver's own contact law.
 """
 
 import unittest
@@ -15,6 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.sensors import SensorContact
 from newton.tests.unittest_utils import (
     add_function_test,
     configure_sdf_for_collision_shapes,
@@ -49,6 +51,12 @@ def _active_soft_rows(contacts):
     count = min(int(contacts.soft_contact_count.numpy()[0]), contacts.soft_contact_max)
     start = contacts.rigid_contact_max
     return count, contacts.force.numpy()[start : start + count].astype(np.float64)
+
+
+def _active_rigid_rows(contacts):
+    """Return ``(count, rows)`` where ``rows`` are the active rigid-contact rows of ``contacts.force``."""
+    count = min(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
+    return count, contacts.force.numpy()[:count].astype(np.float64)
 
 
 def _expected_soft_contact_wrenches(
@@ -160,6 +168,29 @@ def _build_particle_on_ground(device, *, pos, radius, mass=1.0, gravity=True):
     builder.add_particle(pos=wp.vec3(*pos), vel=wp.vec3(0.0), mass=mass, radius=radius)
     builder.color()
     return builder.finalize(device=device)
+
+
+def _build_sphere_on_ground(device, *, with_particle):
+    """A dynamic sphere resting on the ground plane, optionally with a particle resting nearby.
+
+    Stiff shape material keeps the sphere's penetration small. The sphere sits away from the world
+    origin, so a rigid row whose shape 0 is the static ground carries a torque about the origin.
+    Returns ``(model, body, sphere_shape)``.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e5
+    builder.default_shape_cfg.kd = 1.0e2
+    builder.default_shape_cfg.mu = 0.5
+    builder.add_ground_plane()
+    radius = 0.1
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.3, -0.2, radius - 0.002), wp.quat_identity()))
+    sphere_shape = builder.add_shape_sphere(body, radius=radius)
+    if with_particle:
+        # 0.2 mm penetration is close to the particle's equilibrium against the stiff shape material,
+        # so it stays loaded instead of bouncing clear of the surface.
+        builder.add_particle(pos=wp.vec3(-0.5, 0.4, 0.0498), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
+    builder.color()
+    return builder.finalize(device=device), body, sphere_shape
 
 
 def _build_box_under_particles(device, *, penetration, particle_radius=0.02, box_mass=1.0e4):
@@ -564,6 +595,120 @@ def test_vbd_soft_contact_force_edge_records_match_law(test, device):
     test.assertTrue(np.all(np.einsum("ij,ij->i", rows[active, :3], normals[active]) < 0.0))
 
 
+def _settle_sphere_on_ground(device, *, with_particle, sensor=False, steps=300):
+    """Settle the sphere scene and return the objects needed to inspect the last step's export."""
+    model, body, sphere_shape = _build_sphere_on_ground(device, with_particle=with_particle)
+    contact_sensor = None
+    if sensor:
+        contact_sensor = SensorContact(model, sensing_bodies=[body], verbose=False)
+    else:
+        model.request_contact_attributes("force")
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    state_in, state_out = model.state(), model.state()
+
+    dt = 1.0 / 60.0
+    body_q_prev = None
+    for step in range(steps):
+        pipeline.collide(state_in, contacts)
+        if step == steps - 1:
+            body_q_prev = wp.clone(solver.body_q_prev)
+        solver.step(state_in, state_out, None, contacts, dt)
+        state_in, state_out = state_out, state_in
+    solver.update_contacts(contacts, state_in)
+    return model, body, sphere_shape, solver, contacts, state_in, body_q_prev, dt, contact_sensor
+
+
+def test_vbd_rigid_contact_force_static_equilibrium(test, device):
+    """Report a resting sphere's weight in the rigid rows, matching the collector and the torque reference.
+
+    Each rigid row is the force on body 0 by body 1 with its torque about body 0's center of mass
+    (world origin when shape 0 is the static ground). The rows must sum to the sphere's weight once
+    normalized to the sphere side, equal the negated force the public collector reports on body 1,
+    and carry the moment of the force about body 0's reference taken at the geometric contact point.
+    """
+    model, body, sphere_shape, solver, contacts, state, body_q_prev, dt, _ = _settle_sphere_on_ground(
+        device, with_particle=True
+    )
+    count, rows = _active_rigid_rows(contacts)
+    test.assertGreater(count, 0)
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    test.assertTrue(np.all((shape0 == sphere_shape) | (shape1 == sphere_shape)))
+
+    weight = float(model.body_mass.numpy()[body]) * GRAVITY
+    sign = np.where(shape0 == sphere_shape, 1.0, -1.0)
+    force_on_sphere = (sign[:, None] * rows[:, :3]).sum(axis=0)
+    np.testing.assert_allclose(force_on_sphere, [0.0, 0.0, weight], rtol=2.0e-2, atol=2.0e-2 * weight)
+    test.assertLess(abs(float(state.body_qd.numpy()[body, 2])), 1.0e-2)
+
+    # The public collector evaluates the same contact law; it reports the force on body 1.
+    body0, _body1, _p0, _p1, force_on_body1, collected = solver.collect_rigid_contact_forces(
+        state.body_q, body_q_prev, contacts, dt
+    )
+    test.assertEqual(int(collected.numpy()[0]), count)
+    np.testing.assert_allclose(rows[:, :3], -force_on_body1.numpy()[:count], rtol=1.0e-5, atol=1.0e-5 * weight)
+
+    # Torque reference: body 0's COM, or the world origin for the static ground.
+    body_q = state.body_q.numpy()
+    body_com = model.body_com.numpy()
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    body0 = body0.numpy()[:count]
+    ground_rows = 0
+    for i in range(count):
+        if body0[i] >= 0:
+            xform = body_q[body0[i]].astype(np.float64)
+            lever = _transform_point_np(xform, point0[i]) - _transform_point_np(xform, body_com[body0[i]])
+        else:
+            lever = point0[i].astype(np.float64)
+            ground_rows += 1
+        np.testing.assert_allclose(rows[i, 3:], np.cross(lever, rows[i, :3]), atol=5.0e-3 * weight)
+    if ground_rows:
+        # The sphere sits 0.36 m from the origin, so ground-side rows carry a clear moment.
+        test.assertGreater(float(np.max(np.linalg.norm(rows[:, 3:], axis=1))), 0.2 * weight)
+
+
+def test_vbd_rigid_contact_force_feeds_sensor_contact(test, device):
+    """Report a resting sphere's weight through SensorContact after update_contacts."""
+    model, body, _shape, _solver, contacts, state, _prev, _dt, sensor = _settle_sphere_on_ground(
+        device, with_particle=False, sensor=True
+    )
+    test.assertIsNotNone(contacts.force)
+    sensor.update(state, contacts)
+    weight = float(model.body_mass.numpy()[body]) * GRAVITY
+    total = sensor.total_force.numpy()[0]
+    np.testing.assert_allclose(total, [0.0, 0.0, weight], rtol=2.0e-2, atol=2.0e-2 * weight)
+
+
+def test_vbd_contact_force_external_rigid_leaves_rigid_rows(test, device):
+    """Leave the rigid rows to the external rigid solver and still write the soft rows."""
+    model, _body, _shape = _build_sphere_on_ground(device, with_particle=True)
+    model.request_contact_attributes("force")
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model, iterations=4, rigid_compliant_alm=True, integrate_with_external_rigid_solver=True
+    )
+    state_in, state_out = model.state(), model.state()
+    # The external solver stands still: the body keeps its pose through the step.
+    wp.copy(state_out.body_q, state_in.body_q)
+    wp.copy(state_out.body_qd, state_in.body_qd)
+
+    pipeline.collide(state_in, contacts)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
+    solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+
+    contacts.force.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
+    solver.update_contacts(contacts, state_out)
+    force = contacts.force.numpy()
+    rigid_max = contacts.rigid_contact_max
+    np.testing.assert_array_equal(force[:rigid_max], 7.0)
+    test.assertLess(force[rigid_max, 2], 0.0)
+    np.testing.assert_array_equal(force[rigid_max + 1 :], 0.0)
+
+
 def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device):
     """Produce bitwise identical trajectories with and without the contact force export enabled."""
     dt = 1.0 / 60.0
@@ -601,6 +746,10 @@ def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device)
             _build_sphere_on_fixed_triangle,
             {"broad_phase": "nxn", "soft_contact_gap": 0.1, "enable_rigid_soft_full_surface_contact": True},
         ),
+        "sphere_on_ground_with_particle": (
+            lambda d: _build_sphere_on_ground(d, with_particle=True),
+            {},
+        ),
     }
     for name, (build, pipeline_kwargs) in scenes.items():
         with test.subTest(scene=name):
@@ -610,11 +759,11 @@ def test_vbd_soft_contact_force_export_leaves_simulation_unchanged(test, device)
                 np.testing.assert_array_equal(exported[key], value, err_msg=f"{name}: {key} differs with export on")
 
 
-def test_vbd_soft_contact_force_layout(test, device):
-    """Write only the active soft rows of ``Contacts.force``; leave rigid rows untouched and inactive soft rows zero."""
+def test_vbd_contact_force_layout(test, device):
+    """Write the active rigid and soft rows of ``Contacts.force`` and zero the inactive rows of both segments."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
-    box = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.25), wp.quat_identity()))
+    box = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.249), wp.quat_identity()))
     builder.add_shape_box(body=box, hx=0.25, hy=0.25, hz=0.25)
     builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.046), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
     builder.color()
@@ -629,18 +778,20 @@ def test_vbd_soft_contact_force_layout(test, device):
     state_in, state_out = model.state(), model.state()
 
     pipeline.collide(state_in, contacts)
-    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    n_rigid = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(n_rigid, 0)
+    test.assertLess(n_rigid, contacts.rigid_contact_max)
     test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
     solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
 
-    sentinel = wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0)
-    contacts.force.fill_(sentinel)
+    contacts.force.fill_(wp.spatial_vector(7.0, 7.0, 7.0, 7.0, 7.0, 7.0))
     solver.update_contacts(contacts, state_out)
 
     force = contacts.force.numpy()
     rigid_max = contacts.rigid_contact_max
-    # Rigid-rigid rows are not exported by SolverVBD.update_contacts and must not be modified.
-    np.testing.assert_array_equal(force[:rigid_max], 7.0)
+    # Active rigid rows carry the box-ground contact; the rest of the rigid segment is zero.
+    test.assertGreater(float(np.max(np.abs(force[:n_rigid, :3]))), 0.0)
+    np.testing.assert_array_equal(force[n_rigid:rigid_max], 0.0)
     # The active soft row carries the particle's contact force; the remaining soft rows are zero.
     test.assertLess(force[rigid_max, 2], 0.0)
     np.testing.assert_array_equal(force[rigid_max + 1 :], 0.0)
@@ -701,50 +852,63 @@ def test_vbd_update_contacts_rejects_capacity_mismatch(test, device):
         solver.update_contacts(other_contacts, state_out)
 
 
-def test_vbd_soft_contact_force_graph_capture(test, device):
+def test_vbd_contact_force_graph_capture(test, device):
     """Replay a captured collide/step/update_contacts sequence and match an uncaptured run."""
     dt = 1.0 / 120.0
+    box_twist = np.zeros((1, 6), dtype=np.float32)
+    box_twist[0, :3] = [0.5, 0.0, 0.0]
     scenes = {
         "particle_on_ground": (
             lambda d: (_build_particle_on_ground(d, pos=(0.3, -0.2, 0.046), radius=0.05), None),
             {"soft_contact_gap": 0.01},
             {},
+            None,
+            False,
         ),
-        "box_under_particle": (
+        "box_under_particles": (
             lambda d: _build_box_under_particles(d, penetration=0.004),
             {"soft_contact_gap": 0.01},
             {"rigid_compliant_alm": True},
+            box_twist,
+            False,
+        ),
+        "sphere_on_ground_with_particle": (
+            lambda d: _build_sphere_on_ground(d, with_particle=True)[:2],
+            {},
+            {"rigid_compliant_alm": True},
+            None,
+            True,
         ),
     }
 
-    def make(build, pipeline_kwargs, solver_kwargs):
+    def make(build, pipeline_kwargs, solver_kwargs, twist):
         model, _body = build(device)
         model.request_contact_attributes("force")
         pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
         contacts = pipeline.contacts()
         solver = newton.solvers.SolverVBD(model, iterations=4, **solver_kwargs)
         state_in, state_out = model.state(), model.state()
-        if model.body_count > 0:
-            twist = np.zeros((1, 6), dtype=np.float32)
-            twist[0, :3] = [0.5, 0.0, 0.0]
+        if twist is not None:
             state_in.body_qd.assign(twist)
         return pipeline, solver, contacts, state_in, state_out
 
     with wp.ScopedDevice(device):
-        for name, (build, pipeline_kwargs, solver_kwargs) in scenes.items():
+        for name, (build, pipeline_kwargs, solver_kwargs, twist, expect_rigid) in scenes.items():
             with test.subTest(scene=name):
-                captured = make(build, pipeline_kwargs, solver_kwargs)
-                reference = make(build, pipeline_kwargs, solver_kwargs)
+                captured = make(build, pipeline_kwargs, solver_kwargs, twist)
+                reference = make(build, pipeline_kwargs, solver_kwargs, twist)
 
                 # One uncaptured step sizes the export buffers before capture.
                 _advance(*captured, dt)
                 _advance(*reference, dt)
-                buffer_before = captured[1]._body_particle_contact_force
+                soft_buffer = captured[1]._body_particle_contact_force
+                rigid_buffer = captured[1]._body_body_contact_force
 
                 with wp.ScopedCapture(device=device) as capture:
                     _advance(*captured, dt)
                 test.assertIsNotNone(capture.graph)
-                test.assertIs(captured[1]._body_particle_contact_force, buffer_before)
+                test.assertIs(captured[1]._body_particle_contact_force, soft_buffer)
+                test.assertIs(captured[1]._body_body_contact_force, rigid_buffer)
 
                 replays = 3
                 for _ in range(replays):
@@ -757,6 +921,16 @@ def test_vbd_soft_contact_force_graph_capture(test, device):
                 test.assertGreater(count, 0)
                 test.assertGreater(float(np.max(np.abs(rows))), 0.0)
                 np.testing.assert_allclose(rows, ref_rows, rtol=1.0e-5, atol=1.0e-5 * float(np.max(np.abs(ref_rows))))
+                rigid_count, rigid_rows = _active_rigid_rows(captured[2])
+                test.assertEqual(rigid_count, _active_rigid_rows(reference[2])[0])
+                if expect_rigid:
+                    test.assertGreater(rigid_count, 0)
+                    test.assertGreater(float(np.max(np.abs(rigid_rows))), 0.0)
+                force = captured[2].force.numpy()
+                ref_force = reference[2].force.numpy()
+                np.testing.assert_allclose(
+                    force, ref_force, rtol=1.0e-5, atol=1.0e-5 * float(np.max(np.abs(ref_force)))
+                )
                 np.testing.assert_allclose(
                     captured[3].particle_q.numpy(), reference[3].particle_q.numpy(), rtol=1.0e-6, atol=1.0e-7
                 )
@@ -816,8 +990,26 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBDContactForce,
-    "test_vbd_soft_contact_force_layout",
-    test_vbd_soft_contact_force_layout,
+    "test_vbd_rigid_contact_force_static_equilibrium",
+    test_vbd_rigid_contact_force_static_equilibrium,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDContactForce,
+    "test_vbd_rigid_contact_force_feeds_sensor_contact",
+    test_vbd_rigid_contact_force_feeds_sensor_contact,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDContactForce,
+    "test_vbd_contact_force_external_rigid_leaves_rigid_rows",
+    test_vbd_contact_force_external_rigid_leaves_rigid_rows,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDContactForce,
+    "test_vbd_contact_force_layout",
+    test_vbd_contact_force_layout,
     devices=devices,
 )
 add_function_test(
@@ -840,8 +1032,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBDContactForce,
-    "test_vbd_soft_contact_force_graph_capture",
-    test_vbd_soft_contact_force_graph_capture,
+    "test_vbd_contact_force_graph_capture",
+    test_vbd_contact_force_graph_capture,
     devices=cuda_devices,
 )
 
