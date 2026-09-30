@@ -2827,11 +2827,11 @@ class Gaussian:
         """
         import open3d as o3d
 
+        if tuple(int(part) for part in o3d.__version__.split(".")[:2]) < (0, 20):
+            raise ImportError(f"Gaussian.create_from_ply requires open3d>=0.20, found {o3d.__version__}")
+
         pcd = o3d.t.io.read_point_cloud(filename)
         point_attrs = {name: np.asarray(tensor.numpy(), dtype=np.float32) for name, tensor in pcd.point.items()}
-        # Open3D < 0.20 returns ungrouped per-property attributes.
-        if any(name in point_attrs for name in ("rot_0", "scale_0", "f_dc_0")):
-            raise ImportError(f"Reading Gaussian splat PLY files requires open3d>=0.20, found {o3d.__version__}")
 
         positions = point_attrs.get("positions")
         if positions is None:
