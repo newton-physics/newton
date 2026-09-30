@@ -567,8 +567,8 @@ class ModelKamino:
         """Target-layout snapshot. Returns the wrapped
         :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
         via :meth:`from_newton`; falls back to the live module global
-        :data:`newton.use_coord_layout_targets` for native Kamino models built
-        through :class:`ModelBuilderKamino` (no wrapped Newton model).
+        :data:`newton.use_coord_layout_targets` for native Kamino models (no
+        wrapped Newton model).
         """
         if self._model is not None:
             return self._model.use_coord_layout_targets

@@ -9,15 +9,13 @@ import unittest
 from typing import Any
 
 import numpy as np
+import warp as wp
 
-from newton._src.solvers.kamino._src.core.bodies import RigidBodiesModel
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton import BodyFlags, Model
+from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_origin
 from newton._src.solvers.kamino._src.core.control import ControlKamino
-from newton._src.solvers.kamino._src.core.geometry import GeometriesModel
-from newton._src.solvers.kamino._src.core.joints import JointsModel
-from newton._src.solvers.kamino._src.core.materials import MaterialPairsModel, MaterialsModel
-from newton._src.solvers.kamino._src.core.model import ModelKamino, ModelKaminoInfo
-from newton._src.solvers.kamino._src.core.size import SizeKamino
+from newton._src.solvers.kamino._src.core.joints import JointActuationType
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.utils import logger as msg
 
@@ -26,100 +24,17 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 ###
 
 __all__ = [
-    "arrays_equal",
-    "assert_builders_equal",
+    "assert_array_attributes_equal",
     "assert_control_equal",
-    "assert_model_bodies_equal",
-    "assert_model_equal",
-    "assert_model_geoms_equal",
-    "assert_model_info_equal",
-    "assert_model_joints_equal",
-    "assert_model_material_pairs_equal",
-    "assert_model_materials_equal",
-    "assert_model_size_equal",
+    "assert_model_conversion_consistency",
+    "assert_model_info_size_consistency",
     "assert_state_equal",
-    "lists_equal",
-    "matrices_equal",
-    "vectors_equal",
 ]
-
-
-###
-# Array-like comparisons
-###
-
-
-def lists_equal(list1, list2) -> bool:
-    return np.array_equal(list1, list2)
-
-
-def arrays_equal(arr1, arr2, tolerance=1e-6) -> bool:
-    return np.allclose(arr1, arr2, atol=tolerance)
-
-
-def matrices_equal(m1, m2, tolerance=1e-6) -> bool:
-    return np.allclose(m1, m2, atol=tolerance)
-
-
-def vectors_equal(v1, v2, tolerance=1e-6) -> bool:
-    return np.allclose(v1, v2, atol=tolerance)
 
 
 ###
 # Utilities
 ###
-
-
-def assert_scalar_attributes_equal(
-    test: unittest.TestCase,
-    obj0: Any,
-    obj1: Any,
-    attributes: list[str],
-    mapping: list[int] | None = None,
-) -> None:
-    """Compare scalar attributes on two objects, optionally permuting list-valued fields through `mapping`."""
-    for attr in attributes:
-        # Check if attribute exists in both objects
-        obj_name = obj0.__class__.__name__
-        has_attr0 = hasattr(obj0, attr)
-        has_attr1 = hasattr(obj1, attr)
-        if not has_attr0 and not has_attr1:
-            msg.debug(f"Skipping attribute '{attr}' comparison for {obj_name} because it is missing in both objects.")
-            continue
-        elif not has_attr0 or not has_attr1:
-            test.fail(
-                f"Attribute '{attr}' is missing in one of the objects: "
-                f" {obj_name} has_attr0={has_attr0}, has_attr1={has_attr1}"
-            )
-        # Retrieve attributes for logging
-        attr0 = getattr(obj0, attr)
-        attr1 = getattr(obj1, attr)
-        if mapping is not None:
-            test.assertIsInstance(attr0, list, f"{obj_name}.{attr} must be list-valued to use mapping.")
-            test.assertIsInstance(attr1, list, f"{obj_name}.{attr} must be list-valued to use mapping.")
-            test.assertEqual(len(attr0), len(attr1), f"{obj_name}.{attr} lengths are not equal.")
-            for i, other_idx in enumerate(mapping):
-                msg.debug(
-                    "Comparing %s.%s[%d]: actual=%s, desired=%s",
-                    obj_name,
-                    attr,
-                    i,
-                    attr0[i],
-                    attr1[other_idx],
-                )
-                test.assertEqual(
-                    first=attr0[i],
-                    second=attr1[other_idx],
-                    msg=f"{obj_name}.{attr}[{i}] are not equal.",
-                )
-        else:
-            # Test scalar attribute values
-            msg.debug("Comparing %s.%s: actual=%s, desired=%s", obj_name, attr, attr0, attr1)
-            test.assertEqual(
-                first=attr0,
-                second=attr1,
-                msg=f"{obj_name}.{attr} are not equal.",
-            )
 
 
 def assert_array_attributes_equal(
@@ -200,147 +115,520 @@ def assert_array_attributes_equal(
         )
 
 
-###
-# Container comparisons
-###
-
-
-def assert_builders_equal(
+def _assert_array_is_alias(
     test: unittest.TestCase,
-    builder1: ModelBuilderKamino,
-    builder2: ModelBuilderKamino,
-    skip_colliders: bool = False,
-    skip_materials: bool = False,
-):
+    kamino_obj: Any,
+    kamino_attr: str,
+    newton_model: Model,
+    newton_attr: str,
+) -> None:
+    """Assert a Kamino container attribute is the exact same array as the Newton
+    model attribute it was converted from, i.e. the conversion aliases it rather
+    than copying or recomputing it.
     """
-    Compares two ModelBuilderKamino instances for equality.
+    kamino_array = getattr(kamino_obj, kamino_attr)
+    newton_array = getattr(newton_model, newton_attr)
+    if kamino_array is None and newton_array is None:
+        return
+    test.assertIs(
+        kamino_array,
+        newton_array,
+        f"{kamino_obj.__class__.__name__}.{kamino_attr} is not an alias of Model.{newton_attr}.",
+    )
+
+
+###
+# Model conversion consistency checks
+###
+
+
+def _expected_wid(model_newton: Model, newton_attr: str) -> np.ndarray:
+    """Compute the expected Kamino `wid` array for a `newton_attr` in
+    ``{"body_world", "joint_world", "shape_world"}``, which might be
+    renumbered for single-world models.
     """
-    test.assertEqual(builder1.num_bodies, builder2.num_bodies)
-    test.assertEqual(builder1.num_joints, builder2.num_joints)
-    test.assertEqual(builder1.num_geoms, builder2.num_geoms)
-    test.assertEqual(builder1.num_materials, builder2.num_materials)
+    raw = getattr(model_newton, newton_attr).numpy()
+    if model_newton.world_count != 1 or not np.any(raw < 0):
+        return raw
+    has_dedicated_global_gravity = model_newton.gravity.shape[0] > model_newton.world_count
+    if newton_attr == "body_world" and has_dedicated_global_gravity:
+        return raw
+    expected = raw.copy()
+    expected[expected < 0] = 0
+    return expected
 
-    for body1, body2 in zip(builder1.all_bodies, builder2.all_bodies, strict=True):
-        test.assertEqual(body1.wid, body2.wid)
-        test.assertEqual(body1.bid, body2.bid)
-        test.assertAlmostEqual(body1.m_i, body2.m_i)
-        test.assertTrue(matrices_equal(body1.i_I_i, body2.i_I_i))
-        test.assertTrue(vectors_equal(body1.q_i_0, body2.q_i_0))
-        test.assertTrue(vectors_equal(body1.u_i_0, body2.u_i_0))
 
-    for j, (joint1, joint2) in enumerate(zip(builder1.all_joints, builder2.all_joints, strict=True)):
-        test.assertEqual(joint1.wid, joint2.wid)
-        test.assertEqual(joint1.jid, joint2.jid)
-        test.assertEqual(joint1.act_type, joint2.act_type)
-        test.assertEqual(joint1.dof_act_types, joint2.dof_act_types)
-        test.assertEqual(joint1.dof_type, joint2.dof_type)
-        test.assertEqual(joint1.bid_B, joint2.bid_B)
-        test.assertEqual(joint1.bid_F, joint2.bid_F)
-        test.assertTrue(
-            vectors_equal(joint1.B_r_Bj, joint2.B_r_Bj),
-            f"Joint {j} B_r_Bj:\nleft:\n{joint1.B_r_Bj}\nright:\n{joint2.B_r_Bj}",
-        )
-        test.assertTrue(
-            vectors_equal(joint1.F_r_Fj, joint2.F_r_Fj),
-            f"Joint {j} F_r_Fj:\nleft:\n{joint1.F_r_Fj}\nright:\n{joint2.F_r_Fj}",
-        )
-        test.assertTrue(
-            matrices_equal(joint1.X_Bj, joint2.X_Bj),
-            f"Joint {j} X_Bj:\nleft:\n{joint1.X_Bj}\nright:\n{joint2.X_Bj}",
-        )
-        test.assertTrue(
-            matrices_equal(joint1.X_Fj, joint2.X_Fj),
-            f"Joint {j} X_Fj:\nleft:\n{joint1.X_Fj}\nright:\n{joint2.X_Fj}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.q_j_min, joint2.q_j_min),
-            f"Joint {j} q_j_min:\nleft:\n{joint1.q_j_min}\nright:\n{joint2.q_j_min}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.q_j_max, joint2.q_j_max),
-            f"Joint {j} q_j_max:\nleft:\n{joint1.q_j_max}\nright:\n{joint2.q_j_max}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.dq_j_max, joint2.dq_j_max),
-            f"Joint {j} dq_j_max:\nleft:\n{joint1.dq_j_max}\nright:\n{joint2.dq_j_max}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.tau_j_max, joint2.tau_j_max),
-            f"Joint {j} tau_j_max:\nleft:\n{joint1.tau_j_max}\nright:\n{joint2.tau_j_max}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.a_j, joint2.a_j),
-            f"Joint {j} a_j:\nleft:\n{joint1.a_j}\nright:\n{joint2.a_j}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.b_j, joint2.b_j),
-            f"Joint {j} b_j:\nleft:\n{joint1.b_j}\nright:\n{joint2.b_j}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.f_j, joint2.f_j),
-            f"Joint {j} f_j:\nleft:\n{joint1.f_j}\nright:\n{joint2.f_j}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.k_p_j, joint2.k_p_j),
-            f"Joint {j} k_p_j:\nleft:\n{joint1.k_p_j}\nright:\n{joint2.k_p_j}",
-        )
-        test.assertTrue(
-            arrays_equal(joint1.k_d_j, joint2.k_d_j),
-            f"Joint {j} k_d_j:\nleft:\n{joint1.k_d_j}\nright:\n{joint2.k_d_j}",
-        )
-        test.assertEqual(joint1.num_coords, joint2.num_coords)
-        test.assertEqual(joint1.num_dofs, joint2.num_dofs)
-        test.assertEqual(joint1.num_passive_coords, joint2.num_passive_coords)
-        test.assertEqual(joint1.num_passive_dofs, joint2.num_passive_dofs)
-        test.assertEqual(joint1.num_actuated_coords, joint2.num_actuated_coords)
-        test.assertEqual(joint1.num_actuated_dofs, joint2.num_actuated_dofs)
-        test.assertEqual(joint1.num_actuated_dofs, joint2.num_actuated_dofs)
-        test.assertEqual(joint1.num_bilateral_cts, joint2.num_bilateral_cts)
-        test.assertEqual(joint1.num_dynamic_cts, joint2.num_dynamic_cts)
-        test.assertEqual(joint1.num_kinematic_cts, joint2.num_kinematic_cts)
-        test.assertEqual(joint1.num_bounded_cts, joint2.num_bounded_cts)
-        test.assertEqual(joint1.num_friction_cts, joint2.num_friction_cts)
-        test.assertEqual(joint1.coords_offset, joint2.coords_offset)
-        test.assertEqual(joint1.dofs_offset, joint2.dofs_offset)
-        test.assertEqual(joint1.passive_coords_offset, joint2.passive_coords_offset)
-        test.assertEqual(joint1.passive_dofs_offset, joint2.passive_dofs_offset)
-        test.assertEqual(joint1.actuated_coords_offset, joint2.actuated_coords_offset)
-        test.assertEqual(joint1.actuated_dofs_offset, joint2.actuated_dofs_offset)
-        test.assertEqual(joint1.bilateral_cts_offset, joint2.bilateral_cts_offset)
-        test.assertEqual(joint1.dynamic_cts_offset, joint2.dynamic_cts_offset)
-        test.assertEqual(joint1.kinematic_cts_offset, joint2.kinematic_cts_offset)
-        test.assertEqual(joint1.bounded_cts_offset, joint2.bounded_cts_offset)
-        test.assertEqual(joint1.friction_cts_offset, joint2.friction_cts_offset)
-        test.assertEqual(joint1.is_binary, joint2.is_binary)
-        test.assertEqual(joint1.is_passive, joint2.is_passive)
-        test.assertEqual(joint1.is_actuated, joint2.is_actuated)
+def _assert_model_bodies_conversion_consistency(
+    test: unittest.TestCase,
+    model_newton: Model,
+    model_kamino: ModelKamino,
+    excluded: list[str] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
+) -> None:
+    """Check `RigidBodiesModel` fields against the `newton.Model` they were converted from."""
+    excluded = excluded or []
+    rtol = rtol or {}
+    atol = atol or {}
+    bodies = model_kamino.bodies
 
-    for geom1, geom2 in zip(builder1.all_geoms, builder2.all_geoms, strict=True):
-        test.assertEqual(geom1.wid, geom2.wid)
-        test.assertEqual(geom1.gid, geom2.gid)
-        test.assertEqual(geom1.mid, geom2.mid)
-        test.assertEqual(geom1.body, geom2.body)
-        shape1 = builder1.shapes[geom1.uid]
-        shape2 = builder2.shapes[geom2.uid]
-        test.assertEqual(shape1.type, shape2.type)
-        test.assertTrue(lists_equal(shape1.paramsvec, shape2.paramsvec))
-        test.assertTrue(vectors_equal(shape1.params, shape2.params))
-        if not skip_materials:
-            test.assertEqual(geom1.material, geom2.material)
-        if not skip_colliders:
-            test.assertEqual(geom1.group, geom2.group)
-            test.assertEqual(geom1.collides, geom2.collides)
-            test.assertEqual(geom1.max_contacts, geom2.max_contacts)
-            test.assertEqual(geom1.gap, geom2.gap)
-            test.assertEqual(geom1.margin, geom2.margin)
+    # Pure aliases: mass, inertia, COM, and initial velocity.
+    aliases = [
+        ("i_r_com_i", "body_com"),
+        ("u_i_0", "body_qd"),
+    ]
+    for kamino_attr, newton_attr in aliases:
+        if kamino_attr not in excluded:
+            _assert_array_is_alias(test, bodies, kamino_attr, model_newton, newton_attr)
 
-    if not skip_materials:
-        for m in range(builder1.num_materials):
-            test.assertEqual(builder1.materials[m].wid, builder2.materials[m].wid)
-            test.assertEqual(builder1.materials[m].mid, builder2.materials[m].mid)
-            test.assertEqual(builder1.materials[m].restitution, builder2.materials[m].restitution)
-            test.assertEqual(builder1.materials[m].static_friction, builder2.materials[m].static_friction)
-            test.assertEqual(builder1.materials[m].dynamic_friction, builder2.materials[m].dynamic_friction)
+    if model_newton.body_count == 0:
+        return
+
+    # `wid` may be renumbered for single-world models with global (-1) entities,
+    # so it is compared against the expected post-renumbering value.
+    if "wid" not in excluded:
+        np.testing.assert_array_equal(
+            bodies.wid.numpy(),
+            _expected_wid(model_newton, "body_world"),
+            err_msg="RigidBodiesModel.wid does not match the expected Model.body_world.",
+        )
+
+    # Inverse transformation: mass, inertia, and their inverses are near-identical
+    # copies, except for bodies flagged KINEMATIC or PROXY.
+    if "m_i" not in excluded or "inv_m_i" not in excluded or "i_I_i" not in excluded or "inv_i_I_i" not in excluded:
+        body_flags = model_newton.body_flags.numpy()
+        is_kinematic = body_flags != BodyFlags.DYNAMIC
+        if "m_i" not in excluded:
+            m_i_expected = model_newton.body_mass.numpy()
+            m_i_expected[is_kinematic] = 0.0
+            np.testing.assert_array_equal(
+                bodies.m_i.numpy(),
+                m_i_expected,
+                err_msg="RigidBodiesModel.m_i does not match expected masked Model.body_mass",
+            )
+        if "inv_m_i" not in excluded:
+            inv_m_i_expected = model_newton.body_inv_mass.numpy()
+            inv_m_i_expected[is_kinematic] = 0.0
+            np.testing.assert_array_equal(
+                bodies.inv_m_i.numpy(),
+                inv_m_i_expected,
+                err_msg="RigidBodiesModel.inv_m_i does not match expected masked Model.body_inv_mass",
+            )
+        if "i_I_i" not in excluded:
+            i_I_i_expected = model_newton.body_inertia.numpy()
+            i_I_i_expected[is_kinematic, :, :] = 0.0
+            np.testing.assert_array_equal(
+                bodies.i_I_i.numpy(),
+                i_I_i_expected,
+                err_msg="RigidBodiesModel.i_I_i does not match expected masked Model.body_inertia",
+            )
+        if "inv_i_I_i" not in excluded:
+            inv_i_I_i_expected = model_newton.body_inv_inertia.numpy()
+            inv_i_I_i_expected[is_kinematic, :, :] = 0.0
+            np.testing.assert_array_equal(
+                bodies.inv_i_I_i.numpy(),
+                inv_i_I_i_expected,
+                err_msg="RigidBodiesModel.m_inv_i_I_i does not match expected masked Model.body_inv_inertia",
+            )
+
+    # Inverse transformation: `q_i_0` stores COM-frame world poses; inverting it
+    # back to body-origin frame must recover `Model.body_q` exactly.
+    if "q_i_0" not in excluded:
+        body_q_recovered = wp.empty_like(bodies.q_i_0)
+        convert_body_com_to_origin(bodies.i_r_com_i, bodies.q_i_0, body_q_recovered)
+        np.testing.assert_allclose(
+            body_q_recovered.numpy(),
+            model_newton.body_q.numpy(),
+            rtol=rtol.get("q_i_0", 1e-5),
+            atol=atol.get("q_i_0", 1e-6),
+            err_msg="RigidBodiesModel.q_i_0 does not recover Model.body_q via convert_body_com_to_origin().",
+        )
+
+
+def _assert_model_joints_conversion_consistency(
+    test: unittest.TestCase,
+    model_newton: Model,
+    model_kamino: ModelKamino,
+    excluded: list[str] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
+) -> None:
+    """Check `JointsModel` fields against the `newton.Model` they were converted from."""
+    excluded = excluded or []
+    rtol = rtol or {}
+    atol = atol or {}
+    joints = model_kamino.joints
+
+    # Pure aliases: limits, gains, dynamics coefficients, initial coordinates,
+    # and parent/child body indices.
+    aliases = [
+        ("q_j_min", "joint_limit_lower"),
+        ("q_j_max", "joint_limit_upper"),
+        ("dq_j_max", "joint_velocity_limit"),
+        ("tau_j_max", "joint_effort_limit"),
+        ("a_j", "joint_armature"),
+        ("b_j", "joint_damping"),
+        ("f_j", "joint_friction"),
+        ("k_p_j", "joint_target_ke"),
+        ("k_d_j", "joint_target_kd"),
+        ("q_j_0", "joint_q"),
+        ("dq_j_0", "joint_qd"),
+        ("bid_B", "joint_parent"),
+        ("bid_F", "joint_child"),
+    ]
+    for kamino_attr, newton_attr in aliases:
+        if kamino_attr not in excluded:
+            _assert_array_is_alias(test, joints, kamino_attr, model_newton, newton_attr)
+
+    # `wid` may be renumbered for single-world models with global (-1) entities,
+    # so it is compared against the expected post-renumbering value.
+    if "wid" not in excluded:
+        np.testing.assert_array_equal(
+            joints.wid.numpy(),
+            _expected_wid(model_newton, "joint_world"),
+            err_msg="JointsModel.wid does not match the expected Model.joint_world.",
+        )
+
+    if model_newton.joint_count == 0:
+        return
+
+    # Inverse transformation: `B_r_Bj`/`F_r_Fj` are the joint attachment points
+    # expressed relative to each body's COM; adding the COM back must recover
+    # the parent/child joint transform translations Newton stores in
+    # `joint_X_p`/`joint_X_c`.
+    if "B_r_Bj" not in excluded or "F_r_Fj" not in excluded:
+        body_com = model_newton.body_com.numpy()
+        joint_parent = model_newton.joint_parent.numpy()
+        joint_child = model_newton.joint_child.numpy()
+        p_r_p_j = model_newton.joint_X_p.numpy()[:, :3]
+        c_r_c_j = model_newton.joint_X_c.numpy()[:, :3]
+
+        if "B_r_Bj" not in excluded:
+            has_parent = joint_parent >= 0
+            parent_com = np.zeros_like(p_r_p_j)
+            parent_com[has_parent] = body_com[joint_parent[has_parent]]
+            np.testing.assert_allclose(
+                joints.B_r_Bj.numpy() + parent_com,
+                p_r_p_j,
+                rtol=rtol.get("B_r_Bj", 1e-5),
+                atol=atol.get("B_r_Bj", 1e-6),
+                err_msg="JointsModel.B_r_Bj does not recover Model.joint_X_p's translation.",
+            )
+
+        if "F_r_Fj" not in excluded:
+            child_com = body_com[joint_child]
+            np.testing.assert_allclose(
+                joints.F_r_Fj.numpy() + child_com,
+                c_r_c_j,
+                rtol=rtol.get("F_r_Fj", 1e-5),
+                atol=atol.get("F_r_Fj", 1e-6),
+                err_msg="JointsModel.F_r_Fj does not recover Model.joint_X_c's translation.",
+            )
+
+    # Inverse transformation: `X_Bj`/`X_Fj` re-express the joint's DoF axes
+    # (defined in the joint's own local frame) in the parent/child body frame,
+    # by rotating them with the parent/child joint transform's rotation
+    # (`Model.joint_X_p`/`joint_X_c`).
+    # Columns beyond a joint's DoF count complete an orthonormal basis chosen
+    # internally by the conversion and have no Newton counterpart, so they are
+    # never compared.
+    if "X_Bj" not in excluded or "X_Fj" not in excluded:
+        joint_axis = model_newton.joint_axis.numpy()
+        joint_qd_start = model_newton.joint_qd_start.numpy()
+        num_dofs = joints.num_dofs.numpy()
+        joint_X_p = model_newton.joint_X_p.numpy()
+        joint_X_c = model_newton.joint_X_c.numpy()
+        X_Bj = joints.X_Bj.numpy()
+        X_Fj = joints.X_Fj.numpy()
+        for j in range(model_newton.joint_count):
+            dof_start = int(joint_qd_start[j])
+            q_p = wp.quatf(*joint_X_p[j, 3:7])
+            q_c = wp.quatf(*joint_X_c[j, 3:7])
+            # X_Bj/X_Fj are always 3x3: a FREE joint has 6 DoFs (3 translational +
+            # 3 rotational) but only the first 3 (translational) axes feed the
+            # matrix -- Newton requires them to equal the rotational axes for a
+            # free joint, so comparing against the first 3 is valid either way.
+            for k in range(min(int(num_dofs[j]), 3)):
+                axis = wp.vec3f(*joint_axis[dof_start + k])
+                if "X_Bj" not in excluded:
+                    np.testing.assert_allclose(
+                        X_Bj[j][:, k],
+                        np.array(wp.quat_rotate(q_p, axis)),
+                        rtol=rtol.get("X_Bj", 1e-5),
+                        atol=atol.get("X_Bj", 1e-6),
+                        err_msg=f"JointsModel.X_Bj column {k} of joint {j} does not match Newton model.",
+                    )
+                if "X_Fj" not in excluded:
+                    np.testing.assert_allclose(
+                        X_Fj[j][:, k],
+                        np.array(wp.quat_rotate(q_c, axis)),
+                        rtol=rtol.get("X_Fj", 1e-5),
+                        atol=atol.get("X_Fj", 1e-6),
+                        err_msg=f"JointsModel.X_Fj column {k} of joint {j} does not match Newton model.",
+                    )
+
+    # Inverse transformation: `dof_act_types` is a per-DoF lookup-table
+    # conversion of Newton's `joint_target_mode` alone (gains/armature/damping/
+    # effort_limit do not factor into this classification).
+    if "dof_act_types" not in excluded and model_newton.joint_dof_count > 0:
+        expected_dof_act_types = np.array(
+            [int(JointActuationType.from_newton(mode)) for mode in model_newton.joint_target_mode.numpy()]
+        )
+        np.testing.assert_array_equal(
+            joints.dof_act_types.numpy(),
+            expected_dof_act_types,
+            err_msg="JointsModel.dof_act_types does not match JointActuationType.from_newton(Model.joint_target_mode).",
+        )
+
+
+def _assert_model_geoms_conversion_consistency(
+    test: unittest.TestCase,
+    model_newton: Model,
+    model_kamino: ModelKamino,
+    excluded: list[str] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
+) -> None:
+    """Check `GeometriesModel` fields against the `newton.Model` they were converted from."""
+    excluded = excluded or []
+    rtol = rtol or {}
+    atol = atol or {}
+    geoms = model_kamino.geoms
+
+    # Pure aliases: label/type/flags/pointer/scale/collision-group/gap/margin
+    # and the collidable-pair list are pure aliases.
+    aliases = [
+        ("label", "shape_label"),
+        ("type", "shape_type"),
+        ("flags", "shape_flags"),
+        ("ptr", "shape_source_ptr"),
+        ("params", "shape_scale"),
+        ("group", "shape_collision_group"),
+        ("gap", "shape_gap"),
+        ("margin", "shape_margin"),
+        ("collidable_pairs", "shape_contact_pairs"),
+        ("bid", "shape_body"),
+    ]
+    for kamino_attr, newton_attr in aliases:
+        if kamino_attr not in excluded:
+            _assert_array_is_alias(test, geoms, kamino_attr, model_newton, newton_attr)
+
+    # `wid` may be renumbered for single-world models with global (-1) entities,
+    # so it is compared against the expected post-renumbering value.
+    if "wid" not in excluded:
+        np.testing.assert_array_equal(
+            geoms.wid.numpy(),
+            _expected_wid(model_newton, "shape_world"),
+            err_msg="GeometriesModel.wid does not match the expected (possibly renumbered) Model.shape_world.",
+        )
+
+    if model_newton.shape_count == 0:
+        return
+
+    # Inverse transform: `offset` stores shape transforms with the translation
+    # made COM-relative; adding the body's COM back must recover
+    # `Model.shape_transform`.
+    if "offset" not in excluded:
+        body_com = model_newton.body_com.numpy()
+        shape_body = model_newton.shape_body.numpy()
+        shape_transform = model_newton.shape_transform.numpy()
+        offset = geoms.offset.numpy()
+
+        expected_translation = offset[:, :3].copy()
+        attached = shape_body >= 0
+        expected_translation[attached] += body_com[shape_body[attached]]
+        np.testing.assert_allclose(
+            expected_translation,
+            shape_transform[:, :3],
+            rtol=rtol.get("offset", 1e-5),
+            atol=atol.get("offset", 1e-6),
+            err_msg="GeometriesModel.offset translation does not recover Model.shape_transform.",
+        )
+        np.testing.assert_allclose(
+            offset[:, 3:7],
+            shape_transform[:, 3:7],
+            rtol=rtol.get("offset", 1e-5),
+            atol=atol.get("offset", 1e-6),
+            err_msg="GeometriesModel.offset rotation does not match Model.shape_transform.",
+        )
+
+    # Inverse transform: `material` indexes into `ModelKamino.materials`,
+    # deduplicated by (static friction, restitution); every collidable shape's
+    # material properties must match the Newton shape properties it was
+    # registered from.
+    if "material" not in excluded:
+        geom_material = geoms.material.numpy()
+        has_material = geom_material >= 0
+        material_idx = geom_material[has_material]
+        shape_mu = model_newton.shape_material_mu.numpy()[has_material]
+        shape_restitution = model_newton.shape_material_restitution.numpy()[has_material]
+
+        static_friction = model_kamino.materials.static_friction.numpy()
+        dynamic_friction = model_kamino.materials.dynamic_friction.numpy()
+        restitution = model_kamino.materials.restitution.numpy()
+        np.testing.assert_allclose(
+            static_friction[material_idx],
+            shape_mu,
+            rtol=rtol.get("material", 1e-6),
+            atol=atol.get("material", 1e-6),
+            err_msg="MaterialsModel.static_friction does not match Model.shape_material_mu.",
+        )
+        np.testing.assert_allclose(
+            dynamic_friction[material_idx],
+            shape_mu,
+            rtol=rtol.get("material", 1e-6),
+            atol=atol.get("material", 1e-6),
+            err_msg="MaterialsModel.dynamic_friction does not match Model.shape_material_mu.",
+        )
+        np.testing.assert_allclose(
+            restitution[material_idx],
+            shape_restitution,
+            rtol=rtol.get("material", 1e-6),
+            atol=atol.get("material", 1e-6),
+            err_msg="MaterialsModel.restitution does not match Model.shape_material_restitution.",
+        )
+
+
+def assert_model_conversion_consistency(
+    test: unittest.TestCase,
+    model_newton: Model,
+    model_kamino: ModelKamino,
+    excluded: list[str] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
+) -> None:
+    """Check that a `ModelKamino` built via `ModelKamino.from_newton()` is a
+    faithful conversion of the `newton.Model` it was built from.
+
+    Each field is validated against the documented semantics of the conversion
+    itself, either as a strict alias of a Newton array or as an invertible
+    transform of one.
+
+    See `assert_model_bookkeeping_consistent` for the structural (per-world/per-joint
+    count and offset) checks this does not cover.
+
+    Args:
+        test: The test case to report failures against.
+        model_newton: The source `newton.Model` the conversion was built from.
+        model_kamino: The `ModelKamino` produced by `ModelKamino.from_newton(model_newton)`.
+        excluded: Kamino-side field names to skip (e.g. ``"q_i_0"``, ``"X_Bj"``,
+            ``"material"``). A name is matched against whichever body/joint/geom
+            field of that name exists, so e.g. ``"wid"`` skips it in all three.
+        rtol: Per-field relative tolerance overrides for the invertible-transform
+            checks (e.g. ``{"q_i_0": 1e-4}``), keyed the same way as `excluded`.
+        atol: Per-field absolute tolerance overrides, keyed the same way as `rtol`.
+    """
+    _assert_model_bodies_conversion_consistency(
+        test, model_newton, model_kamino, excluded=excluded, rtol=rtol, atol=atol
+    )
+    _assert_model_joints_conversion_consistency(
+        test, model_newton, model_kamino, excluded=excluded, rtol=rtol, atol=atol
+    )
+    _assert_model_geoms_conversion_consistency(
+        test, model_newton, model_kamino, excluded=excluded, rtol=rtol, atol=atol
+    )
+
+
+def assert_model_info_size_consistency(
+    test: unittest.TestCase,
+    model_kamino: ModelKamino,
+    excluded: list[str] | None = None,
+) -> None:
+    """Check the internal self-consistency of `ModelKamino`'s structural bookkeeping.
+
+    The per-world/per-joint counts and start-index offsets have no single Newton
+    array to compare against, so instead this verifies the prefix-sum invariant
+    every such (count, offset) pair must satisfy:
+    - `offset[0] == 0`
+    - `offset[i] + count[i] == offset[i + 1]` for every entity `i` but the last
+    - `offset[-1] + count[-1] == sum(count) == <matching SizeKamino total>`
+
+    Two field groups are covered:
+    - Per-world counts/offsets on `ModelKaminoInfo` (e.g. `num_bodies`/`bodies_offset`).
+    - Per-joint, model-wide counts/offsets on `JointsModel` (e.g. `num_coords`/`coords_offset`).
+
+    Args:
+        test: The test case to report failures against.
+        model_kamino: The model.
+        excluded: Count-array field names to skip (matching the first element of
+            the relevant table, e.g. ``"num_bodies"`` or ``"num_dofs"``).
+    """
+    excluded = excluded or []
+
+    def _check(count: np.ndarray, offset: np.ndarray, total: int, label: str) -> None:
+        # Some offset arrays carry a trailing (grand-total) entry beyond the one
+        # start index per entity, others don't; only the first `n` entries
+        # (one start index per entity) are needed here.
+        n = count.shape[0]
+        test.assertGreaterEqual(offset.shape[0], n, f"{label}: offset array is shorter than the count array.")
+        offset_n = offset[:n]
+        test.assertEqual(int(offset_n[0]), 0, f"{label}: offset does not start at 0.")
+        np.testing.assert_array_equal(
+            offset_n[:-1] + count[:-1],
+            offset_n[1:],
+            err_msg=f"{label}: offset[i] + count[i] != offset[i + 1].",
+        )
+        test.assertEqual(int(offset_n[-1]) + int(count[-1]), total, f"{label}: last offset + count != total.")
+        test.assertEqual(int(count.sum()), total, f"{label}: sum(count) != total.")
+        if offset.shape[0] > n:
+            # Some arrays carry one extra trailing entry equal to the grand
+            # total; check it whenever the offset array is long enough to have one.
+            test.assertEqual(int(offset[n]), total, f"{label}: trailing total entry does not match total.")
+
+    # (info_count_attr, info_offset_attr, size_sum_attr) triples: per-world
+    # entity/DoF/constraint counts in `ModelKaminoInfo`, each with a matching
+    # per-world start-index offset array and model-wide total on `SizeKamino`.
+    model_info_bookkeeping_fields: list[tuple[str, str, str]] = [
+        ("num_bodies", "bodies_offset", "sum_of_num_bodies"),
+        ("num_joints", "joints_offset", "sum_of_num_joints"),
+        ("num_geoms", "geoms_offset", "sum_of_num_geoms"),
+        ("num_body_dofs", "body_dofs_offset", "sum_of_num_body_dofs"),
+        ("num_joint_coords", "joint_coords_offset", "sum_of_num_joint_coords"),
+        ("num_joint_dofs", "joint_dofs_offset", "sum_of_num_joint_dofs"),
+        ("num_passive_joint_coords", "joint_passive_coords_offset", "sum_of_num_passive_joint_coords"),
+        ("num_passive_joint_dofs", "joint_passive_dofs_offset", "sum_of_num_passive_joint_dofs"),
+        ("num_actuated_joint_coords", "joint_actuated_coords_offset", "sum_of_num_actuated_joint_coords"),
+        ("num_actuated_joint_dofs", "joint_actuated_dofs_offset", "sum_of_num_actuated_joint_dofs"),
+        ("num_joint_bilateral_cts", "joint_bilateral_cts_offset", "sum_of_num_bilateral_joint_cts"),
+        ("num_joint_dynamic_cts", "joint_dynamic_cts_offset", "sum_of_num_dynamic_joint_cts"),
+        ("num_joint_kinematic_cts", "joint_kinematic_cts_offset", "sum_of_num_kinematic_joint_cts"),
+        ("num_joint_bounded_cts", "joint_bounded_cts_offset", "sum_of_num_bounded_joint_cts"),
+        ("num_joint_friction_cts", "joint_friction_cts_offset", "sum_of_num_friction_joint_cts"),
+        ("num_joint_effort_cts", "joint_effort_cts_offset", "sum_of_num_effort_joint_cts"),
+    ]
+
+    info = model_kamino.info
+    size = model_kamino.size
+    for count_attr, offset_attr, sum_attr in model_info_bookkeeping_fields:
+        if count_attr in excluded:
+            continue
+        count = getattr(info, count_attr).numpy()
+        offset = getattr(info, offset_attr).numpy()
+        total = getattr(size, sum_attr)
+        _check(count, offset, total, f"ModelKaminoInfo.{count_attr}/{offset_attr}")
+
+    # (joints_count_attr, joints_offset_attr, size_sum_attr) triples: per-joint,
+    # already-globalized (model-wide, not per-world) counts on `JointsModel`,
+    # each with a matching (joint_count + 1)-length prefix-sum offset array.
+    model_joints_bookkeeping_fields: list[tuple[str, str, str]] = [
+        ("num_coords", "coords_offset", "sum_of_num_joint_coords"),
+        ("num_dofs", "dofs_offset", "sum_of_num_joint_dofs"),
+        ("num_bilateral_cts", "bilateral_cts_offset", "sum_of_num_bilateral_joint_cts"),
+        ("num_dynamic_cts", "dynamic_cts_offset", "sum_of_num_dynamic_joint_cts"),
+        ("num_kinematic_cts", "kinematic_cts_offset", "sum_of_num_kinematic_joint_cts"),
+        ("num_bounded_cts", "bounded_cts_offset", "sum_of_num_bounded_joint_cts"),
+        ("num_friction_cts", "friction_cts_offset", "sum_of_num_friction_joint_cts"),
+        ("num_effort_cts", "effort_cts_offset", "sum_of_num_effort_joint_cts"),
+    ]
+
+    joints = model_kamino.joints
+    for count_attr, offset_attr, sum_attr in model_joints_bookkeeping_fields:
+        if count_attr in excluded:
+            continue
+        count = getattr(joints, count_attr).numpy()
+        offset = getattr(joints, offset_attr).numpy()
+        total = getattr(size, sum_attr)
+        _check(count, offset, total, f"JointsModel.{count_attr}/{offset_attr}")
 
 
 ###
@@ -375,617 +663,3 @@ def assert_control_equal(
     if excluded:
         attributes = [attr for attr in attributes if attr not in excluded]
     assert_array_attributes_equal(test, control0, control1, attributes)
-
-
-def assert_model_size_equal(
-    test: unittest.TestCase, size0: SizeKamino, size1: SizeKamino, excluded: list[str] | None = None
-) -> None:
-    attributes = [
-        "num_worlds",
-        "sum_of_num_bodies",
-        "max_of_num_bodies",
-        "sum_of_num_joints",
-        "max_of_num_joints",
-        "sum_of_num_passive_joints",
-        "max_of_num_passive_joints",
-        "sum_of_num_actuated_joints",
-        "max_of_num_actuated_joints",
-        "sum_of_num_dynamic_joints",
-        "max_of_num_dynamic_joints",
-        "sum_of_num_geoms",
-        "max_of_num_geoms",
-        "sum_of_num_material_pairs",
-        "max_of_num_material_pairs",
-        "sum_of_num_body_dofs",
-        "max_of_num_body_dofs",
-        "sum_of_num_joint_coords",
-        "max_of_num_joint_coords",
-        "sum_of_num_joint_dofs",
-        "max_of_num_joint_dofs",
-        "sum_of_num_passive_joint_coords",
-        "max_of_num_passive_joint_coords",
-        "sum_of_num_passive_joint_dofs",
-        "max_of_num_passive_joint_dofs",
-        "sum_of_num_actuated_joint_coords",
-        "max_of_num_actuated_joint_coords",
-        "sum_of_num_actuated_joint_dofs",
-        "max_of_num_actuated_joint_dofs",
-        "sum_of_num_bilateral_joint_cts",
-        "max_of_num_bilateral_joint_cts",
-        "sum_of_num_dynamic_joint_cts",
-        "max_of_num_dynamic_joint_cts",
-        "sum_of_num_kinematic_joint_cts",
-        "max_of_num_kinematic_joint_cts",
-        "sum_of_num_bounded_joint_cts",
-        "max_of_num_bounded_joint_cts",
-        "sum_of_num_friction_joint_cts",
-        "max_of_num_friction_joint_cts",
-        "sum_of_num_effort_joint_cts",
-        "max_of_num_effort_joint_cts",
-        "sum_of_max_limits",
-        "max_of_max_limits",
-        "sum_of_max_contacts",
-        "max_of_max_contacts",
-        "sum_of_max_inequalities",
-        "max_of_max_inequalities",
-        "sum_of_max_total_cts",
-        "max_of_max_total_cts",
-    ]
-    if excluded:
-        attributes = [attr for attr in attributes if attr not in excluded]
-    assert_scalar_attributes_equal(test, size0, size1, attributes)
-
-
-def assert_model_info_equal(
-    test: unittest.TestCase,
-    info0: ModelKaminoInfo,
-    info1: ModelKaminoInfo,
-    excluded: list[str] | None = None,
-    body_index_remap: list[int] | None = None,
-    joint_index_remap: list[int] | None = None,
-) -> None:
-    assert_scalar_attributes_equal(test, info0, info1, ["num_worlds"])
-    array_attributes = [
-        "num_bodies",
-        "num_joints",
-        "num_passive_joints",
-        "num_actuated_joints",
-        "num_dynamic_joints",
-        "num_geoms",
-        "num_body_dofs",
-        "num_joint_coords",
-        "num_joint_dofs",
-        "num_passive_joint_coords",
-        "num_passive_joint_dofs",
-        "num_actuated_joint_coords",
-        "num_actuated_joint_dofs",
-        "num_bilateral_joint_cts",
-        "num_joint_dynamic_cts",
-        "num_joint_kinematic_cts",
-        "num_joint_bounded_cts",
-        "num_joint_friction_cts",
-        "num_joint_effort_cts",
-        "max_limit_cts",
-        "max_contact_cts",
-        "max_total_cts",
-        "bodies_offset",
-        "joints_offset",
-        "geoms_offset",
-        "body_dofs_offset",
-        "joint_coords_offset",
-        "joint_dofs_offset",
-        "joint_passive_coords_offset",
-        "joint_passive_dofs_offset",
-        "joint_actuated_coords_offset",
-        "joint_actuated_dofs_offset",
-        "joint_bilateral_cts_offset",
-        "joint_dynamic_cts_offset",
-        "joint_kinematic_cts_offset",
-        "joint_bounded_cts_offset",
-        "joint_friction_cts_offset",
-        "joint_effort_cts_offset",
-        "total_cts_offset",
-        "joint_dynamic_cts_group_offset",
-        "joint_kinematic_cts_group_offset",
-        "joint_bounded_cts_group_offset",
-        "joint_friction_cts_group_offset",
-        "joint_effort_cts_group_offset",
-        "base_body_index",
-        "base_joint_index",
-    ]
-    if excluded:
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    index_remaps = {}
-    if body_index_remap is not None and "base_body_index" in array_attributes:
-        index_remaps["base_body_index"] = body_index_remap
-    if joint_index_remap is not None and "base_joint_index" in array_attributes:
-        index_remaps["base_joint_index"] = joint_index_remap
-    assert_array_attributes_equal(test, info0, info1, array_attributes, index_remaps=index_remaps or None)
-
-
-def _assert_world_local_ids(test: unittest.TestCase, obj: Any, id_attr: str, wid_attr: str = "wid") -> None:
-    """Assert a world-local id array (e.g. ``bid``/``jid``/``gid``) is a valid sequential position
-    within each world, i.e. ``ids[row] == row - world_offset``.
-
-    Used in place of a direct cross-model comparison of these ids when rows have been permuted:
-    once reordered, there is no meaningful pairwise comparison left to make between the two
-    models' own world-local ids, only the per-model invariant.
-    """
-    ids = getattr(obj, id_attr).numpy()
-    if ids.size == 0:
-        return
-    wids = getattr(obj, wid_attr).numpy()
-    unique_wids, first_index = np.unique(wids, return_index=True)
-    offsets = first_index[np.searchsorted(unique_wids, wids)]
-    expected = np.arange(ids.size) - offsets
-    np.testing.assert_array_equal(
-        ids,
-        expected,
-        err_msg=f"{obj.__class__.__name__}.{id_attr} is not a valid sequential world-local id.",
-    )
-
-
-def _assert_geom_pairs_equal(
-    test: unittest.TestCase,
-    geoms0: GeometriesModel,
-    geoms1: GeometriesModel,
-    attr: str,
-    geom_index_remap: list[int] | None,
-) -> None:
-    """Compare a geometry-pair array (``collidable_pairs``/``excluded_pairs``).
-
-    These hold geom indices that are absolute w.r.t. the model rather than per-entity rows, so
-    they cannot be row-permuted or index-remapped by the generic array-attribute comparison:
-    remapping the referenced geom indices can change both a pair's internal (min, max) order and
-    the array's sort order, so rows are canonicalized before comparing.
-    """
-    obj_name = geoms0.__class__.__name__
-    pairs0 = getattr(geoms0, attr).numpy()
-    pairs1 = getattr(geoms1, attr).numpy()
-    test.assertEqual(pairs0.shape, pairs1.shape, f"{obj_name}.{attr} shapes are not equal.")
-    if pairs0.size == 0:
-        return
-    if geom_index_remap is not None:
-        remap = np.asarray(geom_index_remap)
-        pairs1 = remap[pairs1]
-    canonical0 = sorted(tuple(sorted(pair)) for pair in pairs0.tolist())
-    canonical1 = sorted(tuple(sorted(pair)) for pair in pairs1.tolist())
-    test.assertEqual(canonical0, canonical1, f"{obj_name}.{attr} are not equal.")
-
-
-def _assert_joint_packed_arrays_equal(
-    test: unittest.TestCase,
-    joints0: JointsModel,
-    joints1: JointsModel,
-    attributes: list[str],
-    offset_attr: str,
-    perm: list[int],
-    rtol: dict[str, float] | None = None,
-    atol: dict[str, float] | None = None,
-) -> None:
-    offsets0 = getattr(joints0, offset_attr).numpy()
-    offsets1 = getattr(joints1, offset_attr).numpy()
-    for attr in attributes:
-        if not hasattr(joints0, attr) or not hasattr(joints1, attr):
-            continue
-        arr0 = getattr(joints0, attr)
-        arr1 = getattr(joints1, attr)
-        if arr0 is None or arr1 is None:
-            continue
-        values0 = arr0.numpy()
-        values1 = arr1.numpy()
-        for ref_idx in range(joints0.num_joints):
-            other_idx = perm[ref_idx]
-            start0, end0 = offsets0[ref_idx], offsets0[ref_idx + 1]
-            start1, end1 = offsets1[other_idx], offsets1[other_idx + 1]
-            test.assertEqual(
-                end0 - start0,
-                end1 - start1,
-                msg=f"{joints0.__class__.__name__}.{attr} slice size mismatch for joint {ref_idx}.",
-            )
-            np.testing.assert_allclose(
-                actual=values0[start0:end0],
-                desired=values1[start1:end1],
-                err_msg=f"{joints0.__class__.__name__}.{attr} are not equal for joint {ref_idx}.",
-                rtol=rtol.get(attr, 1e-6) if rtol else 1e-6,
-                atol=atol.get(attr, 1e-6) if atol else 1e-6,
-            )
-
-
-def assert_model_bodies_equal(
-    test: unittest.TestCase,
-    bodies0: RigidBodiesModel,
-    bodies1: RigidBodiesModel,
-    excluded: list[str] | None = None,
-    mapping: list[int] | None = None,
-    rtol: dict[str, float] | None = None,
-    atol: dict[str, float] | None = None,
-) -> None:
-    """Compare two rigid-body models, optionally matching rows by label permutation."""
-    assert_scalar_attributes_equal(test, bodies0, bodies1, ["num_bodies"])
-    if excluded is None or "label" not in excluded:
-        assert_scalar_attributes_equal(test, bodies0, bodies1, ["label"], mapping=mapping)
-    array_attributes = [
-        "wid",
-        "bid",
-        "i_r_com_i",
-        "m_i",
-        "inv_m_i",
-        "i_I_i",
-        "inv_i_I_i",
-        "q_i_0",
-        "u_i_0",
-    ]
-    if excluded:
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    if mapping is not None and "bid" in array_attributes:
-        # `bid` is world-local and positional: once rows are reordered there is no cross-model
-        # value left to compare, only the per-model invariant that it is still a valid ordering.
-        array_attributes = [attr for attr in array_attributes if attr != "bid"]
-        _assert_world_local_ids(test, bodies0, "bid")
-        _assert_world_local_ids(test, bodies1, "bid")
-    assert_array_attributes_equal(
-        test,
-        bodies0,
-        bodies1,
-        array_attributes,
-        rtol=rtol,
-        atol=atol,
-        mapping=mapping,
-    )
-
-
-def assert_model_joints_equal(
-    test: unittest.TestCase,
-    joints0: JointsModel,
-    joints1: JointsModel,
-    excluded: list[str] | None = None,
-    mapping: list[int] | None = None,
-    body_index_remap: list[int] | None = None,
-    rtol: dict[str, float] | None = None,
-    atol: dict[str, float] | None = None,
-) -> None:
-    """Compare two joint models, optionally matching rows and remapping body references."""
-    assert_scalar_attributes_equal(test, joints0, joints1, ["num_joints"])
-    if excluded is None or "label" not in excluded:
-        assert_scalar_attributes_equal(test, joints0, joints1, ["label"], mapping=mapping)
-    dof_flat_attributes = [
-        "dof_act_types",
-        "q_j_min",
-        "q_j_max",
-        "dq_j_max",
-        "tau_j_max",
-        "a_j",
-        "b_j",
-        "f_j",
-        "k_p_j",
-        "k_d_j",
-        "dq_j_0",
-    ]
-    coord_flat_attributes = ["q_j_0"]
-    per_joint_attributes = [
-        "wid",
-        "jid",
-        "dof_type",
-        "act_type",
-        "bid_B",
-        "bid_F",
-        "B_r_Bj",
-        "F_r_Fj",
-        "X_Bj",
-        "X_Fj",
-        "num_coords",
-        "num_dofs",
-        "num_bilateral_cts",
-        "num_dynamic_cts",
-        "num_kinematic_cts",
-        "num_bounded_cts",
-        "num_friction_cts",
-        "num_effort_cts",
-    ]
-    if mapping is None:
-        per_joint_attributes.extend(dof_flat_attributes)
-        per_joint_attributes.extend(coord_flat_attributes)
-        per_joint_attributes.extend(
-            [
-                "coords_offset",
-                "dofs_offset",
-                "passive_coords_offset",
-                "passive_dofs_offset",
-                "actuated_coords_offset",
-                "actuated_dofs_offset",
-                "bilateral_cts_offset",
-                "dynamic_cts_offset",
-                "kinematic_cts_offset",
-                "bounded_cts_offset",
-                "friction_cts_offset",
-                "friction_cts_offset_total_cts",
-                "effort_cts_offset",
-                "effort_cts_offset_total_cts",
-            ]
-        )
-    if excluded:
-        per_joint_attributes = [attr for attr in per_joint_attributes if attr not in excluded]
-        dof_flat_attributes = [attr for attr in dof_flat_attributes if attr not in excluded]
-        coord_flat_attributes = [attr for attr in coord_flat_attributes if attr not in excluded]
-    if mapping is not None and "jid" in per_joint_attributes:
-        # See the matching comment on `bid` in assert_model_bodies_equal: `jid` is world-local
-        # and positional, so once rows are reordered only the per-model invariant is meaningful.
-        per_joint_attributes = [attr for attr in per_joint_attributes if attr != "jid"]
-        _assert_world_local_ids(test, joints0, "jid")
-        _assert_world_local_ids(test, joints1, "jid")
-    index_remaps = None
-    if body_index_remap is not None:
-        index_remaps = {
-            "bid_B": body_index_remap,
-            "bid_F": body_index_remap,
-        }
-    assert_array_attributes_equal(
-        test,
-        joints0,
-        joints1,
-        per_joint_attributes,
-        mapping=mapping,
-        index_remaps=index_remaps,
-        rtol=rtol,
-        atol=atol,
-    )
-    if mapping is not None:
-        _assert_joint_packed_arrays_equal(
-            test, joints0, joints1, dof_flat_attributes, "dofs_offset", mapping, rtol=rtol, atol=atol
-        )
-        _assert_joint_packed_arrays_equal(
-            test, joints0, joints1, coord_flat_attributes, "coords_offset", mapping, rtol=rtol, atol=atol
-        )
-
-
-def assert_model_geoms_equal(
-    test: unittest.TestCase,
-    geoms0: GeometriesModel,
-    geoms1: GeometriesModel,
-    excluded: list[str] | None = None,
-    mapping: list[int] | None = None,
-    body_index_remap: list[int] | None = None,
-    geom_index_remap: list[int] | None = None,
-    rtol: dict[str, float] | None = None,
-    atol: dict[str, float] | None = None,
-) -> None:
-    """Compare two geometry models, optionally matching rows and remapping body/geometry references."""
-    scalar_attributes = [
-        "num_geoms",
-        "num_collidable",
-        "num_collidable_pairs",
-        "num_excluded_pairs",
-        "model_minimum_contacts",
-        "world_minimum_contacts",
-    ]
-    array_attributes = [
-        "wid",
-        "gid",
-        "bid",
-        "type",
-        "flags",
-        "ptr",
-        "params",
-        "offset",
-        "material",
-        "group",
-        "gap",
-        "margin",
-    ]
-    pair_attributes = ["collidable_pairs", "excluded_pairs"]
-    if excluded:
-        scalar_attributes = [attr for attr in scalar_attributes if attr not in excluded]
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-        pair_attributes = [attr for attr in pair_attributes if attr not in excluded]
-    assert_scalar_attributes_equal(test, geoms0, geoms1, scalar_attributes)
-    if excluded is None or "label" not in excluded:
-        assert_scalar_attributes_equal(test, geoms0, geoms1, ["label"], mapping=mapping)
-    if mapping is not None and "gid" in array_attributes:
-        # See the matching comment on `bid` in assert_model_bodies_equal: `gid` is world-local
-        # and positional, so once rows are reordered only the per-model invariant is meaningful.
-        array_attributes = [attr for attr in array_attributes if attr != "gid"]
-        _assert_world_local_ids(test, geoms0, "gid")
-        _assert_world_local_ids(test, geoms1, "gid")
-    index_remaps = {"bid": body_index_remap} if body_index_remap is not None else None
-    assert_array_attributes_equal(
-        test,
-        geoms0,
-        geoms1,
-        array_attributes,
-        rtol=rtol,
-        atol=atol,
-        mapping=mapping,
-        index_remaps=index_remaps,
-    )
-    for attr in pair_attributes:
-        _assert_geom_pairs_equal(test, geoms0, geoms1, attr, geom_index_remap)
-
-
-def assert_model_materials_equal(
-    test: unittest.TestCase, materials0: MaterialsModel, materials1: MaterialsModel, excluded: list[str] | None = None
-) -> None:
-    assert_scalar_attributes_equal(test, materials0, materials1, ["num_materials"])
-    array_attributes = [
-        "restitution",
-        "static_friction",
-        "dynamic_friction",
-    ]
-    if excluded:
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    assert_array_attributes_equal(test, materials0, materials1, array_attributes)
-
-
-def assert_model_material_pairs_equal(
-    test: unittest.TestCase,
-    matpairs0: MaterialPairsModel,
-    matpairs1: MaterialPairsModel,
-    excluded: list[str] | None = None,
-) -> None:
-    assert_scalar_attributes_equal(test, matpairs0, matpairs1, ["num_material_pairs"])
-    array_attributes = [
-        "restitution",
-        "static_friction",
-        "dynamic_friction",
-    ]
-    if excluded:
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    assert_array_attributes_equal(test, matpairs0, matpairs1, array_attributes)
-
-
-def assert_model_equal(
-    test: unittest.TestCase,
-    model0: ModelKamino,
-    model1: ModelKamino,
-    skip_geom_source_ptr: bool = False,
-    skip_geom_group_and_collides: bool = False,
-    skip_geom_margin_and_gap: bool = False,
-    excluded: list[str] | None = None,
-    rtol: dict[str, float] | None = None,
-    atol: dict[str, float] | None = None,
-    allow_reordering: bool = False,
-) -> None:
-    """Compare two Kamino models, allowing for reordering of entities by label within each world.
-
-    Args:
-        skip_geom_source_ptr: If True, excludes the geometry source ``ptr`` attribute.
-        skip_geom_group_and_collides: If True, excludes the geometry ``group``/``collides``
-            attributes.
-        skip_geom_margin_and_gap: If True, excludes the geometry ``margin``/``gap`` attributes.
-        excluded: Attribute names to exclude from all comparisons.
-        rtol: Per-attribute relative tolerance overrides for floating-point array comparisons.
-        atol: Per-attribute absolute tolerance overrides for floating-point array comparisons.
-        allow_reordering: If True, bodies/joints/geoms are matched by label within each world
-            instead of by row order, so ``model0`` and ``model1`` may store entities of the same
-            world in a different order. Defaults to ``False``.
-    """
-    assert_model_size_equal(test, model0.size, model1.size, excluded)
-
-    body_mapping = None
-    joint_mapping = None
-    geom_mapping = None
-    body_index_remap = None
-    joint_index_remap = None
-    geom_index_remap = None
-    if allow_reordering:
-        num_worlds = model0.info.num_worlds
-
-        def _label_mapping(
-            labels_0: list[str] | None,
-            labels_1: list[str] | None,
-            ranges: list[tuple[int, int]],
-        ) -> list[int]:
-            """Return indices into ``labels_1`` that align with ``labels_0`` within each world."""
-            if labels_0 is None or labels_1 is None:
-                test.fail(
-                    "Cannot compare with allow_reordering=True because label is unset on one of "
-                    f"the models (model0 label is None: {labels_0 is None}, "
-                    f"model1 label is None: {labels_1 is None})."
-                )
-            test.assertEqual(len(labels_0), len(labels_1))
-            mapping = list(range(len(labels_0)))
-            for world_id, (range_start, range_end) in enumerate(ranges):
-                labels_0_world = labels_0[range_start:range_end]
-                labels_1_world = labels_1[range_start:range_end]
-                test.assertEqual(
-                    sorted(labels_0_world),
-                    sorted(labels_1_world),
-                    f"Label sets differ in world {world_id}.",
-                )
-                index_1 = {label: i for i, label in enumerate(labels_1_world)}
-                test.assertEqual(
-                    len(index_1),
-                    len(labels_1_world),
-                    f"Duplicate labels found in world {world_id}.",
-                )
-                for local_idx, label in enumerate(labels_0_world):
-                    mapping[range_start + local_idx] = range_start + index_1[label]
-            return mapping
-
-        def _entity_index_remap(mapping: list[int]) -> list[int]:
-            """Map global entity indices in the other model to indices in the reference model."""
-            remap = [0] * len(mapping)
-            for ref_idx, other_idx in enumerate(mapping):
-                remap[other_idx] = ref_idx
-            return remap
-
-        def _none_if_identity(mapping: list[int]) -> list[int] | None:
-            """Collapse an identity permutation back to `None`.
-
-            Preserves the strict comparison path (which validates more, e.g. per-joint offset
-            attributes,) for worlds where entities are already in matching order, and only pays
-            for the permutation-aware comparison where reordering actually occurred.
-            """
-            return None if mapping == list(range(len(mapping))) else mapping
-
-        # Ranges are already validated to match through the check on the model
-        # info, so the same ranges can be used for both models
-        bodies_offset = model0.info.bodies_offset.numpy().tolist()
-        body_ranges = [(bodies_offset[w], bodies_offset[w + 1]) for w in range(num_worlds)]
-        joints_offset = model0.info.joints_offset.numpy().tolist()
-        num_joints = model0.info.num_joints.numpy().tolist()
-        joint_ranges = [(joints_offset[w], joints_offset[w] + num_joints[w]) for w in range(num_worlds)]
-        geoms_offset = model0.info.geoms_offset.numpy().tolist()
-        num_geoms = model0.info.num_geoms.numpy().tolist()
-        geom_ranges = [(geoms_offset[w], geoms_offset[w] + num_geoms[w]) for w in range(num_worlds)]
-
-        body_mapping = _none_if_identity(_label_mapping(model0.bodies.label, model1.bodies.label, body_ranges))
-        joint_mapping = _none_if_identity(_label_mapping(model0.joints.label, model1.joints.label, joint_ranges))
-        geom_mapping = _none_if_identity(_label_mapping(model0.geoms.label, model1.geoms.label, geom_ranges))
-
-        if body_mapping is not None:
-            body_index_remap = _entity_index_remap(body_mapping)
-        if joint_mapping is not None:
-            joint_index_remap = _entity_index_remap(joint_mapping)
-        if geom_mapping is not None:
-            geom_index_remap = _entity_index_remap(geom_mapping)
-
-    assert_model_info_equal(
-        test,
-        model0.info,
-        model1.info,
-        excluded,
-        body_index_remap=body_index_remap,
-        joint_index_remap=joint_index_remap,
-    )
-    assert_model_bodies_equal(
-        test,
-        model0.bodies,
-        model1.bodies,
-        excluded,
-        mapping=body_mapping,
-        rtol=rtol,
-        atol=atol,
-    )
-    assert_model_joints_equal(
-        test,
-        model0.joints,
-        model1.joints,
-        excluded,
-        mapping=joint_mapping,
-        body_index_remap=body_index_remap,
-        rtol=rtol,
-        atol=atol,
-    )
-    geom_excluded = excluded
-    if skip_geom_source_ptr or skip_geom_group_and_collides or skip_geom_margin_and_gap:
-        geom_excluded = [] if excluded is None else list(excluded)
-        if skip_geom_source_ptr:
-            geom_excluded.append("ptr")
-        if skip_geom_group_and_collides:
-            geom_excluded.extend(["group", "collides"])
-        if skip_geom_margin_and_gap:
-            geom_excluded.extend(["margin", "gap"])
-    assert_model_geoms_equal(
-        test,
-        model0.geoms,
-        model1.geoms,
-        excluded=geom_excluded,
-        mapping=geom_mapping,
-        body_index_remap=body_index_remap,
-        geom_index_remap=geom_index_remap,
-        rtol=rtol,
-        atol=atol,
-    )
-    assert_model_materials_equal(test, model0.materials, model1.materials, excluded)
-    assert_model_material_pairs_equal(test, model0.material_pairs, model1.material_pairs, excluded)

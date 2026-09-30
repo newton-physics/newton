@@ -20,6 +20,7 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
 from newton._src.solvers.mujoco.constants import (
+    SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
@@ -1704,6 +1705,29 @@ class TestImportMjcfGeometry(unittest.TestCase):
         # Body 6: mass="0" should also have zero inertia
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
 
+    def test_explicit_geom_mass_for_small_primitives(self):
+        """Apply explicit mass above a (0.1 mm)^3 reference-volume cutoff."""
+        mjcf_content = """
+<mujoco model="small_explicit_mass_test">
+    <worldbody>
+        <body name="sphere"><freejoint/><geom type="sphere" size="0.005" mass="0.1"/></body>
+        <body name="cylinder"><freejoint/><geom type="cylinder" size="0.003 0.005" mass="0.2"/></body>
+        <body name="capsule"><freejoint/><geom type="capsule" size="0.003 0.005" mass="0.3"/></body>
+        <body name="ellipsoid"><freejoint/><geom type="ellipsoid" size="0.004 0.005 0.006" mass="0.4"/></body>
+        <body name="above_cutoff"><freejoint/><geom type="sphere" size="0.00007" mass="0.5"/></body>
+        <body name="below_cutoff"><freejoint/><geom type="sphere" size="0.00005" mass="0.6"/></body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.body_mass.numpy(), [0.1, 0.2, 0.3, 0.4, 0.5, 0.0], rtol=1e-6)
+        for body_index, inertia in enumerate(model.body_inertia.numpy()[:5]):
+            self.assertGreater(np.trace(inertia), 0.0, msg=f"Body {body_index} should have non-zero inertia")
+        self.assertEqual(np.trace(model.body_inertia.numpy()[5]), 0.0)
+
     def test_explicit_small_mesh_geom_mass(self):
         """Test that a positive mass on a solid or hollow mesh sets body mass and inertia."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -1826,7 +1850,7 @@ f 4 5 8
             )
 
     def test_solreflimit_parsing(self):
-        """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
+        """Verify that joint ``solreflimit`` is preserved without changing Newton limit gains."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="solreflimit_test">
     <worldbody>
@@ -1852,6 +1876,8 @@ f 4 5 8
 """
 
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = 4321.0
+        builder.default_joint_cfg.limit_kd = 76.0
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1860,28 +1886,22 @@ f 4 5 8
         self.assertEqual(len(model.joint_limit_ke), 3)
         self.assertEqual(len(model.joint_limit_kd), 3)
 
-        # Convert warp arrays to numpy for testing
         joint_limit_ke = model.joint_limit_ke.numpy()
         joint_limit_kd = model.joint_limit_kd.numpy()
+        solreflimit = model.mujoco.solreflimit.numpy()
+        solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # Test joint1: standard mode solreflimit="0.03 0.9"
-        # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
-        expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
-        expected_kd_1 = 2.0 / 0.03
-        self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
-        self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
-
-        # Test joint2: direct mode solreflimit="-100 -1"
-        # Expected: ke = 100, kd = 1
-        self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
-        self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
-
-        # Test joint3: no solreflimit (should use default 0.02, 1.0)
-        # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
-        expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
-        expected_kd_3 = 2.0 / 0.02
-        self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
-        self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+        # Native MuJoCo parameters retain their own provenance while Newton's
+        # configured generic gains remain force-space inputs.
+        np.testing.assert_allclose(joint_limit_ke, [4321.0, 4321.0, 4321.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(joint_limit_kd, [76.0, 76.0, 76.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[0], [0.03, 0.9], rtol=1.0e-6, atol=0.0)
+        np.testing.assert_allclose(solreflimit[1], [-100.0, -1.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[2], [0.0, 0.0], rtol=0.0, atol=0.0)
+        np.testing.assert_array_equal(
+            solreflimit_mode,
+            [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE],
+        )
 
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""
@@ -5280,6 +5300,77 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
         slide_idx = model.joint_label.index("test/worldbody/base/child1/child2/slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
+
+    def test_ref_shifts_joint_limits(self):
+        """Shift MJCF absolute joint ranges relative to the authored pose."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="0.5" range="0.4 0.9"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="-0.2" range="-0.1 0.3"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child3" pos="0 0 1">
+                        <joint name="free_hinge" type="hinge" axis="1 0 0" ref="0.7"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        lower = model.joint_limit_lower.numpy()
+        upper = model.joint_limit_upper.numpy()
+
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(lower[hinge_dof], 0.4 - 0.5, places=5)
+        self.assertAlmostEqual(upper[hinge_dof], 0.9 - 0.5, places=5)
+
+        slide_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/slide")]
+        self.assertAlmostEqual(lower[slide_dof], -0.1 - (-0.2), places=5)
+        self.assertAlmostEqual(upper[slide_dof], 0.3 - (-0.2), places=5)
+
+        # No authored range: the unlimited sentinel must not be shifted.
+        free_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/child2/child3/free_hinge")]
+        self.assertGreater(upper[free_dof], 1.0e5)
+        self.assertLess(lower[free_dof], -1.0e5)
+
+    def test_ref_shifts_joint_limits_degrees(self):
+        """Apply degree-authored ref and range conversion to the limits."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="30" range="10 90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_dof = qd_start[model.joint_label.index("test/worldbody/base/child1/hinge")]
+        self.assertAlmostEqual(model.joint_limit_lower.numpy()[hinge_dof], np.deg2rad(10.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.joint_limit_upper.numpy()[hinge_dof], np.deg2rad(90.0 - 30.0), places=5)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[hinge_dof], np.deg2rad(30.0), places=5)
 
     def test_springref_attribute_parsing(self):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""

@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    get_edge_colliding_edges_count,
+    get_vertex_colliding_triangles_count,
+)
 from ...math import quat_velocity
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -14,7 +19,6 @@ from .particle_vbd_kernels import (
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
 from .rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY, _eval_body_particle_contact, _eval_soft_ef_contact
-from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
 
@@ -138,6 +142,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
@@ -221,6 +226,7 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
             body_particle_contact_normal,
             shape_margin,
             dt,
+            rigid_body_particle_contact_use_log_barrier,
         )
 
         force_on_body = -force_on_particle
@@ -305,6 +311,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
     active_particle_flag: int,
     proxy_particle_flag: int,
     friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
     particle_radius: wp.array[float],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
@@ -367,6 +374,7 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         body_particle_contact_normal,
         shape_margin,
         dt,
+        rigid_body_particle_contact_use_log_barrier,
     )
     _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
 
@@ -402,7 +410,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         e1_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
+        collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_count:
             e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
 
             if e1_idx != -1 and e2_idx != -1:
@@ -453,7 +462,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         particle_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
+        collision_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_count:
             tri_idx = collision_info.vertex_colliding_triangles[
                 (collision_buffer_offset + collision_buffer_counter) * 2 + 1
             ]

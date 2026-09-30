@@ -4,8 +4,7 @@
 from __future__ import annotations
 
 import re
-import warnings
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -14,31 +13,8 @@ from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
 from ..utils.selection import match_labels
 
-_UNSET = object()
-
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
-
-_SENSING_OBJ_IDX_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_idx is deprecated; use SensorContact.sensing_indices. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_TYPE_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_type is deprecated; use SensorContact.sensing_type. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_transforms is deprecated; use SensorContact.sensing_transforms. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_BODIES_DEPRECATION_MSG = (
-    "SensorContact(..., sensing_obj_bodies=...) is deprecated; use sensing_bodies=... instead. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_SHAPES_DEPRECATION_MSG = (
-    "SensorContact(..., sensing_obj_shapes=...) is deprecated; use sensing_shapes=... instead. "
-    "The alias will be removed in a future release."
-)
 
 
 @wp.kernel(enable_backward=False)
@@ -404,51 +380,6 @@ class SensorContact:
     """World-frame transforms of sensing objects [m, unitless quaternion],
     shape ``(n_sensing,)``, dtype :class:`transform`."""
 
-    @property
-    def sensing_obj_idx(self) -> list[int]:
-        """Deprecated alias for :attr:`sensing_indices`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_indices` instead.
-        """
-        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_indices
-
-    @sensing_obj_idx.setter
-    def sensing_obj_idx(self, value: list[int]) -> None:
-        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_indices = value
-
-    @property
-    def sensing_obj_type(self) -> Literal["body", "shape"]:
-        """Deprecated alias for :attr:`sensing_type`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_type` instead.
-        """
-        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_type
-
-    @sensing_obj_type.setter
-    def sensing_obj_type(self, value: Literal["body", "shape"]) -> None:
-        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_type = value
-
-    @property
-    def sensing_obj_transforms(self) -> wp.array[wp.transform]:
-        """Deprecated alias for :attr:`sensing_transforms`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_transforms` instead.
-        """
-        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_transforms
-
-    @sensing_obj_transforms.setter
-    def sensing_obj_transforms(self, value: wp.array[wp.transform]) -> None:
-        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_transforms = value
-
     def __init__(
         self,
         model: Model,
@@ -460,7 +391,6 @@ class SensorContact:
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
-        **kwargs: Any,
     ):
         """Initialize the SensorContact.
 
@@ -486,26 +416,6 @@ class SensorContact:
             request_contact_attributes: If True (default), transparently request the extended contact attribute
                 ``force`` from the model.
         """
-        deprecated_sensing_bodies = kwargs.pop("sensing_obj_bodies", _UNSET)
-        if deprecated_sensing_bodies is not _UNSET:
-            warnings.warn(_SENSING_OBJ_BODIES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if sensing_bodies is not None and deprecated_sensing_bodies is not None:
-                raise TypeError("Specify only one of `sensing_bodies` and deprecated `sensing_obj_bodies`.")
-            if deprecated_sensing_bodies is not None:
-                sensing_bodies = deprecated_sensing_bodies
-
-        deprecated_sensing_shapes = kwargs.pop("sensing_obj_shapes", _UNSET)
-        if deprecated_sensing_shapes is not _UNSET:
-            warnings.warn(_SENSING_OBJ_SHAPES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if sensing_shapes is not None and deprecated_sensing_shapes is not None:
-                raise TypeError("Specify only one of `sensing_shapes` and deprecated `sensing_obj_shapes`.")
-            if deprecated_sensing_shapes is not None:
-                sensing_shapes = deprecated_sensing_shapes
-
-        if kwargs:
-            unexpected = next(iter(kwargs))
-            raise TypeError(f"SensorContact.__init__() got an unexpected keyword argument '{unexpected}'")
-
         if (sensing_bodies is None) == (sensing_shapes is None):
             raise ValueError("Exactly one of `sensing_bodies` and `sensing_shapes` must be specified")
 

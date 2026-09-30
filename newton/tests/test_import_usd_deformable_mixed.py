@@ -11,6 +11,7 @@ family-specific lowering, and ``test_import_usd_deformable_groups`` covers the b
 group registries across the model lifecycle.
 """
 
+import math
 import os
 import unittest
 import warnings
@@ -22,6 +23,8 @@ import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _author_deformable_element_array,
+    _bind_deformable_material,
     _deformable_stage,
     group_labels,
     group_range,
@@ -96,9 +99,83 @@ class TestUSDDeformableMixed(unittest.TestCase):
                 result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 600.0)
 
+    def test_non_numeric_physics_material_density_warns_and_uses_fallback(self):
+        """Warn and use the proposal density when a base material density is non-numeric."""
+        from pxr import Sdf, UsdPhysics, UsdShade
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        material = UsdShade.Material.Define(stage, "/World/Mat")
+        material.GetPrim().CreateAttribute("physics:density", Sdf.ValueTypeNames.Token).Set("bad")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(cloth.GetPrim()).Bind(material, materialPurpose="physics")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, r"/World/Mat.*physics:density.*numeric"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
+        self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
+
+    def test_proposal_deformables_use_final_density_fallback(self):
+        """Use 1000 kg/m^3 only for proposal-marked deformables without a density."""
+        stage = _deformable_stage()
+        cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS, thickness=None)
+        _author_deformable_element_array(cable.GetPrim(), "thicknesses", [0.02], "constant")
+        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.01], "constant")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
+        volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
+        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
+        _author_unit_tet(stage, "/World/BareTet", sim_api=False)
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 7.0
+        builder.default_tet_density = 11.0
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_soft_attrs"]["/World/Volume"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_soft_attrs"]["/World/BareTet"]["resolved_density"], 11.0)
+
+    def test_proposal_fallbacks_follow_stage_length_units(self):
+        """Express physical proposal fallbacks consistently in centimeter stage units."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS, thickness=None)
+        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
+        volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
+        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertAlmostEqual(float(builder.shape_scale[0][0]), 0.05, places=6)
+        self.assertAlmostEqual(builder.particle_radius[0], 0.05, places=6)
+        for family, path in (
+            ("path_cable_attrs", "/World/Cable"),
+            ("path_cloth_attrs", "/World/Cloth"),
+            ("path_soft_attrs", "/World/Volume"),
+        ):
+            self.assertAlmostEqual(result[family][path]["resolved_density"], 0.001, places=9)
+
+        volume_tet, _ = group_range(builder, "soft", "/World/Volume", "tet")
+        self.assertAlmostEqual(builder.tet_materials[volume_tet][0], 3846.153846153846, delta=0.02)
+
     def test_mixed_scene_imports_and_finalizes(self):
-        """The mixed scene builds every family with correct counts, labels, disjoint
-        ranges, materials, and per-cable articulations, and finalizes in one pass."""
+        """Verify that a mixed scene imports and finalizes every family in one pass.
+
+        Check counts, labels, disjoint ranges, materials, and per-cable articulations.
+        """
         builder = newton.ModelBuilder()
         builder.add_usd(_ASSET)
 
@@ -120,12 +197,12 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(builder.body_count, 6)
         self.assertEqual(len(builder.articulation_label), 2)
 
-        # Cloth: 4 particles / 2 triangles with the material's stretch modulus scaled by
-        # thickness (tri_ke = stretchStiffness * thickness) and no fabricated area term.
+        # Cloth: 4 particles / 2 triangles with the material's structural stretch
+        # stiffness mapped directly and no fabricated area term.
         p0, p1 = group_range(builder, "cloth", "/World/Cloth/sim", "particle")
         t0, t1 = group_range(builder, "cloth", "/World/Cloth/sim", "tri")
         self.assertEqual((p1 - p0, t1 - t0), (4, 2))
-        self.assertAlmostEqual(builder.tri_materials[t0][0], 1.0e5 * 0.001, delta=1.0)  # tri_ke
+        self.assertAlmostEqual(builder.tri_materials[t0][0], 100.0, delta=1.0)  # tri_ke
         self.assertEqual(builder.tri_materials[t0][1], 0.0)  # tri_ka
 
         # Volumes: one tet of 4 particles each, disjoint back-to-back particle ranges.
@@ -171,12 +248,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertTrue(any("/World/ClothKin" in m and "kinematic deformables" in m for m in messages))
         self.assertTrue(any("/World/SoftOff/sim" in m and "bodyEnabled is false" in m for m in messages))
 
-    def test_body_mass_applies_with_zero_fallback_density(self):
-        """An authored PhysicsDeformableBodyAPI mass must not depend on the lower-precedence
-        builder fallback density: with zero builder fallbacks (default_shape_cfg.density,
-        default_tet_density) the geometric weights are built at a neutral density and the
-        body total distributes over them (measure-proportional, not uniform), in all three
-        families."""
+    def test_body_mass_overrides_proposal_density(self):
+        """Distribute body mass by geometric measure ahead of the final density fallback."""
         from pxr import Sdf, UsdGeom
 
         def _with_body_mass(prim, mass):
@@ -193,6 +266,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
             mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
             mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
             mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat")
             _with_body_mass(mesh.GetPrim(), 8.0)
 
             builder = newton.ModelBuilder()
@@ -254,9 +329,49 @@ class TestUSDDeformableMixed(unittest.TestCase):
             self.assertAlmostEqual(masses[4] / masses[0], 2.0, places=5)
             model = builder.finalize()
             self.assertTrue(all(im > 0.0 for im in model.particle_inv_mass.numpy()))
-            # The neutral build weight is not a physical density; the metadata reports the
-            # unmodified resolution (the zero builder fallback here).
-            self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 0.0)
+            self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 1000.0)
+
+    def test_invalid_body_mass_and_density_warn_and_use_fallbacks(self):
+        """Reject malformed body overrides while preserving finite fallback masses."""
+        from pxr import Sdf
+
+        for attr_name in ("mass", "density"):
+            for value in (-1.0, float("nan"), float("inf"), float("-inf"), 0.0):
+                with self.subTest(attribute=attr_name, value=value):
+                    stage = _deformable_stage()
+                    cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                    cloth.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                    cloth.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Float).Set(value)
+
+                    builder = newton.ModelBuilder()
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        builder.add_usd(stage)
+                    messages = [str(item.message) for item in caught]
+                    invalid = [message for message in messages if f"invalid physics:{attr_name}" in message]
+                    if value == 0.0:
+                        self.assertEqual(invalid, [], "zero is the schema sentinel, not an invalid value")
+                    else:
+                        self.assertGreaterEqual(len(invalid), 1)
+                        self.assertTrue(all("/World/Cloth" in message for message in invalid))
+                    self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
+
+    def test_non_numeric_body_mass_and_density_warn_and_use_fallbacks(self):
+        """Warn and preserve finite masses for non-numeric body overrides."""
+        from pxr import Sdf
+
+        for attr_name in ("mass", "density"):
+            with self.subTest(attribute=attr_name):
+                stage = _deformable_stage()
+                cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                cloth.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                cloth.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Token).Set("bad")
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, rf"/World/Cloth.*physics:{attr_name}.*numeric"):
+                    builder.add_usd(stage)
+
+                self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
 
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body
@@ -298,7 +413,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         builder.finalize()
 
     def test_unsupported_rest_and_velocity_fields_warn(self):
-        """Authored rest state and velocities warn per prim but do not block the import."""
+        """Verify that unsupported rest-state and velocity fields warn without blocking import."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -309,11 +424,15 @@ class TestUSDDeformableMixed(unittest.TestCase):
         UsdGeom.PointBased(cable.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         cloth.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([0.1])
+        cloth.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.IntArray).Set(
+            [0, 1, 2, 0, 2, 3]
+        )
         UsdGeom.PointBased(cloth.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
         tet = _author_unit_tet(stage, "/World/Soft")
         tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
             [(0.0, 0.0, 0.0)] * 4
         )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.IntArray).Set([0, 1, 2, 3])
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -324,7 +443,9 @@ class TestUSDDeformableMixed(unittest.TestCase):
         for field, path in (
             ("restNormals", "/World/Cable"),
             ("restBendAngles", "/World/Cloth"),
+            ("restTriVertexIndices", "/World/Cloth"),
             ("restShapePoints", "/World/Soft"),
+            ("restTetVertexIndices", "/World/Soft"),
         ):
             self.assertTrue(any(path in m and field in m and "not yet supported" in m for m in messages), field)
         for path in ("/World/Cable", "/World/Cloth"):

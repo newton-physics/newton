@@ -12,7 +12,8 @@ See the repository's
 for contribution and pull-request workflows. The
 `governance contribution guidelines <https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md>`_
 cover legal requirements, project roles, and approval authority. Code and
-public API changes must follow the :doc:`source_code_guidelines`.
+public API changes must follow the :doc:`source_code_guidelines`. Reviewers may
+use the suggested :doc:`review_guidelines`.
 
 Installation
 ------------

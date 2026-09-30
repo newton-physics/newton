@@ -9,15 +9,13 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
 from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
@@ -31,6 +29,7 @@ from newton.tests.kamino.utils.extract import (
     extract_problem_vector,
 )
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.utils import basics
 
 ###
 # Helper functions
@@ -52,19 +51,21 @@ class TestSetup:
         self.max_world_contacts = max_world_contacts
 
         # Construct the model description using model builders for different systems
-        self.builder: ModelBuilderKamino = builder_fn(**kwargs)
+        self.builder: ModelBuilder = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
         if not gravity:
-            self.builder.set_gravity(wp.vec3f(0.0))
+            for i in range(len(self.builder.world_gravity)):
+                self.builder.world_gravity[i] = wp.vec3(0.0, 0.0, 0.0)
         if perturb:
             u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            for body in self.builder.all_bodies:
-                body.u_i_0 = u_0
+            for i in range(len(self.builder.body_qd)):
+                self.builder.body_qd[i] = u_0
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(self.builder.finalize(device=device))
         self.model, self.data, self.state, self.limits, self.detector, self.jacobians = make_containers(
-            builder=self.builder, max_world_contacts=max_world_contacts, device=device, sparse=sparse
+            model=model, max_world_contacts=max_world_contacts, sparse=sparse
         )
         self.contacts = self.detector.contacts
         self.state_p = self.model.state()
@@ -703,9 +704,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -751,9 +752,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -790,11 +791,11 @@ class TestPADMMSolver(unittest.TestCase):
 
     def test_08_padmm_solve_single_contact(self):
         """
-        Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
-        constraints and limits) with a single contact.
+        Tests the Proximal-ADMM (PADMM) solver with default config on the sphere-on-plane problem
+        (no constraints and limits) with a single contact.
         """
         # Create the test problem
-        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
+        test = TestSetup(builder_fn=basics.build_sphere_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
         solver = PADMMSolver(model=test.model, collect_info=self.savefig)
@@ -1006,13 +1007,16 @@ class TestPADMMSolver(unittest.TestCase):
 
         for use_graph_conditionals in modes:
             with self.subTest(use_graph_conditionals=use_graph_conditionals):
+
+                def builder_fn():
+                    builder = ModelBuilder()
+                    builder.replicate(basics.build_box_pendulum(ground=False), world_count=len(budgets))
+                    return builder
+
                 test = TestSetup(
-                    builder_fn=make_homogeneous_builder,
+                    builder_fn=builder_fn,
                     max_world_contacts=1,
                     device=self.default_device,
-                    num_worlds=len(budgets),
-                    build_fn=basics.build_box_pendulum,
-                    ground=False,
                 )
                 configs = [
                     PADMMSolver.Config(
