@@ -33,8 +33,8 @@ _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)
 class TestUSDDeformableGroups(unittest.TestCase):
     """Prim-path group registries across lifecycle transformations."""
 
-    def test_mixed_scene_groups_survive_finalize(self):
-        """The group registries describe the mixed scene and the model finalizes intact."""
+    def test_mixed_scene_groups_and_model_counts(self):
+        """Record the mixed scene on the builder and finalize its simulation elements intact."""
         builder = newton.ModelBuilder()
         builder.add_usd(_MIXED_ASSET)
 
@@ -47,7 +47,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         t0, t1 = group_range(builder, "soft", "/World/SoftA/sim", "tet")
         self.assertEqual(t1 - t0, 1)
         # No begin_world -> global groups.
-        self.assertEqual(builder._cable_world, [-1, -1])
+        self.assertEqual(builder.curve_world, [-1, -1])
+        self.assertEqual((len(builder.curve_label), len(builder.surface_label), len(builder.volume_label)), (2, 1, 2))
 
         model = builder.finalize()
         self.assertEqual((model.particle_count, model.body_count), (12, 6))
@@ -70,14 +71,15 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.replicate(sub, 3)
 
         self.assertEqual(group_labels(scene, "cloth"), ["/World/Cloth"] * 3)
-        self.assertEqual(scene._cloth_world, [0, 1, 2])
+        self.assertEqual(scene.surface_world, [0, 1, 2])
         for w in range(3):
             self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=w), (4 * w, 4 * w + 4))
         with self.assertRaises(LookupError):
             group_range(scene, "cloth", "/World/Cloth", "particle")  # ambiguous without world
         with self.assertRaises(LookupError):
             group_range(scene, "cloth", "/World/Cloth", "particle", world=7)
-        scene.finalize()  # replicated groups do not break finalization
+        model = scene.finalize()
+        self.assertEqual((model.particle_count, model.world_count), (12, 3))
 
     def test_heterogeneous_worlds_keep_world_tags(self):
         """Verify that heterogeneous worlds preserve their group labels and world tags."""
@@ -96,12 +98,13 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.add_world(cloth_sub)  # world 0: cloth only
         scene.add_world(cable_sub)  # world 1: cable only
 
-        self.assertEqual(scene._cloth_world, [0])
-        self.assertEqual(scene._cable_world, [1])
+        self.assertEqual(scene.surface_world, [0])
+        self.assertEqual(scene.curve_world, [1])
         self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=0), (0, 4))
         b0, b1 = group_range(scene, "cable", "/World/Cable", "body", world=1)
         self.assertEqual(b1 - b0, 3)
-        scene.finalize()
+        model = scene.finalize()
+        self.assertEqual((model.particle_count, model.body_count, model.world_count), (4, 3, 2))
 
     def test_cable_group_survives_fixed_joint_collapse(self):
         """Cable body ranges follow the renumbered bodies of collapse_fixed_joints."""
@@ -124,7 +127,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in builder.body_label[b] for b in range(b0, b1)))
-        builder.finalize()
+        model = builder.finalize()
+        self.assertEqual(model.body_count, 4)
 
     def test_welded_graph_empty_joint_ranges_survive_collapse(self):
         """A welded-graph curve records an empty joint range at its insertion boundary; when
@@ -159,7 +163,66 @@ class TestUSDDeformableGroups(unittest.TestCase):
             j0, j1 = group_range(builder, "cable", path, "joint")
             self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
             self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
-        builder.finalize()
+        model = builder.finalize()
+        self.assertCountEqual(builder.curve_label, ["/World/Trunk", "/World/Branch"])
+        for path in builder.curve_label:
+            j0, j1 = group_range(builder, "cable", path, "joint")
+            self.assertEqual(j0, j1)
+            self.assertLessEqual(j1, model.joint_count)
+
+    def test_cable_prim_with_multiple_curves_records_once(self):
+        """Record one USD prim rather than one record per native rod construction call."""
+        stage = _deformable_stage()
+        points = [*_CABLE_PTS, *((x, 1.0, z) for x, _, z in _CABLE_PTS)]
+        curve = _add_cable_curve(stage, "/World/Cables", points)
+        curve.CreateCurveVertexCountsAttr([4, 4])
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertEqual(builder.curve_label, ["/World/Cables"])
+        self.assertEqual(len(result["path_cable_map"]["/World/Cables"][0]), 6)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.body_count, 6)
+        self.assertEqual(group_range(builder, "cable", "/World/Cables", "body"), (0, 6))
+
+    def test_cable_records_replicate_with_free_and_attached_roots(self):
+        """Preserve a cable's recorded ranges when either endpoint is attached to a rigid body."""
+        from pxr import UsdGeom, UsdPhysics
+
+        for attached_point in (None, 0, len(_CABLE_PTS) - 1):
+            with self.subTest(attached_point=attached_point):
+                stage = _deformable_stage()
+                _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
+                if attached_point is not None:
+                    plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                    plug.CreateSizeAttr(0.1)
+                    UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+                    _add_physics_attachment(
+                        stage,
+                        "/World/Attachment",
+                        src0="/World/Cable",
+                        src1="/World/Plug",
+                        type0="point",
+                        indices0=[attached_point],
+                        coords1=[_CABLE_PTS[attached_point]],
+                    )
+                source = newton.ModelBuilder()
+                result = source.add_usd(stage, return_deformable_results=True)
+                bodies, joints = result["path_cable_map"]["/World/Cable"]
+                self.assertEqual(source.curve_label, ["/World/Cable"])
+                scene = newton.ModelBuilder()
+                scene.replicate(source, 2)
+                model = scene.finalize(device="cpu")
+                self.assertEqual((model.body_count, model.joint_count), (2 * source.body_count, 2 * source.joint_count))
+                self.assertEqual(scene.curve_world, [0, 1])
+                self.assertEqual(
+                    [group_range(scene, "cable", "/World/Cable", "body", world=w) for w in range(2)],
+                    [(bodies[0] + w * source.body_count, bodies[-1] + 1 + w * source.body_count) for w in range(2)],
+                )
+                self.assertEqual(
+                    [group_range(scene, "cable", "/World/Cable", "joint", world=w) for w in range(2)],
+                    [(joints[0] + w * source.joint_count, joints[-1] + 1 + w * source.joint_count) for w in range(2)],
+                )
 
 
 if __name__ == "__main__":
