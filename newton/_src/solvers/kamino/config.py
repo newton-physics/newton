@@ -800,6 +800,9 @@ class DVIAPGDConfig:
 
     These runtime solver controls are Python-only; they do not author a
     material model or add USD schema attributes.
+    CUDA execution requires a Warp build and CUDA driver supporting CUDA
+    12.4+ conditional graphs. Capture the solve for GPU-only loop control;
+    uncaptured CUDA execution reads conditions back to the host.
     """
 
     max_iterations: int = 64
@@ -829,13 +832,6 @@ class DVIAPGDConfig:
     relaxation: float = 1.0
     """Damping of each De Saxce impulse update, in ``(0, 1]``."""
 
-    use_graph_conditionals: bool = True
-    """Stop device loops early when supported; otherwise use masked fixed loops.
-
-    Each world stops independently. A conditional loop exits when no world
-    needs another iteration; fixed loops preserve the same per-world masks.
-    """
-
     def validate(self) -> None:
         """Reject non-finite tolerances and invalid nonlinear or inner budgets."""
         for name in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
@@ -846,8 +842,6 @@ class DVIAPGDConfig:
             raise ValueError("`tolerance` must be finite and non-negative.")
         if isinstance(self.relaxation, bool) or not math.isfinite(self.relaxation) or not 0.0 < self.relaxation <= 1.0:
             raise ValueError("`relaxation` must be finite and in (0, 1].")
-        if not isinstance(self.use_graph_conditionals, bool):
-            raise ValueError("`use_graph_conditionals` must be a boolean.")
 
     def __post_init__(self) -> None:
         """Validate constructor arguments."""

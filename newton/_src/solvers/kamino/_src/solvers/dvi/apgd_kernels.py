@@ -76,6 +76,8 @@ def initialize_phase(
     njc: wp.array[wp.int32],
     config: wp.array[DVIConfigStruct],
     block_iteration: wp.int32,
+    operator_scale: wp.array[wp.float32],
+    estimating: wp.array[wp.bool],
     phase: wp.array[wp.bool],
     active: wp.array[wp.bool],
     state: wp.array[APGDState],
@@ -88,8 +90,79 @@ def initialize_phase(
     active[wid] = enabled
     entry = APGDState()
     entry.lipschitz = 1.0
+    estimating[wid] = enabled and block_iteration <= 0
+    if block_iteration <= 0:
+        operator_scale[wid] = 1.0
+    else:
+        entry.lipschitz = wp.max(operator_scale[wid], 0.9 * state[wid].lipschitz)
     state[wid] = entry
     if enabled:
+        wp.atomic_add(condition, 0, 1)
+
+
+@wp.kernel
+def seed_scale_probe(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    estimating: wp.array[wp.bool],
+    retry: wp.bool,
+    probe: wp.array[wp.float32],
+):
+    """Seed a normalized constant probe, or a ramp when the first probe is null."""
+    wid, row = wp.tid()
+    if row < dim[wid]:
+        value = wp.float32(0.0)
+        if estimating[wid] and row >= njc[wid]:
+            n = wp.float32(dim[wid] - njc[wid])
+            value = 1.0
+            if retry:
+                value = (2.0 * wp.float32(row - njc[wid]) + 1.0) / n - 1.0
+            value /= wp.sqrt(n)
+        probe[vio[wid] + row] = value
+
+
+@wp.kernel
+def finish_scale_probe(
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    njc: wp.array[wp.int32],
+    probe: wp.array[wp.float32],
+    product: wp.array[wp.float32],
+    retry: wp.bool,
+    operator_scale: wp.array[wp.float32],
+    state: wp.array[APGDState],
+    estimating: wp.array[wp.bool],
+    condition: wp.array[wp.int32],
+):
+    """Estimate ``norm(A d) / norm(d)`` without a host reduction.
+
+    A null or non-finite first probe requests one alternate direction. If
+    neither probe yields a positive finite scale, retain the unit trial
+    denominator; backtracking still validates every accepted step.
+    """
+    wid = wp.tid()
+    if not estimating[wid]:
+        return
+    numerator = wp.float64(0.0)
+    denominator = wp.float64(0.0)
+    for row in range(njc[wid], dim[wid]):
+        i = vio[wid] + row
+        p = wp.float64(product[i])
+        d = wp.float64(probe[i])
+        numerator += p * p
+        denominator += d * d
+    estimate = wp.float32(0.0)
+    if denominator > wp.float64(0.0):
+        estimate = wp.float32(wp.sqrt(numerator / denominator))
+    valid = wp.isfinite(estimate) and estimate > 0.0
+    if valid:
+        operator_scale[wid] = estimate
+        entry = state[wid]
+        entry.lipschitz = estimate
+        state[wid] = entry
+    estimating[wid] = not valid and not retry
+    if estimating[wid]:
         wp.atomic_add(condition, 0, 1)
 
 
@@ -128,6 +201,7 @@ def build_phase_bias(
 @wp.kernel
 def begin_correction(
     active: wp.array[wp.bool],
+    operator_scale: wp.array[wp.float32],
     state: wp.array[APGDState],
     inner: wp.array[wp.bool],
     condition: wp.array[wp.int32],
@@ -137,6 +211,8 @@ def begin_correction(
     inner[wid] = active[wid]
     if active[wid]:
         entry = state[wid]
+        if entry.corrections > 0:
+            entry.lipschitz = wp.max(operator_scale[wid], 0.9 * entry.lipschitz)
         entry.theta = 1.0
         entry.iterations = 0
         entry.corrections += 1
@@ -315,24 +391,45 @@ def natural_residual(
     With ``nonlinear=False``, use the frozen ``shift`` to measure inner QP
     convergence. Otherwise recompute the De Saxce shift from ``product +
     bias = A x + b`` to measure the nonlinear contact law at ``x``.
+    Evaluate projection differences in double precision and use direct
+    gradient expressions in the interior to avoid cancellation at large impulses.
     """
     residual = wp.float32(0.0)
     row = wp.int32(0)
     while row < dim - njc:
         count = 1 if row < nbc + nl else 3
         i = vio + njc + row
-        impulse = wp.vec3f(0.0)
-        velocity = wp.vec3f(0.0)
+        impulse = wp.vec3d(0.0)
+        velocity = wp.vec3d(0.0)
         for j in range(count):
-            impulse[j] = x[i + j]
-            velocity[j] = product[i + j] + bias[i + j]
+            impulse[j] = wp.float64(x[i + j])
+            velocity[j] = wp.float64(product[i + j]) + wp.float64(bias[i + j])
             if not nonlinear:
-                velocity[j] += shift[i + j]
+                velocity[j] += wp.float64(shift[i + j])
         if nonlinear and count == 3:
-            velocity.z += mu[cio + (row - nbc - nl) // 3] * wp.length(wp.vec2f(velocity.x, velocity.y))
-        projected = project_unilateral(row, nbc, nl, bcio, cio, mu, lower, upper, impulse - velocity)
+            velocity.z += wp.float64(mu[cio + (row - nbc - nl) // 3]) * wp.length(wp.vec2d(velocity.x, velocity.y))
+        delta = wp.vec3d(0.0)
+        if row < nbc:
+            delta.x = wp.clamp(
+                velocity.x, impulse.x - wp.float64(upper[bcio + row]), impulse.x - wp.float64(lower[bcio + row])
+            )
+        elif row < nbc + nl:
+            delta.x = wp.min(impulse.x, velocity.x)
+        else:
+            value = impulse - velocity
+            tangent = wp.length(wp.vec2d(value.x, value.y))
+            friction = wp.float64(mu[cio + (row - nbc - nl) // 3])
+            # Match the cone projection's polar, interior, and boundary cases.
+            if friction * tangent <= -value.z:
+                delta = impulse
+            elif tangent <= friction * value.z:
+                delta = velocity
+            else:
+                normal = (friction * tangent + value.z) / (friction * friction + wp.float64(1.0))
+                factor = friction * normal / tangent
+                delta = impulse - wp.vec3d(factor * value.x, factor * value.y, normal)
         for j in range(count):
-            difference = wp.abs(impulse[j] - projected[j])
+            difference = wp.float32(wp.abs(delta[j]))
             if not wp.isfinite(difference):
                 difference = 3.0e38
             residual = wp.max(residual, difference)

@@ -31,6 +31,10 @@ class UnilateralAPGD:
         """
         self.owner = owner
         self.device = owner.device
+        if self.device.is_cuda and not wp.is_conditional_graph_supported():
+            raise RuntimeError(
+                "CUDA APGD requires conditional graphs: a Warp build and CUDA driver supporting CUDA 12.4+."
+            )
         size = owner.size
         self.rows = (size.num_worlds, max(1, size.max_of_max_total_cts))
         self.bilateral_rows = (size.num_worlds, max(1, size.max_of_num_bilateral_joint_cts))
@@ -50,10 +54,14 @@ class UnilateralAPGD:
         self.active = wp.zeros_like(self.phase)
         self.inner = wp.zeros_like(self.phase)
         self.searching = wp.zeros_like(self.phase)
+        self.estimating = wp.zeros_like(self.phase)
+        self.operator_scale = wp.ones(size.num_worlds, device=self.device)
         self.correction_condition = wp.zeros(1, dtype=wp.int32, device=self.device)
         self.inner_condition = wp.zeros_like(self.correction_condition)
         self.search_condition = wp.zeros_like(self.correction_condition)
+        self.scale_condition = wp.zeros_like(self.correction_condition)
         self.x = wp.zeros(max(1, size.sum_of_max_total_cts), device=self.device)
+        self.probe = wp.zeros_like(self.x)
         self.y = wp.zeros_like(self.x)
         self.candidate = wp.zeros_like(self.x)
         self.previous = wp.zeros_like(self.x)
@@ -71,10 +79,6 @@ class UnilateralAPGD:
         self.response_rhs = wp.zeros(max(1, bilateral_size), device=self.device)
         self.response_solution = wp.zeros_like(self.response_rhs)
         self.response_dim = wp.zeros(size.num_worlds, dtype=wp.int32, device=self.device)
-        self.max_iterations = max(c.max_iterations for c in configs)
-        self.max_backtracks = max(c.max_backtracks for c in configs)
-        self.max_nonlinear_corrections = max(c.max_nonlinear_corrections for c in configs)
-        self.use_conditionals = all(c.use_graph_conditionals for c in configs)
         self.problem = None
 
     def _launch(self, kernel, args, *, rows=False):
@@ -140,6 +144,9 @@ class UnilateralAPGD:
 
         Each correction restarts acceleration, solves its QP to the inner
         tolerance or iteration limit, and checks the updated nonlinear map.
+        Operator scale is estimated on the device at the first phase and
+        reused through alternating blocks. Later QPs can reduce a learned
+        denominator toward that estimate when restarting acceleration.
         The default correction budget of one may leave a nonzero residual.
         Impulses and diagnostics are written to the owner's existing arrays.
 
@@ -163,12 +170,37 @@ class UnilateralAPGD:
                 data.njc,
                 owner.data.config,
                 block_iteration,
+                self.operator_scale,
+                self.estimating,
                 self.phase,
                 self.active,
                 self.state,
                 self.correction_condition,
             ],
         )
+        if block_iteration <= 0:
+
+            def estimate_scale(retry=False):
+                """Measure the effective operator, including its factored Schur response."""
+                self._launch(kernels.seed_scale_probe, [*layout, self.estimating, retry, self.probe], rows=True)
+                self.matvec(self.probe, self.product, self.estimating)
+                self.scale_condition.zero_()
+                self._launch(
+                    kernels.finish_scale_probe,
+                    [
+                        *layout,
+                        self.probe,
+                        self.product,
+                        retry,
+                        self.operator_scale,
+                        self.state,
+                        self.estimating,
+                        self.scale_condition,
+                    ],
+                )
+
+            estimate_scale()
+            wp.capture_if(self.scale_condition, on_true=estimate_scale, retry=True)
         # Construct q from the actual iterate before projecting a potentially
         # infeasible warmstart. For Schur, the caller first refreshes B.
         self.x.zero_()
@@ -187,7 +219,6 @@ class UnilateralAPGD:
             [*projection, self.phase, self.state, self.x, self.zero, self.zero, self.zero, self.x],
             rows=True,
         )
-        use_conditionals = self.use_conditionals and (self.device.is_cpu or wp.is_conditional_graph_supported())
 
         def search_body():
             """Project a trial and check the fixed quadratic majorizer."""
@@ -230,11 +261,7 @@ class UnilateralAPGD:
             self.matvec(self.y, self.product_y, self.inner)
             self.search_condition.zero_()
             self._launch(kernels.begin_iteration, [self.inner, self.state, self.searching, self.search_condition])
-            if use_conditionals:
-                wp.capture_while(self.search_condition, while_body=search_body)
-            else:
-                for _ in range(self.max_backtracks):
-                    search_body()
+            wp.capture_while(self.search_condition, while_body=search_body)
             self.inner_condition.zero_()
             self._launch(
                 kernels.accept_iteration,
@@ -261,7 +288,7 @@ class UnilateralAPGD:
             self.inner_condition.zero_()
             self._launch(
                 kernels.begin_correction,
-                [self.active, self.state, self.inner, self.inner_condition],
+                [self.active, self.operator_scale, self.state, self.inner, self.inner_condition],
             )
             self._launch(
                 kernels.freeze_correction,
@@ -279,11 +306,7 @@ class UnilateralAPGD:
                 ],
                 rows=True,
             )
-            if use_conditionals:
-                wp.capture_while(self.inner_condition, while_body=inner_body)
-            else:
-                for _ in range(self.max_iterations):
-                    inner_body()
+            wp.capture_while(self.inner_condition, while_body=inner_body)
             self._launch(
                 kernels.relax_correction, [*layout, self.active, self.config, self.previous, self.x], rows=True
             )
@@ -305,10 +328,6 @@ class UnilateralAPGD:
                 ],
             )
 
-        if use_conditionals:
-            wp.capture_while(self.correction_condition, while_body=correction_body)
-        else:
-            for _ in range(self.max_nonlinear_corrections):
-                correction_body()
+        wp.capture_while(self.correction_condition, while_body=correction_body)
         self._launch(kernels.scatter_solution, [*layout, self.phase, self.x, solution], rows=True)
         self._launch(kernels.finish_phase, [self.phase, self.state, status])

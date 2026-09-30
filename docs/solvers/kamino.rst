@@ -113,18 +113,34 @@ the convex QP ``min_{x in K} 0.5 * x.T A x + (b + s).T x`` using APGD:
 
 .. code-block:: text
 
+   L_seed = estimate_scale(A)             # Once per DVI solve, on the device
+   L = L_seed                            # Retain L across alternating phases
    x = project_K(initial_impulse)
-   for each nonlinear correction:
+   for each nonlinear correction (at most max_nonlinear_corrections):
+       if this is a later frozen QP in the same DVI solve:
+           L = max(L_seed, 0.9 * L)
        x_outer = x
        s = correction(A x_outer + b)
-       y = x; restart acceleration
-       for each APGD iteration:
+       y = x; t = 1                      # Restart acceleration
+       for each APGD iteration (at most max_iterations):
            g = A y + b + s
-           z = project_K(y - g / L)       # Backtrack L; keep y and s fixed
-           y = z + beta * (z - x); x = z # Update momentum, with restart
-           stop inner loop if the frozen-QP residual meets tolerance
+           backtrack for at most max_backtracks trials:
+               z = project_K(y - g / L); d = z - y
+               abort search on a non-finite trial or denominator
+               accept if d.T A d <= L * norm(d)**2 + roundoff
+               otherwise double L and retry, keeping y and s fixed
+           if the search fails: return x with a failure flag
+           t_next = (1 + sqrt(1 + 4 * t**2)) / 2
+           beta = (t - 1) / t_next
+           if dot(y - z, z - x) > 0: t_next = 1; beta = 0
+           y = z + beta * (z - x); x = z; t = t_next
+           if norm_inf(x - project_K(x - (A x + b + s))) <= tolerance:
+               break
        x = x_outer + relaxation * (x - x_outer)
-       stop outer loop if the fresh nonlinear residual meets tolerance
+       s_fresh = correction(A x + b)
+       if norm_inf(x - project_K(x - (A x + b + s_fresh))) <= tolerance:
+           break
+   return x and the fresh nonlinear residual
 
 APGD updates the velocity ``A y + b`` at every extrapolated iterate ``y``;
 only the correction remains fixed during the inner solve. A new outer
@@ -137,6 +153,23 @@ The inner residual is ``norm_inf(x - project_K(x - (A x + b + s)))``.
 The nonlinear residual uses the same expression with ``s`` recomputed from
 ``A x + b``. Both use a unit projection step. Inner convergence alone does
 not establish nonlinear Coulomb convergence.
+
+**Step size.** At the first unilateral phase of each DVI solve, device
+kernels initialize ``L = norm(A d) / norm(d)`` using a normalized constant
+probe over unilateral rows. The product uses the effective operator, including
+the factored bilateral response in Schur mode. A null or non-finite probe
+triggers one centered-ramp probe for the affected worlds. If neither gives a
+positive finite estimate, ``L`` starts at one and backtracking validates the
+trial steps. The estimate is directional, not a certified spectral bound.
+
+The operator estimate is recomputed from current device data on each graph
+replay and reused across alternating blocks within a solve. Backtracking
+can only increase ``L`` inside a frozen QP. At the next QP, where acceleration
+restarts, ``L`` is reduced to ``max(initial_estimate, 0.9 * L)``. This lets
+an oversized learned denominator recover without changing the momentum
+recurrence inside the QP. No decrease is applied between inner APGD iterations.
+With one correction and one unilateral phase, ``L`` never decreases during
+the solve. Additional corrections or alternating phases enable the reduction.
 
 **Stopping conditions.** APGD currently uses an infinity-norm natural map;
 there is no configurable residual type. The inner and nonlinear loops share
@@ -174,10 +207,19 @@ retains the last accepted impulses and stops all APGD loops for that world.
 Each loop maintains a per-world active mask and an integer condition counting
 worlds that need another iteration. The condition is cleared and recomputed
 on every pass. A Warp conditional loop exits when that count reaches zero;
-worlds that finish sooner remain masked while other worlds continue. Without
-conditional graph support, fixed loops use the same masks and stopping tests,
-but still launch the remaining masked work. Nonempty worlds perform at least
-one trial: the residual checks occur after updates, not before the first step.
+worlds that finish sooner remain masked while other worlds continue. Nonempty
+worlds perform at least one trial: residual checks occur after updates, not
+before the first step. Projection differences use double precision and direct
+gradient expressions in the interior to avoid false convergence from
+cancellation at large impulses; operator products and impulses remain float32.
+
+CUDA APGD requires a Warp build and CUDA driver supporting CUDA 12.4+
+conditional graphs; unsupported runtimes raise an error during solver
+allocation. Each loop body is captured once, so graph size does not grow with
+the iteration budgets. All estimates, reductions, and stopping decisions run
+on the GPU during graph replay using preallocated arrays. Uncaptured CUDA
+execution reads loop conditions back to the host. CPU execution also supports
+early termination. There is no fixed-loop fallback.
 
 **Budgets and accuracy.** All budgets are upper limits; supported conditional
 device loops stop early when their residual meets ``apgd.tolerance``.
@@ -204,9 +246,6 @@ device loops stop early when their residual meets ``apgd.tolerance``.
    * - ``relaxation``
      - 1.0
      - Damping of the impulse update after each QP, in ``(0, 1]``.
-   * - ``use_graph_conditionals``
-     - ``True``
-     - Use device early exit when supported; otherwise use masked fixed loops.
 
 The default performs one frozen-correction approximation. Workloads requiring
 tighter Coulomb accuracy can set ``max_nonlinear_corrections`` to a larger
