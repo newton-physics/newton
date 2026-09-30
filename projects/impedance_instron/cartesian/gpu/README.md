@@ -1,5 +1,107 @@
 # Twelve-point CUDA pipeline
 
+## Experimental shared stance controller
+
+The shared trainer learns one 12-by-6 correction across a training dataset.
+For each stance, a deterministic generator builds a nominal equilibrium spline
+from reference positions and velocities, including ankle Cartesian velocity
+compensation. The common correction is added and contracted independently for
+that stance to satisfy the existing position, rate, and acceleration bounds.
+Existing PD feedback, contact physics, timestep, and measured objective remain
+in the canonical CUDA engine.
+
+This prototype takes inspiration from motion-conditioned controllers and
+training over sampled motions. Its optimizer is antithetic population search
+with an explicitly simulated elite-mean proposal; it does not implement
+ProtoMotions PPO or a neural feedback policy. Population worlds contain distinct
+controller candidates. Stances in a minibatch are currently simulated
+sequentially, with a bounded engine cache.
+
+From the repository root:
+
+```bash
+uv run --no-sync -m projects.impedance_instron.cartesian.gpu.shared_train \
+  --dataset outputs/impedance_instron/stance_dataset_peak_hip \
+  --saved-fit outputs/impedance_instron/fr3_2_ankle_xy_refit_20260929/fit_run2 \
+  --output outputs/impedance_instron/shared_training \
+  --iterations 25 --batch-size 4 --population-pairs 12
+```
+
+Use a fresh output directory. The saved six-channel profile supplies the
+gains and bounds, even when the dataset was prepared with a four-channel
+profile. Training samples only manifest training members and balances trials.
+Initial and final reports score all selected training and evaluation members;
+evaluation losses do not select updates. `--train-limit` and `--score-limit`
+produce explicitly reported partial runs. `--benchmark-single --iterations 5
+--sigma 0.0005` instead starts from the saved controller on its original reference
+for a matched timing comparison.
+
+`shared_controller.npz` stores the learned shared residual and generated stance
+coefficients. `report.json` records losses, tracking metrics, failures,
+projection factors, coverage, and timing. These experimental artifacts are
+separate from the qualified fitting pipeline described below.
+
+For another prepared stance, load the checkpoint's `residual`, call
+`shared_controller.nominal_six_channel(reference, profile)`, and pass that nominal
+as a singleton stance batch to `shared_controller.project_shared_residual` with
+the stance duration and the same six-channel profile. The returned coefficients
+define the controller; the returned factor records how much the common residual
+was contracted for that stance. This mapping uses reference motion and the
+existing PD feedback. Measured forces are loss targets, not controller inputs.
+
+Continue from a shared checkpoint with `--initial-controller
+outputs/impedance_instron/shared_training/shared_controller.npz`; the requested
+iteration count is additional work. This reuses controller weights and starts
+a new seeded search, without restoring optimizer or RNG history.
+`--fresh-controller` starts with zero shared correction instead. These flags
+are mutually exclusive. By default, a resumable sibling file named
+`<output>.checkpoint.npz` is atomically updated every 25 iterations;
+`--checkpoint-every 0` disables it. Final output directories are not overwritten.
+
+### Initial RTX 4070 experiment
+
+Five iterations from the same saved six-channel fit, with seed 17, took
+13.91 s for the existing 192-world optimizer and 5.23 s for the shared
+25-candidate search. Both start at loss 0.520437. Final losses were 0.519153
+and 0.520067 respectively. Shared iterations were 2.66 times faster, with a
+smaller improvement per iteration. This does not establish faster convergence
+to the same final loss. Both single-stance results meet the native RMS limits.
+
+A 25-iteration shared run with batches of four covered all 100 training stances
+and scored all 10 held-out stances. Training loss fell from 8.0794 to 3.7342;
+evaluation loss fell from 4.8088 to 2.9328. Search took 158.10 s and the full
+command, including initial and final scoring, took 321.23 s. All rollouts
+completed, but only 15/100 training and 3/10 evaluation stances meet every native
+RMS limit. These are prototype results after one sampling pass, not a converged
+or qualified replacement for individual fits. The frozen six-channel fit
+supplied the initial shared correction.
+
+Reports and checkpoints are under
+`outputs/impedance_instron/shared_controller_experiment_20260929/` when the local
+dataset is available. Evaluation members were excluded from update selection.
+
+### Full fresh fit across 100 stances
+
+The subsequent `--fresh-controller --iterations 200 --batch-size 4 --seed 17`
+experiment starts with zero learned correction. It visited all 100 training
+stances in eight passes and scored all 10 evaluation stances separately.
+Training loss fell from 17.9019 to 3.2230; evaluation loss fell from 17.4754
+to 1.7845. Search took 21.43 minutes and the full command took 24.15 minutes.
+No rollout failed. Only 28/100 training and 3/10 evaluation stances meet every
+native RMS limit, so the shared fit has not matched the individual fit quality.
+
+On the original fitted reference, the existing controller reproduced loss
+0.520437, while the fresh shared controller scored 2.081180. Shared ankle RMS
+error was 55.31 mrad and vertical force RMS was 117.08 N, exceeding the unchanged
+50 mrad and 100 N limits. This original reference is an additional transfer
+probe with different temporal boundaries from the peak-bracketed dataset.
+
+The fresh checkpoint and exact metrics are in
+`outputs/impedance_instron/shared_controller_experiment_20260929/from_scratch_200/`.
+The parent directory contains `full_refit_report.md` and
+`original_stance_comparison.json`. These results use no fitted weights for
+initialization. The interrupted continuation experiment is kept separately.
+
 The [project command](../../README.md) is the supported end-to-end path.
 It builds new evidence and runs one shared 12-point controller on 128 fixed
 worlds. Proposals, residual Jacobians, damped Gauss–Newton solves, bounds,
@@ -278,3 +380,95 @@ stiffness per column, no tangential damping). Maxwell and material-derived
 `column_maxwell` remain explicit options. Legacy fused friction remains an
 explicit compatibility mode. The default uses the shared foundation launch
 path, including retained normal-surround optimization.
+
+## Physics backpropagation experiment
+
+The execution plan and current status are in
+[`PHYSICS_BACKPROP_PLAN.md`](../../PHYSICS_BACKPROP_PLAN.md). The experiment
+preserves the saved six-channel physics and measured objective. Validation uses
+production forward parity and directional finite differences, followed by
+time-to-quality fitting comparisons. No unit tests are added at this stage.
+
+`adjoint_audit` accepts a saved six-channel fit through its
+`optimization_inputs.json` metadata. Diagnostic windows hold the starting
+checkpoint fixed; only a complete stance from step zero can qualify the
+measured-objective gradient. `gradient_fit` requires a passing full-stance audit
+with matching source and input hashes, and uses normalized L-BFGS proposals
+with strict spline bounds and production-engine backtracking scores.
+
+This backend is experimental. Passing a gradient audit does not establish a
+fitting speedup or the existing half-timestep acceptance qualification. See the
+plan for commands and experiment reports.
+
+`gradient_train` fits a reference-conditioned coefficient predictor over all
+100 FR3_1/FR3_2 training stances using the four-world heterogeneous
+`BatchAdjoint`. Feature statistics and checkpoint selection use training only;
+the ten held-out stances are scored separately. `batch_probe` checks independent
+production parity and reusable graph behavior, while `conditioned_physics_probe`
+qualifies the predictor/projection/full-physics derivative chain before training.
+`gradient_train_qualify` independently scores the frozen controller on all 110
+native rollouts and at half timestep on the ten held-out stances. See
+[`PHYSICS_BACKPROP_RESULTS.md`](../../PHYSICS_BACKPROP_RESULTS.md) for measured
+timing, threshold failures, derivative limitations and both standalone HTML reports.
+
+## One runner controller from initial conditions
+
+The corrected identification objective is documented in
+[`RUNNER_CONTROLLER_PLAN.md`](../../RUNNER_CONTROLLER_PLAN.md). `runner_fit`
+fits one shared 72-coefficient equilibrium curve over all 100 training stances,
+using a stored training-only phase period and frozen human geometry. Initial
+horizontal translation preserves the same curve shape; no future reference
+trajectory, force trace, or per-stance nominal enters controller inference.
+
+`Engine.from_initial` and `rollout` advance the plant without constructing a
+measured objective. `runner_rollout` deploys the saved controller from five
+initial state coordinates and five velocity coordinates. Its `--shoe-artifact`
+option changes the material/asset independently. `--modulus-scale` generates a
+synthetic stiffness sensitivity variant without changing shoe geometry; these
+variants are not separately calibrated materials.
+
+Run from `/home/jkuzm/projects/newton`, using a fresh output path:
+
+```bash
+uv run -m projects.impedance_instron.cartesian.gpu.runner_fit qualify \
+  --dataset outputs/impedance_instron/stance_dataset_peak_hip \
+  --fit-directory outputs/impedance_instron/fr3_2_ankle_xy_refit_20260929/fit_run2 \
+  --output outputs/impedance_instron/runner_shared_fit_20260929/qualification.json
+
+uv run -m projects.impedance_instron.cartesian.gpu.runner_fit fit \
+  --dataset outputs/impedance_instron/stance_dataset_peak_hip \
+  --fit-directory outputs/impedance_instron/fr3_2_ankle_xy_refit_20260929/fit_run2 \
+  --qualification outputs/impedance_instron/runner_shared_fit_20260929/qualification.json \
+  --output outputs/impedance_instron/runner_shared_fit_20260929/from_scratch_20 \
+  --epochs 20 --learning-rate 0.003
+
+uv run -m projects.impedance_instron.cartesian.gpu.runner_evaluate \
+  --run outputs/impedance_instron/runner_shared_fit_20260929/from_scratch_20 \
+  --output outputs/impedance_instron/runner_shared_fit_20260929/frozen_evaluation
+
+uv run -m projects.impedance_instron.cartesian.gpu.runner_report \
+  --run outputs/impedance_instron/runner_shared_fit_20260929/from_scratch_20 \
+  --evaluation outputs/impedance_instron/runner_shared_fit_20260929/frozen_evaluation \
+  --output outputs/impedance_instron/runner_shared_fit_20260929/from_scratch_20/report.html
+```
+
+Native scoring covers available measurements within the common curve period;
+recorded endpoints never stretch phase. `runner_evaluate` independently checks
+all 110 native scores, all 110 target-free full-period continuations, ten held-out
+half-timestep scores, and frozen-human material sensitivities. These are
+experiments; no unit tests are added or run.
+
+The completed shared human fit and frozen-material evidence are recorded in
+[`RUNNER_CONTROLLER_RESULTS.md`](../../RUNNER_CONTROLLER_RESULTS.md). For a
+standalone material rollout, pass initial vectors as JSON:
+
+```bash
+uv run -m projects.impedance_instron.cartesian.gpu.runner_rollout \
+  --controller outputs/impedance_instron/runner_shared_fit_20260929/from_scratch_20/runner_controller.npz \
+  --initial-conditions outputs/impedance_instron/runner_shared_fit_20260929/example_initial_conditions.json \
+  --modulus-scale 1.2 \
+  --output outputs/impedance_instron/runner_shared_fit_20260929/material_rollout_new
+```
+
+The JSON supplies `initial_state` and `initial_velocity`, each with five
+coordinates. It contains no future trajectory or target force trace.

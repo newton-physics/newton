@@ -1,17 +1,38 @@
-# Twelve-point controller baseline
+# Twelve-point controllers and shared runner identification
 
-This worktree has one controller pipeline: one leg, one shoe, one stance,
+The original controller pipeline uses one leg, one shoe, one stance,
 with **12 cubic control points per equilibrium channel**. The original
 controller has four equilibrium channels (48 coefficients); the promoted FR3_2
 sample adds ankle XY for six channels (72 coefficients). The shared GPU search
 uses 128 worlds for four channels and 192 for six.
 There is no trunk, opposite leg, hip-angle motor, or added upper-body load.
 
+The shared runner experiment fits one 72-coefficient equilibrium curve from
+100 training stances and validates ten held-out stances. Runtime accepts only
+initial conditions, keeps one stored phase clock and human geometry, and can
+compare materials without refitting the human. See
+[runner results](RUNNER_CONTROLLER_RESULTS.md) and the
+[portable controller/report bundle](data/samples/runner_shared_100/README.md).
+
 Small reference and controller bundles for the recovered FR3_1 rate refit and
 the FR3_2 peak-to-peak movement are in [sample data](data/samples/README.md).
 The promoted FR3_2 six-channel controller meets numerical measured-fit and
 refinement criteria; its rollout still reaches the passive shoe compression
 cap.
+
+## Peak-to-peak stance dataset
+
+The right-foot dataset at `outputs/impedance_instron/stance_dataset_peak_hip/`
+contains 50 training and 5 evaluation windows from each of FR3_1 and FR3_2.
+Each window starts at the right hip-center height peak before an identified
+right-foot contact and ends at the next peak after toe-off. Hip-center height
+is the requested proxy for center-of-mass height; it is not a whole-body COM
+measurement. FR3_3 is excluded. `manifest.json` records split membership,
+event bounds, side assignment, and source hashes. Rebuild it with:
+
+```bash
+uv run --no-sync -m projects.impedance_instron.cartesian.prepare_dataset
+```
 
 ## Import processed measurements
 

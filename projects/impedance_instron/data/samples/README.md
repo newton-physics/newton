@@ -16,6 +16,10 @@ reaction force, contact moment, and compression diagnostics. Load them with
 
 ## Bundles
 
+- [`runner_shared_100/`](runner_shared_100/README.md): one shared human
+  equilibrium controller fitted from 100 stances, with ten held-out stances,
+  target-free rollout verification, and frozen-human material sensitivity reports.
+
 - [`fr3_1_rate_refit/`](fr3_1_rate_refit/README.md): recovered frozen FR3_1
   rate-refit controller and rollout, with its prepared reference and profile.
 - **Working movement baseline sample:** [`fr3_2_peak_to_peak/`](fr3_2_peak_to_peak/README.md),

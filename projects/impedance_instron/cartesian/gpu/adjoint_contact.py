@@ -17,7 +17,7 @@ from projects.digital_shoe.friction_maxwell import (
     column_maxwell_parameters,
     elastic_coulomb_stiffness,
 )
-from projects.digital_shoe.material import maxwell_coefficients, maxwell_step
+from projects.digital_shoe.material import maxwell_coefficients, maxwell_coefficients_numpy, maxwell_step
 from projects.digital_shoe.runtime import FoundationParams, _hyperfoam_pressure, _pasternak_coupling, _surround_balance
 
 wp.set_module_options({"enable_backward": True, "fuse_fp": True})
@@ -26,6 +26,8 @@ wp.set_module_options({"enable_backward": True, "fuse_fp": True})
 @wp.kernel
 def _rigid_penetration(
     columns: int,
+    valid_steps: wp.array[int],
+    step: int,
     body_q: wp.array[wp.transform],
     anchor: wp.array[wp.vec3],
     rigid_top: wp.array[float],
@@ -33,6 +35,8 @@ def _rigid_penetration(
 ):
     """Stage pose-dependent penetration once so eight reverse sweeps do not contend on the same pose."""
     i = wp.tid()
+    if step >= valid_steps[i // columns]:
+        return
     c = i % columns
     point = wp.transform_point(body_q[i // columns], anchor[c])
     rigid[i] = rigid_top[c] - point[2]
@@ -41,6 +45,8 @@ def _rigid_penetration(
 @wp.kernel
 def _surround_sweep(
     columns: int,
+    valid_steps: wp.array[int],
+    step: int,
     rigid: wp.array[float],
     driven: wp.array[int],
     neighbors: wp.array2d[int],
@@ -54,7 +60,7 @@ def _surround_sweep(
     coupling_scale: float,
     attachment: float,
     max_strain: float,
-    relaxation: float,
+    relaxation: wp.array[float],
     carrier_bond: int,
     current: wp.array[float],
     output: wp.array[float],
@@ -62,6 +68,8 @@ def _surround_sweep(
     """Apply the same fixed Jacobi sweep with a retained, per-column penetration input."""
     i = wp.tid()
     w = i // columns
+    if step >= valid_steps[w]:
+        return
     c = i % columns
     r = rigid[i]
     if driven[c] != 0:
@@ -90,7 +98,7 @@ def _surround_sweep(
         area[c],
         attachment,
         max_strain,
-        relaxation,
+        relaxation[w],
         carrier_bond,
     )
 
@@ -98,6 +106,8 @@ def _surround_sweep(
 @wp.kernel
 def _free_top(
     columns: int,
+    valid_steps: wp.array[int],
+    step: int,
     body_q: wp.array[wp.transform],
     driven: wp.array[int],
     anchor: wp.array[wp.vec3],
@@ -108,6 +118,8 @@ def _free_top(
     """Publish each world's free surface without modifying a previous step."""
     i = wp.tid()
     w = i // columns
+    if step >= valid_steps[w]:
+        return
     c = i % columns
     if driven[c] != 0:
         top[i] = rigid_top[c]
@@ -119,7 +131,9 @@ def _free_top(
 @wp.kernel
 def _pressure(
     columns: int,
-    dt: float,
+    valid_steps: wp.array[int],
+    step: int,
+    dt: wp.array[float],
     body_q: wp.array[wp.transform],
     anchor: wp.array[wp.vec3],
     top: wp.array[float],
@@ -135,6 +149,8 @@ def _pressure(
     """Evaluate the shared Maxwell and Hyperfoam expressions into separate histories."""
     i = wp.tid()
     w = i // columns
+    if step >= valid_steps[w]:
+        return
     c = i % columns
     p = params[w]
     point = wp.transform_point(body_q[w], anchor[c])
@@ -143,7 +159,7 @@ def _pressure(
         comp = 0.0
     compression[i] = comp
     peq = _hyperfoam_pressure(comp / rest[c], p)
-    decay, ramp = maxwell_coefficients(dt, p.tau_s)
+    decay, ramp = maxwell_coefficients(dt[w], p.tau_s)
     qn = maxwell_step(q_prev[i], peq, peq_prev[i], p.overstress, decay, ramp)
     q_next[i] = qn
     peq_next[i] = peq
@@ -153,7 +169,9 @@ def _pressure(
 @wp.kernel
 def _forces(
     columns: int,
-    dt: float,
+    valid_steps: wp.array[int],
+    step: int,
+    dt: wp.array[float],
     ground_height: float,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -184,16 +202,19 @@ def _forces(
     """Apply the same carried-ground bristle law without overwriting its input state."""
     i = wp.tid()
     w = i // columns
+    if step >= valid_steps[w]:
+        return
     c = i % columns
     p = params[w]
+    dt_value = dt[w]
     flux = pasternak_flux(c, w * columns, compression, rest, neighbors, p.g_eq + p.g_eq2)
     point, _com, velocity, gap = contact_kinematics(body_q[w], body_qd[w], body_com[w], anchor[c], ground_height, 1)
     reaction = normal_reaction(compression[i], pressure[i], area[c], p.normal_damping, velocity[2], gap, 1)
     if p.friction_model == 3:
         shear_kt = elastic_coulomb_stiffness(p.g_eq + p.g_eq2, area[c], rest[c])
-        tangent, _jac, z, _q, next_stuck, next_dwell = bristle_elastic_coulomb_step(
+        tangent, _jac, z, next_stuck, next_dwell = bristle_elastic_coulomb_step(
             wp.vec2(velocity[0], velocity[1]),
-            dt,
+            dt_value,
             reaction,
             shear_kt,
             p.mu,
@@ -204,7 +225,7 @@ def _forces(
         )
         deflection_next[i] = z
         maxwell_next[i] = wp.vec2(0.0)
-        next_anchor = wp.vec2(point[0], point[1]) + dt * wp.vec2(velocity[0], velocity[1]) - z
+        next_anchor = wp.vec2(point[0], point[1]) + dt_value * wp.vec2(velocity[0], velocity[1]) - z
     elif p.friction_model == 1 or p.friction_model == 2:
         shear_kt = kt[c]
         shear_kv = kv[c]
@@ -218,7 +239,7 @@ def _forces(
             )
         tangent, _jac, z, q, next_stuck, next_dwell = bristle_maxwell_step(
             wp.vec2(velocity[0], velocity[1]),
-            dt,
+            dt_value,
             reaction,
             shear_kt,
             shear_kv,
@@ -232,12 +253,12 @@ def _forces(
         )
         deflection_next[i] = z
         maxwell_next[i] = q
-        next_anchor = wp.vec2(point[0], point[1]) + dt * wp.vec2(velocity[0], velocity[1]) - z
+        next_anchor = wp.vec2(point[0], point[1]) + dt_value * wp.vec2(velocity[0], velocity[1]) - z
     else:
         tangent, next_anchor, next_stuck, next_dwell = bristle_step(
             wp.vec2(point[0], point[1]),
             wp.vec2(velocity[0], velocity[1]),
-            dt,
+            dt_value,
             reaction,
             kt[c],
             kv[c],
@@ -305,6 +326,8 @@ def _adj_group_wrench(
 def _partial_wrench(
     columns: int,
     groups: int,
+    valid_steps: wp.array[int],
+    step: int,
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     force: wp.array[wp.vec3],
@@ -314,19 +337,66 @@ def _partial_wrench(
     """Reduce fixed-order groups with explicit per-column reverse derivatives."""
     i = wp.tid()
     w = i // groups
+    if step >= valid_steps[w]:
+        return
     group = i % groups
     com = wp.transform_point(body_q[w], body_com[w])
     partial[i] = _group_wrench(w * columns, group, columns, groups, com, force, points)
 
 
 @wp.kernel
-def _total_wrench(groups: int, partial: wp.array[wp.spatial_vector], wrench: wp.array[wp.spatial_vector]):
+def _total_wrench(
+    groups: int,
+    valid_steps: wp.array[int],
+    step: int,
+    partial: wp.array[wp.spatial_vector],
+    wrench: wp.array[wp.spatial_vector],
+):
     """Fold groups in the original order into a fresh per-step wrench."""
     w = wp.tid()
+    if step >= valid_steps[w]:
+        wrench[w] = wp.spatial_vector()
+        return
     total = wp.spatial_vector()
     for g in range(groups):
         total += partial[w * groups + g]
     wrench[w] = total
+
+
+@wp.kernel
+def _copy_inactive_state(
+    columns: int,
+    valid_steps: wp.array[int],
+    step: int,
+    q_prev: wp.array[float],
+    peq_prev: wp.array[float],
+    anchor_prev: wp.array[wp.vec2],
+    stuck_prev: wp.array[int],
+    dwell_prev: wp.array[float],
+    deflection_prev: wp.array[wp.vec2],
+    maxwell_prev: wp.array[wp.vec2],
+    surround_prev: wp.array[float],
+    q_next: wp.array[float],
+    peq_next: wp.array[float],
+    anchor_next: wp.array[wp.vec2],
+    stuck_next: wp.array[int],
+    dwell_next: wp.array[float],
+    deflection_next: wp.array[wp.vec2],
+    maxwell_next: wp.array[wp.vec2],
+    surround_next: wp.array[float],
+):
+    """Keep every shoe memory field fixed after a world's terminal step."""
+    i = wp.tid()
+    if step < valid_steps[i // columns]:
+        return
+    q_next[i] = q_prev[i]
+    peq_next[i] = peq_prev[i]
+    anchor_next[i] = anchor_prev[i]
+    stuck_next[i] = stuck_prev[i]
+    dwell_next[i] = dwell_prev[i]
+    deflection_next[i] = deflection_prev[i]
+    maxwell_next[i] = maxwell_prev[i]
+    surround_next[i] = surround_prev[i]
 
 
 class ContactTape:
@@ -415,6 +485,9 @@ class ContactTape:
         self.source = source
         self.device = source.device
         self.dt = float(dt)
+        self.dt_values = wp.full(source.world_count, float(dt), dtype=float, device=self.device)
+        self.relaxation_values = wp.zeros(source.world_count, dtype=float, device=self.device)
+        self.valid_steps = wp.full(source.world_count, steps, dtype=int, device=self.device)
         count = source.world_count * source.column_count
         self._state_storage = {
             name: wp.zeros((steps + 1, count), dtype=dtype, device=self.device, requires_grad=dtype is not int)
@@ -440,11 +513,35 @@ class ContactTape:
             )
         self.states = [self.State.from_storage(self._state_storage, t) for t in range(steps + 1)]
         self.steps = [self.Step(self, t, self.states[t + 1]) for t in range(steps)]
-        source._refresh_surround_constants(dt)
-        cfg = source.surround
-        self.relaxation = (
-            1.0 if cfg.relaxation_time_s <= 0 else 1.0 - float(np.exp(-(dt / cfg.sweeps) / cfg.relaxation_time_s))
-        )
+        self.set_world_timesteps(np.full(source.world_count, dt, dtype=np.float64))
+
+    def set_world_timesteps(self, values):
+        """Upload each world's exact timestep and matching surround constants."""
+        values = np.asarray(values, dtype=np.float64)
+        if values.shape != (self.source.world_count,) or not np.isfinite(values).all() or np.any(values <= 0.0):
+            raise ValueError("One positive finite timestep is required per world")
+        self.dt_values.assign(values.astype(np.float32))
+        cfg = self.source.surround
+        relaxation = np.ones(len(values), dtype=np.float32)
+        if cfg.relaxation_time_s > 0.0:
+            relaxation = (1.0 - np.exp(-(values / cfg.sweeps) / cfg.relaxation_time_s)).astype(np.float32)
+        self.relaxation_values.assign(relaxation)
+        self.source._refresh_surround_constants(float(values[0]))
+        decay = np.empty(len(values), dtype=np.float32)
+        gain = np.empty(len(values), dtype=np.float32)
+        for w, (dt, block) in enumerate(zip(values, self.source.world_blocks, strict=True)):
+            world_decay, ramp = maxwell_coefficients_numpy(float(dt), block.tau_s)
+            decay[w] = world_decay
+            gain[w] = float(block.overstress * ramp)
+        self.source.surround_decay.assign(decay)
+        self.source.surround_gain.assign(gain)
+
+    def set_valid_steps(self, values):
+        """Upload each world's true terminal step for masked contact updates."""
+        values = np.asarray(values, dtype=np.int32)
+        if values.shape != (self.source.world_count,) or np.any(values < 0) or np.any(values > len(self.steps)):
+            raise ValueError("World terminal steps must lie within retained contact history")
+        self.valid_steps.assign(values)
 
     def zero_grad(self):
         """Clear owning gradient buffers once, not once for every timestep view."""
@@ -470,7 +567,7 @@ class ContactTape:
             wp.launch(
                 _rigid_penetration,
                 dim=count,
-                inputs=[s.column_count, body_q, s.anchor_local, s.z_free_rigid, out.rigid],
+                inputs=[s.column_count, self.valid_steps, index, body_q, s.anchor_local, s.z_free_rigid, out.rigid],
                 device=self.device,
             )
             for buffer in out.sweeps:
@@ -479,6 +576,8 @@ class ContactTape:
                     dim=count,
                     inputs=[
                         s.column_count,
+                        self.valid_steps,
+                        index,
                         out.rigid,
                         s.driven,
                         s.neighbors,
@@ -492,7 +591,7 @@ class ContactTape:
                         float(cfg.coupling_scale),
                         float(cfg.attachment_n_m),
                         float(cfg.max_strain),
-                        self.relaxation,
+                        self.relaxation_values,
                         int(bool(cfg.carrier_bond)),
                         current,
                         buffer,
@@ -503,7 +602,17 @@ class ContactTape:
             wp.launch(
                 _free_top,
                 dim=count,
-                inputs=[s.column_count, body_q, s.driven, s.anchor_local, s.z_free_rigid, current, out.z_free],
+                inputs=[
+                    s.column_count,
+                    self.valid_steps,
+                    index,
+                    body_q,
+                    s.driven,
+                    s.anchor_local,
+                    s.z_free_rigid,
+                    current,
+                    out.z_free,
+                ],
                 device=self.device,
             )
             top = out.z_free
@@ -515,7 +624,9 @@ class ContactTape:
             dim=count,
             inputs=[
                 s.column_count,
-                self.dt,
+                self.valid_steps,
+                index,
+                self.dt_values,
                 body_q,
                 s.anchor_local,
                 top,
@@ -535,7 +646,9 @@ class ContactTape:
             dim=count,
             inputs=[
                 s.column_count,
-                self.dt,
+                self.valid_steps,
+                index,
+                self.dt_values,
                 float(s.ground_height_m),
                 body_q,
                 body_qd,
@@ -571,6 +684,8 @@ class ContactTape:
             inputs=[
                 s.column_count,
                 s.reduction_groups,
+                self.valid_steps,
+                index,
                 body_q,
                 s.body_com,
                 out.ground_force,
@@ -583,8 +698,34 @@ class ContactTape:
         wp.launch(
             _total_wrench,
             dim=s.world_count,
-            inputs=[s.reduction_groups, out.partial, out.body_f],
+            inputs=[s.reduction_groups, self.valid_steps, index, out.partial, out.body_f],
             device=self.device,
             block_dim=1,
+        )
+        wp.launch(
+            _copy_inactive_state,
+            dim=count,
+            inputs=[
+                s.column_count,
+                self.valid_steps,
+                index,
+                prev.q_state,
+                prev.peq_prev,
+                prev.tangent_anchor,
+                prev.tangent_stuck,
+                prev.tangent_dwell,
+                prev.tangent_deflection,
+                prev.tangent_maxwell_force,
+                prev.surround_compression,
+                nxt.q_state,
+                nxt.peq_prev,
+                nxt.tangent_anchor,
+                nxt.tangent_stuck,
+                nxt.tangent_dwell,
+                nxt.tangent_deflection,
+                nxt.tangent_maxwell_force,
+                nxt.surround_compression,
+            ],
+            device=self.device,
         )
         return out

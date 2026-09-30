@@ -23,7 +23,7 @@ from ..run import Config
 from ..shoe import Shoe
 from ..trajectory import Spline, basis
 from .foundation import FoundationFused
-from .mechanics import Params, Vec5, ankle, dynamics, foot_angle, make_params, solve
+from .mechanics import Params, Vec5, ankle, dynamics, foot_angle, make_params, make_params_initial, solve
 from .objective import MeasuredObjective
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
@@ -802,7 +802,8 @@ class Engine:
     isolated history tiles cannot load another candidate.
 
     Args:
-        reference: Frozen single-leg recorded inputs and initial state.
+        reference: Frozen single-leg recorded inputs and initial state, or
+            ``None`` for an initial-condition-only rollout.
         profile: Fixed three-body masses, gains, and spline bounds.
         artifact: Shared shoe artifact path.
         mount_m: Fixed ankle location in the intrinsic shoe frame [m].
@@ -812,6 +813,8 @@ class Engine:
         world_count: Fixed batch size, one independent leg/shoe per candidate.
         device: CUDA device; the engine does not offer a CPU fallback.
         chunk_steps: Number of integration steps captured in a reusable graph.
+        controller_duration_s: Fixed equilibrium spline period [s]. Defaults
+            to the rollout horizon for legacy measured-reference evaluations.
     """
 
     def __init__(
@@ -828,6 +831,12 @@ class Engine:
         device: str = "cuda:0",
         chunk_steps: int = 32,
         friction_model: str = "elastic_coulomb",
+        controller_duration_s: float | None = None,
+        initial_state=None,
+        initial_velocity=None,
+        lengths_m=None,
+        endpoint_local_m=None,
+        duration_s: float | None = None,
     ):
         started = perf_counter()
         self.device = wp.get_device(device)
@@ -837,15 +846,46 @@ class Engine:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         reference, profile = deepcopy(reference), deepcopy(profile)
-        if "shoe_static_pitch_rad" in reference and not np.isclose(
-            float(reference["shoe_static_pitch_rad"]), static_pitch_rad, rtol=0, atol=1e-12
+        target_free = reference is None
+        if (target_free or controller_duration_s is not None) and config.hip_flight_gate_enabled:
+            raise ValueError("Causal rollouts cannot use a reference-derived hip flight gate")
+        if (
+            not target_free
+            and "shoe_static_pitch_rad" in reference
+            and not np.isclose(float(reference["shoe_static_pitch_rad"]), static_pitch_rad, rtol=0, atol=1e-12)
         ):
             raise ValueError("Ground-angle reference and shoe use different fixed pitch frames")
+        if target_free:
+            if duration_s is None or lengths_m is None or endpoint_local_m is None:
+                raise ValueError("Target-free rollouts require duration_s, lengths_m, and endpoint_local_m")
+            self.initial_state = self._initial_vector(initial_state, "initial_state")
+            self.initial_velocity = self._initial_vector(initial_velocity, "initial_velocity")
+            self.lengths_m = self._initial_pair(lengths_m, "lengths_m")
+            self.endpoint_local_m = self._initial_pair(endpoint_local_m, "endpoint_local_m")
+        else:
+            if any(
+                value is not None
+                for value in (initial_state, initial_velocity, lengths_m, endpoint_local_m, duration_s)
+            ):
+                raise ValueError("Initial-only arguments require reference=None")
+            self.initial_state = np.asarray(reference["state"][0], dtype=np.float64).copy()
+            self.initial_velocity = np.asarray(reference["velocity"][0], dtype=np.float64).copy()
+            self.lengths_m = np.asarray(reference["lengths_m"], dtype=np.float64).copy()
+            self.endpoint_local_m = np.asarray(reference["endpoint_local_m"], dtype=np.float64).copy()
         self.reference, self.profile = reference, profile
         self.config, self.settings = config, settings
         self.world_count, self.chunk_steps = world_count, chunk_steps
-        self.params = make_params(reference, profile)
-        self.duration = float(reference["time_s"][-1])
+        self.params = make_params_initial(self.lengths_m, profile) if target_free else make_params(reference, profile)
+        self.duration = float(duration_s if target_free else reference["time_s"][-1])
+        if not np.isfinite(self.duration) or self.duration <= 0.0:
+            raise ValueError("duration_s must be finite and positive")
+        self.controller_duration_s = (
+            float(controller_duration_s) if controller_duration_s is not None else self.duration
+        )
+        if not np.isfinite(self.controller_duration_s) or self.controller_duration_s <= 0.0:
+            raise ValueError("controller_duration_s must be finite and positive")
+        if self.duration > self.controller_duration_s:
+            raise ValueError("Rollout horizon exceeds the supported controller period")
         self.steps = math.ceil(self.duration / config.dt_s)
         self.dt = self.duration / self.steps
         self.time_s = np.linspace(0.0, self.duration, self.steps + 1)
@@ -909,7 +949,7 @@ class Engine:
             (world_count, settings.control_count, self.channels), dtype=wp.float64, device=self.device
         )
         self.basis = wp.array(
-            basis(self.time_s, self.duration, settings.control_count), dtype=wp.float64, device=self.device
+            basis(self.time_s, self.controller_duration_s, settings.control_count), dtype=wp.float64, device=self.device
         )
         self.hip_gate = wp.array(self.hip_gate_values, dtype=wp.float64, device=self.device)
         self.states = wp.zeros((self.steps + 1, world_count), dtype=Vec5, device=self.device)
@@ -937,16 +977,20 @@ class Engine:
         )
         for name in ("integrated", "recorded", "failure", "failure_step", "range_step", "range_mask"):
             setattr(self, name, wp.zeros(world_count, dtype=wp.int32, device=self.device))
-        self.objective = MeasuredObjective(
-            reference,
-            settings,
-            self.time_s,
-            world_count,
-            self.device,
-            profile["hip_damping_ns_m"],
-            self.shoe.metadata["friction_mu"],
-            self.dt,
-            self.hip_gate,
+        self.objective = (
+            None
+            if target_free
+            else MeasuredObjective(
+                reference,
+                settings,
+                self.time_s,
+                world_count,
+                self.device,
+                profile["hip_damping_ns_m"],
+                self.shoe.metadata["friction_mu"],
+                self.dt,
+                self.hip_gate,
+            )
         )
         self.graph = None
         self.tail_graph = None
@@ -956,6 +1000,62 @@ class Engine:
         self.capture_wall_s = None
         self.last_wall_s = None
 
+    @staticmethod
+    def _initial_vector(values, name: str) -> np.ndarray:
+        array = np.asarray(values, dtype=np.float64)
+        if array.shape != (5,) or not np.isfinite(array).all():
+            raise ValueError(f"{name} must contain five finite values")
+        return array.copy()
+
+    @staticmethod
+    def _initial_pair(values, name: str) -> np.ndarray:
+        array = np.asarray(values, dtype=np.float64)
+        if array.shape != (2,) or not np.isfinite(array).all():
+            raise ValueError(f"{name} must contain two finite values")
+        return array.copy()
+
+    @classmethod
+    def from_initial(
+        cls,
+        initial_state,
+        initial_velocity,
+        lengths_m,
+        endpoint_local_m,
+        profile,
+        artifact,
+        mount_m,
+        static_pitch_rad,
+        *,
+        duration_s: float,
+        controller_duration_s: float,
+        config: Config,
+        settings: FitConfig,
+        world_count: int = 1,
+        device: str = "cuda:0",
+        chunk_steps: int = 32,
+        friction_model: str = "elastic_coulomb",
+    ) -> Engine:
+        """Construct a measurement-free simulator from frozen human inputs."""
+        return cls(
+            None,
+            profile,
+            artifact,
+            mount_m,
+            static_pitch_rad,
+            config=config,
+            settings=settings,
+            world_count=world_count,
+            device=device,
+            chunk_steps=chunk_steps,
+            friction_model=friction_model,
+            controller_duration_s=controller_duration_s,
+            initial_state=initial_state,
+            initial_velocity=initial_velocity,
+            lengths_m=lengths_m,
+            endpoint_local_m=endpoint_local_m,
+            duration_s=duration_s,
+        )
+
     def _reset(self):
         """Reset each physical history once at the beginning of a candidate rollout."""
         self.foundation.reset()
@@ -964,8 +1064,8 @@ class Engine:
             _initialize,
             dim=self.world_count,
             inputs=[
-                Vec5(*self.reference["state"][0]),
-                Vec5(*self.reference["velocity"][0]),
+                Vec5(*self.initial_state),
+                Vec5(*self.initial_velocity),
                 self.states,
                 self.velocities,
                 self.integrated,
@@ -1087,8 +1187,13 @@ class Engine:
         self.foundation.enabled.fill_(1)
         self._reset()
         self._step()
-        self.objective.launch(self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure)
-        self.objective.loss.numpy()
+        if self.objective is not None:
+            self.objective.launch(
+                self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure
+            )
+            self.objective.loss.numpy()
+        else:
+            self.integrated.numpy()
         with wp.ScopedCapture(device=self.device) as capture:
             for _ in range(min(self.chunk_steps, self.steps)):
                 self._step()
@@ -1142,9 +1247,10 @@ class Engine:
             else:
                 for _ in range(self.steps):
                     self._step(staged=True)
-            self.objective.launch(
-                self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure
-            )
+            if self.objective is not None:
+                self.objective.launch(
+                    self.states, self.velocities, self.actuator, self.forces, self.integrated, self.failure
+                )
         self.resident_graph = capture.graph
 
     def evaluate_device(self):
@@ -1202,6 +1308,8 @@ class Engine:
 
     def create_snapshot(self):
         """Allocate one best-history buffer before search starts."""
+        if self.objective is None:
+            raise RuntimeError("A measured objective is required for winner snapshots")
         return self.Snapshot(self)
 
     def snapshot_device(self, winner, snapshot):
@@ -1227,12 +1335,14 @@ class Engine:
             )
         ]
         for row in values:
-            if not Spline(self.duration, row).bounds(*bounds):
+            if not Spline(self.controller_duration_s, row).bounds(*bounds):
                 raise ValueError("Equilibrium exceeds position, rate, or acceleration limits")
         return np.ascontiguousarray(values)
 
     def evaluate(self, coefficients):
         """Return batch scores after device-only rollouts and one reporting boundary."""
+        if self.objective is None:
+            raise RuntimeError("This engine has no measured objective; use rollout(coefficients)")
         values = self._validate_coefficients(coefficients)
         if self.graph is None:
             self.capture(values)
@@ -1244,6 +1354,27 @@ class Engine:
         scores.update(integrated_steps=self.integrated.numpy(), failure_code=self.failure.numpy())
         self.last_wall_s = perf_counter() - started
         return scores
+
+    def rollout(self, coefficients):
+        """Advance initial conditions through physics and report completion without targets."""
+        values = self._validate_coefficients(coefficients)
+        if self.graph is None:
+            self.capture(values)
+        started = perf_counter()
+        self.coefficients.assign(values)
+        self.foundation.enabled.fill_(1)
+        self.evaluate_device()
+        integrated = self.integrated.numpy().copy()
+        failure = self.failure.numpy().copy()
+        self.last_wall_s = perf_counter() - started
+        return {
+            "completed": (integrated == self.steps) & (failure == 0),
+            "integrated_steps": integrated,
+            "failure_code": failure,
+            "duration_s": self.duration,
+            "controller_duration_s": self.controller_duration_s,
+            "wall_s": self.last_wall_s,
+        }
 
     def trace(self, world: int = 0):
         """Copy one selected trace only after the batch has completed."""
@@ -1294,8 +1425,8 @@ class Engine:
         spring_force = gate[:, None] * hip_stiffness * (eq[:recorded, :2] - q[:recorded, :2])
         damping_force = -gate[:, None] * hip_damping * v[:recorded, :2]
         body = Body(
-            self.reference["lengths_m"],
-            self.reference["endpoint_local_m"],
+            self.lengths_m,
+            self.endpoint_local_m,
             self.profile["masses_kg"],
             self.profile["com_local_m"],
             self.profile["inertias_kg_m2"],
@@ -1360,13 +1491,16 @@ class Engine:
             "hip_flight_gate_enabled": self.config.hip_flight_gate_enabled,
             "hip_flight_gate_ramp_s": self.config.hip_flight_gate_ramp_s,
             "hip_flight_gate_contact_threshold_n": 5.0,
-            "hip_flight_gate_reference_source": "grf_time_s/grf_target_n vertical force",
+            "hip_flight_gate_reference_source": "grf_time_s/grf_target_n vertical force"
+            if self.config.hip_flight_gate_enabled
+            else None,
             "mechanics_backend": "Warp float64 CUDA; resident batched limb/contact/objective",
             "shoe_device": str(self.device),
             "actual_dt_s": self.dt,
             "integrated_steps": integrated,
             "integrated_duration_s": integrated * self.dt,
             "requested_duration_s": self.duration,
+            "controller_duration_s": self.controller_duration_s,
             "terminal_state": q[integrated].tolist(),
             "terminal_velocity": v[integrated].tolist(),
             "leg_mass_kg": float(np.sum(body.masses_kg)),
@@ -1418,7 +1552,8 @@ class Engine:
             "The existing passive cap and footprint attachment approximation are unchanged. "
             "No trunk, opposite leg, upper-body weight, hip torque, or measured-force input is present.",
         }
-        summary["rollout_diagnostics"] = summarize_diagnostics(
-            trace, self.reference, float(self.shoe.metadata["friction_mu"])
-        )
+        if self.reference is not None:
+            summary["rollout_diagnostics"] = summarize_diagnostics(
+                trace, self.reference, float(self.shoe.metadata["friction_mu"])
+            )
         return trace, summary

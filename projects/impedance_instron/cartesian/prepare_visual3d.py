@@ -251,8 +251,15 @@ def prepare(
     belt_speed_m_s: float | None = None,
     virtual_foot_reference: str = "shank",
     shoe_static_pitch_rad: float | None = None,
+    allow_force_side_override: bool = False,
 ) -> Path:
-    """Prepare a validated reference bundle from a selected Visual3D window."""
+    """Prepare a validated reference bundle from a selected Visual3D window.
+
+    Args:
+        allow_force_side_override: Permit a selected side to differ from the
+            trial-level manifest label. Callers must independently verify the
+            selected event with synchronized force, COP, and foot markers.
+    """
     if (
         side not in {"left", "right"}
         or belt_speed_m_s is None
@@ -440,7 +447,8 @@ def prepare(
     force = trial.force_n[force_mask][:, [0, 2]]
     if np.any(force[:, 1] < 0.0) or not np.any(force[:, 1] > 0.0):
         raise ValueError("selected force window contains negative upward force; verify Visual3D axis/sign metadata")
-    if trial.manifest.get("force_side") != side:
+    source_force_side = trial.manifest.get("force_side")
+    if source_force_side != side and not allow_force_side_override:
         raise ValueError("manifest.force_side must explicitly identify the selected stance side")
     loaded = force_mask & (trial.force_n[:, 2] > 50.0)
     if not np.any(loaded) or not np.all(np.isfinite(trial.cop_m[loaded])):
@@ -499,6 +507,8 @@ def prepare(
                     "side": side,
                     "foot_marker_names": ["heel_cluster", "toe", "mth"],
                     "source": "visual3d",
+                    "source_manifest_force_side": source_force_side,
+                    "force_side_override": bool(source_force_side != side and allow_force_side_override),
                     "joint_angles_source": joint_angles_source,
                 }
             )
@@ -559,6 +569,8 @@ def prepare(
         "status": "input_prepared_uncertified",
         "accepted": False,
         "side": side,
+        "source_manifest_force_side": source_force_side,
+        "force_side_override": bool(source_force_side != side and allow_force_side_override),
         "selected_window_s": [float(start_s), float(end_s)],
         "subject_mass_kg": float(subject_mass_kg),
         "belt_speed_m_s": belt_speed_m_s,

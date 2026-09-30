@@ -16,10 +16,39 @@ import warp as wp
 
 from .adjoint_contact import ContactTape
 from .adjoint_objective import ObjectiveAdjoint
-from .engine import _advance_world, _compression_partial, _prepare_world, _Settings
-from .mechanics import Params, Vec5
+from .engine import Vec6, _advance_world, _compression_partial, _prepare_world, _Settings
+from .mechanics import Params, Vec5, ankle, foot_angle
 
 wp.set_module_options({"enable_backward": True, "fuse_fp": False})
+
+
+@wp.kernel
+def _stage_carrier(
+    p: Params,
+    cfg: _Settings,
+    q: wp.array2d[Vec5],
+    v: wp.array2d[Vec5],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    """Expose the reference carrier kinematics through a plain differentiable kernel."""
+    w = wp.tid()
+    state = q[0, w]
+    velocity = v[0, w]
+    position, jx, jz = ankle(state, p)
+    angle = (foot_angle(state) - cfg.pitch) / wp.float64(2.0)
+    body_q[w] = wp.transform(
+        wp.vec3(wp.float32(position[0]), 0.0, wp.float32(position[1])),
+        wp.quat(0.0, wp.float32(-wp.sin(angle)), 0.0, wp.float32(wp.cos(angle))),
+    )
+    body_qd[w] = wp.spatial_vector(
+        wp.float32(wp.dot(jx, velocity)),
+        0.0,
+        wp.float32(wp.dot(jz, velocity)),
+        0.0,
+        wp.float32(-((velocity[2] + velocity[3]) + velocity[4])),
+        0.0,
+    )
 
 
 @wp.kernel
@@ -28,11 +57,13 @@ def _prepare_taped(
     p: Params,
     cfg: _Settings,
     basis_values: wp.array2d[wp.float64],
+    hip_gate: wp.array[wp.float64],
     coefficients: wp.array3d[wp.float64],
     states: wp.array2d[Vec5],
     velocities: wp.array2d[Vec5],
-    equilibrium: wp.array2d[wp.vec4d],
+    equilibrium: wp.array2d[Vec6],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     failure: wp.array[int],
@@ -48,11 +79,13 @@ def _prepare_taped(
         p,
         cfg,
         basis_values,
+        hip_gate,
         coefficients,
         states,
         velocities,
         equilibrium,
         actuator,
+        ankle_force,
         body_q,
         body_qd,
         failure,
@@ -72,6 +105,7 @@ def _advance_taped(
     next_states: wp.array2d[Vec5],
     next_velocities: wp.array2d[Vec5],
     actuator: wp.array2d[wp.vec4d],
+    ankle_force: wp.array2d[wp.vec2d],
     body_f: wp.array[wp.spatial_vector],
     groups: int,
     partial_maxima: wp.array2d[wp.vec2d],
@@ -99,6 +133,7 @@ def _advance_taped(
         next_states,
         next_velocities,
         actuator,
+        ankle_force,
         body_f,
         groups,
         partial_maxima,
@@ -121,6 +156,14 @@ def _force_seed(force: wp.array2d[wp.vec2d], scale: wp.float64, loss: wp.array[w
     w = wp.tid()
     f = force[0, w]
     wp.atomic_add(loss, 0, scale * (wp.float64(0.002) * f[0] + wp.float64(0.001) * f[1]))
+
+
+@wp.kernel
+def _measure_force(body_f: wp.array[wp.spatial_vector], force: wp.array2d[wp.vec2d]):
+    """Retain a differentiable force read from the same shoe wrench used by integration."""
+    w = wp.tid()
+    wrench = body_f[w]
+    force[0, w] = wp.vec2d(wp.float64(wrench[0]), wp.float64(wrench[2]))
 
 
 @wp.kernel
@@ -157,9 +200,16 @@ class EngineAdjoint:
             raise ValueError("The window must remain within the original stance")
         if source.settings.control_count != 12:
             raise ValueError("The adjoint controller requires twelve control points")
-        if objective not in ("diagnostic", "measured"):
-            raise ValueError("objective must be diagnostic or measured")
-        if objective == "measured" and (start_step != 0 or steps != source.steps or source.world_count != 1):
+        if objective not in (
+            "diagnostic",
+            "diagnostic_force",
+            "diagnostic_terminal",
+            "measured",
+            "measured_motion",
+            "measured_force",
+        ):
+            raise ValueError("Unknown audit objective")
+        if objective.startswith("measured") and (start_step != 0 or steps != source.steps or source.world_count != 1):
             raise ValueError("Measured gradients require one complete stance from its fixed initial state")
         self.objective_mode = objective
         if int(source.clock.numpy()[0]) != start_step:
@@ -182,8 +232,11 @@ class EngineAdjoint:
         field_types = {
             "body_q": ((w,), wp.transform, True),
             "body_qd": ((w,), wp.spatial_vector, True),
-            "equilibrium": ((1, w), wp.vec4d, True),
+            "carrier_q": ((w,), wp.transform, True),
+            "carrier_qd": ((w,), wp.spatial_vector, True),
+            "equilibrium": ((1, w), Vec6, True),
             "actuator": ((1, w), wp.vec4d, True),
+            "ankle_force": ((1, w), wp.vec2d, True),
             "forces": ((1, w), wp.vec2d, True),
             "moments": ((1, w), wp.float64, False),
             "fractions": ((1, w), wp.vec3d, False),
@@ -197,6 +250,8 @@ class EngineAdjoint:
             for name, (shape, dtype, grad) in field_types.items()
         }
         self.trace = [self.Step(self._trace_storage, t) for t in range(steps + 1)]
+        self._measured_force_storage = wp.zeros((steps, 1, w), dtype=wp.vec2d, device=self.device, requires_grad=True)
+        self.measured_force = [self._measured_force_storage[t] for t in range(steps)]
         self._initial_diagnostics = {}
         for name in ("failure", "failure_step", "range_step", "range_mask", "integrated", "recorded"):
             self._initial_diagnostics[name] = wp.clone(getattr(source, name))
@@ -208,14 +263,21 @@ class EngineAdjoint:
         self.objective = None
         self.state_history = None
         self.force_history = None
-        if objective == "measured":
+        if objective.startswith("measured"):
             self.objective = ObjectiveAdjoint(source.objective)
             self.state_history = self._q_storage.reshape((steps + 1, w))
-            self.force_history = self._trace_storage["forces"][:steps].reshape((steps, w))
+            self.force_history = self._measured_force_storage.reshape((steps, w))
 
     def zero_grad(self):
         """Clear each owning gradient buffer once while preserving all primal histories."""
-        arrays = [self.coefficients, self.loss, self._q_storage, self._v_storage, *self._trace_storage.values()]
+        arrays = [
+            self.coefficients,
+            self.loss,
+            self._q_storage,
+            self._v_storage,
+            self._measured_force_storage,
+            *self._trace_storage.values(),
+        ]
         if self.objective is not None:
             arrays.extend((self.objective.residual, self.objective.costs))
         for array in arrays:
@@ -240,11 +302,13 @@ class EngineAdjoint:
                 s.params,
                 s.kernel_config,
                 s.basis,
+                s.hip_gate,
                 self.coefficients,
                 self.q[t],
                 self.v[t],
                 out.equilibrium,
                 out.actuator,
+                out.ankle_force,
                 out.body_q,
                 out.body_qd,
                 self.failure,
@@ -262,7 +326,14 @@ class EngineAdjoint:
         for t in range(self.steps):
             self._prepare(t)
             out = self.trace[t]
-            contact = self.contact.apply(t, out.body_q, out.body_qd)
+            wp.launch(
+                _stage_carrier,
+                dim=s.world_count,
+                inputs=[s.params, s.kernel_config, self.q[t], self.v[t], out.carrier_q, out.carrier_qd],
+                device=self.device,
+                block_dim=1,
+            )
+            contact = self.contact.apply(t, out.carrier_q, out.carrier_qd)
             # These extrema only select failure screens and diagnostics. Successful
             # trajectories never differentiate the pass/fail decision.
             wp.launch(
@@ -295,6 +366,7 @@ class EngineAdjoint:
                     self.q[t + 1],
                     self.v[t + 1],
                     out.actuator,
+                    out.ankle_force,
                     contact.body_f,
                     s.reduction_groups,
                     out.partial_maxima,
@@ -312,15 +384,25 @@ class EngineAdjoint:
                 device=self.device,
                 block_dim=1,
             )
-            if self.objective_mode == "diagnostic":
+            wp.launch(
+                _measure_force,
+                dim=s.world_count,
+                inputs=[contact.body_f, self.measured_force[t]],
+                device=self.device,
+                block_dim=1,
+            )
+            if self.objective_mode in ("diagnostic", "diagnostic_force"):
                 wp.launch(
-                    _force_seed, dim=s.world_count, inputs=[out.forces, 1.0 / self.steps, self.loss], device=self.device
+                    _force_seed,
+                    dim=s.world_count,
+                    inputs=[self.measured_force[t], 1.0 / self.steps, self.loss],
+                    device=self.device,
                 )
         self._prepare(self.steps)
-        if self.objective_mode == "diagnostic":
+        if self.objective_mode in ("diagnostic", "diagnostic_terminal"):
             wp.launch(_terminal_seed, dim=s.world_count, inputs=[self.q[-1], self.v[-1], self.loss], device=self.device)
-        else:
-            self.objective.launch(self.state_history, self.force_history, self.loss)
+        elif self.objective_mode.startswith("measured"):
+            self.objective.launch(self.state_history, self.force_history, self.loss, mode=self.objective_mode)
 
     def complete(self):
         """Require every world to finish the requested window without a failed screen."""

@@ -1,0 +1,216 @@
+{
+  "qualified": true,
+  "sources": {
+    "projects/digital_shoe/__init__.py": "51fb012072575166e0efaa702cc82d5ca3b830c1ffade80fb5685bb41bb23c41",
+    "projects/digital_shoe/artifact.py": "684db4e16589426897922142d8a0ec53c0865f628fb6aefb5c9bb225a40b2bb6",
+    "projects/digital_shoe/contact.py": "ea850ee6b00dc23f3ecf79f02b3135fba34126669f68dacf4e21fb1f1e58d1f5",
+    "projects/digital_shoe/friction_adapter.py": "137c3769d16da524e374a75b6f29a504a4c18e2b1070ef115b15d40d46904096",
+    "projects/digital_shoe/friction_deflection.py": "6e728395a4f34d311f07ae05820f323804ee337e81ff46b42b286d73187c6a3b",
+    "projects/digital_shoe/friction_law.py": "a999b5bc2d7834f38f27ef7def8be3796ce509e0be549e702ee919a4ee1efcc9",
+    "projects/digital_shoe/friction_maxwell.py": "0ee6889a1e079be2159cb6b7cf3ec776cf1bb3afc29e145d848ae6e685e2d669",
+    "projects/digital_shoe/friction_parameter_adapter.py": "3de2e1f3eb83851aa51cac19e01a0ddc7c551394390a067b8b283af30285f259",
+    "projects/digital_shoe/friction_pressure.py": "7564674888ee1d616dd5b9c42e26587be6a8ed63bfe683879ac87640d1860af5",
+    "projects/digital_shoe/friction_slip_history.py": "5eb55be1605bf42c6dda417f6a31f7c7e8720a19e45b28a5aaf1ea9f5b4627c6",
+    "projects/digital_shoe/friction_solver.py": "1138f20840bbeb570e017a3e6092a3c58ec2a0304f86cdb0de58dafe593d569a",
+    "projects/digital_shoe/friction_stribeck.py": "2ab2b7e87a165252758cda829dc7871635f296bfd722966edbf05b2d5271ab12",
+    "projects/digital_shoe/material.py": "b35478d605e800560c041450b278fd63fbdef8f59561f47057caa90c9811b154",
+    "projects/digital_shoe/provenance.py": "074e1a29de9d980af42f4c8ee3c92b71483d0da8f41c4c5093cf0529af3eab46",
+    "projects/digital_shoe/rendering.py": "ccc5fb6a9697471bc10ce968a63221637b4445d34ec9fb3fe644ea8f9a4feb9c",
+    "projects/digital_shoe/runtime.py": "e90a23ad8b5d6decbfa85bae729318915b8d86e3c4a611ebb35ab76f555e4243",
+    "projects/impedance_instron/cartesian/__init__.py": "114c876edb7137d9e267b7db56be4151345ee544248da822ec75ff0e14bd74ed",
+    "projects/impedance_instron/cartesian/data.py": "5e3f610a30f2efb225ca458dc4317846c831b9852c8500e1fb57a93d6e72336d",
+    "projects/impedance_instron/cartesian/fit.py": "efe5235049a99a228476fa155be145423055e0f3536402657eea914d56f782bd",
+    "projects/impedance_instron/cartesian/gpu/__init__.py": "a6c06641d675e412b20ff0ac83f3f9c5677cbcd52a7d03f265c8259fef3f4243",
+    "projects/impedance_instron/cartesian/gpu/engine.py": "c460a32803d4336a6ca3080c7f3b18021df2102927d3636b79c0b5bf26d39e0b",
+    "projects/impedance_instron/cartesian/gpu/foundation.py": "b9b4d3e39802dc7f8dd52e2a857aa3de9208db8f4ad8c96cd312adf76ac31266",
+    "projects/impedance_instron/cartesian/gpu/mechanics.py": "07d3f65dec4fc879f39ca974763b28daa77317e5d18ca1a4c714efaf90b465f0",
+    "projects/impedance_instron/cartesian/gpu/objective.py": "b211f7852df4006e5534a36adedf4ab83c30260964ee9e124d9fdb667d333c62",
+    "projects/impedance_instron/cartesian/gpu/provenance.py": "7e2f2929800aeff6649b48ffd17fd3adf93d7d9a5b4d0d86ade10f4adcbe944e",
+    "projects/impedance_instron/cartesian/mechanics.py": "1b3fc9d80674d68f701a3bedb5cd826ad57110bd53663faa3c587f4db7cdc902",
+    "projects/impedance_instron/cartesian/profile.py": "2584b3ff4b7102c9decea0b435e1dbd651974cbbe53f26ba3eec426c65a98ace",
+    "projects/impedance_instron/cartesian/run.py": "543b826039475894560f339a4eb1550cacaeb48714a7410aad24be9a3abea513",
+    "projects/impedance_instron/cartesian/shoe.py": "c3784392fec832e89f454e19e64c26edea684aebbd9382ff1570137a6d4f4413",
+    "projects/impedance_instron/cartesian/spline.py": "3f43c91a743b429198eb812096c2cb1d64da3c4daec2ec7996ffcae9f8fb2c03",
+    "projects/impedance_instron/cartesian/trajectory.py": "95fe7f163de990d103a800540efdf8b20fe02fa9edcd625970f7b5180fd4747c",
+    "runner_controller.py": "cccbe76532da8660e23d59e7eea8dbcd7a97ed08fa70e583cb8e9b7020a29e36",
+    "runner_fit.py": "a5fd1af6b8ba1b44d7283f37858766755b071d9df36009b5fadbea06a9a79ab2",
+    "adjoint_batch.py": "59486f1d7fdf16978273d562e6134dbc056ef950e90f4e067bf8d87864d27846",
+    "adjoint.py": "aa4c72a4c84426080cac75538eb6b2900dcb7f8b9283492c14ba43827680c9af",
+    "adjoint_contact.py": "eb63a33884856c791baa72945f26f1278ed81aaec286520e2f0fd1e7dc57e543",
+    "adjoint_objective.py": "81b2d274c9aa2754f11c6724949f3363f1bbcd65565db2935037af88a2205c25"
+  },
+  "dataset_sha256": "f78344c56059bd9a1ea81582dda37386dc8c88a6dc8a1d44144c38256436dd9f",
+  "fit_directory": "/home/jkuzm/projects/newton/outputs/impedance_instron/fr3_2_ankle_xy_refit_20260929/fit_run2",
+  "duration_s": 0.3549995399999979,
+  "geometry_m": [
+    0.37619076326850204,
+    0.3835319201587655
+  ],
+  "scope": "Four training stances from both trials; fixed clock and geometry; target-free production parity; three shared-coefficient directions tangent to active spline faces. Contact nonsmoothness remains.",
+  "parity": [
+    {
+      "stance_id": "FR3_1_train_000",
+      "batch_state_exact": true,
+      "batch_force_exact": true,
+      "loss_absolute_difference": 0.0,
+      "target_free_state_exact": true,
+      "target_free_force_exact": true,
+      "target_free_complete": true
+    },
+    {
+      "stance_id": "FR3_1_train_025",
+      "batch_state_exact": true,
+      "batch_force_exact": true,
+      "loss_absolute_difference": 0.0,
+      "target_free_state_exact": true,
+      "target_free_force_exact": true,
+      "target_free_complete": true
+    },
+    {
+      "stance_id": "FR3_2_train_027",
+      "batch_state_exact": true,
+      "batch_force_exact": true,
+      "loss_absolute_difference": 0.0,
+      "target_free_state_exact": true,
+      "target_free_force_exact": true,
+      "target_free_complete": true
+    },
+    {
+      "stance_id": "FR3_2_train_018",
+      "batch_state_exact": true,
+      "batch_force_exact": true,
+      "loss_absolute_difference": 0.0,
+      "target_free_state_exact": true,
+      "target_free_force_exact": true,
+      "target_free_complete": true
+    }
+  ],
+  "directions": [
+    {
+      "passed": true,
+      "curve": [
+        {
+          "epsilon": 0.03,
+          "autodiff": 3.1546958441044906,
+          "finite_difference": 3.1533959964518727,
+          "absolute_error": 0.0012998476526178138,
+          "passed": true
+        },
+        {
+          "epsilon": 0.01,
+          "autodiff": 3.1546958441044906,
+          "finite_difference": 3.152045447460239,
+          "absolute_error": 0.002650396644251707,
+          "passed": true
+        },
+        {
+          "epsilon": 0.003,
+          "autodiff": 3.1546958441044906,
+          "finite_difference": 3.156421977883165,
+          "absolute_error": 0.0017261337786744768,
+          "passed": true
+        },
+        {
+          "epsilon": 0.001,
+          "autodiff": 3.1546958441044906,
+          "finite_difference": 3.156675494278005,
+          "absolute_error": 0.0019796501735145355,
+          "passed": true
+        },
+        {
+          "epsilon": 0.0003,
+          "autodiff": 3.1546958441044906,
+          "finite_difference": 3.1553375095623912,
+          "absolute_error": 0.0006416654579006753,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "curve": [
+        {
+          "epsilon": 0.03,
+          "autodiff": 4.557870974195434,
+          "finite_difference": 4.563127762200322,
+          "absolute_error": 0.005256788004888158,
+          "passed": true
+        },
+        {
+          "epsilon": 0.01,
+          "autodiff": 4.557870974195434,
+          "finite_difference": 4.558706705351234,
+          "absolute_error": 0.0008357311558002678,
+          "passed": true
+        },
+        {
+          "epsilon": 0.003,
+          "autodiff": 4.557870974195434,
+          "finite_difference": 4.559930855955112,
+          "absolute_error": 0.0020598817596777508,
+          "passed": true
+        },
+        {
+          "epsilon": 0.001,
+          "autodiff": 4.557870974195434,
+          "finite_difference": 4.560326476090282,
+          "absolute_error": 0.002455501894847778,
+          "passed": true
+        },
+        {
+          "epsilon": 0.0003,
+          "autodiff": 4.557870974195434,
+          "finite_difference": 4.560427952776299,
+          "absolute_error": 0.0025569785808654544,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "passed": true,
+      "curve": [
+        {
+          "epsilon": 0.03,
+          "autodiff": -5.587884299717403,
+          "finite_difference": -5.632809175003869,
+          "absolute_error": 0.04492487528646638,
+          "passed": true
+        },
+        {
+          "epsilon": 0.01,
+          "autodiff": -5.587884299717403,
+          "finite_difference": -5.5981522008099915,
+          "absolute_error": 0.010267901092588794,
+          "passed": true
+        },
+        {
+          "epsilon": 0.003,
+          "autodiff": -5.587884299717403,
+          "finite_difference": -5.595135432344023,
+          "absolute_error": 0.007251132626620027,
+          "passed": true
+        },
+        {
+          "epsilon": 0.001,
+          "autodiff": -5.587884299717403,
+          "finite_difference": -5.590453737207568,
+          "absolute_error": 0.0025694374901652495,
+          "passed": true
+        },
+        {
+          "epsilon": 0.0003,
+          "autodiff": -5.587884299717403,
+          "finite_difference": -5.587206780255372,
+          "absolute_error": 0.0006775194620303182,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "baseline_losses": [
+    21.417947806137292,
+    16.483248643895873,
+    31.799296942009647,
+    17.750571043896112
+  ]
+}

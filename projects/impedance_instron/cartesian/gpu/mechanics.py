@@ -34,9 +34,17 @@ class Params:
 def make_params(reference: dict, profile: dict) -> Params:
     """Validate host inputs once and pack only the three declared bodies."""
     validate_reference(reference)
+    return make_params_initial(reference["lengths_m"], profile)
+
+
+def make_params_initial(lengths_m, profile: dict) -> Params:
+    """Pack human geometry and inertial properties without measured targets."""
     validate_profile(profile)
+    lengths = tuple(float(value) for value in lengths_m)
+    if len(lengths) != 2 or not all(math.isfinite(value) and value > 0.0 for value in lengths):
+        raise ValueError("lengths_m must contain two finite, positive segment lengths")
     params = Params()
-    params.lengths = wp.vec2d(*reference["lengths_m"])
+    params.lengths = wp.vec2d(*lengths)
     params.masses = wp.vec3d(*profile["masses_kg"])
     params.com0 = wp.vec2d(*profile["com_local_m"][0])
     params.com1 = wp.vec2d(*profile["com_local_m"][1])
