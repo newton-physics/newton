@@ -4261,11 +4261,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 global world ``-1`` and is a no-op because MuJoCo does not
                 support global dynamic objects. If ``None``, all worlds are
                 reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
