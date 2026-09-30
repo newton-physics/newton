@@ -157,7 +157,7 @@ class ViewerRTX(ViewerUSD):
     _borrowed_reference = None
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
-    _render_settings: Mapping[str, Any] = MappingProxyType({})
+    _rtx_render_settings: Mapping[str, Any] = MappingProxyType({})
     _render_var_path = "/Render/Vars/LdrColor"
 
     @override
@@ -216,7 +216,9 @@ class ViewerRTX(ViewerUSD):
                 ``environment`` is ignored. Requires OVRTX 0.4 or newer.
             render_settings: ``omni:rtx:*`` attribute overrides applied to the
                 viewer's render product, e.g.
-                ``{"omni:rtx:pt:samplesPerPixel": 4}``.
+                ``{"omni:rtx:pt:samplesPerPixel": 4}``. A value may be a
+                ``(usd_type_name, value)`` pair to set the USD type
+                explicitly, e.g. ``("UInt", 4)``.
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
@@ -251,7 +253,7 @@ class ViewerRTX(ViewerUSD):
             if scaling != 1.0:
                 raise ValueError("ViewerRTX(stage=...) does not support scaling")
             self._root_path = "/__newton_viewer"
-        self._render_settings = dict(render_settings or {})
+        self._rtx_render_settings = dict(render_settings or {})
         self._borrowed_reference = None
 
         self._environment = environment.lower()
@@ -703,7 +705,7 @@ void main() {
         rp.CreateAttribute("omni:rtx:quality", Sdf.ValueTypeNames.Int, custom=False).Set(0)
         rp.CreateAttribute("omni:rtx:waitForEvents", Sdf.ValueTypeNames.TokenArray).Set([])
 
-        for name, value in self._render_settings.items():
+        for name, value in self._rtx_render_settings.items():
             self._author_render_setting(rp, name, value)
 
         # Global render settings belong to the owner of a borrowed stage.
@@ -728,6 +730,10 @@ void main() {
         """Set a render-product attribute, inferring the USD type for new attributes."""
         from pxr import Sdf
 
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str):
+            type_name, value = value
+            prim.CreateAttribute(name, getattr(Sdf.ValueTypeNames, type_name)).Set(value)
+            return
         attr = prim.GetAttribute(name)
         if not attr:
             if isinstance(value, bool):

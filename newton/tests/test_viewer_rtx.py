@@ -328,6 +328,32 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
             np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
 
 
+@unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
+class TestViewerRTXRenderSettings(unittest.TestCase):
+    def test_render_settings_override_render_product_attributes(self):
+        """Apply plain and explicitly typed render settings to the render product."""
+        from pxr import Sdf
+
+        viewer = ViewerRTX(
+            headless=True,
+            render_settings={
+                "omni:rtx:pt:samplesPerPixel": 4,
+                "omni:rtx:quality": ("Int", 100),
+                "omni:rtx:post:tonemap:cm2Factor": 1.5,
+            },
+        )
+        try:
+            viewer._add_camera_lights_and_render_product()
+            product = viewer.stage.GetPrimAtPath(viewer._render_product_path)
+            spp = product.GetAttribute("omni:rtx:pt:samplesPerPixel")
+            self.assertEqual((spp.GetTypeName(), spp.Get()), (Sdf.ValueTypeNames.UInt, 4))
+            self.assertEqual(product.GetAttribute("omni:rtx:quality").Get(), 100)
+            factor = product.GetAttribute("omni:rtx:post:tonemap:cm2Factor")
+            self.assertEqual((factor.GetTypeName(), factor.Get()), (Sdf.ValueTypeNames.Float, 1.5))
+        finally:
+            viewer.close()
+
+
 class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):
         """Find the color output returned by legacy and OVRTX 0.5 renderers."""
