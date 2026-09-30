@@ -85,12 +85,6 @@ changes. Keep the default ``"LLTB"`` solver for small systems.
 DVI APGD unilateral subsolver
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. experimental::
-
-   The opt-in DVI APGD mode and its ``config.dvi.apgd`` configuration may
-   change without prior notice. Nonlinear convergence and performance should
-   be evaluated on the intended workload before selecting this mode.
-
 Set ``config.dvi.unilateral_solver = "apgd"`` to solve bounded joint rows,
 joint limits, and contact cones with accelerated projected gradient steps.
 The default remains ``"pgs"``. APGD supports dense and sparse operators and
@@ -102,27 +96,136 @@ unilateral split and rigid-constraint model.
    config = newton.solvers.SolverKamino.Config(dynamics_solver="dvi")
    config.dvi.unilateral_solver = "apgd"
    config.dvi.apgd.max_iterations = 64
-   config.dvi.apgd.max_corrections = 20
+   config.dvi.apgd.max_nonlinear_corrections = 1
    config.dvi.apgd.tolerance = 1.0e-5
    solver = newton.solvers.SolverKamino(model, config=config)
 
-APGD solves a sequence of convex cone quadratic programs. Between programs it
-recomputes the De Saxce normal-velocity correction ``mu * norm(v_t)``; that
-correction remains fixed during each inner solve and its backtracking search.
-The stopping condition evaluates the nonlinear Coulomb natural map with the
-updated velocity. This avoids treating convergence of an associated cone QP
-as convergence of Coulomb friction.
+**Velocity and contact correction.** During a unilateral phase, let ``x`` be
+the constraint impulse, ``A`` the unilateral Delassus operator (or its Schur
+complement), and ``b`` the fixed velocity bias. Every velocity evaluation uses
+the same relation ``v(x) = A x + b``. Contact rows are ordered ``[t0, t1, n]``;
+the De Saxce shift is ``s(v) = (0, 0, mu * norm(v_t))`` for each contact and
+zero for bounds and limits. Let ``K`` denote the product of the bound
+intervals, limit half-lines, and Coulomb cones.
 
-``apgd.max_iterations`` bounds inner accelerated steps,
-``apgd.max_backtracks`` bounds each line search, and
-``apgd.max_corrections`` bounds nonlinear correction iterations per unilateral
-phase. ``apgd.relaxation`` can damp the nonlinear update. These controls are
-runtime Python settings and do not add USD material attributes.
+**Nested algorithm.** Each nonlinear correction freezes ``s`` and solves
+the convex QP ``min_{x in K} 0.5 * x.T A x + (b + s).T x`` using APGD:
+
+.. code-block:: text
+
+   x = project_K(initial_impulse)
+   for each nonlinear correction:
+       x_outer = x
+       s = correction(A x_outer + b)
+       y = x; restart acceleration
+       for each APGD iteration:
+           g = A y + b + s
+           z = project_K(y - g / L)       # Backtrack L; keep y and s fixed
+           y = z + beta * (z - x); x = z # Update momentum, with restart
+           stop inner loop if the frozen-QP residual meets tolerance
+       x = x_outer + relaxation * (x - x_outer)
+       stop outer loop if the fresh nonlinear residual meets tolerance
+
+APGD updates the velocity ``A y + b`` at every extrapolated iterate ``y``;
+only the correction remains fixed during the inner solve. A new outer
+iteration refreshes that correction from the updated impulse. This makes
+the correction consistent with the resulting contact velocity while keeping
+one convex objective throughout each inner solve. It does not guarantee
+convergence of the outer fixed point for every frictional contact problem.
+
+The inner residual is ``norm_inf(x - project_K(x - (A x + b + s)))``.
+The nonlinear residual uses the same expression with ``s`` recomputed from
+``A x + b``. Both use a unit projection step. Inner convergence alone does
+not establish nonlinear Coulomb convergence.
+
+**Stopping conditions.** APGD currently uses an infinity-norm natural map;
+there is no configurable residual type. The inner and nonlinear loops share
+``apgd.tolerance`` because they measure the same map with different corrections.
+Backtracking has a separate acceptance condition:
+
+.. list-table:: Per-world termination
+   :header-rows: 1
+   :widths: 20 45 35
+
+   * - Loop
+     - Successful exit
+     - Budget or failure exit
+   * - Backtracking
+     - Finite trial satisfying ``d.T A d <= L * norm(d)**2``, with roundoff allowance.
+     - After ``max_backtracks`` rejected trials, or a non-finite curvature or step-size calculation.
+   * - Inner APGD
+     - Frozen-correction residual ``<= apgd.tolerance`` after an accepted step.
+     - After ``max_iterations`` accepted steps, or a failed line search.
+   * - Nonlinear correction
+     - Fresh nonlinear residual ``<= apgd.tolerance`` after the relaxed update.
+     - After ``max_nonlinear_corrections`` solves, or a failed line search.
+
+For backtracking, ``d = candidate - y``. The numerical allowance is
+``1e-6 * max(abs(d.T A d), L * norm(d)**2) + 1e-20``; it is not a solver
+convergence tolerance. A rejected finite trial doubles ``L`` and retries.
+
+If the inner iteration budget is exhausted, the outer loop uses the partial
+solution, applies relaxation, and checks the nonlinear residual. It can then
+start another correction solve if needed and budget remains. Exhausting the
+nonlinear budget returns the last accepted, possibly unconverged impulses;
+it does not raise an exception or imply convergence. A failed line search
+retains the last accepted impulses and stops all APGD loops for that world.
+
+Each loop maintains a per-world active mask and an integer condition counting
+worlds that need another iteration. The condition is cleared and recomputed
+on every pass. A Warp conditional loop exits when that count reaches zero;
+worlds that finish sooner remain masked while other worlds continue. Without
+conditional graph support, fixed loops use the same masks and stopping tests,
+but still launch the remaining masked work. Nonempty worlds perform at least
+one trial: the residual checks occur after updates, not before the first step.
+
+**Budgets and accuracy.** All budgets are upper limits; supported conditional
+device loops stop early when their residual meets ``apgd.tolerance``.
+
+.. list-table:: APGD controls
+   :header-rows: 1
+   :widths: 35 10 55
+
+   * - Control
+     - Default
+     - Meaning
+   * - ``max_iterations``
+     - 64
+     - Accepted APGD steps per frozen-correction QP.
+   * - ``max_backtracks``
+     - 24
+     - Trial steps per APGD iteration, including the initial trial.
+   * - ``max_nonlinear_corrections``
+     - 1
+     - Frozen-correction QPs per unilateral phase.
+   * - ``tolerance``
+     - ``1e-5``
+     - Absolute infinity-norm tolerance for both natural maps.
+   * - ``relaxation``
+     - 1.0
+     - Damping of the impulse update after each QP, in ``(0, 1]``.
+   * - ``use_graph_conditionals``
+     - ``True``
+     - Use device early exit when supported; otherwise use masked fixed loops.
+
+The default performs one frozen-correction approximation. Workloads requiring
+tighter Coulomb accuracy can set ``max_nonlinear_corrections`` to a larger
+value, such as 20, before constructing the solver. More inner APGD iterations
+cannot remove error caused by a stale correction. For example, with
+``A = I``, ``b = (10, 0, -1)``, ``mu = 0.5``, and zero initial impulse, one
+correction gives ``(-0.4, 0, 0.8)``. Repeated corrections approach the Coulomb
+solution ``(-0.5, 0, 1)``. Accuracy tests therefore select their correction
+budget explicitly and retain the same physical assertions.
+
+These controls are runtime Python settings and do not add USD material
+attributes. The nonlinear correction loop is separate from DVI's bilateral/
+unilateral alternation.
 ``max_alternating_iterations`` and ``bilateral_solve_interval`` continue to
 control the existing alternating path; Schur mode eliminates the bilateral
 rows during the unilateral solve and recovers their impulses afterward.
 
-The APGD status reports accepted inner ``iterations``, ``apgd_corrections``,
+**Status and limitations.** The APGD status reports accepted inner
+``iterations``, ``apgd_corrections``,
 ``apgd_backtracks``, and the last phase's ``apgd_residual``. Budget exhaustion
 can leave a nonzero residual. An exhausted or non-finite line search sets
 ``apgd_line_search_failed`` and cannot report convergence. The existing
@@ -130,6 +233,12 @@ terminal full-system status also checks joint and contact conditions after
 bilateral recovery. APGD does not apply PGS's heuristic reduction of the
 friction load for penetration recovery; it uses the full Coulomb cone and
 the existing stabilized free velocity.
+
+The final ``converged`` flag uses DVI's feasibility, bilateral, and
+complementarity checks with ``config.dvi.tolerance``. This tolerance is
+independent of ``config.dvi.apgd.tolerance``. Inspect ``apgd_residual`` when
+requiring the APGD natural-map threshold as well; inner or nonlinear budget
+exhaustion alone does not determine the full-system flag.
 
 Inspecting terminal status
 --------------------------

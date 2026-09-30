@@ -798,11 +798,8 @@ class PADMMSolverConfig:
 class DVIAPGDConfig:
     """Controls for the APGD unilateral subsolver.
 
-    .. experimental::
-
-        This configuration and the APGD mode may change without prior notice.
-        These runtime solver controls are Python-only; they do not author a
-        material model or add USD schema attributes.
+    These runtime solver controls are Python-only; they do not author a
+    material model or add USD schema attributes.
     """
 
     max_iterations: int = 64
@@ -811,21 +808,37 @@ class DVIAPGDConfig:
     max_backtracks: int = 24
     """Maximum trial steps per iteration, including the initial trial."""
 
-    max_corrections: int = 20
-    """Maximum De Saxce fixed-point iterations per unilateral phase."""
+    max_nonlinear_corrections: int = 1
+    """Maximum De Saxce fixed-point iterations per unilateral phase.
+
+    Each iteration freezes the correction for one inner APGD solve. The
+    default of one performs a single frozen-correction approximation.
+    Increase this budget for tighter nonlinear contact accuracy; increasing
+    ``max_iterations`` alone cannot resolve a stale correction. The nonlinear
+    residual remains available when the budget is exhausted.
+    """
 
     tolerance: float = 1.0e-5
-    """Absolute infinity-norm tolerance on inner and nonlinear natural maps."""
+    """Shared absolute infinity-norm tolerance on inner and nonlinear natural maps.
+
+    The inner map uses the frozen correction; the nonlinear map recomputes
+    it at the accepted impulse. Backtracking uses a curvature test instead.
+    Full-system status checks use :attr:`DVISolverConfig.tolerance`.
+    """
 
     relaxation: float = 1.0
     """Damping of each De Saxce impulse update, in ``(0, 1]``."""
 
     use_graph_conditionals: bool = True
-    """Stop device loops early when supported; otherwise use masked fixed loops."""
+    """Stop device loops early when supported; otherwise use masked fixed loops.
+
+    Each world stops independently. A conditional loop exits when no world
+    needs another iteration; fixed loops preserve the same per-world masks.
+    """
 
     def validate(self) -> None:
         """Reject non-finite tolerances and invalid nonlinear or inner budgets."""
-        for name in ("max_iterations", "max_backtracks", "max_corrections"):
+        for name in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"`{name}` must be a positive integer.")
@@ -850,13 +863,9 @@ class DVISolverConfig:
     unilateral_solver: Literal["pgs", "apgd"] = field(default="pgs", kw_only=True)
     """Backend for bounded rows, limits, and contacts. Defaults to ``pgs``.
 
-    .. experimental::
-
-        The opt-in ``apgd`` mode uses frozen De Saxce corrections around
-        accelerated cone-QP solves. It preserves the Coulomb contact law and
-        the existing bilateral coupling controls, but its API and behavior
-        may change without prior notice. Nonlinear convergence is not
-        guaranteed for every frictional contact problem.
+    The ``apgd`` backend uses frozen De Saxce corrections around accelerated
+    cone-QP solves. It retains the existing bilateral coupling controls.
+    Nonlinear convergence depends on the contact problem and iteration budget.
     """
 
     apgd: DVIAPGDConfig = field(default_factory=DVIAPGDConfig, kw_only=True)

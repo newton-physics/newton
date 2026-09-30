@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device operations for unilateral APGD with frozen De Saxce corrections."""
+"""Device operations for unilateral APGD with frozen De Saxce corrections.
+
+Vectors use the full constraint layout: bilaterals, bounds, limits, then
+contact triplets ``[t0, t1, n]``. Only unilateral rows are updated. Per-world
+masks select active correction solves, inner iterations, and trial steps.
+"""
 
 import warp as wp
 
@@ -16,10 +21,15 @@ class APGDConfig:
     """Per-world budgets and tolerances for the nested solve."""
 
     max_iterations: wp.int32
+    """Maximum accepted steps in each frozen-correction QP."""
     max_backtracks: wp.int32
-    max_corrections: wp.int32
+    """Maximum trial steps per inner iteration, including the initial trial."""
+    max_nonlinear_corrections: wp.int32
+    """Maximum frozen-correction QPs per unilateral phase."""
     tolerance: wp.float32
+    """Absolute infinity-norm tolerance for both natural-map residuals."""
     relaxation: wp.float32
+    """Damping applied after each frozen-correction solve."""
 
 
 @wp.struct
@@ -27,11 +37,17 @@ class APGDState:
     """Per-world acceleration and termination state."""
 
     lipschitz: wp.float32
+    """Quadratic curvature estimate; its reciprocal is the trial step size."""
     theta: wp.float32
+    """Nesterov acceleration parameter, reset for each frozen-correction QP."""
     iterations: wp.int32
+    """Accepted steps in the current frozen-correction QP."""
     corrections: wp.int32
+    """Correction solves started in the current unilateral phase."""
     backtracks: wp.int32
+    """Rejected trial steps in the current inner iteration."""
     failed: wp.int32
+    """Whether a line search failed during the current unilateral phase."""
 
 
 @wp.func
@@ -143,7 +159,12 @@ def freeze_correction(
     shift: wp.array[wp.float32],
     y: wp.array[wp.float32],
 ):
-    """Freeze mu times tangential speed on each normal row."""
+    """Freeze the De Saxce shift at the current outer impulse.
+
+    ``product + bias`` is the velocity ``A x + b``. Store
+    ``mu * norm(v_t)`` on contact normal rows, zero all other shifts, and
+    initialize the extrapolated iterate ``y`` from ``x``.
+    """
     wid, row = wp.tid()
     if not active[wid] or row < njc[wid] or row >= dim[wid]:
         return
@@ -193,7 +214,11 @@ def projected_step(
     shift: wp.array[wp.float32],
     candidate: wp.array[wp.float32],
 ):
-    """Take a projected gradient step for the frozen quadratic objective."""
+    """Project ``y - (A y + b + s) / L`` onto the unilateral feasible set.
+
+    ``product`` contains ``A y`` and ``shift`` contains the fixed correction
+    ``s``. A backtracking retry changes ``L`` while retaining ``y`` and ``s``.
+    """
     wid, row = wp.tid()
     nu = dim[wid] - njc[wid]
     scalar_rows = nbc[wid] + nl[wid]
@@ -226,7 +251,14 @@ def check_descent(
     condition: wp.array[wp.int32],
     status: wp.array[DVIStatus],
 ):
-    """Accept only steps satisfying quadratic majorization; reject exhausted searches."""
+    """Check the quadratic upper bound and reject exhausted searches.
+
+    For ``d = candidate - y``, require ``d.T A d <= L * norm(d)**2``.
+    The fixed linear term ``b + s`` cancels from this test. This checks the
+    frozen QP's curvature, not convergence of the nonlinear contact law.
+    Non-finite curvature or bounds fail the search even if an infinity
+    comparison would otherwise accept the trial.
+    """
     wid = wp.tid()
     if not searching[wid]:
         return
@@ -239,7 +271,10 @@ def check_descent(
         norm += delta * delta
     entry = state[wid]
     bound = wp.float64(entry.lipschitz) * norm
-    accepted = curvature <= bound + wp.float64(1.0e-6) * wp.max(wp.abs(curvature), bound) + wp.float64(1.0e-20)
+    finite = wp.isfinite(curvature) and wp.isfinite(bound)
+    accepted = finite and (
+        curvature <= bound + wp.float64(1.0e-6) * wp.max(wp.abs(curvature), bound) + wp.float64(1.0e-20)
+    )
     searching[wid] = False
     if not accepted:
         info = status[wid]
@@ -247,7 +282,7 @@ def check_descent(
         status[wid] = info
         entry.backtracks += 1
         entry.lipschitz *= 2.0
-        if entry.backtracks >= config[wid].max_backtracks or not wp.isfinite(curvature):
+        if entry.backtracks >= config[wid].max_backtracks or not finite or not wp.isfinite(entry.lipschitz):
             entry.failed = 1
             inner[wid] = False
             active[wid] = False
@@ -275,7 +310,12 @@ def natural_residual(
     shift: wp.array[wp.float32],
     nonlinear: wp.bool,
 ) -> wp.float32:
-    """Evaluate the complete box/limit/contact natural map with unit step."""
+    """Evaluate the infinity norm of the unit-step unilateral natural map.
+
+    With ``nonlinear=False``, use the frozen ``shift`` to measure inner QP
+    convergence. Otherwise recompute the De Saxce shift from ``product +
+    bias = A x + b`` to measure the nonlinear contact law at ``x``.
+    """
     residual = wp.float32(0.0)
     row = wp.int32(0)
     while row < dim - njc:
@@ -434,7 +474,7 @@ def finish_correction(
     info.apgd_residual = residual
     info.apgd_corrections += 1
     status[wid] = info
-    active[wid] = residual > config[wid].tolerance and state[wid].corrections < config[wid].max_corrections
+    active[wid] = residual > config[wid].tolerance and state[wid].corrections < config[wid].max_nonlinear_corrections
     if active[wid]:
         wp.atomic_add(condition, 0, 1)
 

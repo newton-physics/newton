@@ -73,10 +73,11 @@ class DVISolver:
     and contact rows enforce Coulomb-cone complementarity after the De Saxce
     velocity correction.
 
-    Bilateral constraints are solved as a direct block when available, while
-    every limit and frictional contact uses one graph-colored projected
-    Gauss-Seidel schedule. Dense and matrix-free sparse problems share the
-    same solution, warm-start, status, and diagnostics contract.
+    Bilateral constraints are solved as a direct block when available.
+    Bounds, limits, and contacts use graph-colored projected Gauss-Seidel
+    by default, or the APGD unilateral subsolver. Dense and
+    matrix-free sparse problems share the same solution, warm-start,
+    status, and diagnostics contract.
     """
 
     Config = DVISolverConfig

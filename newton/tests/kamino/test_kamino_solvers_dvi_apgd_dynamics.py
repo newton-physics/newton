@@ -1,24 +1,48 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Acceptance workloads for experimental DVI APGD: DR Legs and contact stacks."""
+"""Acceptance workloads for DVI APGD: DR Legs and contact stacks."""
 
 import math
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton.solvers import SolverKamino
+from newton.tests.kamino.test_kamino_solver_kamino_joint_friction import (
+    _run_hold_and_breakaway_test,
+    _run_spin_down_test,
+)
 from newton.tests.kamino.test_kamino_solvers_dvi import _build_five_box_stack
 from newton.tests.kamino.test_kamino_solvers_dvi_apgd import _devices
+from newton.tests.kamino.utils.solver_configs import make_dvi_dense_config, make_dvi_sparse_config
 from newton.viewer import ViewerNull
 
 
 class TestDVIAPGDDynamics(unittest.TestCase):
     """Exercise the actual integration, warmstart, and captured sparse solver paths."""
+
+    def test_joint_friction_spin_down(self):
+        """Reuse analytical joint-friction deceleration and stopped-pose checks for APGD."""
+        for device in _devices():
+            for factory in (make_dvi_dense_config, make_dvi_sparse_config):
+                with self.subTest(device=device, config=factory.__name__), wp.ScopedDevice(device):
+                    config = factory()
+                    config.dvi.unilateral_solver = "apgd"
+                    _run_spin_down_test(self, factory.__name__, config)
+
+    def test_joint_friction_hold_and_breakaway(self):
+        """Reuse static holding and saturated friction-torque checks for APGD."""
+        for device in _devices():
+            for factory in (make_dvi_dense_config, make_dvi_sparse_config):
+                with self.subTest(device=device, config=factory.__name__), wp.ScopedDevice(device):
+                    config = factory()
+                    config.dvi.unilateral_solver = "apgd"
+                    _run_hold_and_breakaway_test(self, factory.__name__, config)
 
     def test_contact_stack_rollout(self):
         """Keep a five-box stack supported through dense and sparse simulation steps."""
@@ -83,7 +107,16 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 # Match the upstream support test; bounded rows have separate tests.
                 joint_effort_limit=math.inf,
             )
-            example = Example(ViewerNull(num_frames=1), args)
+            config_from_model = SolverKamino.Config.from_model
+
+            def make_accuracy_config(*args, **kwargs):
+                """Set the DR Legs residual budget before solver allocation and capture."""
+                config = config_from_model(*args, **kwargs)
+                config.dvi.apgd.max_nonlinear_corrections = 20
+                return config
+
+            with patch.object(SolverKamino.Config, "from_model", side_effect=make_accuracy_config):
+                example = Example(ViewerNull(num_frames=1), args)
             base_z = []
             for _ in range(180):
                 example.step()

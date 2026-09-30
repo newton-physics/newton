@@ -11,6 +11,11 @@ from . import apgd_kernels as kernels
 class UnilateralAPGD:
     """Solve frozen cone QPs inside a De Saxce fixed-point iteration.
 
+    Each correction uses ``v = A x + b`` at the current impulse ``x`` and
+    holds ``s = (0, 0, mu * norm(v_t))`` fixed throughout an APGD solve.
+    Inner steps evaluate ``A y + b + s`` at the extrapolated impulse ``y``.
+    A fresh nonlinear residual decides whether another correction is needed.
+
     The bilateral block is fixed during an alternating phase. In Schur mode
     each product includes its eliminated response, using the already factored
     bilateral operator. No dense unilateral matrix or contact adjacency is
@@ -18,7 +23,12 @@ class UnilateralAPGD:
     """
 
     def __init__(self, owner):
-        """Allocate all iteration and response storage before graph capture."""
+        """Allocate all iteration and response storage before graph capture.
+
+        Args:
+            owner: DVI solver supplying per-world configuration, operator
+                storage, impulses, and terminal status.
+        """
         self.owner = owner
         self.device = owner.device
         size = owner.size
@@ -30,7 +40,7 @@ class UnilateralAPGD:
             entry = kernels.APGDConfig()
             entry.max_iterations = config.max_iterations
             entry.max_backtracks = config.max_backtracks
-            entry.max_corrections = config.max_corrections
+            entry.max_nonlinear_corrections = config.max_nonlinear_corrections
             entry.tolerance = config.tolerance
             entry.relaxation = config.relaxation
             entries.append(entry)
@@ -63,7 +73,7 @@ class UnilateralAPGD:
         self.response_dim = wp.zeros(size.num_worlds, dtype=wp.int32, device=self.device)
         self.max_iterations = max(c.max_iterations for c in configs)
         self.max_backtracks = max(c.max_backtracks for c in configs)
-        self.max_corrections = max(c.max_corrections for c in configs)
+        self.max_nonlinear_corrections = max(c.max_nonlinear_corrections for c in configs)
         self.use_conditionals = all(c.use_graph_conditionals for c in configs)
         self.problem = None
 
@@ -72,7 +82,13 @@ class UnilateralAPGD:
         wp.launch(kernel, dim=self.rows if rows else self.owner.size.num_worlds, inputs=args, device=self.device)
 
     def full_matvec(self, x, y, mask):
-        """Apply the current Delassus while preserving masked output worlds."""
+        """Apply the full Delassus operator to the selected worlds.
+
+        Args:
+            x: Input vector in the full constraint layout.
+            y: Output product; entries in unselected worlds are preserved.
+            mask: Per-world flag selecting operator products.
+        """
         problem = self.problem
         data = problem.data
         if problem.sparse:
@@ -82,7 +98,17 @@ class UnilateralAPGD:
             self._launch(kernels.dense_matvec, [data.dim, data.mio, data.vio, data.D, mask, x, y], rows=True)
 
     def matvec(self, x, y, mask):
-        """Apply D_uu, or D_uu - D_ub D_bb^-1 D_bu with Schur enabled."""
+        """Apply the unilateral operator, including the optional Schur response.
+
+        Unilateral entries of the output contain ``D_uu x`` or
+        ``(D_uu - D_ub D_bb^-1 D_bu) x``. The Schur path reuses the owner's
+        factored bilateral block without assembling a reduced matrix.
+
+        Args:
+            x: Input vector with zero bilateral entries.
+            y: Output product; only unilateral entries are used by APGD.
+            mask: Per-world flag selecting operator products.
+        """
         self.full_matvec(x, y, mask)
         owner = self.owner
         if not owner._use_schur_complement or owner._bilateral_solver is None:
@@ -110,7 +136,18 @@ class UnilateralAPGD:
         self.full_matvec(self.response, y, mask)
 
     def solve(self, problem, *, block_iteration=-1):
-        """Update the existing unilateral block without changing the coupling schedule."""
+        """Update unilateral impulses through bounded frozen-correction solves.
+
+        Each correction restarts acceleration, solves its QP to the inner
+        tolerance or iteration limit, and checks the updated nonlinear map.
+        The default correction budget of one may leave a nonzero residual.
+        Impulses and diagnostics are written to the owner's existing arrays.
+
+        Args:
+            problem: Dual problem supplying the operator and constraint data.
+            block_iteration: Current bilateral/unilateral alternation index.
+                A negative value bypasses per-world alternation limits.
+        """
         self.problem = problem
         data = problem.data
         owner = self.owner
@@ -271,7 +308,7 @@ class UnilateralAPGD:
         if use_conditionals:
             wp.capture_while(self.correction_condition, while_body=correction_body)
         else:
-            for _ in range(self.max_corrections):
+            for _ in range(self.max_nonlinear_corrections):
                 correction_body()
         self._launch(kernels.scatter_solution, [*layout, self.phase, self.x, solution], rows=True)
         self._launch(kernels.finish_phase, [self.phase, self.state, status])

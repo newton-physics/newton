@@ -121,7 +121,7 @@ def _model_problem(builder, device, sparse, *, schur=False, max_contacts=64, ite
             use_schur_complement=schur,
             max_alternating_iterations=iterations,
             tolerance=1e-4,
-            apgd=DVIAPGDConfig(max_iterations=128, max_corrections=30, tolerance=1e-6),
+            apgd=DVIAPGDConfig(max_iterations=128, max_nonlinear_corrections=30, tolerance=1e-6),
         ),
         warmstart=WarmStartMode.NONE,
     )
@@ -132,13 +132,14 @@ class TestDVIAPGD(unittest.TestCase):
     """Check Coulomb impulses rather than only the inner cone-QP residual."""
 
     def test_configuration_is_opt_in(self):
-        """Retain PGS defaults and accept the experimental APGD backend."""
+        """Retain PGS defaults and accept the APGD backend."""
         self.assertEqual(DVISolverConfig().unilateral_solver, "pgs")
         self.assertEqual(DVISolverConfig(unilateral_solver="apgd").unilateral_solver, "apgd")
+        self.assertEqual(DVIAPGDConfig().max_nonlinear_corrections, 1)
 
     def test_configuration_rejects_invalid_controls(self):
         """Reject unusable budgets, damping, and tolerances before launching kernels."""
-        for field in ("max_iterations", "max_backtracks", "max_corrections"):
+        for field in ("max_iterations", "max_backtracks", "max_nonlinear_corrections"):
             for value in (0, -1, True, 1.5):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     DVIAPGDConfig(**{field: value})
@@ -159,7 +160,14 @@ class TestDVIAPGD(unittest.TestCase):
         """Recover Coulomb normal impulse instead of the associated cone-QP solution."""
         for device in _devices():
             with self.subTest(device=device):
-                solver, problem = _problem([np.eye(3)], [[10.0, 0.0, -1.0]], [(0, 0, 1)], [0.5], device)
+                solver, problem = _problem(
+                    [np.eye(3)],
+                    [[10.0, 0.0, -1.0]],
+                    [(0, 0, 1)],
+                    [0.5],
+                    device,
+                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
+                )
                 solver.solve(problem)
                 impulses = solver.owner.data.solution.lambdas.numpy()
                 np.testing.assert_allclose(impulses, [-0.5, 0.0, 1.0], atol=2.0e-5, rtol=0.0)
@@ -180,6 +188,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 1)] * 4 + [(0, 0, 0)],
                     [0.5, 0.5, 0.5, 0.0],
                     device,
+                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(
@@ -201,6 +210,7 @@ class TestDVIAPGD(unittest.TestCase):
                     device,
                     lower=[-0.25],
                     upper=[0.25],
+                    options=DVIAPGDConfig(max_nonlinear_corrections=8),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(
@@ -225,7 +235,7 @@ class TestDVIAPGD(unittest.TestCase):
                     [(0, 0, 2)],
                     [0.5, 0.5],
                     device,
-                    options=DVIAPGDConfig(max_iterations=100, max_corrections=40, tolerance=2e-6),
+                    options=DVIAPGDConfig(max_iterations=100, max_nonlinear_corrections=40, tolerance=2e-6),
                 )
                 solver.solve(problem)
                 np.testing.assert_allclose(solver.owner.data.solution.lambdas.numpy(), expected, atol=2e-5)
@@ -249,22 +259,269 @@ class TestDVIAPGD(unittest.TestCase):
                 self.assertEqual(int(status["iterations"]), 0)
 
     def test_nonlinear_budget_does_not_hide_residual(self):
-        """Expose an unconverged contact law when only one correction is allowed."""
-        solver, problem = _problem(
-            [np.eye(3)],
-            [[10.0, 0.0, -1.0]],
-            [(0, 0, 1)],
-            [0.5],
-            "cpu",
-            options=DVIAPGDConfig(max_corrections=1),
-        )
-        solver.solve(problem)
-        self.assertGreater(float(solver.owner.data.status.numpy()[0]["apgd_residual"]), 0.1)
+        """Distinguish a frozen-correction approximation from a consistent warmstart."""
+        for device in _devices():
+            with self.subTest(device=device):
+                solver, problem = _problem(
+                    [np.eye(3)],
+                    [[10.0, 0.0, -1.0]],
+                    [(0, 0, 1)],
+                    [0.5],
+                    device,
+                )
+                solver.solve(problem)
+                # The cold-start shift is 5. Its cone QP gives n=0.8, while
+                # Coulomb contact requires n=1 and zero normal velocity.
+                np.testing.assert_allclose(
+                    solver.owner.data.solution.lambdas.numpy(), [-0.4, 0.0, 0.8], atol=1e-6, rtol=0.0
+                )
+                info = solver.owner.data.status.numpy()[0]
+                self.assertEqual(int(info["apgd_corrections"]), 1)
+                self.assertAlmostEqual(float(info["apgd_residual"]), 0.16, delta=1e-6)
+
+                # A consistent warmstart already supplies the final shift.
+                solver.owner.data.solution.lambdas.assign(np.array([-0.5, 0.0, 1.0], dtype=np.float32))
+                solver.owner.data.status.zero_()
+                solver.solve(problem)
+                np.testing.assert_allclose(
+                    solver.owner.data.solution.lambdas.numpy(), [-0.5, 0.0, 1.0], atol=1e-6, rtol=0.0
+                )
+                info = solver.owner.data.status.numpy()[0]
+                self.assertEqual(int(info["apgd_corrections"]), 1)
+                self.assertLessEqual(float(info["apgd_residual"]), 1e-5)
+
+    def test_nonfinite_backtracking_stops_all_loops(self):
+        """Reject overflowing trial products without accepting a step or retrying corrections."""
+        for device in _devices():
+            for conditional in (False, True):
+                with self.subTest(device=device, conditional=conditional):
+                    solver, problem = _problem(
+                        [1e20 * np.eye(3)],
+                        [[0.0, 0.0, -1e20]],
+                        [(0, 0, 1)],
+                        [0.0],
+                        device,
+                        options=DVIAPGDConfig(
+                            max_iterations=2,
+                            max_backtracks=3,
+                            max_nonlinear_corrections=2,
+                            use_graph_conditionals=conditional,
+                        ),
+                    )
+
+                    def solve(solver=solver, problem=problem):
+                        """Reset the initial impulse and status for each solve or replay."""
+                        solver.owner.data.solution.lambdas.zero_()
+                        solver.owner.data.status.zero_()
+                        solver.solve(problem)
+
+                    solve()
+                    if solver.device.is_cuda:
+                        with wp.ScopedCapture(device=device) as capture:
+                            solve()
+                        wp.capture_launch(capture.graph)
+                    info = solver.owner.data.status.numpy()[0]
+                    self.assertEqual(int(info["apgd_line_search_failed"]), 1)
+                    self.assertEqual(int(info["iterations"]), 0)
+                    self.assertEqual(int(info["apgd_corrections"]), 0)
+                    np.testing.assert_array_equal(solver.owner.data.solution.lambdas.numpy(), [0.0, 0.0, 0.0])
+                    self.assertFalse(np.any(solver.active.numpy()))
+                    self.assertFalse(np.any(solver.inner.numpy()))
+                    self.assertFalse(np.any(solver.searching.numpy()))
+
+    def test_early_termination_at_every_level(self):
+        """Exit all three loops before their budgets, including in a captured CUDA graph."""
+        options = DVIAPGDConfig(max_iterations=12, max_backtracks=4, max_nonlinear_corrections=12)
+        for device in _devices():
+            with self.subTest(device=device), wp.ScopedDevice(device):
+                if wp.get_device(device).is_cuda and not wp.is_conditional_graph_supported():
+                    self.skipTest("CUDA conditional graphs are not supported")
+                solver, problem = _problem(
+                    [2.0 * np.eye(3)],
+                    [[10.0, 0.0, -1.0]],
+                    [(0, 0, 1)],
+                    [0.5],
+                    device,
+                    options=options,
+                )
+                self.assertTrue(solver.use_conditionals)
+
+                def solve(solver=solver, problem=problem):
+                    """Reset impulses and diagnostics so each replay performs a cold solve."""
+                    solver.owner.data.solution.lambdas.zero_()
+                    solver.owner.data.status.zero_()
+                    solver.solve(problem)
+
+                solve()
+                eager_status = solver.owner.data.status.numpy()
+                graph = None
+                if solver.device.is_cuda:
+                    with wp.ScopedCapture(device=device) as capture:
+                        solve()
+                    graph = capture.graph
+
+                for replay in range(2):
+                    with self.subTest(replay=replay):
+                        if graph is None:
+                            solve()
+                        else:
+                            wp.capture_launch(graph)
+                        status = solver.owner.data.status.numpy()
+                        np.testing.assert_array_equal(status, eager_status)
+                        info = status[0]
+                        state = solver.state.numpy()[0]
+                        corrections = int(info["apgd_corrections"])
+                        backtracks = int(info["apgd_backtracks"])
+                        self.assertEqual(int(info["apgd_line_search_failed"]), 0)
+                        self.assertLessEqual(float(info["apgd_residual"]), options.tolerance)
+                        self.assertGreater(corrections, 1)
+                        self.assertLess(corrections, options.max_nonlinear_corrections)
+                        # Each completed QP takes at least one accepted step, so
+                        # equality proves every inner solve stopped after one.
+                        self.assertEqual(int(info["iterations"]), corrections)
+                        self.assertEqual(int(state["iterations"]), 1)
+                        self.assertLess(int(state["iterations"]), options.max_iterations)
+                        # One rejection across the entire solve bounds every
+                        # search by two trials, including its accepted trial.
+                        self.assertEqual(backtracks, 1)
+                        self.assertLess(backtracks + 1, options.max_backtracks)
+                        np.testing.assert_allclose(
+                            solver.owner.data.solution.lambdas.numpy(), [-0.25, 0.0, 0.5], atol=1e-5, rtol=0.0
+                        )
+                        for mask in (solver.active, solver.inner, solver.searching):
+                            self.assertFalse(np.any(mask.numpy()))
+                        for condition in (solver.correction_condition, solver.inner_condition, solver.search_condition):
+                            self.assertEqual(int(condition.numpy()[0]), 0)
+
+    def test_batched_loop_termination_and_replay(self):
+        """Stop each world at its own tolerance, iteration limit, or line-search failure."""
+        matrices = [
+            np.empty((0, 0)),
+            [[2.0]],
+            *([np.diag([1.0, 2.0])] * 3),
+            np.eye(3),
+            np.eye(3),
+            [[4.0]],
+            [[4.0]],
+            np.diag([1.0, 2.0]),
+        ]
+        biases = [
+            [],
+            [-2.0],
+            *([[-1.0, -2.0]] * 3),
+            [10.0, 0.0, -1.0],
+            [10.0, 0.0, -1.0],
+            [-4.0],
+            [-4.0],
+            [-1.0, -2.0],
+        ]
+        families = [
+            (0, 0, 0),
+            (0, 1, 0),
+            *([(0, 2, 0)] * 3),
+            (0, 0, 1),
+            (0, 0, 1),
+            (0, 1, 0),
+            (0, 1, 0),
+            (0, 2, 0),
+        ]
+        overrides = [
+            {},
+            {},
+            {},
+            {"tolerance": 0.25},
+            {"max_iterations": 2},
+            {"max_nonlinear_corrections": 10, "tolerance": 1e-5},
+            {"max_nonlinear_corrections": 2, "tolerance": 1e-5},
+            {},
+            {"max_backtracks": 2},
+            {"max_iterations": 1, "max_nonlinear_corrections": 12},
+        ]
+        for device in _devices():
+            results = []
+            for conditional in (False, True):
+                with self.subTest(device=device, conditional=conditional):
+                    configs = [
+                        DVISolverConfig(
+                            unilateral_solver="apgd",
+                            apgd=DVIAPGDConfig(
+                                **{
+                                    "max_iterations": 12,
+                                    "max_backtracks": 3,
+                                    "tolerance": 1e-3,
+                                    "use_graph_conditionals": conditional,
+                                    **override,
+                                }
+                            ),
+                        )
+                        for override in overrides
+                    ]
+                    solver, problem = _problem(matrices, biases, families, [0.5, 0.5], device, configs=configs)
+
+                    def solve(solver=solver, problem=problem):
+                        """Start each replay from the same cold impulse and clean counters."""
+                        solver.owner.data.solution.lambdas.zero_()
+                        solver.owner.data.status.zero_()
+                        solver.solve(problem)
+
+                    solve()
+                    graph = None
+                    if solver.device.is_cuda:
+                        with wp.ScopedCapture(device=device) as capture:
+                            solve()
+                        graph = capture.graph
+                        wp.capture_launch(graph)
+                    impulses = solver.owner.data.solution.lambdas.numpy()
+                    info = solver.owner.data.status.numpy()
+                    np.testing.assert_array_equal(info["iterations"], [0, 1, 9, 2, 2, 8, 2, 1, 0, 10])
+                    np.testing.assert_array_equal(info["apgd_corrections"], [0, 1, 1, 1, 1, 8, 2, 1, 0, 10])
+                    np.testing.assert_array_equal(info["apgd_backtracks"], [0, 1, 1, 1, 1, 0, 0, 2, 2, 1])
+                    np.testing.assert_array_equal(info["apgd_line_search_failed"], [0] * 8 + [1, 0])
+                    for wid in (1, 2, 3, 5, 7, 9):
+                        self.assertLessEqual(float(info[wid]["apgd_residual"]), configs[wid].apgd.tolerance)
+                    # A loose tolerance stops at equality; a tight tolerance with
+                    # the same two-step budget returns the same unfinished iterate.
+                    self.assertEqual(float(info[3]["apgd_residual"]), 0.25)
+                    self.assertEqual(float(info[4]["apgd_residual"]), 0.25)
+                    self.assertAlmostEqual(float(info[6]["apgd_residual"]), 0.032, delta=1e-6)
+                    self.assertFalse(np.any(solver.active.numpy()))
+                    self.assertFalse(np.any(solver.inner.numpy()))
+                    self.assertFalse(np.any(solver.searching.numpy()))
+                    for condition in (solver.correction_condition, solver.inner_condition, solver.search_condition):
+                        self.assertEqual(int(condition.numpy()[0]), 0)
+                    results.append((impulses, info))
+
+                    # Reuse the same captured graph with no active constraints,
+                    # then restore them to check that masks and counters reset.
+                    dimensions = problem.data.dim.numpy()
+                    for active in (False, True):
+                        problem.data.dim.assign(dimensions if active else np.zeros_like(dimensions))
+                        if graph is None:
+                            solve()
+                        else:
+                            wp.capture_launch(graph)
+                        actual = solver.owner.data.status.numpy()
+                        if active:
+                            np.testing.assert_array_equal(actual, info)
+                            np.testing.assert_array_equal(solver.owner.data.solution.lambdas.numpy(), impulses)
+                        else:
+                            np.testing.assert_array_equal(actual["iterations"], np.zeros(len(configs)))
+                            np.testing.assert_array_equal(actual["apgd_corrections"], np.zeros(len(configs)))
+                            np.testing.assert_array_equal(actual["apgd_line_search_failed"], np.zeros(len(configs)))
+            np.testing.assert_array_equal(results[0][0], results[1][0])
+            np.testing.assert_array_equal(results[0][1], results[1][1])
 
     def test_warmstart_and_phase_masks(self):
         """Project stale warmstarts and preserve worlds outside their alternating budget."""
         for device in _devices():
-            configs = [DVISolverConfig(unilateral_solver="apgd", max_alternating_iterations=n) for n in (1, 2)]
+            configs = [
+                DVISolverConfig(
+                    unilateral_solver="apgd",
+                    max_alternating_iterations=n,
+                    apgd=DVIAPGDConfig(max_nonlinear_corrections=20),
+                )
+                for n in (1, 2)
+            ]
             solver, problem = _problem(
                 [np.eye(3)] * 2,
                 [[10.0, 0.0, -1.0]] * 2,
@@ -310,7 +567,7 @@ class TestDVIAPGD(unittest.TestCase):
                 options = DVIAPGDConfig(
                     max_iterations=3,
                     max_backtracks=2,
-                    max_corrections=12,
+                    max_nonlinear_corrections=12,
                     use_graph_conditionals=conditional,
                 )
                 solver, problem = _problem(
@@ -425,7 +682,14 @@ class TestDVIAPGD(unittest.TestCase):
         """Replay a preallocated solve as a contact disappears and returns."""
         if not wp.is_cuda_available():
             self.skipTest("CUDA graph replay requires a CUDA device")
-        solver, problem = _problem([np.eye(3)], [[10.0, 0.0, -1.0]], [(0, 0, 1)], [0.5], "cuda:0")
+        solver, problem = _problem(
+            [np.eye(3)],
+            [[10.0, 0.0, -1.0]],
+            [(0, 0, 1)],
+            [0.5],
+            "cuda:0",
+            options=DVIAPGDConfig(max_nonlinear_corrections=8),
+        )
         solver.solve(problem)
         with wp.ScopedCapture(device="cuda:0") as capture:
             solver.solve(problem)
