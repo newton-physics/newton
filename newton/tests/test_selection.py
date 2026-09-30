@@ -98,7 +98,7 @@ class TestSelection(unittest.TestCase):
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
 
-    def test_unsorted_include_indices_deprecated(self):
+    def test_unsorted_include_indices_rejected(self):
         builder = newton.ModelBuilder()
         root = builder.add_link(label="root")
         middle = builder.add_link(label="middle")
@@ -109,12 +109,14 @@ class TestSelection(unittest.TestCase):
         builder.add_articulation([root_joint, middle_joint, tip_joint], label="robot")
         model = builder.finalize()
 
-        with self.assertWarnsRegex(DeprecationWarning, "include_joints"):
-            joint_view = ArticulationView(model, "robot", include_joints=[2, 0])
-        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+        with self.assertRaisesRegex(ValueError, r"include_joints.*ascending order"):
+            ArticulationView(model, "robot", include_joints=[2, 0])
+        with self.assertRaisesRegex(ValueError, r"include_links.*ascending order"):
+            ArticulationView(model, "robot", include_links=[2, 0])
 
-        with self.assertWarnsRegex(DeprecationWarning, "include_links"):
-            link_view = ArticulationView(model, "robot", include_links=[2, 0])
+        joint_view = ArticulationView(model, "robot", include_joints=[0, 2])
+        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+        link_view = ArticulationView(model, "robot", include_links=[0, 2])
         self.assertEqual(link_view.link_names, ["root", "tip"])
 
     def test_empty_selection(self):
