@@ -779,17 +779,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
                                 np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
-        """Return before reading joint topology when every joint belongs to an articulation."""
+        """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
         scene = ModelBuilder()
         scene.replicate(self._make_source(), 2)
+        array_backed_names = set(scene._array_backed_attributes)
+        self.assertTrue({"body_q", "joint_articulation", "joint_child", "joint_parent"}.issubset(array_backed_names))
 
-        with mock.patch.object(
-            ModelBuilder, "joint_parent", new_callable=mock.PropertyMock, create=True
-        ) as joint_parent:
-            joint_parent.side_effect = AssertionError("unexpected general joint validation")
+        with mock.patch("newton._src.sim.builder.np.isin") as isin:
+            isin.side_effect = AssertionError("unexpected orphan-joint validation")
             scene._validate_joints()
 
-        joint_parent.assert_not_called()
+        isin.assert_not_called()
+        self.assertEqual(set(scene._array_backed_attributes), array_backed_names)
 
     def test_array_backed_joint_validation_still_rejects_orphan_joints(self):
         """Run general joint validation when an array-backed articulation entry is negative."""

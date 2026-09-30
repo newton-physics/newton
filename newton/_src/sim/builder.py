@@ -11991,7 +11991,10 @@ class ModelBuilder:
                 )
 
     def _validate_joints(self):
-        """Validate that joints belong to an articulation, with two exceptions.
+        """Validate articulation topology and joint membership.
+
+        A joint in one articulation cannot have a parent body that belongs to a
+        different articulation. Connected joints must use the same articulation.
 
         Loop-closing joints are allowed when their child is already reachable through
         an articulation. Standalone world-root joints (``parent == -1``) are also
@@ -12006,12 +12009,15 @@ class ModelBuilder:
 
         with self._raw_array_access():
             joint_articulation = np.asarray(self.joint_articulation)
-            if np.all(joint_articulation >= 0):
-                return
             joint_parent = np.asarray(self.joint_parent)
             joint_child = np.asarray(self.joint_child)
+            body_count = self.body_count
 
         articulated = joint_articulation >= 0
+        self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated, body_count)
+        if np.all(articulated):
+            return
+
         articulated_bodies = np.concatenate((joint_parent[articulated], joint_child[articulated]))
         orphan_joints = np.flatnonzero(~articulated & (joint_parent != -1) & ~np.isin(joint_child, articulated_bodies))
 
@@ -12021,6 +12027,76 @@ class ModelBuilder:
                 f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
                 f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
                 + ("..." if len(orphan_joints) > 5 else "")
+            )
+
+    def _validate_articulation_connections(
+        self,
+        joint_articulation: np.ndarray,
+        joint_parent: np.ndarray,
+        joint_child: np.ndarray,
+        articulated: np.ndarray,
+        body_count: int,
+    ) -> None:
+        """Reject articulated joints whose parent body belongs to another articulation.
+
+        A parent body belongs to an articulation when it is the child of one of that
+        articulation's joints. Malformed body indices are skipped here so that
+        structural validation can report them.
+
+        Args:
+            joint_articulation: Articulation index of each joint, or ``-1``.
+            joint_parent: Parent body index of each joint.
+            joint_child: Child body index of each joint.
+            articulated: Mask of joints that belong to an articulation.
+            body_count: Number of bodies in the builder.
+
+        Raises:
+            ValueError: If a joint connects two different articulations.
+        """
+        articulated_joints = np.flatnonzero(articulated)
+        if len(articulated_joints) == 0:
+            return
+
+        arts = joint_articulation[articulated_joints]
+        parents = joint_parent[articulated_joints]
+        children = joint_child[articulated_joints]
+
+        # Map each body to one articulation that contains it as a joint child.
+        body_articulation = np.full(body_count, -1, dtype=np.int64)
+        valid_children = (children >= 0) & (children < body_count)
+        body_articulation[children[valid_children]] = arts[valid_children]
+
+        valid_parents = (parents >= 0) & (parents < body_count)
+        parent_articulation = np.full(len(articulated_joints), -1, dtype=np.int64)
+        parent_articulation[valid_parents] = body_articulation[parents[valid_parents]]
+        candidates = np.flatnonzero((parent_articulation >= 0) & (parent_articulation != arts))
+        if len(candidates) == 0:
+            return
+
+        # A body can be the child of joints in several articulations, so confirm
+        # each candidate against the exact (child, articulation) membership.
+        body_articulations: dict[int, set[int]] = {}
+        for child, art in zip(children[valid_children].tolist(), arts[valid_children].tolist(), strict=True):
+            body_articulations.setdefault(child, set()).add(art)
+
+        for candidate in candidates.tolist():
+            articulation_idx = int(arts[candidate])
+            parent = int(parents[candidate])
+            parent_articulations = body_articulations[parent]
+            if articulation_idx in parent_articulations:
+                continue
+
+            joint_idx = int(articulated_joints[candidate])
+            parent_articulation_idx = min(parent_articulations)
+            articulation_label = self.articulation_label[articulation_idx]
+            parent_articulation_label = self.articulation_label[parent_articulation_idx]
+            joint_label = self.joint_label[joint_idx]
+            parent_label = self.body_label[parent]
+            raise ValueError(
+                f"Joint {joint_idx} ('{joint_label}') in articulation {articulation_idx} "
+                f"('{articulation_label}') has parent body {parent} ('{parent_label}') in articulation "
+                f"{parent_articulation_idx} ('{parent_articulation_label}'). Articulations cannot be connected "
+                "through joints. Add all connected joints to the same articulation."
             )
 
     def _validate_shapes(self) -> bool:
@@ -12762,8 +12838,9 @@ class ModelBuilder:
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
                 you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
-            skip_validation_joints: If True, skips articulation-membership validation. By default, non-root joints
-                must belong to an articulation or close a loop; standalone world-root joints are allowed.
+            skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
+                joints cannot connect separate articulations, and non-root joints must belong to an articulation or
+                close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
@@ -12973,7 +13050,14 @@ class ModelBuilder:
                     continue
 
                 geo_hash = hash(geo)
-                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                # Distinct meshes with mutable surface-velocity fields need
+                # distinct Warp meshes even when their geometry is identical.
+                # Repeated shapes using the same Mesh object still share via
+                # finalized_geos_by_identity above.
+                geo_cache_key = (
+                    (geo_hash, geo_identity) if isinstance(geo, Mesh) and geo.enable_surface_velocity else geo_hash
+                )
+                if geo_cache_key not in finalized_geos and isinstance(geo, Heightfield):
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
@@ -12984,15 +13068,15 @@ class ModelBuilder:
                         ground_z=geo.min_z,
                         compute_inertia=False,
                     )
-                    finalized_geos[geo_hash] = hf_geo.finalize(
+                    finalized_geos[geo_cache_key] = hf_geo.finalize(
                         device=device,
                         bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                     )
                     # keep mesh alive for the model's lifetime
                     heightfield_meshes.append(hf_geo.mesh)
-                elif geo_hash not in finalized_geos:
+                elif geo_cache_key not in finalized_geos:
                     if isinstance(geo, Mesh):
-                        finalized_geos[geo_hash] = geo.finalize(
+                        finalized_geos[geo_cache_key] = geo.finalize(
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
@@ -13002,14 +13086,14 @@ class ModelBuilder:
                         # object keeping the finalized wp.Mesh alive
                         mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
-                        finalized_geos[geo_hash] = len(gaussians)
+                        finalized_geos[geo_cache_key] = len(gaussians)
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
                     else:
-                        finalized_geos[geo_hash] = geo.finalize()
+                        finalized_geos[geo_cache_key] = geo.finalize()
 
-                finalized_geo = finalized_geos[geo_hash]
+                finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
@@ -13028,6 +13112,8 @@ class ModelBuilder:
                     if mesh_properties is None:
                         mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
                         mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
                 shape_mesh_properties.append(mesh_properties)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
