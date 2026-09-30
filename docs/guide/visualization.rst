@@ -390,15 +390,28 @@ with :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame.
     viewer = newton.viewer.ViewerRTX(environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": 4})
     viewer.add_background_usd("lighting.usda")
 
-**Rendering an existing USD scene**: When the model was imported from USD, ViewerRTX can render the populated
-``ovstage.Stage`` directly, keeping its authored materials, lights, and environment. The viewer then writes only the
-world transforms of prims bound to bodies, and adds its camera, render product, and debug geometry under
-``/__newton_viewer``. It never adds scene content to the stage or clears it; closing the viewer removes only its own prims.
-Bound prims default to ``Model.body_label``. The model's initial body poses must match the stage's world placement.
+**Rendering an existing USD scene**: With OVRTX 0.4 or newer, when the model was imported from USD, ViewerRTX can
+render the populated ``ovstage.Stage`` directly, keeping its authored materials, lights, and environment. The viewer
+then writes only the world transforms of prims bound to bodies, and adds its camera, render product, and debug geometry
+under ``/__newton_viewer``. It never adds scene content to the stage or clears it; closing the viewer removes only its
+own prims. Bound prims default to ``Model.body_label``. The model's initial body poses must match the stage's world
+placement. Import ``ovrtx`` and register its schemas before ``ovstage``, and create the stage with GPU hierarchy
+computation so that descendants of bound prims follow the written transforms:
 
 .. code-block:: python
 
-    stage = ovstage.Stage("scene")
+    import ovrtx
+
+    ovrtx.register_schema_paths()
+
+    import ovstage
+
+    stage = ovstage.Stage(
+        "scene",
+        config=ovstage.StageConfig(
+            runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+        ),
+    )
     ovstage.population.open_usd(stage, "scene.usda", ordinal=1)
     stage.advance_write_floor(1).wait()
 
