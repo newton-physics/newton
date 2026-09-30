@@ -68,10 +68,13 @@ class TestMuJoCoForceProperties(unittest.TestCase):
 
     def test_eager_updates_preserve_armature_and_optional_parameters(self):
         """Publish force fields on both backends without modifying kinematic armature."""
-        for cpu in (True, False):
+        backends = [(True, "cpu"), (False, "cpu")]
+        if wp.get_cuda_device_count():
+            backends.append((False, "cuda:0"))
+        for cpu, device in backends:
             for custom_attributes in (True, False):
-                with self.subTest(cpu=cpu, custom_attributes=custom_attributes):
-                    model = _make_model(worlds=1, custom_attributes=custom_attributes)
+                with self.subTest(cpu=cpu, device=device, custom_attributes=custom_attributes):
+                    model = _make_model(worlds=1, device=device, custom_attributes=custom_attributes)
                     body_flags = model.body_flags.numpy()
                     body_flags[0] = int(newton.BodyFlags.KINEMATIC)
                     model.body_flags.assign(body_flags)
