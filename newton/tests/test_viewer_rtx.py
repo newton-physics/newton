@@ -12,6 +12,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
+import newton
 from newton.viewer import ViewerRTX
 
 OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
@@ -68,7 +69,28 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             mock.patch.object(ovstage, "__version__", "0.1.1.355824"),
             self.assertRaisesRegex(ValueError, "OVStage 0.2 or newer"),
         ):
-            ViewerRTX(headless=True, stage=object())
+            ViewerRTX(headless=True, ovstage=object())
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_body_prim_paths_must_cover_every_body(self):
+        """Reject body prim paths that do not match the model's body count."""
+        import ovrtx
+        import ovstage
+
+        builder = newton.ModelBuilder()
+        builder.add_body()
+        builder.add_body()
+        model = builder.finalize(device="cpu")
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.5.0"),
+            mock.patch.object(ovstage, "__version__", "0.2.0"),
+        ):
+            viewer = ViewerRTX(headless=True, ovstage=object(), body_prim_paths=["/World/a"])
+        try:
+            with self.assertRaisesRegex(ValueError, "1 entries for a model with 2 bodies"):
+                viewer.set_model(model)
+        finally:
+            viewer.close()
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")

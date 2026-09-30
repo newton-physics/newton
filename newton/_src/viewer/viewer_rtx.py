@@ -24,7 +24,7 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from time import perf_counter
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -38,6 +38,9 @@ try:
     from pxr import Gf, UsdGeom
 except ImportError:
     Gf = UsdGeom = None
+
+if TYPE_CHECKING:
+    import ovstage
 
 from .camera import Camera
 from .picking import Picking
@@ -156,6 +159,7 @@ class ViewerRTX(ViewerUSD):
 
     _borrowed_stage = None
     _borrowed_reference = None
+    _body_prim_paths = None
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
     _rtx_render_settings: Mapping[str, tuple[str, Any]] = MappingProxyType({})
@@ -186,7 +190,8 @@ class ViewerRTX(ViewerUSD):
         async_rendering: bool = True,
         *,
         plot_history_size: int = 250,
-        stage: Any | None = None,
+        ovstage: ovstage.Stage | None = None,
+        body_prim_paths: Sequence[str | None] | None = None,
         render_settings: Mapping[str, tuple[str, Any]] | None = None,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
@@ -209,17 +214,23 @@ class ViewerRTX(ViewerUSD):
                 flight.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
-            stage: Populated ``ovstage.Stage`` to render instead of a scene
-                built from the model. The caller owns its content, lights,
-                and lifetime; the viewer only writes transforms of the prims
-                bound in :meth:`set_model` and adds its camera, render
-                product, and debug geometry under ``/__newton_viewer``.
-                ``environment`` is ignored. Requires OVRTX 0.4 and OVStage 0.2
-                or newer, and a stage created with GPU hierarchy computation.
+            ovstage: Populated stage to render instead of a scene built from
+                the model. The caller owns its content, lights, and lifetime;
+                the viewer adds its camera, render product, and debug geometry
+                under ``/__newton_viewer``. ``environment`` is ignored.
+                Requires OVRTX 0.4 and OVStage 0.2 or newer, and a stage
+                created with GPU hierarchy computation.
+            body_prim_paths: Stage prim driven by each body, shape
+                [body_count]; ``None`` entries are skipped. :meth:`log_state`
+                writes each body's world pose to its prim, keeping the prim's
+                authored scale. Requires ``ovstage``.
             render_settings: ``omni:rtx:*`` attributes to author on the
                 viewer's render product as ``{name: (usd_type_name, value)}``,
                 e.g. ``{"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}``.
         """
+        # Captured before ``import ovstage`` below rebinds the name.
+        self._borrowed_stage = ovstage
+        self._body_prim_paths = None if body_prim_paths is None else tuple(body_prim_paths)
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
@@ -246,17 +257,18 @@ class ViewerRTX(ViewerUSD):
         if UsdGeom is None:
             raise ImportError("usd-core package is required for ViewerRTX. Install with: pip install usd-core")
 
-        self._borrowed_stage = stage
-        if stage is not None:
+        if self._borrowed_stage is None and self._body_prim_paths is not None:
+            raise ValueError("ViewerRTX(body_prim_paths=...) requires ovstage=...")
+        if self._borrowed_stage is not None:
             if not self._use_ovstage:
-                raise ValueError("ViewerRTX(stage=...) requires OVRTX 0.4 or newer")
+                raise ValueError("ViewerRTX(ovstage=...) requires OVRTX 0.4 or newer")
             import ovstage
 
             # Older OVStage misplaces prims under GPU hierarchy computation.
             if _version_prefix(ovstage.__version__, "OVStage") < (0, 2):
-                raise ValueError("ViewerRTX(stage=...) requires OVStage 0.2 or newer")
+                raise ValueError("ViewerRTX(ovstage=...) requires OVStage 0.2 or newer")
             if scaling != 1.0:
-                raise ValueError("ViewerRTX(stage=...) does not support scaling")
+                raise ValueError("ViewerRTX(ovstage=...) does not support scaling")
             self._root_path = "/__newton_viewer"
         self._rtx_render_settings = dict(render_settings or {})
         self._borrowed_reference = None
@@ -940,43 +952,32 @@ void main() {
                 paths.destroy_path_list(path_list)
         return out
 
-    def _bind_borrowed_prims(self, model: newton.Model, prim_body_map: Mapping[str, int] | None) -> None:
-        """Bind stage prims to bodies by their constant row-vector offset ``C = W0 · inv(body0)``.
-
-        ``C`` covers authored scale, prims of collapsed bodies, and prim origins off the body frame.
-        """
-        if prim_body_map is None:
-            prim_body_map = {label: body for body, label in enumerate(model.body_label)}
-        paths = list(prim_body_map)
-        if not paths:
+    def _bind_body_prims(self, model: newton.Model) -> None:
+        """Bind ``body_prim_paths`` to their bodies, keeping each prim's authored world scale."""
+        paths = self._body_prim_paths
+        if paths is None:
             return
-        bodies = np.fromiter(prim_body_map.values(), dtype=np.int32, count=len(paths))
+        if len(paths) != model.body_count:
+            raise ValueError(f"body_prim_paths has {len(paths)} entries for a model with {model.body_count} bodies")
+        bound = [path for path in paths if path is not None]
+        if not bound:
+            return
+        bodies = np.array([body for body, path in enumerate(paths) if path is not None], dtype=np.int32)
 
-        world = self._read_borrowed_world_matrices(paths)
-        missing = [path for path, matrix in zip(paths, world, strict=True) if np.isnan(matrix[0, 0])]
+        world = self._read_borrowed_world_matrices(bound)
+        missing = [path for path, matrix in zip(bound, world, strict=True) if np.isnan(matrix[0, 0])]
         if missing:
-            raise ValueError(
-                f"{len(missing)} bound prims have no world transform in the borrowed stage, e.g. {missing[:3]}"
-            )
-        body0 = _transforms_to_usd_matrices(model.body_q.numpy()[bodies].astype(np.float64))
-        offsets = world @ np.linalg.inv(body0)
-
-        # A body-local C cannot absorb a world-side placement difference.
-        labels = model.body_label
-        own = np.array([labels[body] == path for path, body in zip(paths, bodies, strict=True)], dtype=bool)
-        drift = np.linalg.norm(offsets[own, 3, :3], axis=-1)
-        if drift.size and drift.max() > 1.0e-3:
-            path = np.asarray(paths)[own][int(drift.argmax())]
-            raise ValueError(
-                f"Initial model pose differs from the borrowed stage by {drift.max():.3g} m at {path}; "
-                "world placements (e.g. replicate xforms) must match the stage"
-            )
-
+            raise ValueError(f"{len(missing)} body prims are not in the borrowed stage, e.g. {missing[:3]}")
+        # Row norms of the row-vector linear part are the axis scales; a reflection flips their sign.
+        scales = np.linalg.norm(world[:, :3, :3], axis=2)
+        scales[np.linalg.det(world[:, :3, :3]) < 0.0] *= -1.0
+        linear = np.zeros((len(bound), 3, 3))
+        linear[:, [0, 1, 2], [0, 1, 2]] = scales
         self._set_prim_rows(
-            paths,
+            bound,
             bodies,
-            linear=np.swapaxes(offsets[:, :3, :3], -1, -2),
-            translation=offsets[:, 3, :3],
+            linear=linear,
+            translation=np.zeros((len(bound), 3)),
             worlds=None,
             device=model.device,
         )
@@ -1217,19 +1218,15 @@ void main() {
     # ------------------------------------------------ ViewerUSD overrides
 
     @override
-    def set_model(self, model: newton.Model | None, prim_body_map: Mapping[str, int] | None = None) -> None:
+    def set_model(self, model: newton.Model | None) -> None:
         """Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            prim_body_map: Borrowed-stage prims driven by each body index,
-                including prims of bodies merged by fixed-joint collapse.
-                Defaults to ``model.body_label``. Ignored without a borrowed
-                stage.
         """
         super().set_model(model)
-        if model is not None and self._borrowed_stage is not None:
-            self._bind_borrowed_prims(model, prim_body_map)
+        if model is not None:
+            self._bind_body_prims(model)
         if model is not None:
             from pyglet.math import Vec3 as PyVec3
 
