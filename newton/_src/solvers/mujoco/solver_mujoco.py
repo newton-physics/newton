@@ -4960,8 +4960,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._wake_sleeping_worlds()
 
     def _validate_cone_shape_scales(self) -> None:
-        """Reject resizing cones whose MuJoCo meshes were compiled at construction."""
+        """Reject cone resizing outside capture; compiled cone meshes must stay fixed during replay."""
         if self._cone_shape_indices.size == 0:
+            return
+
+        # Host validation cannot be captured. Eager notifications still reject
+        # resizing; callers must preserve cone scales throughout graph replay.
+        if self.model.device.is_capturing:
             return
 
         current_scales = self.model.shape_scale.numpy()[self._cone_shape_indices]

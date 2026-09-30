@@ -155,8 +155,13 @@ Geometry types
      - MuJoCo has no cone primitive, so Newton tessellates the cone into a
        32-segment mesh at conversion time. Collision uses that convex
        polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
-       after construction raises ``ValueError``; recreate the solver to resize
-       the cone.
+       after construction is unsupported; recreate the solver to resize the
+       cone. Eager shape-property notifications validate cone scales and raise
+       ``ValueError`` on changes. This host-side check is skipped during CUDA
+       graph capture and replay: keep cone scales fixed, and call
+       :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+       :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` outside capture to validate
+       any preceding edits.
    * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.

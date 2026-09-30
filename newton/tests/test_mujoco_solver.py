@@ -940,6 +940,61 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverGraphCapture(unittest.TestCase):
+    def test_cone_shape_updates_are_cuda_graph_capture_safe(self):
+        """Replay shape updates with fixed-size cones and retain eager resize validation."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+
+        with wp.ScopedDevice(device):
+            template = newton.ModelBuilder()
+            body = template.add_link()
+            template.add_shape_cone(body, radius=0.25, half_height=0.5)
+            template.add_shape_sphere(body, radius=0.1)
+            joint = template.add_joint_revolute(parent=-1, child=body)
+            template.add_articulation([joint])
+            builder = newton.ModelBuilder()
+            builder.replicate(template, 2)
+            model = builder.finalize(device=device)
+            solver = SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True, iterations=1)
+            shape_map = solver.mjc_geom_to_newton_shape.numpy()
+            cone_indices = np.flatnonzero(model.shape_type.numpy() == newton.GeoType.CONE)
+            sphere_mask = model.shape_type.numpy()[shape_map] == newton.GeoType.SPHERE
+            initial_scales = model.shape_scale.numpy().copy()
+            mesh_vertices = solver.mjw_model.mesh_vert.numpy().copy()
+
+            for flags in (ModelFlags.SHAPE_PROPERTIES, ModelFlags.ALL):
+                with self.subTest(flags=flags):
+                    solver.notify_model_changed(flags)
+                    with wp.ScopedCapture(device=device) as capture:
+                        solver.notify_model_changed(flags)
+
+                    for factor in (1.5, 2.0):
+                        friction = factor * np.arange(1, model.shape_count + 1, dtype=np.float32) / 10.0
+                        scales = initial_scales.copy()
+                        scales[model.shape_type.numpy() == newton.GeoType.SPHERE] *= factor
+                        model.shape_material_mu.assign(friction)
+                        model.shape_scale.assign(scales)
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[..., 0], friction[shape_map])
+                        np.testing.assert_allclose(
+                            solver.mjw_model.geom_size.numpy()[..., 0][sphere_mask],
+                            scales[shape_map, 0][sphere_mask],
+                        )
+                        np.testing.assert_array_equal(solver.mjw_model.mesh_vert.numpy(), mesh_vertices)
+
+                    # Capture must not disable subsequent eager validation, including
+                    # edits in worlds other than the compiled template world.
+                    scales[cone_indices[-1], 0] *= 2.0
+                    model.shape_scale.assign(scales)
+                    with self.assertRaisesRegex(ValueError, "Recreate the solver after resizing"):
+                        solver.notify_model_changed(flags)
+                    model.shape_scale.assign(initial_scales)
+                    solver.notify_model_changed(flags)
+
     def test_joint_dof_updates_are_cuda_graph_capture_safe(self):
         """Replay joint friction, damping, and limit updates from a CUDA graph."""
         if wp.get_cuda_device_count() == 0:
