@@ -3984,7 +3984,7 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'docs'", specifier = ">=6.0.0,<7.0.0" },
     { name = "jupyter-server-proxy", marker = "extra == 'notebook'", specifier = ">=4.5.0" },
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.5.7" },
-    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.5.0" },
+    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.10.7" },
     { name = "meshio", marker = "extra == 'importers'", specifier = ">=5.3.5" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = "~=3.12.0" },
     { name = "mujoco-warp", marker = "extra == 'sim'", specifier = "~=3.12.0" },
