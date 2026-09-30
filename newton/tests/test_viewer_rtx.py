@@ -285,7 +285,7 @@ def _column_matrix(xform: wp.transform) -> np.ndarray:
 
 class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
     def test_matrices_compose_local_body_and_world_placement(self):
-        """Write ``(world · body · local · scale)ᵀ`` for body-attached, static, and unplaced prims."""
+        """Write ``(layer · offset · body · local · scale)ᵀ`` for body-attached, static, and unplaced prims."""
         from newton._src.viewer.viewer_rtx import write_prim_world_matrices  # noqa: PLC0415
 
         rng = np.random.default_rng(0)
@@ -295,8 +295,9 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
             return wp.transform(wp.vec3(*rng.normal(size=3)), wp.quat(*(quat / np.linalg.norm(quat))))
 
         body_q = [random_xform(), random_xform()]
-        placements = [random_xform() for _ in range(3)]
-        # (body, world); world 5 has no placement slot and falls back to slot 0.
+        layer = random_xform()
+        offsets = rng.normal(size=(2, 3))
+        # (body, world); worlds -1 and 5 have no offset.
         rows = [(0, 0), (-1, -1), (1, 1), (1, 5)]
         local = [random_xform() for _ in rows]
         scales = rng.uniform(0.5, 2.0, size=(len(rows), 3))
@@ -313,7 +314,8 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
                 wp.array(linear, dtype=wp.mat33),
                 wp.array(translation, dtype=wp.vec3),
                 wp.array([world for _, world in rows], dtype=int),
-                wp.array(placements, dtype=wp.transform),
+                wp.array(offsets, dtype=wp.vec3),
+                layer,
                 0,
             ],
             outputs=[out],
@@ -323,23 +325,24 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
             expected = _column_matrix(xf) @ np.diag([*scale, 1.0])
             if body >= 0:
                 expected = _column_matrix(body_q[body]) @ expected
-            slot = world + 1 if 0 <= world + 1 < len(placements) else 0
-            expected = _column_matrix(placements[slot]) @ expected
+            if 0 <= world < len(offsets):
+                expected[:3, 3] += offsets[world]
+            expected = _column_matrix(layer) @ expected
             np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
 
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXRenderSettings(unittest.TestCase):
     def test_render_settings_override_render_product_attributes(self):
-        """Apply plain and explicitly typed render settings to the render product."""
+        """Author typed render settings on the render product, overriding the viewer's defaults."""
         from pxr import Sdf
 
         viewer = ViewerRTX(
             headless=True,
             render_settings={
-                "omni:rtx:pt:samplesPerPixel": 4,
+                "omni:rtx:pt:samplesPerPixel": ("UInt", 4),
                 "omni:rtx:quality": ("Int", 100),
-                "omni:rtx:post:tonemap:cm2Factor": 1.5,
+                "omni:rtx:post:tonemap:cm2Factor": ("Float", 1.5),
             },
         )
         try:

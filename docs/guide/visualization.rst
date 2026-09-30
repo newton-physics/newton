@@ -380,23 +380,21 @@ The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
 the ``examples`` dependencies. Install both RTX viewer and UI dependencies
 with ``uv sync --extra rtx --extra examples``.
 
-**Lighting and render settings**: ``environment`` selects a built-in light rig. For custom lighting, pass
-``environment="none"`` and reference a USD layer containing your lights, e.g. a ``DomeLight`` with an HDR texture,
-with :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame. ``render_settings`` overrides
-``omni:rtx:*`` attributes of the viewer's render product:
+**Lighting and render settings**: For custom lighting, pass ``environment="none"`` and add a USD layer with your
+lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame.
+``render_settings`` authors ``omni:rtx:*`` attributes on the viewer's render product:
 
 .. code-block:: python
 
-    viewer = newton.viewer.ViewerRTX(environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": 4})
+    viewer = newton.viewer.ViewerRTX(
+        environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}
+    )
     viewer.add_background_usd("lighting.usda")
 
-**Rendering an existing USD scene**: With OVRTX 0.4 or newer, when the model was imported from USD, ViewerRTX can
-render the populated ``ovstage.Stage`` directly, keeping its authored materials, lights, and environment. The viewer
-then writes only the world transforms of prims bound to bodies, and adds its camera, render product, and debug geometry
-under ``/__newton_viewer``. It never adds scene content to the stage or clears it; closing the viewer removes only its
-own prims. Bound prims default to ``Model.body_label``. The model's initial body poses must match the stage's world
-placement. Import ``ovrtx`` and register its schemas before ``ovstage``, and create the stage with GPU hierarchy
-computation so that descendants of bound prims follow the written transforms:
+**Rendering an existing USD scene**: With OVRTX 0.4 or newer, ViewerRTX can render a populated ``ovstage.Stage``
+with its authored materials and lights, writing only the transforms of prims bound to bodies (``Model.body_label`` by
+default). The viewer keeps its own prims under ``/__newton_viewer`` and never clears the stage. The model's initial
+body poses must match the stage's placement, and the stage needs GPU hierarchy computation:
 
 .. code-block:: python
 

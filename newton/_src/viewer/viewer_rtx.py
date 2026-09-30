@@ -79,15 +79,12 @@ def write_prim_world_matrices(
     prim_linear: wp.array[wp.mat33],
     prim_translation: wp.array[wp.vec3],
     prim_world: wp.array[int],
-    world_xforms: wp.array[wp.transform],
+    world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     mat44_offset: int,
     m_out: wp.array[wp.mat44d],
 ):
-    """Write ``world · body · local`` prim matrices, transposed to USD's row-vector convention.
-
-    ``world_xforms[w + 1]`` places world ``w``; slot 0 serves global prims and
-    worlds without a placement. ``None`` means identity.
-    """
+    """Write ``layer · world offset · body · local`` prim matrices, transposed to USD's row-vector convention."""
     tid = wp.tid()
     lin = prim_linear[tid]
     t = prim_translation[tid]
@@ -97,13 +94,12 @@ def write_prim_world_matrices(
         rot = wp.quat_to_matrix(wp.transform_get_rotation(xf))
         lin = rot @ lin
         t = rot @ t + wp.transform_get_translation(xf)
-    if world_xforms:
-        slot = prim_world[tid] + 1
-        if slot < 0 or slot >= world_xforms.shape[0]:
-            slot = 0
-        wxf = world_xforms[slot]
-        lin = wp.quat_to_matrix(wp.transform_get_rotation(wxf)) @ lin
-        t = wp.transform_point(wxf, t)
+    if world_offsets:
+        w = prim_world[tid]
+        if w >= 0 and w < world_offsets.shape[0]:
+            t = t + world_offsets[w]
+    lin = wp.quat_to_matrix(wp.transform_get_rotation(layer_xform)) @ lin
+    t = wp.transform_point(layer_xform, t)
     # fmt: off
     m_out[mat44_offset + tid] = wp.mat44d(wp.mat44(
         lin[0, 0], lin[1, 0], lin[2, 0], 0.0,
@@ -157,7 +153,7 @@ class ViewerRTX(ViewerUSD):
     _borrowed_reference = None
     _prim_paths: Sequence[str] = ()
     _prim_count = 0
-    _rtx_render_settings: Mapping[str, Any] = MappingProxyType({})
+    _rtx_render_settings: Mapping[str, tuple[str, Any]] = MappingProxyType({})
     _render_var_path = "/Render/Vars/LdrColor"
 
     @override
@@ -186,7 +182,7 @@ class ViewerRTX(ViewerUSD):
         *,
         plot_history_size: int = 250,
         stage: Any | None = None,
-        render_settings: Mapping[str, Any] | None = None,
+        render_settings: Mapping[str, tuple[str, Any]] | None = None,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
 
@@ -216,11 +212,9 @@ class ViewerRTX(ViewerUSD):
                 ``environment`` is ignored. Requires OVRTX 0.4 or newer and
                 a stage created with GPU hierarchy computation, so that
                 descendants of bound prims follow the written transforms.
-            render_settings: ``omni:rtx:*`` attribute overrides applied to the
-                viewer's render product, e.g.
-                ``{"omni:rtx:pt:samplesPerPixel": 4}``. A value may be a
-                ``(usd_type_name, value)`` pair to set the USD type
-                explicitly, e.g. ``("UInt", 4)``.
+            render_settings: ``omni:rtx:*`` attributes to author on the
+                viewer's render product as ``{name: (usd_type_name, value)}``,
+                e.g. ``{"omni:rtx:pt:samplesPerPixel": ("UInt", 4)}``.
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
@@ -623,7 +617,7 @@ void main() {
 
         # ---- Lights ----------------------------------------------------------
         if self._borrowed_stage is not None:
-            pass  # the borrowed stage owns its lighting
+            pass  # lighting belongs to the borrowed stage
         elif self._environment == "studio":
             self._add_studio_lights()
         elif self._environment == "default":
@@ -707,8 +701,8 @@ void main() {
         rp.CreateAttribute("omni:rtx:quality", Sdf.ValueTypeNames.Int, custom=False).Set(0)
         rp.CreateAttribute("omni:rtx:waitForEvents", Sdf.ValueTypeNames.TokenArray).Set([])
 
-        for name, value in self._rtx_render_settings.items():
-            self._author_render_setting(rp, name, value)
+        for name, (type_name, value) in self._rtx_render_settings.items():
+            rp.CreateAttribute(name, getattr(Sdf.ValueTypeNames, type_name)).Set(value)
 
         # Global render settings belong to the owner of a borrowed stage.
         if self._borrowed_stage is not None:
@@ -726,33 +720,6 @@ void main() {
             ),
         )
         rs.CreateRelationship("products").SetTargets([Sdf.Path(self._render_product_path)])
-
-    @staticmethod
-    def _author_render_setting(prim, name: str, value: Any) -> None:
-        """Set a render-product attribute, inferring the USD type for new attributes."""
-        from pxr import Sdf
-
-        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str):
-            type_name, value = value
-            prim.CreateAttribute(name, getattr(Sdf.ValueTypeNames, type_name)).Set(value)
-            return
-        attr = prim.GetAttribute(name)
-        if not attr:
-            if isinstance(value, bool):
-                type_name = Sdf.ValueTypeNames.Bool
-            elif isinstance(value, int):
-                type_name = Sdf.ValueTypeNames.Int
-            elif isinstance(value, float):
-                type_name = Sdf.ValueTypeNames.Float
-            elif isinstance(value, str):
-                type_name = Sdf.ValueTypeNames.Token
-            elif len(value) == 3:
-                type_name = Sdf.ValueTypeNames.Color3f
-                value = Gf.Vec3f(*value)
-            else:
-                raise TypeError(f"Cannot infer the USD type of render setting {name!r} from {value!r}")
-            attr = prim.CreateAttribute(name, type_name)
-        attr.Set(value)
 
     def _add_default_lights(self):
         """Default lighting: dome light + distant directional light."""
@@ -848,10 +815,9 @@ void main() {
         """Serialise the USD stage, create the OVRTX renderer and load the scene."""
 
         self._add_camera_lights_and_render_product()
+        self._apply_ground_material()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
-            self._apply_ground_material()
-
             # HACK? Export to a unique temp path so OVRTX never uses a cached version
             # of a previous example's file.
             fd, ovrtx_usd_path = tempfile.mkstemp(suffix=".usd")
@@ -966,12 +932,9 @@ void main() {
         return out
 
     def _bind_borrowed_prims(self, model: newton.Model, prim_body_map: Mapping[str, int] | None) -> None:
-        """Bind stage prims to bodies through their fixed offset at the model's initial pose.
+        """Bind stage prims to bodies by their constant row-vector offset ``C = W0 · inv(body0)``.
 
-        A prim's world matrix is ``C · body`` with ``C = W0 · inv(body0)`` in
-        USD's row-vector convention, which
-        keeps authored scale, prims of collapsed bodies, and prim origins that
-        differ from body frames without special cases.
+        ``C`` covers authored scale, prims of collapsed bodies, and prim origins off the body frame.
         """
         if prim_body_map is None:
             prim_body_map = {label: body for body, label in enumerate(model.body_label)}
@@ -989,8 +952,7 @@ void main() {
         body0 = _transforms_to_usd_matrices(model.body_q.numpy()[bodies].astype(np.float64))
         offsets = world @ np.linalg.inv(body0)
 
-        # C is a body-local offset, so it cannot absorb a world-side placement
-        # difference; a body's own prim must coincide with its initial pose.
+        # A body-local C cannot absorb a world-side placement difference.
         labels = model.body_label
         own = np.array([labels[body] == path for path, body in zip(paths, bodies, strict=True)], dtype=bool)
         drift = np.linalg.norm(offsets[own, 3, :3], axis=-1)
@@ -1001,7 +963,6 @@ void main() {
                 "world placements (e.g. replicate xforms) must match the stage"
             )
 
-        # Row-vector ``C`` is the transpose of the column-form local affine.
         self._set_prim_rows(
             paths,
             bodies,
@@ -1016,14 +977,8 @@ void main() {
         import ovstage
         from pxr import Usd
 
-        # Freeze time samples; OVRTX consumes the current frame.
         stage = Usd.Stage.Open(self.stage.Flatten())
-        for prim in stage.Traverse():
-            for attr in prim.GetAttributes():
-                if attr.GetNumTimeSamples():
-                    value = attr.Get(self._frame_index)
-                    attr.Clear()
-                    attr.Set(value)
+        self._freeze_time_samples(stage)
 
         self._ovstage = self._borrowed_stage
         self._rtx.attach_ovstage(self._ovstage)
@@ -1112,32 +1067,11 @@ void main() {
             mat44_offset=flat_mat44_offset,
         )
 
-    def _get_world_xforms(self) -> wp.array | None:
-        """Return per-world placements (world offset, then layer xform), cached until either changes."""
-        layer_xform = tuple(float(v) for v in self.layer.xform)
-        key = (self.world_offsets, layer_xform)
-        cached = self._world_xforms_key
-        if cached is not None and cached[0] is key[0] and cached[1] == key[1]:
-            return self._world_xforms
-
-        offsets = self.world_offsets.numpy() if self.world_offsets is not None else np.zeros((0, 3))
-        identity_layer = layer_xform == tuple(wp.transform_identity())
-        if not len(offsets) and identity_layer:
-            placements = None
-        else:
-            layer = wp.transform(*layer_xform)
-            xforms = [layer] + [
-                wp.transform_multiply(layer, wp.transform(wp.vec3(*offset), wp.quat_identity())) for offset in offsets
-            ]
-            placements = wp.array(xforms, dtype=wp.transform, device=self.device)
-        self._world_xforms = placements
-        self._world_xforms_key = key
-        return placements
-
     def _launch_prim_world_matrices(self, m_out: wp.array, mat44_offset: int = 0) -> None:
         """Compute all prim world matrices into ``m_out`` with one launch."""
         body_q = self._last_state.body_q if self._last_state is not None else None
-        world_xforms = self._get_world_xforms() if self._prim_world is not None else None
+        # Borrowed prims have no world index; the stage already places their worlds.
+        world_offsets = self.world_offsets if self._prim_world is not None else None
         wp.launch(
             write_prim_world_matrices,
             dim=self._prim_count,
@@ -1147,7 +1081,8 @@ void main() {
                 self._prim_linear,
                 self._prim_translation,
                 self._prim_world,
-                world_xforms,
+                world_offsets,
+                self.layer.xform,
                 mat44_offset,
             ],
             outputs=[m_out],
@@ -1198,6 +1133,15 @@ void main() {
                 prim_mode=PrimMode.MUST_EXIST,
             )
 
+    def _freeze_time_samples(self, stage) -> None:
+        """Replace time samples with their current-frame value; OVRTX consumes the current frame."""
+        for prim in stage.Traverse():
+            for attr in prim.GetAttributes():
+                if attr.GetNumTimeSamples():
+                    value = attr.Get(self._frame_index)
+                    attr.Clear()
+                    attr.Set(value)
+
     def _replace_runtime_prim(self, path: str) -> str:
         """Publish a self-contained USD subtree, including its bound materials."""
         from pxr import Sdf, Usd, UsdShade
@@ -1227,13 +1171,7 @@ void main() {
                     materials[target] = material_path
                 binding.SetTargets([materials[target]])
 
-        # OVRTX consumes the current frame, not the USD export timeline.
-        for prim in stage.Traverse():
-            for attr in prim.GetAttributes():
-                if attr.GetNumTimeSamples():
-                    value = attr.Get(self._frame_index)
-                    attr.Clear()
-                    attr.Set(value)
+        self._freeze_time_samples(stage)
 
         handle = self._runtime_prim_handles.pop(path, None)
         if handle is not None:
@@ -2810,8 +2748,6 @@ void main() {
         self._prim_world = None
         self._prim_matrices = None
         self._prim_mat44_offset = 0
-        self._world_xforms = None
-        self._world_xforms_key = None
         self._use_layered_transform_updates = False
 
         self._last_state = None
