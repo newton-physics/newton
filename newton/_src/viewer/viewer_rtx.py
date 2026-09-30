@@ -38,6 +38,7 @@ except ImportError:
     Gf = UsdGeom = None
 
 from .camera import Camera
+from .gl.icon import set_window_icon
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -264,6 +265,7 @@ class ViewerRTX(ViewerUSD):
             visible=not self._headless,
             vsync=self._vsync,
         )
+        set_window_icon(self._window)
 
         # cache the imported pyglet modules to avoid reimporting later
         self._pyglet = pyglet
