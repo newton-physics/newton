@@ -62,14 +62,15 @@ Use :meth:`~newton.ModelBuilder.begin_world` / :meth:`~newton.ModelBuilder.end_w
 to assign worlds when creating or cloning deformable objects. Do not edit the
 world lists: changing an entry does not move its simulation elements.
 
-Composition and finalization
-----------------------------
+Composition and fixed-joint collapse
+------------------------------------
 
 :meth:`~newton.ModelBuilder.add_builder`, :meth:`~newton.ModelBuilder.add_world`,
 and :meth:`~newton.ModelBuilder.replicate` preserve the records and offset their
-element ranges. Label prefixes also apply to deformable labels. Finalization
-retains the records on the model, but their storage and simulation ranges remain
-private. These identity lists do not provide a public state-selection API.
+element ranges. Label prefixes also apply to deformable labels. These records
+remain on the builder; :meth:`~newton.ModelBuilder.finalize` does not copy them
+to the model. The simulation ranges remain private, and the identity lists do
+not provide a public state-selection API.
 
 Native rods and USD cables have different joint ranges. Native rod records
 include free-root joints created by the call. USD records retain the existing

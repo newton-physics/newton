@@ -72,7 +72,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
-from .model import Model, _DeformableObjectRecord, _pack_shape_pair_codes
+from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 
 if TYPE_CHECKING:
@@ -14033,40 +14033,6 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
-
-            # Preserve builder identities and element ownership across finalization without
-            # exposing the record layout as a public Model API.
-            deformable_objects: list[_DeformableObjectRecord] = []
-
-            def _append_deformable_object_records(
-                family: str,
-                kinds: tuple[tuple[str, str], ...],
-            ) -> None:
-                labels = getattr(self, f"{family}_label")
-                worlds = getattr(self, f"{family}_world")
-                for i, label in enumerate(labels):
-                    deformable_objects.append(
-                        _DeformableObjectRecord(
-                            id=len(deformable_objects),
-                            family=family,
-                            label=label,
-                            world=worlds[i],
-                            ranges={
-                                public_kind: (
-                                    getattr(self, f"_{family}_{private_kind}_start")[i],
-                                    getattr(self, f"_{family}_{private_kind}_end")[i],
-                                )
-                                for private_kind, public_kind in kinds
-                            },
-                        )
-                    )
-
-            _append_deformable_object_records("curve", (("body", "body"), ("joint", "joint")))
-            _append_deformable_object_records(
-                "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
-            )
-            _append_deformable_object_records("volume", (("particle", "particle"), ("tet", "tetrahedron")))
-            m._deformable_objects = tuple(deformable_objects)
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
