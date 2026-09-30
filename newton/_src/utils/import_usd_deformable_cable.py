@@ -909,10 +909,6 @@ def _deformable_prepare_cable_topology(
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
-        # Unlike single cables, the graph junction spanning tree is intrinsic topology, not a
-        # caller choice, and only a tree (not the all-incident-edges joint set produced when
-        # unwrapped) is articulation-safe. So the importer wraps each component into its own
-        # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
         # The graph spans several welded curves. Record a deformable object for each
         # curve below, rather than one for the whole component.
         rod = Rod(node_positions, edges=edges, radius=radius)
