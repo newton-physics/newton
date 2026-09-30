@@ -17,6 +17,7 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import sys
 import typing
 import unittest
 from unittest import mock
@@ -89,6 +90,7 @@ class TestCompactedAppend(unittest.TestCase):
 
 
 class TestNarrowPhaseBufferWarnings(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
     def test_reduction_hashtable_load_warning(self):
         """Report the load threshold correctly when either percentage product exceeds int32."""
         # Capture CPU printf to avoid CUDA printf buffering differences across drivers.
