@@ -3389,6 +3389,57 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("already belongs to articulation", str(context.exception))
         self.assertIn("joint_2", str(context.exception))  # joint2's key
 
+    def test_articulation_validation_rejects_cross_articulation_joint(self):
+        """Reject joints that connect separate articulations during finalization."""
+        builder = ModelBuilder()
+
+        base = builder.add_link(label="base")
+        base_joint = builder.add_joint_revolute(parent=-1, child=base, label="base_joint")
+        builder.add_articulation([base_joint], label="base_articulation")
+
+        pendulum = builder.add_link(label="pendulum")
+        mount_joint = builder.add_joint_revolute(parent=base, child=pendulum, label="mount_joint")
+        builder.add_articulation([mount_joint], label="pendulum_articulation")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("pendulum_articulation", error_msg)
+        self.assertIn("mount_joint", error_msg)
+        self.assertIn("base", error_msg)
+        self.assertIn("cannot be connected", error_msg)
+
+    def test_articulation_validation_body_in_multiple_articulations(self):
+        """Allow parent bodies shared with the joint's articulation and reject others."""
+        builder = ModelBuilder()
+
+        root_b = builder.add_link(label="root_b")
+        shared = builder.add_link(label="shared")
+        child_b = builder.add_link(label="child_b")
+        joint_b_root = builder.add_joint_revolute(parent=-1, child=root_b, label="joint_b_root")
+        joint_b_shared = builder.add_joint_revolute(parent=root_b, child=shared, label="joint_b_shared")
+        joint_b_child = builder.add_joint_revolute(parent=shared, child=child_b, label="joint_b_child")
+        builder.add_articulation([joint_b_root, joint_b_shared, joint_b_child], label="articulation_b")
+
+        joint_a = builder.add_joint_revolute(parent=-1, child=shared, label="joint_a")
+        builder.add_articulation([joint_a], label="articulation_a")
+
+        # ``shared`` is a child in both articulations, so ``joint_b_child`` stays within articulation B.
+        builder.finalize(device="cpu")
+
+        child_c = builder.add_link(label="child_c")
+        joint_c = builder.add_joint_revolute(parent=shared, child=child_c, label="joint_c")
+        builder.add_articulation([joint_c], label="articulation_c")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(device="cpu")
+
+        error_msg = str(context.exception)
+        self.assertIn("joint_c", error_msg)
+        self.assertIn("articulation_c", error_msg)
+        self.assertIn("articulation_b", error_msg)
+
     def test_joint_world_validation(self):
         """Test that joints validate parent/child bodies belong to current world"""
         builder = ModelBuilder()

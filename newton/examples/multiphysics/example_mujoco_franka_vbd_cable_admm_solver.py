@@ -206,8 +206,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
             self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.7 * scale, 0.95 * scale), pitch=-18.0, yaw=120.0)
-            if hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
+            self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)

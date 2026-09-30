@@ -841,7 +841,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         if integrates_rigid_bodies:
-            self._set_module_options(options, module=rigid_vbd_kernels)
+            rigid_modules = (
+                rigid_vbd_kernels,
+                accumulate_body_body_contacts_per_body.module,
+                compute_rigid_contact_forces.module,
+                update_duals_body_body_contacts.module,
+            )
+            for module in rigid_modules:
+                self._set_module_options(options, module=module)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -2507,11 +2514,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Shape ``(world_count + 1,)``, with the final entry selecting
                 entities in global world ``-1``. ``None`` selects all local and
                 global entities.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
                 and particle fields to copy from the model defaults. VBD honors
                 :attr:`~newton.StateFlags.BODY_Q`,
@@ -3876,6 +3878,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_surface_velocity,
                         contacts.rigid_contact_offset0,
                         contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
@@ -3985,6 +3988,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
+                    contacts.rigid_contact_surface_velocity,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
@@ -3993,6 +3997,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.shape_body,
                     state_in.body_q,
                     self.body_q_prev,
+                    dt,
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
@@ -4189,6 +4194,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_surface_velocity,
                 contacts.rigid_contact_offset0,
                 contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,

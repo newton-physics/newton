@@ -1266,7 +1266,7 @@ def eval_jacobian(
     state: State,
     J: wp.array | None = None,
     joint_S_s: wp.array | None = None,
-    mask: wp.array | None = None,
+    mask: wp.array[bool] | None = None,
 ) -> wp.array | None:
     """Evaluate spatial Jacobian for articulations.
 
@@ -1283,8 +1283,9 @@ def eval_jacobian(
         joint_S_s: Optional pre-allocated temp array for motion subspaces,
                    shape (joint_dof_count,), dtype wp.spatial_vector.
                    If None, allocates internally.
-        mask: Optional boolean mask to select which articulations to compute.
-              Shape [articulation_count]. If None, computes for all articulations.
+        mask: Optional one-dimensional mask of shape (articulation_count,) selecting
+              which articulations to compute. If None, computes for all articulations.
+              Two-dimensional per-world masks are not supported.
 
     Returns:
         The Jacobian array J, or None if the model has no articulations.
@@ -1690,7 +1691,7 @@ def eval_mass_matrix(
     J: wp.array | None = None,
     body_I_s: wp.array | None = None,
     joint_S_s: wp.array | None = None,
-    mask: wp.array | None = None,
+    mask: wp.array[bool] | None = None,
 ) -> wp.array | None:
     """Evaluate generalized mass matrix for articulations.
 
@@ -1710,8 +1711,9 @@ def eval_mass_matrix(
                   shape (body_count,), dtype wp.spatial_matrix. If None, allocates internally.
         joint_S_s: Optional pre-allocated temp array for motion subspaces (only used if J is None),
                    shape (joint_dof_count,), dtype wp.spatial_vector. If None, allocates internally.
-        mask: Optional boolean mask to select which articulations to compute.
-              Shape [articulation_count]. If None, computes for all articulations.
+        mask: Optional one-dimensional mask of shape (articulation_count,) selecting
+              which articulations to compute. If None, computes for all articulations.
+              Two-dimensional per-world masks are not supported.
 
     Returns:
         The mass matrix array H, or None if the model has no articulations.

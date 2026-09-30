@@ -139,10 +139,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
-_SCALAR_GRAVITY_DEPRECATION_MSG = (
-    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
-    "Scalar gravity will be removed in a future release."
-)
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
@@ -1482,7 +1478,7 @@ class ModelBuilder:
     def __init__(
         self,
         up_axis: AxisType = Axis.Z,
-        gravity: float | Vec3 | None = None,
+        gravity: Vec3 | None = None,
         sdf_texture_paired_samples: bool = True,
     ):
         """
@@ -1491,8 +1487,7 @@ class ModelBuilder:
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
-                applies acceleration along ``up_axis``. If omitted, gravity
+            gravity: Default gravity vector [m/s^2]. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
             sdf_texture_paired_samples: Store adjacent X samples together in
                 SDF textures for faster software interpolation. Disable to
@@ -1935,11 +1930,11 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
-        self._gravity: float | wp.vec3 | None = None
+        """Up axis used by geometry helpers and for resolving default gravity."""
+        self._gravity: wp.vec3 | None = None
         """Explicit global/default gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
-            self._set_gravity(gravity, stacklevel=3)
+            self._set_gravity(gravity)
 
         self.world_gravity: list[Vec3] = []
         """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
@@ -2941,22 +2936,15 @@ class ModelBuilder:
         )
 
     @property
-    def gravity(self) -> float | wp.vec3:
-        """Global/default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
-        if np.isscalar(self._gravity):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            return self._gravity
+    def gravity(self) -> wp.vec3:
+        """Global/default gravity vector [m/s^2]."""
         return self._gravity_as_vector()
 
     @gravity.setter
-    def gravity(self, value: float | Vec3) -> None:
-        self._set_gravity(value, stacklevel=3)
+    def gravity(self, value: Vec3) -> None:
+        self._set_gravity(value)
 
-    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
-        if np.isscalar(value):
-            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
-            self._gravity = float(value)
-            return
+    def _set_gravity(self, value: Vec3) -> None:
         gravity = np.asarray(value, dtype=np.float32)
         if gravity.shape != (3,):
             raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
@@ -2964,9 +2952,8 @@ class ModelBuilder:
 
     def _gravity_as_vector(self) -> wp.vec3:
         """Resolve gravity to a fresh vector so callers never alias builder state."""
-        if self._gravity is None or np.isscalar(self._gravity):
-            magnitude = -9.81 if self._gravity is None else self._gravity
-            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        if self._gravity is None:
+            return wp.vec3(*(-9.81 * component for component in self.up_vector))
         return wp.vec3(*self._gravity)
 
     @property
@@ -8381,7 +8368,7 @@ class ModelBuilder:
         +------------------------+-------------------------------------------------------------------------------+
         | Method                 | Description                                                                   |
         +========================+===============================================================================+
-        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/wjakob/coacd>`_         |
+        | ``"coacd"``            | Convex decomposition using `CoACD <https://github.com/SarahWeiii/CoACD>`_     |
         +------------------------+-------------------------------------------------------------------------------+
         | ``"vhacd"``            | Convex decomposition using `V-HACD <https://github.com/trimesh/vhacdx>`_      |
         +------------------------+-------------------------------------------------------------------------------+
@@ -11876,7 +11863,10 @@ class ModelBuilder:
                 )
 
     def _validate_joints(self):
-        """Validate that joints belong to an articulation, with two exceptions.
+        """Validate articulation topology and joint membership.
+
+        A joint in one articulation cannot have a parent body that belongs to a
+        different articulation. Connected joints must use the same articulation.
 
         Loop-closing joints are allowed when their child is already reachable through
         an articulation. Standalone world-root joints (``parent == -1``) are also
@@ -11891,12 +11881,15 @@ class ModelBuilder:
 
         with self._raw_array_access():
             joint_articulation = np.asarray(self.joint_articulation)
-            if np.all(joint_articulation >= 0):
-                return
             joint_parent = np.asarray(self.joint_parent)
             joint_child = np.asarray(self.joint_child)
+            body_count = self.body_count
 
         articulated = joint_articulation >= 0
+        self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated, body_count)
+        if np.all(articulated):
+            return
+
         articulated_bodies = np.concatenate((joint_parent[articulated], joint_child[articulated]))
         orphan_joints = np.flatnonzero(~articulated & (joint_parent != -1) & ~np.isin(joint_child, articulated_bodies))
 
@@ -11906,6 +11899,76 @@ class ModelBuilder:
                 f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
                 f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
                 + ("..." if len(orphan_joints) > 5 else "")
+            )
+
+    def _validate_articulation_connections(
+        self,
+        joint_articulation: np.ndarray,
+        joint_parent: np.ndarray,
+        joint_child: np.ndarray,
+        articulated: np.ndarray,
+        body_count: int,
+    ) -> None:
+        """Reject articulated joints whose parent body belongs to another articulation.
+
+        A parent body belongs to an articulation when it is the child of one of that
+        articulation's joints. Malformed body indices are skipped here so that
+        structural validation can report them.
+
+        Args:
+            joint_articulation: Articulation index of each joint, or ``-1``.
+            joint_parent: Parent body index of each joint.
+            joint_child: Child body index of each joint.
+            articulated: Mask of joints that belong to an articulation.
+            body_count: Number of bodies in the builder.
+
+        Raises:
+            ValueError: If a joint connects two different articulations.
+        """
+        articulated_joints = np.flatnonzero(articulated)
+        if len(articulated_joints) == 0:
+            return
+
+        arts = joint_articulation[articulated_joints]
+        parents = joint_parent[articulated_joints]
+        children = joint_child[articulated_joints]
+
+        # Map each body to one articulation that contains it as a joint child.
+        body_articulation = np.full(body_count, -1, dtype=np.int64)
+        valid_children = (children >= 0) & (children < body_count)
+        body_articulation[children[valid_children]] = arts[valid_children]
+
+        valid_parents = (parents >= 0) & (parents < body_count)
+        parent_articulation = np.full(len(articulated_joints), -1, dtype=np.int64)
+        parent_articulation[valid_parents] = body_articulation[parents[valid_parents]]
+        candidates = np.flatnonzero((parent_articulation >= 0) & (parent_articulation != arts))
+        if len(candidates) == 0:
+            return
+
+        # A body can be the child of joints in several articulations, so confirm
+        # each candidate against the exact (child, articulation) membership.
+        body_articulations: dict[int, set[int]] = {}
+        for child, art in zip(children[valid_children].tolist(), arts[valid_children].tolist(), strict=True):
+            body_articulations.setdefault(child, set()).add(art)
+
+        for candidate in candidates.tolist():
+            articulation_idx = int(arts[candidate])
+            parent = int(parents[candidate])
+            parent_articulations = body_articulations[parent]
+            if articulation_idx in parent_articulations:
+                continue
+
+            joint_idx = int(articulated_joints[candidate])
+            parent_articulation_idx = min(parent_articulations)
+            articulation_label = self.articulation_label[articulation_idx]
+            parent_articulation_label = self.articulation_label[parent_articulation_idx]
+            joint_label = self.joint_label[joint_idx]
+            parent_label = self.body_label[parent]
+            raise ValueError(
+                f"Joint {joint_idx} ('{joint_label}') in articulation {articulation_idx} "
+                f"('{articulation_label}') has parent body {parent} ('{parent_label}') in articulation "
+                f"{parent_articulation_idx} ('{parent_articulation_label}'). Articulations cannot be connected "
+                "through joints. Add all connected joints to the same articulation."
             )
 
     def _validate_shapes(self) -> bool:
@@ -12647,8 +12710,9 @@ class ModelBuilder:
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
                 you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
-            skip_validation_joints: If True, skips articulation-membership validation. By default, non-root joints
-                must belong to an articulation or close a loop; standalone world-root joints are allowed.
+            skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
+                joints cannot connect separate articulations, and non-root joints must belong to an articulation or
+                close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
@@ -12858,7 +12922,14 @@ class ModelBuilder:
                     continue
 
                 geo_hash = hash(geo)
-                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                # Distinct meshes with mutable surface-velocity fields need
+                # distinct Warp meshes even when their geometry is identical.
+                # Repeated shapes using the same Mesh object still share via
+                # finalized_geos_by_identity above.
+                geo_cache_key = (
+                    (geo_hash, geo_identity) if isinstance(geo, Mesh) and geo.enable_surface_velocity else geo_hash
+                )
+                if geo_cache_key not in finalized_geos and isinstance(geo, Heightfield):
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
@@ -12869,15 +12940,15 @@ class ModelBuilder:
                         ground_z=geo.min_z,
                         compute_inertia=False,
                     )
-                    finalized_geos[geo_hash] = hf_geo.finalize(
+                    finalized_geos[geo_cache_key] = hf_geo.finalize(
                         device=device,
                         bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                     )
                     # keep mesh alive for the model's lifetime
                     heightfield_meshes.append(hf_geo.mesh)
-                elif geo_hash not in finalized_geos:
+                elif geo_cache_key not in finalized_geos:
                     if isinstance(geo, Mesh):
-                        finalized_geos[geo_hash] = geo.finalize(
+                        finalized_geos[geo_cache_key] = geo.finalize(
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
@@ -12887,14 +12958,14 @@ class ModelBuilder:
                         # object keeping the finalized wp.Mesh alive
                         mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
-                        finalized_geos[geo_hash] = len(gaussians)
+                        finalized_geos[geo_cache_key] = len(gaussians)
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
                     else:
-                        finalized_geos[geo_hash] = geo.finalize()
+                        finalized_geos[geo_cache_key] = geo.finalize()
 
-                finalized_geo = finalized_geos[geo_hash]
+                finalized_geo = finalized_geos[geo_cache_key]
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
@@ -12913,6 +12984,8 @@ class ModelBuilder:
                     if mesh_properties is None:
                         mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
                         mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                    if shape_type == GeoType.MESH and geo.enable_surface_velocity:
+                        mesh_properties |= MeshProperties.SURFACE_VELOCITY
                 shape_mesh_properties.append(mesh_properties)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
@@ -13706,95 +13779,63 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
-            if len(self.body_mass) > 0:
-                if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings.
-                    # Build corrected copies without modifying builder lists.
-                    corrected_mass = list(self.body_mass)
-                    corrected_inertia = list(self.body_inertia)
-                    corrected_inv_mass = list(self.body_inv_mass)
-                    corrected_inv_inertia = list(self.body_inv_inertia)
-
-                    for i in range(len(self.body_mass)):
-                        mass = self.body_mass[i]
-                        inertia = self.body_inertia[i]
-                        body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
-
-                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
-                            mass,
-                            inertia,
-                            self.balance_inertia,
-                            self.bound_mass,
-                            self.bound_inertia,
-                            body_label,
-                        )
-
-                        if was_corrected:
-                            corrected_mass[i] = new_mass
-                            corrected_inertia[i] = new_inertia
-                            if new_mass > 0.0:
-                                corrected_inv_mass[i] = 1.0 / new_mass
-                            else:
-                                corrected_inv_mass[i] = 0.0
-
-                            if any(x for x in new_inertia):
-                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
-                            else:
-                                corrected_inv_inertia[i] = new_inertia
-
-                    # Create arrays from corrected copies
-                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                else:
-                    # Use fast Warp kernel validation
-                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inv_inertia_array = wp.array(
-                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+            body_mass = self.body_mass
+            body_inertia = self.body_inertia
+            body_inv_mass = self.body_inv_mass
+            body_inv_inertia = self.body_inv_inertia
+            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+                # Use detailed Python validation with per-body warnings on copies of the builder lists.
+                body_mass = list(body_mass)
+                body_inertia = list(body_inertia)
+                body_inv_mass = list(body_inv_mass)
+                body_inv_inertia = list(body_inv_inertia)
+                for i in range(len(body_mass)):
+                    body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
+                    new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
+                        body_mass[i],
+                        body_inertia[i],
+                        self.balance_inertia,
+                        self.bound_mass,
+                        self.bound_inertia,
+                        body_label,
                     )
-                    correction_count = wp.zeros(1, dtype=wp.int32)
+                    if was_corrected:
+                        body_mass[i] = new_mass
+                        body_inertia[i] = new_inertia
+                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
+                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
 
-                    # Launch validation kernel (corrects arrays in-place on device)
-                    wp.launch(
-                        kernel=validate_and_correct_inertia_kernel,
-                        dim=len(self.body_mass),
-                        inputs=[
-                            body_mass_array,
-                            body_inertia_array,
-                            body_inv_mass_array,
-                            body_inv_inertia_array,
-                            self.balance_inertia,
-                            self.bound_mass if self.bound_mass is not None else 0.0,
-                            self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_count,
-                        ],
+            m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inertia = wp.array(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.array(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+
+            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+                # Use fast Warp kernel validation, correcting the Model arrays in place on device.
+                correction_count = wp.zeros(1, dtype=wp.int32)
+                wp.launch(
+                    kernel=validate_and_correct_inertia_kernel,
+                    dim=len(self.body_mass),
+                    inputs=[
+                        m.body_mass,
+                        m.body_inertia,
+                        m.body_inv_mass,
+                        m.body_inv_inertia,
+                        self.balance_inertia,
+                        self.bound_mass if self.bound_mass is not None else 0.0,
+                        self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        correction_count,
+                    ],
+                )
+
+                # Check if any corrections were made (single int transfer)
+                num_corrections = int(correction_count.numpy()[0])
+                if num_corrections > 0:
+                    warnings.warn(
+                        f"Inertia validation corrected {num_corrections} bodies. "
+                        f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                        stacklevel=3,
                     )
-
-                    # Check if any corrections were made (single int transfer)
-                    num_corrections = int(correction_count.numpy()[0])
-                    if num_corrections > 0:
-                        warnings.warn(
-                            f"Inertia validation corrected {num_corrections} bodies. "
-                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=3,
-                        )
-
-                    # Use the corrected arrays directly on the Model.
-                    # Builder state is intentionally left unchanged — corrected
-                    # values live only on the returned Model.
-                    m.body_mass = body_mass_array
-                    m.body_inv_mass = body_inv_mass_array
-                    m.body_inertia = body_inertia_array
-                    m.body_inv_inertia = body_inv_inertia_array
-            else:
-                # No bodies, create empty arrays
-                m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
@@ -14045,18 +14086,6 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             self._resolve_custom_frequency_articulation_owners()
 
-            # Early return if no custom attributes exist to avoid overhead
-            if not self.custom_attributes:
-                m.custom_frequency_counts = dict(self._custom_frequency_counts)
-                self._finalize_custom_frequency_metadata(m, device)
-                m.bvh_build_shapes(
-                    m,
-                    bvh_constructor=self.default_bvh_cfg.shape_constructor,
-                    shape_flags=self.default_bvh_cfg.shape_flags,
-                )
-                m.bvh_build_particles(m)
-                return m
-
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
             custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
@@ -14103,43 +14132,7 @@ class ModelBuilder:
                     continue
 
                 freq_key = custom_attr.frequency
-
-                # determine count by frequency
-                if isinstance(freq_key, str):
-                    # Custom frequency: count determined by validated frequency count
-                    count = custom_frequency_counts.get(freq_key, 0)
-                elif freq_key == Model.AttributeFrequency.ONCE:
-                    count = 1
-                elif freq_key == Model.AttributeFrequency.BODY:
-                    count = m.body_count
-                elif freq_key == Model.AttributeFrequency.SHAPE:
-                    count = m.shape_count
-                elif freq_key == Model.AttributeFrequency.JOINT:
-                    count = m.joint_count
-                elif freq_key == Model.AttributeFrequency.JOINT_DOF:
-                    count = m.joint_dof_count
-                elif freq_key == Model.AttributeFrequency.JOINT_COORD:
-                    count = m.joint_coord_count
-                elif freq_key == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                    count = m.joint_constraint_count
-                elif freq_key == Model.AttributeFrequency.ARTICULATION:
-                    count = m.articulation_count
-                elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.world_count
-                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
-                    count = m.constraint_mimic_count
-                elif freq_key == Model.AttributeFrequency.PARTICLE:
-                    count = m.particle_count
-                elif freq_key == Model.AttributeFrequency.EDGE:
-                    count = m.edge_count
-                elif freq_key == Model.AttributeFrequency.TRIANGLE:
-                    count = m.tri_count
-                elif freq_key == Model.AttributeFrequency.TETRAHEDRON:
-                    count = m.tet_count
-                elif freq_key == Model.AttributeFrequency.SPRING:
-                    count = m.spring_count
-                else:
-                    continue
+                count = m._attribute_frequency_count(freq_key)
 
                 # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
                 # callers consume ``model.mujoco.equality_constraint_*`` without branching on
