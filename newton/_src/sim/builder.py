@@ -1881,6 +1881,9 @@ class ModelBuilder:
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
+        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        USD cable imports record one entry per simulation prim, even when it contains
+        several curves.
         See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
@@ -1911,6 +1914,8 @@ class ModelBuilder:
         self.surface_label: list[str] = []
         """Labels of deformable objects represented by triangle surfaces, aligned with :attr:`surface_world`.
 
+        :meth:`add_cloth_mesh` and :meth:`add_cloth_grid` each record one cloth.
+        USD cloth imports record one entry per simulation prim.
         See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
@@ -1943,6 +1948,8 @@ class ModelBuilder:
         self.volume_label: list[str] = []
         """Labels of deformable objects represented by tetrahedral volumes, aligned with :attr:`volume_world`.
 
+        :meth:`add_soft_mesh` and :meth:`add_soft_grid` each record one soft body.
+        USD volume imports record one entry per simulation prim.
         See :ref:`deformable-objects` for builder-time identity updates.
 
         .. experimental::
@@ -9177,9 +9184,10 @@ class ModelBuilder:
                 segment back to the first. Repeat the first position at the end
                 to include the closing segment. When using ``rod``, pass
                 ``closed=True`` to the :class:`newton.Rod` constructor instead.
-            label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                recorded deformable curve. If None, the deformable object receives a generated ``curve_N``
-                label. See :ref:`deformable-objects`. Generated joint labels retain
+            label: Optional label prefix for bodies, shapes, joints, and articulations.
+                The same name is appended to :attr:`curve_label` for this rod; if None,
+                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
+                Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates
                 articulations for the generated tree joints. Defaults to True.
@@ -9382,9 +9390,10 @@ class ModelBuilder:
                 ``bend_stiffness``.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                recorded deformable curve. If None, the deformable object receives a generated ``curve_N``
-                label. See :ref:`deformable-objects`. Generated joint labels retain
+            label: Optional label prefix for bodies, shapes, joints, and articulations.
+                The same name is appended to :attr:`curve_label` for this rod; if None,
+                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
+                Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, places each connected component's generated joints and a
                 free joint to the world in one articulation.
@@ -10582,8 +10591,8 @@ class ModelBuilder:
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
-                The same name labels the recorded deformable surface; if None, the deformable object receives
-                a generated ``surface_N`` label. See :ref:`deformable-objects`.
+                The same name is appended to :attr:`surface_label` for this cloth; if None,
+                a generated ``surface_N`` label is used. See :ref:`deformable-objects`.
             color: Display color in [0, 1] for the cloth surface. If a single
                 RGB value, applied to all triangles. If array-like, RGB values
                 are applied per triangle.
@@ -10727,8 +10736,8 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify this cloth.
-                The same name labels the recorded deformable surface; if None, the deformable object receives
-                a generated ``surface_N`` label. See :ref:`deformable-objects`.
+                The same name is appended to :attr:`surface_label` for this cloth; if None,
+                a generated ``surface_N`` label is used. See :ref:`deformable-objects`.
 
         Note:
             The mesh should be two-manifold.
@@ -11007,8 +11016,8 @@ class ModelBuilder:
             opacity: Display opacity in [0, 1] for the generated surface mesh.
                 If scalar, applied to all triangles. If array-like, values are
                 applied per triangle.
-            label: Optional name for the recorded deformable volume. If None, the deformable object receives
-                a generated ``volume_N`` label. Currently unused by mesh-quality diagnostics
+            label: Optional name appended to :attr:`volume_label` for this soft body.
+                If None, a generated ``volume_N`` label is used. Currently unused by mesh-quality diagnostics
                 because the generated grid is degenerate-free by construction. See
                 :ref:`deformable-objects`.
 
@@ -11195,9 +11204,9 @@ class ModelBuilder:
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
             label: Optional name forwarded to
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
-                ``validate_mesh=True`` can identify this soft body. The same name labels the
-                recorded deformable volume; if None, the deformable object receives a generated ``volume_N``
-                label. See :ref:`deformable-objects`.
+                ``validate_mesh=True`` can identify this soft body. The same name is appended to
+                :attr:`volume_label`; if None, a generated ``volume_N`` label is used.
+                See :ref:`deformable-objects`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`

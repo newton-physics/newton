@@ -11,6 +11,32 @@ simulation elements. A rod-backed curve contains bodies and joints. A triangle
 surface contains particles, triangles, and bending edges. A tetrahedral volume
 contains particles and tetrahedra.
 
+The family names describe the simulation geometry. The builder methods and
+supported USD deformable imports populate these lists:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 45 25
+
+   * - Builder lists
+     - Native construction
+     - USD deformable import
+   * - ``curve_label`` / ``curve_world``
+     - :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph` (legacy)
+     - Cable ``BasisCurves``
+   * - ``surface_label`` / ``surface_world``
+     - :meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_cloth_grid`
+     - Cloth ``Mesh``
+   * - ``volume_label`` / ``volume_world``
+     - :meth:`~newton.ModelBuilder.add_soft_mesh`, :meth:`~newton.ModelBuilder.add_soft_grid`
+     - Volume ``TetMesh``
+
+Each native call records one deformable object. For example,
+:meth:`~newton.ModelBuilder.add_cloth_grid` delegates to
+:meth:`~newton.ModelBuilder.add_cloth_mesh` but records the cloth only once.
+USD imports record each simulation prim once, including cable prims with several
+curves. Internal rod calls made by the importer do not create extra entries.
+
 Builder identities
 ------------------
 
