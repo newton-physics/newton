@@ -1413,26 +1413,6 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
-    def _resolve_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return explicitly registered frequency metadata."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.frequency
-
-    def _attribute_reference_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
-        """Return the entity domain indexed by an attribute's values."""
-        spec = self._attribute_spec(name)
-        return None if spec is None else spec.references
-
-    def _attribute_row_width(self, name: str) -> int:
-        """Return the number of flattened values stored per frequency row."""
-        spec = self._attribute_spec(name)
-        return 1 if spec is None else spec.row_width
-
-    def _attribute_requires_empty_sentinel(self, name: str) -> bool:
-        """Return whether an empty attribute retains one sentinel value."""
-        spec = self._attribute_spec(name)
-        return False if spec is None else spec.requires_empty_sentinel
-
     def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
         """Return the frequency domain addressed by a builder reference declaration."""
         if references is None:
