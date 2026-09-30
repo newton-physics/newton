@@ -337,15 +337,21 @@ def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.nda
     return lut, offsets, np.asarray(neighbors, dtype=np.int32)
 
 
-def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+def _build_joint_ancestor(
+    joint_parent: Sequence[int], joint_child: Sequence[int], joint_articulation: Sequence[int]
+) -> np.ndarray:
     joint_parents = np.asarray(joint_parent, dtype=np.int32)
     joint_children = np.asarray(joint_child, dtype=np.int32)
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
     joint_indices = np.arange(len(joint_parents), dtype=np.int32)
     max_child = int(np.max(joint_children, initial=-1))
 
     body_joint = np.full(max_child + 1, -1, dtype=np.int32)
     valid_child = joint_children >= 0
     body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+    # Prefer articulation tree joints over loop closures, regardless of creation order.
+    tree_joint = valid_child & (joint_articulations >= 0)
+    body_joint[joint_children[tree_joint]] = joint_indices[tree_joint]
 
     parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
     has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
@@ -13870,7 +13876,7 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np, joint_articulation_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
             m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
