@@ -8118,16 +8118,40 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
-    def test_disable_sensors_rejects_rne_state_attributes(self):
-        """Reject disabled sensors when RNE-derived state attributes are requested."""
-        for attribute in ("body_qdd", "body_parent_f"):
-            with self.subTest(attribute=attribute):
-                model = self._create_multiworld_model(world_count=1)
-                solver = SolverMuJoCo(model, disable_sensors=True)
-                model.request_state_attributes(attribute)
-                state = model.state()
-                with self.assertRaisesRegex(ValueError, "disable_sensors"):
-                    solver.step(state, state, None, None, 0.01)
+    def test_disable_sensors_computes_rne_state_attributes(self):
+        """Compute body_qdd and body_parent_f with sensors disabled.
+
+        A horizontal pendulum released from rest has nonzero body acceleration
+        and joint wrench, so stale zero-initialized outputs would not match the
+        sensors-enabled reference.
+        """
+        results = {}
+        for disable_sensors in (False, True):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
+            builder.request_state_attributes("body_qdd", "body_parent_f")
+            link = builder.add_link()
+            builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+            joint = builder.add_joint_revolute(
+                -1,
+                link,
+                child_xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity()),
+                axis=wp.vec3(0.0, 1.0, 0.0),
+            )
+            builder.add_articulation([joint])
+            model = builder.finalize()
+
+            solver = SolverMuJoCo(model, disable_sensors=disable_sensors, disable_contacts=True)
+            state_in, state_out = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+            solver.step(state_in, state_out, None, None, 1.0e-3)
+            results[disable_sensors] = (state_out.body_qdd.numpy(), state_out.body_parent_f.numpy())
+
+        qdd_ref, parent_f_ref = results[False]
+        qdd, parent_f = results[True]
+        self.assertGreater(np.linalg.norm(qdd_ref), 0.1)
+        self.assertGreater(np.linalg.norm(parent_f_ref), 0.1)
+        np.testing.assert_allclose(qdd, qdd_ref, rtol=1.0e-5, atol=1.0e-5)
+        np.testing.assert_allclose(parent_f, parent_f_ref, rtol=1.0e-5, atol=1.0e-5)
 
     def test_disable_sensors_allows_unrelated_state_attributes(self):
         """Step with disabled sensors when no RNE-derived state attribute is requested."""
