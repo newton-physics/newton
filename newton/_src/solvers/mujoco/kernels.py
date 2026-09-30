@@ -1434,6 +1434,10 @@ def update_jnt_connect_constraint_anchors_kernel(
 def create_convert_mjw_contacts_to_newton_kernel():
     """Create contact conversion kernel; deferred so ``wp.static`` doesn't import mujoco_warp at module load."""
 
+    from mujoco_warp import Contact
+
+    has_adhesion = "adhesion" in Contact.__dataclass_fields__
+
     @wp.kernel
     def convert_mjw_contacts_to_newton_kernel(
         # inputs
@@ -1447,6 +1451,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_contact_dim: wp.array[int],
         mj_contact_geom: wp.array[wp.vec2i],
         mj_contact_efc_address: wp.array2d[int],
+        mj_contact_adhesion: wp.array[float],
         mj_contact_worldid: wp.array[wp.int32],
         mj_efc_force: wp.array2d[float],
         mj_geom_bodyid: wp.array[int],
@@ -1509,19 +1514,35 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
-                mj_opt_cone,
-                mj_contact_frame,
-                mj_contact_friction,
-                mj_contact_dim,
-                mj_contact_efc_address,
-                mj_efc_force,
-                njmax,
-                mj_nacon,
-                world,
-                contact_idx,
-                True,
-            )
+            if wp.static(has_adhesion):
+                contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
+                    mj_opt_cone,
+                    mj_contact_frame,
+                    mj_contact_friction,
+                    mj_contact_dim,
+                    mj_contact_efc_address,
+                    mj_contact_adhesion,
+                    mj_efc_force,
+                    njmax,
+                    mj_nacon,
+                    world,
+                    contact_idx,
+                    True,
+                )
+            else:
+                contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
+                    mj_opt_cone,
+                    mj_contact_frame,
+                    mj_contact_friction,
+                    mj_contact_dim,
+                    mj_contact_efc_address,
+                    mj_efc_force,
+                    njmax,
+                    mj_nacon,
+                    world,
+                    contact_idx,
+                    True,
+                )
 
     return convert_mjw_contacts_to_newton_kernel
 
@@ -2375,40 +2396,6 @@ def update_joint_transforms_kernel(
     jnt_pos[world, mjc_jnt] = child_xform.p
 
 
-@wp.kernel(enable_backward=False)
-def update_shape_mappings_kernel(
-    geom_to_shape_idx: wp.array[wp.int32],
-    geom_is_static: wp.array[bool],
-    shape_range_len: int,
-    first_env_shape_base: int,
-    # output - MuJoCo[world, geom] -> Newton shape
-    mjc_geom_to_newton_shape: wp.array2d[wp.int32],
-):
-    """
-    Build the mapping from MuJoCo [world, geom] to Newton shape index.
-    This is the primary mapping direction for the new unified design.
-    """
-    world, geom_idx = wp.tid()
-    template_or_static_idx = geom_to_shape_idx[geom_idx]
-    if template_or_static_idx < 0:
-        return
-
-    # Check if this is a static shape using the precomputed mask
-    # For static shapes, template_or_static_idx is the absolute Newton shape index
-    # For non-static shapes, template_or_static_idx is 0-based offset from first env's first shape
-    is_static = geom_is_static[geom_idx]
-
-    if is_static:
-        # Static shape - use absolute index (same for all worlds)
-        newton_shape_idx = template_or_static_idx
-    else:
-        # Non-static shape - compute the absolute Newton shape index for this world
-        # template_or_static_idx is 0-based offset within first_group shapes
-        newton_shape_idx = first_env_shape_base + template_or_static_idx + world * shape_range_len
-
-    mjc_geom_to_newton_shape[world, geom_idx] = newton_shape_idx
-
-
 @wp.kernel
 def update_model_properties_kernel(
     # Newton model properties
@@ -2510,8 +2497,9 @@ def update_geom_properties_kernel(
     else:
         geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
-    # update size
-    geom_size[world, geom_idx] = shape_size[shape_idx]
+    # Mesh size is compiled from the scaled vertices.
+    if geom_type[geom_idx] != GEOM_TYPE_MESH:
+        geom_size[world, geom_idx] = shape_size[shape_idx]
 
     # update position and orientation
 
@@ -2535,23 +2523,16 @@ def update_geom_properties_kernel(
 def update_site_properties_kernel(
     shape_transform: wp.array[wp.transform],
     shape_scale: wp.array[wp.vec3],
-    site_shape_index: wp.array[wp.int32],
-    site_is_global: wp.array[bool],
-    shapes_per_world: int,
-    first_env_shape_base: int,
+    site_to_shape: wp.array2d[wp.int32],
     site_pos: wp.array2d[wp.vec3],
     site_quat: wp.array2d[wp.quat],
     site_size: wp.array[wp.vec3],
 ):
     """Update MuJoCo site poses and sizes from Newton shape properties."""
     world, site = wp.tid()
-    template_or_global_shape = site_shape_index[site]
-    if template_or_global_shape < 0:
+    shape = site_to_shape[world, site]
+    if shape < 0:
         return
-
-    shape = template_or_global_shape
-    if not site_is_global[site]:
-        shape = first_env_shape_base + template_or_global_shape + world * shapes_per_world
 
     tf = shape_transform[shape]
     site_pos[world, site] = tf.p
