@@ -277,7 +277,8 @@ class TestViewerRTXRenderOutput(unittest.TestCase):
             with self.subTest(name=name):
                 render_var = object()
                 frame = mock.Mock(render_vars={name: render_var})
-                self.assertIs(ViewerRTX._get_ldr_color_render_var(frame), render_var)
+                viewer = mock.Mock(_render_var_path="/Render/Vars/LdrColor")
+                self.assertIs(ViewerRTX._get_ldr_color_render_var(viewer, frame), render_var)
 
     @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
     def test_display_uses_ovrtx_05_color_output(self):

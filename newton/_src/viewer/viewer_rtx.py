@@ -21,8 +21,9 @@ import os
 import re
 import tempfile
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from time import perf_counter
+from types import MappingProxyType
 from typing import Any, Literal
 
 import numpy as np
@@ -111,6 +112,41 @@ def update_and_write_shape_transforms(
     m_out[mat44_offset + tid] = wp.transpose(wp.transform_compose(p64, q64, s64))
 
 
+@wp.kernel(enable_backward=False)
+def write_borrowed_prim_transforms(
+    body_q: wp.array[wp.transform],
+    prim_body: wp.array[int],
+    prim_offsets: wp.array[wp.mat44d],
+    m_out: wp.array[wp.mat44d],
+):
+    """Write ``offset · body`` world matrices in USD row-vector convention."""
+    tid = wp.tid()
+    xf = body_q[prim_body[tid]]
+    p64 = wp.vec3d(wp.float64(xf[0]), wp.float64(xf[1]), wp.float64(xf[2]))
+    q64 = wp.quatd(wp.float64(xf[3]), wp.float64(xf[4]), wp.float64(xf[5]), wp.float64(xf[6]))
+    one = wp.float64(1.0)
+    body = wp.transpose(wp.transform_compose(p64, q64, wp.vec3d(one, one, one)))
+    m_out[tid] = prim_offsets[tid] @ body
+
+
+def _transforms_to_usd_matrices(xforms: np.ndarray) -> np.ndarray:
+    """Convert ``[N, 7]`` Newton transforms to ``[N, 4, 4]`` USD row-vector matrices."""
+    x, y, z, w = xforms[:, 3], xforms[:, 4], xforms[:, 5], xforms[:, 6]
+    rot = np.stack(
+        [
+            np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=-1),
+            np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=-1),
+            np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=-1),
+        ],
+        axis=-2,
+    )
+    out = np.zeros((len(xforms), 4, 4), dtype=np.float64)
+    out[:, :3, :3] = np.swapaxes(rot, -1, -2)
+    out[:, 3, :3] = xforms[:, :3]
+    out[:, 3, 3] = 1.0
+    return out
+
+
 class ViewerRTX(ViewerUSD):
     """Real-time ray-traced viewer using NVIDIA OVRTX.
 
@@ -131,6 +167,12 @@ class ViewerRTX(ViewerUSD):
 
     # Available lighting environment presets.
     ENVIRONMENTS = ("default", "studio", "none")
+
+    _borrowed_stage = None
+    _borrowed_reference = None
+    _borrowed_prim_paths: Sequence[str] = ()
+    _render_settings: Mapping[str, Any] = MappingProxyType({})
+    _render_var_path = "/Render/Vars/LdrColor"
 
     @override
     def activate(self, layer_id: str):
@@ -157,6 +199,8 @@ class ViewerRTX(ViewerUSD):
         async_rendering: bool = True,
         *,
         plot_history_size: int = 250,
+        stage: Any | None = None,
+        render_settings: Mapping[str, Any] | None = None,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
 
@@ -178,6 +222,15 @@ class ViewerRTX(ViewerUSD):
                 flight.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
+            stage: Populated ``ovstage.Stage`` to render instead of a scene
+                built from the model. The caller owns its content, lights,
+                and lifetime; the viewer only writes transforms of the prims
+                bound in :meth:`set_model` and adds its camera, render
+                product, and debug geometry under ``/__newton_viewer``.
+                ``environment`` is ignored. Requires OVRTX 0.4 or newer.
+            render_settings: ``omni:rtx:*`` attribute overrides applied to the
+                viewer's render product, e.g.
+                ``{"omni:rtx:pt:samplesPerPixel": 4}``.
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self._window)
 
@@ -204,6 +257,16 @@ class ViewerRTX(ViewerUSD):
 
         if UsdGeom is None:
             raise ImportError("usd-core package is required for ViewerRTX. Install with: pip install usd-core")
+
+        self._borrowed_stage = stage
+        if stage is not None:
+            if not self._use_ovstage:
+                raise ValueError("ViewerRTX(stage=...) requires OVRTX 0.4 or newer")
+            if scaling != 1.0:
+                raise ValueError("ViewerRTX(stage=...) does not support scaling")
+            self._root_path = "/__newton_viewer"
+        self._render_settings = dict(render_settings or {})
+        self._borrowed_reference = None
 
         self._environment = environment.lower()
         if self._environment not in self.ENVIRONMENTS:
@@ -569,7 +632,9 @@ void main() {
         mat_op.Set(gf_mat)
 
         # ---- Lights ----------------------------------------------------------
-        if self._environment == "studio":
+        if self._borrowed_stage is not None:
+            pass  # the borrowed stage owns its lighting
+        elif self._environment == "studio":
             self._add_studio_lights()
         elif self._environment == "default":
             self._add_default_lights()
@@ -578,9 +643,7 @@ void main() {
         # Structure: /Render/OmniverseKit/HydraTextures/<product>
         #            /Render/Vars/LdrColor
         #            /Render/OmniverseGlobalRenderSettings
-        self.stage.DefinePrim("/Render")
-        self.stage.DefinePrim("/Render/OmniverseKit")
-        self.stage.DefinePrim("/Render/OmniverseKit/HydraTextures")
+        self._ensure_scopes_for_path(self.stage, self._render_product_path)
 
         rp = self.stage.DefinePrim(self._render_product_path, "RenderProduct")
         rp.SetMetadata(
@@ -610,7 +673,8 @@ void main() {
         )
 
         # RenderVar lives at /Render/Vars/LdrColor (NOT nested under the product)
-        rv_path = "/Render/Vars/LdrColor"
+        rv_path = self._render_var_path
+        self._ensure_scopes_for_path(self.stage, rv_path)
         rv = self.stage.DefinePrim(rv_path, "RenderVar")
         rv.CreateAttribute("sourceName", Sdf.ValueTypeNames.String, custom=False).Set("LdrColor")
         rp.CreateRelationship("orderedVars").SetTargets([Sdf.Path(rv_path)])
@@ -655,6 +719,13 @@ void main() {
         rp.CreateAttribute("omni:rtx:quality", Sdf.ValueTypeNames.Int, custom=False).Set(0)
         rp.CreateAttribute("omni:rtx:waitForEvents", Sdf.ValueTypeNames.TokenArray).Set([])
 
+        for name, value in self._render_settings.items():
+            self._author_render_setting(rp, name, value)
+
+        # Global render settings belong to the owner of a borrowed stage.
+        if self._borrowed_stage is not None:
+            return
+
         # ---- RenderSettings --------------------------------------------------
         rs = self.stage.DefinePrim("/Render/OmniverseGlobalRenderSettings", "RenderSettings")
         rs.SetMetadata(
@@ -667,6 +738,29 @@ void main() {
             ),
         )
         rs.CreateRelationship("products").SetTargets([Sdf.Path(self._render_product_path)])
+
+    @staticmethod
+    def _author_render_setting(prim, name: str, value: Any) -> None:
+        """Set a render-product attribute, inferring the USD type for new attributes."""
+        from pxr import Sdf
+
+        attr = prim.GetAttribute(name)
+        if not attr:
+            if isinstance(value, bool):
+                type_name = Sdf.ValueTypeNames.Bool
+            elif isinstance(value, int):
+                type_name = Sdf.ValueTypeNames.Int
+            elif isinstance(value, float):
+                type_name = Sdf.ValueTypeNames.Float
+            elif isinstance(value, str):
+                type_name = Sdf.ValueTypeNames.Token
+            elif len(value) == 3:
+                type_name = Sdf.ValueTypeNames.Color3f
+                value = Gf.Vec3f(*value)
+            else:
+                raise TypeError(f"Cannot infer the USD type of render setting {name!r} from {value!r}")
+            attr = prim.CreateAttribute(name, type_name)
+        attr.Set(value)
 
     def _add_default_lights(self):
         """Default lighting: dome light + distant directional light."""
@@ -746,6 +840,8 @@ void main() {
         Args:
             path: Absolute or relative path to a USD file.
         """
+        if self._borrowed_stage is not None:
+            raise RuntimeError("add_background_usd() is unavailable with a borrowed stage; add the USD to that stage")
         if self._phase != self._PHASE_BUILD:
             raise RuntimeError("add_background_usd() must be called before the first simulation frame")
         path = os.path.abspath(path)
@@ -760,13 +856,15 @@ void main() {
         """Serialise the USD stage, create the OVRTX renderer and load the scene."""
 
         self._add_camera_lights_and_render_product()
-        self._apply_ground_material()
+        ovrtx_usd_path = None
+        if self._borrowed_stage is None:
+            self._apply_ground_material()
 
-        # HACK? Export to a unique temp path so OVRTX never uses a cached version
-        # of a previous example's file.
-        fd, ovrtx_usd_path = tempfile.mkstemp(suffix=".usd")
-        os.close(fd)
-        self.stage.GetRootLayer().Export(ovrtx_usd_path)
+            # HACK? Export to a unique temp path so OVRTX never uses a cached version
+            # of a previous example's file.
+            fd, ovrtx_usd_path = tempfile.mkstemp(suffix=".usd")
+            os.close(fd)
+            self.stage.GetRootLayer().Export(ovrtx_usd_path)
 
         try:
             import ovrtx
@@ -774,7 +872,9 @@ void main() {
             config = ovrtx.RendererConfig()
             config.log_level = "error"
             self._rtx = ovrtx.Renderer(config=config)
-            if self._use_ovstage:
+            if self._borrowed_stage is not None:
+                self._attach_borrowed_stage()
+            elif self._use_ovstage:
                 import ovstage
 
                 self._ovstage = ovstage.Stage("newton.ViewerRTX")
@@ -806,10 +906,11 @@ void main() {
             self._destroy_ovrtx()
             raise RuntimeError(f"Failed to create OVRTX renderer: {e}") from e
         finally:
-            try:
-                os.unlink(ovrtx_usd_path)
-            except OSError:
-                pass
+            if ovrtx_usd_path is not None:
+                try:
+                    os.unlink(ovrtx_usd_path)
+                except OSError:
+                    pass
 
         # Create the presentation window now that all Warp kernels have been
         # compiled.  Doing this earlier causes a deadlock on Windows because
@@ -835,6 +936,113 @@ void main() {
             self._build_flat_shape_arrays()
 
         self._phase = self._PHASE_RENDER
+
+    # --------------------------------------------------------- borrowed stage
+
+    def _borrowed_write_floor(self) -> int:
+        """Return the borrowed stage's sealed global write floor."""
+        stage = self._borrowed_stage
+        query = stage.get_attribute_write_floor()
+        try:
+            return int(stage.fetch_ordinal(query))
+        finally:
+            stage.release_ordinal_query(query).wait()
+
+    def _read_borrowed_world_matrices(self, prim_paths: Sequence[str]) -> np.ndarray:
+        """Read ``omni:fabric:worldMatrix`` rows in ``prim_paths`` order; missing prims stay NaN."""
+        import ovstage
+
+        stage = self._borrowed_stage
+        out = np.full((len(prim_paths), 4, 4), np.nan, dtype=np.float64)
+        ordinal_range = ovstage.OrdinalRange.latest(self._borrowed_write_floor())
+        with ovstage.PathDictionary(stage) as paths:
+            path_list = paths.create_path_list_from_strings(list(prim_paths))
+            try:
+                token = paths.intern_token("omni:fabric:worldMatrix")
+                with stage.query_from_path_list(path_list) as query:
+                    with stage.read_attributes(query, [token], ordinal_range) as read:
+                        read.wait()
+                        group = read.fetch_next()
+                        while group is not None:
+                            rows = np.from_dlpack(group.dlpack(0)).reshape(-1, 4, 4)
+                            for local in range(group.prim_count):
+                                out[group.prim_index(local)] = rows[local]
+                            stage.release_group(group)
+                            group = read.fetch_next()
+            finally:
+                paths.destroy_path_list(path_list)
+        return out
+
+    def _bind_borrowed_prims(self, model: newton.Model, prim_body_map: Mapping[str, int] | None) -> None:
+        """Bind stage prims to bodies through their fixed offset at the model's initial pose.
+
+        A prim's world matrix is ``C · body`` with ``C = W0 · inv(body0)``, which
+        keeps authored scale, prims of collapsed bodies, and prim origins that
+        differ from body frames without special cases.
+        """
+        if prim_body_map is None:
+            prim_body_map = {label: body for body, label in enumerate(model.body_label)}
+        paths = list(prim_body_map)
+        if not paths:
+            return
+        bodies = np.fromiter(prim_body_map.values(), dtype=np.int32, count=len(paths))
+
+        world = self._read_borrowed_world_matrices(paths)
+        missing = [path for path, matrix in zip(paths, world, strict=True) if np.isnan(matrix[0, 0])]
+        if missing:
+            raise ValueError(
+                f"{len(missing)} bound prims have no world transform in the borrowed stage, e.g. {missing[:3]}"
+            )
+        body0 = _transforms_to_usd_matrices(model.body_q.numpy()[bodies].astype(np.float64))
+        offsets = world @ np.linalg.inv(body0)
+
+        # C is a body-local offset, so it cannot absorb a world-side placement
+        # difference; a body's own prim must coincide with its initial pose.
+        labels = model.body_label
+        own = np.array([labels[body] == path for path, body in zip(paths, bodies, strict=True)], dtype=bool)
+        drift = np.linalg.norm(offsets[own, 3, :3], axis=-1)
+        if drift.size and drift.max() > 1.0e-3:
+            path = np.asarray(paths)[own][int(drift.argmax())]
+            raise ValueError(
+                f"Initial model pose differs from the borrowed stage by {drift.max():.3g} m at {path}; "
+                "world placements (e.g. replicate xforms) must match the stage"
+            )
+
+        self._borrowed_prim_paths = paths
+        self._borrowed_prim_body = wp.array(bodies, dtype=int, device=model.device)
+        self._borrowed_prim_offsets = wp.array(offsets, dtype=wp.mat44d, device=model.device)
+        self._borrowed_matrices = wp.empty(len(paths), dtype=wp.mat44d, device=model.device)
+
+    def _attach_borrowed_stage(self) -> None:
+        """Attach the renderer and publish the viewer-owned subtree into the borrowed stage."""
+        import ovstage
+        from pxr import Usd
+
+        # Freeze time samples; OVRTX consumes the current frame.
+        stage = Usd.Stage.Open(self.stage.Flatten())
+        for prim in stage.Traverse():
+            for attr in prim.GetAttributes():
+                if attr.GetNumTimeSamples():
+                    value = attr.Get(self._frame_index)
+                    attr.Clear()
+                    attr.Set(value)
+
+        self._ovstage = self._borrowed_stage
+        self._rtx.attach_ovstage(self._ovstage)
+        self._ovstage_attached = True
+        self._ovstage_paths = ovstage.PathDictionary(self._ovstage)
+        self._ovstage_ordinal = self._borrowed_write_floor() + 1
+        self._borrowed_reference = ovstage.population.add_usd_reference_from_string(
+            self._ovstage, stage.GetRootLayer().ExportToString(), self._root_path
+        )
+        ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
+        if self._borrowed_prim_paths:
+            self._write_runtime_attribute(
+                self._borrowed_prim_paths,
+                "omni:resetXformStack",
+                np.ones(len(self._borrowed_prim_paths), dtype=np.bool_),
+            )
+        self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
 
     def _build_flat_shape_arrays(self):
         """Concatenate per-batch shape arrays into flat warp arrays matching the mat44d layout.
@@ -996,13 +1204,19 @@ void main() {
     # ------------------------------------------------ ViewerUSD overrides
 
     @override
-    def set_model(self, model: newton.Model | None) -> None:
+    def set_model(self, model: newton.Model | None, prim_body_map: Mapping[str, int] | None = None) -> None:
         """Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
+            prim_body_map: Borrowed-stage prims driven by each body index,
+                including prims of bodies merged by fixed-joint collapse.
+                Defaults to ``model.body_label``. Ignored without a borrowed
+                stage.
         """
         super().set_model(model)
+        if model is not None and self._borrowed_stage is not None:
+            self._bind_borrowed_prims(model, prim_body_map)
         if model is not None:
             from pyglet.math import Vec3 as PyVec3
 
@@ -1042,9 +1256,22 @@ void main() {
         Args:
             spacing: Spacing between worlds along each axis [m].
         """
+        if self._borrowed_stage is not None and any(float(value) != 0.0 for value in spacing):
+            raise ValueError("A borrowed stage places its worlds; world offsets must be zero")
         super().set_world_offsets(spacing)
         if self.picking is not None:
             self.picking.world_offsets = self.world_offsets
+
+    @override
+    def _populate_shapes(self):
+        # A borrowed stage already contains the model's geometry.
+        if self._borrowed_stage is None:
+            super()._populate_shapes()
+
+    @override
+    def _auto_compute_world_offsets(self):
+        if self._borrowed_stage is None:
+            super()._auto_compute_world_offsets()
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None) -> None:
@@ -1092,7 +1319,7 @@ void main() {
         # Use an emissive material so the picking line stays visibly cyan even under scene shadows.
         from pxr import Sdf, UsdShade
 
-        mat_path = "/root/Materials/mat_picking_line"
+        mat_path = f"{self._root_path}/Materials/mat_picking_line"
         self._ensure_scopes_for_path(self.stage, mat_path)
         material = UsdShade.Material.Define(self.stage, mat_path)
         surface = UsdShade.Shader.Define(self.stage, f"{mat_path}/PreviewSurface")
@@ -1919,11 +2146,32 @@ void main() {
         queries.clear()
         self._ovstage_paths = None
 
+        if self._borrowed_stage is not None:
+            self._remove_borrowed_prims()
+
         if self._rtx is not None and self._ovstage_attached:
             self._rtx.detach_ovstage()
             self._ovstage_attached = False
-        stage.destroy()
+        if self._borrowed_stage is None:
+            stage.destroy()
         self._ovstage = None
+
+    def _remove_borrowed_prims(self) -> None:
+        """Remove only the viewer-owned references from the borrowed stage."""
+        import ovstage
+
+        handles = [*self._runtime_prim_handles.values()]
+        if self._borrowed_reference is not None:
+            handles.append(self._borrowed_reference)
+        if not handles:
+            return
+        for handle in handles:
+            ovstage.population.remove_usd(self._ovstage, handle)
+        self._runtime_prim_handles = {}
+        self._borrowed_reference = None
+        self._ovstage_ordinal += 1
+        ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
+        self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
 
     def _release_runtime_scene(self) -> None:
         """Release resources owned by the active scene interface."""
@@ -1962,7 +2210,8 @@ void main() {
 
     def _update_ovrtx_transforms(self):
         has_flat_shape_arrays = self._flat_total_shapes > 0
-        if self._rtx is None or (not has_flat_shape_arrays and not self._pending_xforms):
+        has_borrowed_prims = bool(self._borrowed_prim_paths)
+        if self._rtx is None or (not has_flat_shape_arrays and not has_borrowed_prims and not self._pending_xforms):
             return
         if self._use_ovstage and self._ovstage is None:
             return
@@ -1971,6 +2220,16 @@ void main() {
             with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
                 body_q = self._last_state.body_q if self._last_state is not None else None
                 world_offsets = self.world_offsets
+
+                if has_borrowed_prims and body_q is not None:
+                    wp.launch(
+                        write_borrowed_prim_transforms,
+                        dim=len(self._borrowed_prim_paths),
+                        inputs=[body_q, self._borrowed_prim_body, self._borrowed_prim_offsets],
+                        outputs=[self._borrowed_matrices],
+                        device=self._borrowed_matrices.device,
+                    )
+                    self._write_ovstage_matrix_attribute(self._borrowed_prim_paths, self._borrowed_matrices)
 
                 if has_flat_shape_arrays:
                     wp.launch(
@@ -2259,10 +2518,9 @@ void main() {
 
     # ------------------------------------------------------- render + display
 
-    @staticmethod
-    def _get_ldr_color_render_var(frame):
+    def _get_ldr_color_render_var(self, frame):
         """Return the color output across supported OVRTX versions."""
-        for name in ("LdrColor", "/Render/Vars/LdrColor"):
+        for name in ("LdrColor", self._render_var_path):
             if name in frame.render_vars:
                 return frame.render_vars[name]
         return None
@@ -2541,9 +2799,20 @@ void main() {
 
         # reset camera
         self.camera = Camera(width=self._render_width, height=self._render_height, up_axis=self._up_axis)
-        self._camera_prim_path = "/World/Camera"
-        self._render_product_path = "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0"
+        if self._borrowed_stage is not None:
+            self._camera_prim_path = f"{self._root_path}/Camera"
+            self._render_product_path = f"{self._root_path}/Render/Product"
+            self._render_var_path = f"{self._root_path}/Render/Vars/LdrColor"
+        else:
+            self._camera_prim_path = "/World/Camera"
+            self._render_product_path = "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0"
+            self._render_var_path = "/Render/Vars/LdrColor"
         self._camera_dirty = True
+
+        self._borrowed_prim_paths = []
+        self._borrowed_prim_body = None
+        self._borrowed_prim_offsets = None
+        self._borrowed_matrices = None
 
         super().clear_model()
 

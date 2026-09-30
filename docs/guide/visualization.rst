@@ -380,6 +380,35 @@ The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
 the ``examples`` dependencies. Install both RTX viewer and UI dependencies
 with ``uv sync --extra rtx --extra examples``.
 
+**Lighting and render settings**: ``environment`` selects a built-in light rig. For custom lighting, pass
+``environment="none"`` and reference a USD layer containing your lights, e.g. a ``DomeLight`` with an HDR texture,
+with :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame. ``render_settings`` overrides
+``omni:rtx:*`` attributes of the viewer's render product:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": 4})
+    viewer.add_background_usd("lighting.usda")
+
+**Rendering an existing USD scene**: When the model was imported from USD, ViewerRTX can render the populated
+``ovstage.Stage`` directly, keeping its authored materials, lights, and environment. The viewer then writes only the
+world transforms of prims bound to bodies, and adds its camera, render product, and debug geometry under
+``/__newton_viewer``. It never adds scene content to the stage or clears it; closing the viewer removes only its own prims.
+Bound prims default to ``Model.body_label``. The model's initial body poses must match the stage's world placement.
+
+.. code-block:: python
+
+    stage = ovstage.Stage("scene")
+    ovstage.population.open_usd(stage, "scene.usda", ordinal=1)
+    stage.advance_write_floor(1).wait()
+
+    builder = newton.ModelBuilder()
+    builder.add_usd("scene.usda")
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerRTX(stage=stage)
+    viewer.set_model(model)
+
 Recording and Offline Viewers
 -----------------------------
 
