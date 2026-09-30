@@ -4916,6 +4916,60 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with self._scoped_mujoco_warp_execution():
                 self._notify_model_changed(flags)
 
+    def update_joint_dof_passive_properties(self) -> None:
+        """Synchronize joint friction and damping from the Newton model.
+
+        Copy :attr:`Model.joint_friction`, :attr:`Model.joint_damping`, and the
+        optional ``model.mujoco.solreffriction`` and ``solimpfriction`` arrays
+        for all mapped DOFs. Missing optional attributes retain their current
+        MuJoCo values. This excludes armature, passive spring stiffness,
+        limits, actuator gains, and reference poses;
+        changes to those properties still require :meth:`notify_model_changed`.
+
+        The MuJoCo Warp path supports CUDA graph capture and does not recompute
+        model constants or invalidate cached contact data. Sleeping worlds are
+        awakened when sleeping is enabled. The CPU backend synchronizes the
+        same fields to the host model and does not support graph capture.
+
+        Write the effective friction and damping into the model before calling
+        this method and stepping. Values replace rather than add to authored
+        passive damping; callers must compose any desired contributions.
+        Full notifications copy these same model arrays, so they preserve the
+        current budget unless another writer has changed the source values.
+        Apply reset-time property edits before publishing each step's budget.
+        """
+        if self.model.joint_dof_count == 0:
+            return
+        attrs = getattr(self.model, "mujoco", None)
+        with self._scoped_mujoco_warp_execution():
+            wp.launch(
+                update_dof_properties_kernel,
+                dim=self.mjc_dof_to_newton_dof.shape,
+                inputs=[
+                    self.mjc_dof_to_newton_dof,
+                    None,  # Armature and body properties are outside this update scope.
+                    None,
+                    None,
+                    self.model.joint_friction,
+                    self.model.joint_damping,
+                    getattr(attrs, "solimpfriction", None),
+                    getattr(attrs, "solreffriction", None),
+                ],
+                outputs=[
+                    None,
+                    self.mjw_model.dof_frictionloss,
+                    self.mjw_model.dof_damping,
+                    self.mjw_model.dof_solimp,
+                    self.mjw_model.dof_solref,
+                ],
+                device=self.model.device,
+            )
+            if not self.use_mujoco_cpu and self.enable_sleeping:
+                self._wake_sleeping_worlds()
+        if self.use_mujoco_cpu:
+            for name in ("dof_frictionloss", "dof_damping", "dof_solimp", "dof_solref"):
+                getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
+
     def _notify_model_changed(self, flags: ModelFlags | int) -> None:
         need_const_fixed = False
         need_const_0 = False

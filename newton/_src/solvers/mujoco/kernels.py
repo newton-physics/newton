@@ -2191,16 +2191,17 @@ def update_dof_properties_kernel(
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
     and copies armature, friction, damping, solimp, solref.
-    Armature updates are skipped for DOFs whose child body is marked kinematic.
+    Armature updates are skipped when joint_armature is absent or the child body is kinematic.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
 
-    newton_body = newton_dof_to_body[newton_dof]
-    if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
-        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    if joint_armature:
+        newton_body = newton_dof_to_body[newton_dof]
+        if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
+            dof_armature[world, mjc_dof] = joint_armature[newton_dof]
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
