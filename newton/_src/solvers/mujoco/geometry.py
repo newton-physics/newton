@@ -101,7 +101,7 @@ def build_shape_layout(
 
     keep = np.where(sites[representatives], include_sites, (not skip_visual_only_geoms) | colliders[representatives])
     if required_shapes:
-        keep |= np.any(np.isin(mapping, list(required_shapes)), axis=0)
+        keep |= np.isin(representatives, list(required_shapes))
     representatives, mapping = representatives[keep], mapping[:, keep]
     for column in np.flatnonzero(np.any(mapping < 0, axis=0)):
         shape = representatives[column]

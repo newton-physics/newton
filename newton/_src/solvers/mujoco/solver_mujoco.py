@@ -8200,20 +8200,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         size = np.tile(self.mj_model.geom_size, (geom_shapes.shape[0], 1, 1))
         aabb = np.tile(self.mj_model.geom_aabb.reshape(-1, 2, 3), (geom_shapes.shape[0], 1, 1, 1))
         rbound = np.tile(self.mj_model.geom_rbound, (geom_shapes.shape[0], 1))
-        for world, shapes in enumerate(geom_shapes):
-            for geom, shape in enumerate(shapes):
-                if shape < 0:
-                    dataid[world, geom] = -1
-                    size[world, geom] = 0.0
-                    aabb[world, geom] = 0.0
-                    rbound[world, geom] = 0.0
-                elif shape in shape_mesh_names:
-                    mesh_id = mesh_ids[shape_mesh_names[shape]]
-                    source_geom = source_geoms[mesh_id]
-                    dataid[world, geom] = mesh_id
-                    size[world, geom] = source.geom_size[source_geom]
-                    aabb[world, geom] = source.geom_aabb[source_geom].reshape(2, 3)
-                    rbound[world, geom] = source.geom_rbound[source_geom]
+        # The final entry maps absent shapes (-1) to no mesh.
+        shape_mesh_ids = np.full(self.model.shape_count + 1, -1, dtype=np.int32)
+        for shape, name in shape_mesh_names.items():
+            shape_mesh_ids[shape] = mesh_ids[name]
+        mapped_mesh_ids = shape_mesh_ids[geom_shapes]
+        mesh_mask = mapped_mesh_ids >= 0
+        mesh_geoms = np.asarray([source_geoms[mesh] for mesh in range(source.nmesh)])
+        source_geom = mesh_geoms[mapped_mesh_ids[mesh_mask]]
+        dataid[mesh_mask] = mapped_mesh_ids[mesh_mask]
+        size[mesh_mask] = source.geom_size[source_geom]
+        aabb[mesh_mask] = source.geom_aabb[source_geom].reshape(-1, 2, 3)
+        rbound[mesh_mask] = source.geom_rbound[source_geom]
+
+        missing = geom_shapes < 0
+        dataid[missing] = -1
+        size[missing] = 0.0
+        aabb[missing] = 0.0
+        rbound[missing] = 0.0
         if np.all(dataid == dataid[:1]):
             dataid = dataid[:1]
         if np.all(aabb == aabb[:1]):
