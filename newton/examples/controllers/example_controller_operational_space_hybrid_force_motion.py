@@ -358,7 +358,9 @@ class Example:
 
         # Pulled back and to the side so both robots and tables (Franka at
         # y=0, UR10 at y=1.8) are in view together.
-        self.viewer.set_camera_look_at(pos=wp.vec3(-2.1, 0.9, 3.4), target=wp.vec3(0.4, 0.9, 0.4))
+        self.viewer.set_camera(pos=wp.vec3(-2.1, 0.9, 3.4), pitch=-50.1944, yaw=0.0000)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
 
         self.viewer.set_model(self.model)
 

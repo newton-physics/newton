@@ -845,53 +845,6 @@ class ViewerBase(ABC):
         """
         return
 
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None):
-        """Set the camera position and aim it at a world-space target.
-
-        Backends that do not expose an orbit target fall back to equivalent
-        pitch and yaw angles.
-
-        Args:
-            pos: Camera position [m].
-            target: World-space point at which to aim the camera [m].
-            fov: Optional vertical field of view [deg], when supported by the
-                viewer backend. Must be finite and strictly between 0 and 180.
-        """
-        self._validate_camera_fov(fov)
-        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
-        target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
-        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):
-            raise ValueError("Camera position and target must be finite")
-        direction = target_np - position
-        direction_norm = float(np.linalg.norm(direction))
-        if direction_norm <= 1.0e-12:
-            self.set_camera(pos, pitch=0.0, yaw=0.0)
-            return
-
-        up_axis = int(self.model.up_axis) if self.model is not None else 2
-        pitch, yaw = self._camera_pitch_yaw_from_direction(direction / direction_norm, up_axis)
-        self.set_camera(pos, pitch=pitch, yaw=yaw)
-
-    @staticmethod
-    def _validate_camera_fov(fov: float | None) -> None:
-        """Reject invalid perspective projections before changing camera state."""
-        if fov is not None and (not math.isfinite(fov) or not 0.0 < fov < 180.0):
-            raise ValueError("Camera field of view must be finite and between 0 and 180 degrees")
-
-    @staticmethod
-    def _camera_pitch_yaw_from_direction(direction: np.ndarray, up_axis: int) -> tuple[float, float]:
-        """Convert a unit view direction to camera pitch and yaw angles [deg]."""
-        if up_axis == 0:
-            pitch = math.degrees(math.asin(float(np.clip(direction[0], -1.0, 1.0))))
-            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[1])))
-        elif up_axis == 2:
-            pitch = math.degrees(math.asin(float(np.clip(direction[2], -1.0, 1.0))))
-            yaw = math.degrees(math.atan2(float(direction[1]), float(direction[0])))
-        else:
-            pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
-            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[0])))
-        return pitch, yaw
-
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
 

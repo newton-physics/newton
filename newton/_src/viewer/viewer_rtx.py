@@ -959,26 +959,6 @@ void main() {
             self.camera.yaw = yaw
         self._camera_dirty = True
 
-    @override
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None) -> None:
-        """Set the camera position, orbit target, and optional field of view.
-
-        Args:
-            pos: Camera position [m].
-            target: World-space orbit target [m].
-            fov: Optional vertical field of view [deg], finite and strictly between 0 and 180.
-        """
-        self._validate_camera_fov(fov)
-        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
-        target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
-        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):
-            raise ValueError("Camera position and target must be finite")
-        self.camera.pos = self.camera._as_vec3(position)
-        self.camera.look_at(target_np)
-        if fov is not None:
-            self.camera.fov = float(fov)
-        self._camera_dirty = True
-
     def _ensure_picking_line_primitive(self):
         if self._phase != self._PHASE_BUILD or self._PICKING_LINE_NAME in self._instance_prim_paths:
             return

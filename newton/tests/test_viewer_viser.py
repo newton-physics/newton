@@ -153,7 +153,7 @@ class TestViewerViserInteraction(unittest.TestCase):
     def test_scene_switch_resets_camera_but_layer_clear_preserves_it(self):
         """Reset a whole-scene camera while preserving it for individual layer clears."""
         default = tuple(value.copy() for value in self.viewer._camera_request)
-        self.viewer.set_camera_look_at(wp.vec3(1.0, 2.0, 3.0), wp.vec3(0.0), fov=70.0)
+        self.viewer.set_camera(wp.vec3(1.0, 2.0, 3.0), pitch=-30.0, yaw=45.0)
         self.viewer.clear_model()
         np.testing.assert_allclose(self.viewer._camera_request[0], (1.0, 2.0, 3.0))
         self.viewer.clear_all_layers()
@@ -256,16 +256,6 @@ class TestViewerViserInteraction(unittest.TestCase):
         x, y = self.viewer._plot_handles["force"].data
         np.testing.assert_allclose(y, (3.0, 7.0))
         self.assertTrue(np.isfinite(x).all())
-
-    def test_invalid_fov_leaves_camera_unchanged(self):
-        """Reject invalid projection angles before changing the camera pose."""
-        before = tuple(v.copy() for v in self.viewer._camera_request)
-        for fov in (float("nan"), float("inf"), 0.0, -1.0, 180.0, 181.0):
-            with self.subTest(fov=fov):
-                with self.assertRaises(ValueError):
-                    self.viewer.set_camera_look_at(wp.vec3(1.0, 2.0, 3.0), wp.vec3(0.0), fov=fov)
-                for actual, expected in zip(self.viewer._camera_request, before, strict=True):
-                    np.testing.assert_array_equal(actual, expected)
 
     def test_url_uses_bound_port(self):
         """Report the actual listening port when Viser selects an available port."""

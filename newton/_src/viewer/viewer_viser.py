@@ -1892,35 +1892,6 @@ class ViewerViser(ViewerBase):
         look_at = position + front * pivot_distance
         self._set_camera_request(position, look_at, up_direction)
 
-    @override
-    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, *, fov: float | None = None):
-        """Set the camera position, orbit target, and optional field of view.
-
-        Args:
-            pos: Camera position [m].
-            target: Orbit target [m].
-            fov: Optional vertical field of view [deg], finite and strictly between 0 and 180.
-        """
-        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
-        look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
-        self._validate_camera_fov(fov)
-        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
-            raise ValueError("Camera position and target must be finite")
-        direction = look_at - position
-        direction_norm = float(np.linalg.norm(direction))
-        if direction_norm <= 1.0e-12:
-            super().set_camera_look_at(pos, target, fov=fov)
-            self._set_camera_request(*self._camera_request, fov=fov)
-            return
-
-        # Track the equivalent angles so later set_camera() calls that omit
-        # pitch or yaw keep this orientation.
-        self._camera_pitch, self._camera_yaw = self._camera_pitch_yaw_from_direction(
-            direction / direction_norm, self._get_camera_up_axis()
-        )
-        _, up_direction = self._compute_camera_front_up(0.0, 0.0)
-        self._set_camera_request(position, look_at, up_direction, fov=fov)
-
     @staticmethod
     def _camera_query_from_request(camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None) -> str:
         """Build URL query parameters for playback initial camera overrides."""

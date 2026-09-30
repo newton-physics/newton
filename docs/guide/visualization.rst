@@ -101,7 +101,6 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 **Camera and layout:**
 
 - :meth:`~newton.viewer.ViewerBase.set_camera` — set camera position, pitch, and yaw
-- :meth:`~newton.viewer.ViewerBase.set_camera_look_at` — set camera position, orbit target, and optional field of view
 - :attr:`~newton.viewer.ViewerBase.camera_speed` — set keyboard camera translation speed in m/s
 - :meth:`~newton.viewer.ViewerBase.set_world_offsets` — arrange multiple worlds in a grid with a given spacing along each axis
 
@@ -888,17 +887,6 @@ Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera
 
     viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-20.0, yaw=30.0)
     viewer.camera_speed = 0.2  # m/s
-
-Alternatively, specify an orbit target and optional field of view with
-:meth:`~newton.viewer.ViewerBase.set_camera_look_at`:
-
-.. code-block:: python
-
-    viewer.set_camera_look_at(
-        pos=wp.vec3(5.0, 2.0, 3.0),
-        target=wp.vec3(0.0, 0.0, 1.0),
-        fov=60.0,
-    )
 
 When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid
 (must be called after :meth:`~newton.viewer.ViewerBase.set_model`):
