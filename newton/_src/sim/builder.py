@@ -14118,18 +14118,6 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             self._resolve_custom_frequency_articulation_owners()
 
-            # Early return if no custom attributes exist to avoid overhead
-            if not self.custom_attributes:
-                m.custom_frequency_counts = dict(self._custom_frequency_counts)
-                self._finalize_custom_frequency_metadata(m, device)
-                m.bvh_build_shapes(
-                    m,
-                    bvh_constructor=self.default_bvh_cfg.shape_constructor,
-                    shape_flags=self.default_bvh_cfg.shape_flags,
-                )
-                m.bvh_build_particles(m)
-                return m
-
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
             custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
@@ -14176,43 +14164,7 @@ class ModelBuilder:
                     continue
 
                 freq_key = custom_attr.frequency
-
-                # determine count by frequency
-                if isinstance(freq_key, str):
-                    # Custom frequency: count determined by validated frequency count
-                    count = custom_frequency_counts.get(freq_key, 0)
-                elif freq_key == Model.AttributeFrequency.ONCE:
-                    count = 1
-                elif freq_key == Model.AttributeFrequency.BODY:
-                    count = m.body_count
-                elif freq_key == Model.AttributeFrequency.SHAPE:
-                    count = m.shape_count
-                elif freq_key == Model.AttributeFrequency.JOINT:
-                    count = m.joint_count
-                elif freq_key == Model.AttributeFrequency.JOINT_DOF:
-                    count = m.joint_dof_count
-                elif freq_key == Model.AttributeFrequency.JOINT_COORD:
-                    count = m.joint_coord_count
-                elif freq_key == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                    count = m.joint_constraint_count
-                elif freq_key == Model.AttributeFrequency.ARTICULATION:
-                    count = m.articulation_count
-                elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.world_count
-                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
-                    count = m.constraint_mimic_count
-                elif freq_key == Model.AttributeFrequency.PARTICLE:
-                    count = m.particle_count
-                elif freq_key == Model.AttributeFrequency.EDGE:
-                    count = m.edge_count
-                elif freq_key == Model.AttributeFrequency.TRIANGLE:
-                    count = m.tri_count
-                elif freq_key == Model.AttributeFrequency.TETRAHEDRON:
-                    count = m.tet_count
-                elif freq_key == Model.AttributeFrequency.SPRING:
-                    count = m.spring_count
-                else:
-                    continue
+                count = m._attribute_frequency_count(freq_key)
 
                 # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
                 # callers consume ``model.mujoco.equality_constraint_*`` without branching on

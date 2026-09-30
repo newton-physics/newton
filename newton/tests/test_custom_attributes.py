@@ -1592,6 +1592,17 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("not registered", str(context.exception))
         self.assertIn("test:unregistered", str(context.exception))
 
+    def test_unsupported_frequency_raises_on_finalize(self):
+        """Verify finalize() raises for a non-string frequency outside Model.AttributeFrequency."""
+        builder = ModelBuilder()
+        builder.add_body(mass=1.0)
+        # 8 was the value of the removed AttributeFrequency.EQUALITY_CONSTRAINT.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(name="bogus", frequency=8, dtype=wp.float32, namespace="test")
+        )
+        with self.assertRaisesRegex(ValueError, "Unsupported attribute frequency: 8"):
+            builder.finalize(device=self.device)
+
     def test_custom_frequency_add_custom_values_batch(self):
         """Test batched custom frequency row insertion."""
         builder = ModelBuilder()
