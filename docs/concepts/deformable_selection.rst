@@ -36,6 +36,29 @@ expose particle positions and velocities. A family does not prescribe a solver o
 storage layout. Particle-based curves and solver-owned MPM data are not supported
 yet. There is no simulation-representation filter in this version.
 
+Inspect all deformable objects
+------------------------------
+
+Views read the public model data described in :ref:`deformable-objects`.
+Use those arrays directly when all labels, worlds, or ranges are needed,
+without applying a selection pattern:
+
+.. code-block:: python
+
+    # Read metadata once during setup, outside simulation steps or graph capture.
+    worlds = model.surface_world.numpy()
+    starts = model.surface_particle_start.numpy()
+    ends = model.surface_particle_end.numpy()
+    for label, world, start, end in zip(
+        model.surface_label, worlds, starts, ends, strict=True
+    ):
+        print(label, "world:", world, "particles:", end - start)
+
+Like ``model.articulation_label`` and ``model.articulation_world``, these arrays
+describe recorded objects before selection. They include global objects and
+objects in uneven worlds. A view contains only its matches, ordered by world.
+Its destination indices refer to that selection, not the model inventory.
+
 Read and reset state
 --------------------
 
