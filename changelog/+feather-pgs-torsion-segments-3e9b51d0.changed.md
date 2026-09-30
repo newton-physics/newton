@@ -1,0 +1,1 @@
+Group FeatherPGS device contact torsion by friction-patch segments in linear time instead of rescanning each world. Rows, coefficients and errors are unchanged. Pass `patch_segments=False` to `DeviceTorsionPreparation` to restore the per-world scan for comparison.

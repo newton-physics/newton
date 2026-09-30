@@ -67,6 +67,9 @@ class _Workspace:
     spin_source: wp.array2d[int]
     planned_count: wp.array[int]
     status: wp.array[int]
+    patch_keys: wp.array[wp.int64]
+    patch_indices: wp.array[int]
+    rejected: wp.array[int]
 
 
 @wp.kernel(enable_backward=False)
@@ -171,6 +174,106 @@ def _gather(
     work.anchor[c] = anchor
     # Valid row allocation gives a unique contact per normal slot.
     work.row_contact[world, slot] = c
+
+
+@wp.kernel(enable_backward=False)
+def _patch_keys(work: _Workspace):
+    """Key contacts by (world, owner, ineligible) so each patch sorts contiguously in contact order."""
+    c = wp.tid()
+    work.patch_indices[c] = c
+    work.patch_keys[c] = wp.int64(9223372036854775807)
+    if work.keys[c] == wp.int64(9223372036854775807):
+        return
+    eligible = work.eligible[c]
+    if eligible != 1:
+        # Emission visits representatives only, so the (world, contact) order keeps eligible contacts alone.
+        work.keys[c] = wp.int64(9223372036854775807)
+    owner = wp.int64(work.owner[c]) + wp.int64(2147483648)
+    key = (wp.int64(work.world[c]) << wp.int64(33)) | (owner << wp.int64(1))
+    if eligible != 1:
+        key = key | wp.int64(1)
+    work.patch_keys[c] = key
+
+
+@wp.kernel(enable_backward=False)
+def _group_patches(capacity: int, mu: wp.array2d[float], work: _Workspace):
+    """Summarize one patch from its head; eligible members precede rejection witnesses."""
+    i = wp.tid()
+    key = work.patch_keys[i]
+    if key == wp.int64(9223372036854775807):
+        return
+    patch = key >> wp.int64(1)
+    if i > 0 and (work.patch_keys[i - 1] >> wp.int64(1)) == patch:
+        return
+    rep = work.patch_indices[i]
+    if work.eligible[rep] != 1:
+        return
+    rejected = int(0)
+    anchor_count = int(0)
+    first_anchor = int(-1)
+    touching = int(-1)
+    j = i
+    while j < capacity and (work.patch_keys[j] >> wp.int64(1)) == patch:
+        c = work.patch_indices[j]
+        if work.eligible[c] == 1:
+            work.group[c] = rep
+            work.first_pair[c] = rep
+            if work.anchor[c] != 0:
+                anchor_count += 1
+                if first_anchor < 0:
+                    first_anchor = c
+            if touching < 0 and work.gap[c] <= _TOUCH_TOLERANCE:
+                touching = c
+        elif work.eligible[c] == -1:
+            rejected = 1
+        j += 1
+    work.rejected[rep] = rejected
+    if rejected != 0 or first_anchor < 0 or touching < 0:
+        return
+    coefficient = mu[work.world[rep], work.slot[first_anchor] + 1] * float(anchor_count)
+    if coefficient <= 0.0:
+        return
+    work.coefficient[rep] = coefficient
+    work.lead[rep] = touching
+
+
+@wp.kernel(enable_backward=False)
+def _check_patch_membership(row_capacity: int, parents: wp.array2d[int], work: _Workspace):
+    c = wp.tid()
+    rep = work.group[c]
+    if rep < 0 or work.rejected[rep] != 0:
+        return
+    world = work.world[c]
+    parent = parents[world, work.slot[c]]
+    member = int(-1)
+    if parent >= 0 and parent < row_capacity:
+        member = work.row_contact[world, parent]
+    if member < 0:
+        wp.atomic_or(work.status, 0, 16)
+    elif work.group[member] != rep:
+        wp.atomic_or(work.status, 0, 16)
+
+
+@wp.kernel(enable_backward=False)
+def _emit_patches(
+    contact_capacity: int,
+    row_capacity: int,
+    row_count: wp.array[int],
+    row_dropped: wp.array[int],
+    work: _Workspace,
+):
+    world = wp.tid()
+    if row_dropped[world] != 0:
+        wp.atomic_or(work.status, 0, 4)
+    stride = wp.int64(contact_capacity + 1)
+    start = _lower_bound(work.keys, wp.int64(world) * stride, contact_capacity)
+    end = _lower_bound(work.keys, wp.int64(world + 1) * stride, contact_capacity)
+    row = row_count[world]
+    for i in range(start, end):
+        rep = work.indices[i]
+        if work.lead[rep] >= 0:
+            row = _append_group(work, rep, world, row, row_capacity)
+    work.planned_count[world] = row
 
 
 @wp.func
@@ -437,9 +540,10 @@ def _jacobians(
 class DeviceTorsionPreparation:
     """Own fixed-capacity preparation buffers and explicit error readback."""
 
-    def __init__(self, solver, *, deferred_errors=False):
+    def __init__(self, solver, *, deferred_errors=False, patch_segments=True):
         self.solver = solver
         self.deferred_errors = bool(deferred_errors)
+        self.patch_segments = bool(patch_segments)
         self.capacity = solver._max_contacts_alloc
         device = solver.model.device
         self.work = _Workspace()
@@ -473,6 +577,9 @@ class DeviceTorsionPreparation:
         w.spin_source = wp.full(shape, -1, dtype=int, device=device)
         w.planned_count = wp.zeros(solver.world_count, dtype=int, device=device)
         w.status = wp.zeros(1, dtype=int, device=device)
+        w.patch_keys = wp.empty(2 * self.capacity, dtype=wp.int64, device=device)
+        w.patch_indices = wp.empty(2 * self.capacity, dtype=int, device=device)
+        w.rejected = wp.empty(self.capacity, dtype=int, device=device)
         w.spin_row.fill_(-1)
         selected = solver._contact_torsion_shape_set
         self.selected = wp.array(
@@ -619,22 +726,41 @@ class DeviceTorsionPreparation:
             ],
             device=device,
         )
-        wp.utils.radix_sort_pairs(w.keys, w.indices, self.capacity)
-        wp.launch(
-            _group_world,
-            dim=s.world_count,
-            inputs=[
-                self.capacity,
-                s.dense_max_constraints,
-                int(patches),
-                s.constraint_count,
-                s._row_dropped_dense,
-                s.row_parent,
-                s.row_mu,
-                w,
-            ],
-            device=device,
-        )
+        if patches and self.patch_segments:
+            wp.launch(_patch_keys, dim=self.capacity, inputs=[w], device=device)
+            wp.utils.radix_sort_pairs(w.keys, w.indices, self.capacity)
+            # Stable sort keeps contact order inside each patch segment.
+            wp.utils.radix_sort_pairs(w.patch_keys, w.patch_indices, self.capacity)
+            wp.launch(_group_patches, dim=self.capacity, inputs=[self.capacity, s.row_mu, w], device=device)
+            wp.launch(
+                _check_patch_membership,
+                dim=self.capacity,
+                inputs=[s.dense_max_constraints, s.row_parent, w],
+                device=device,
+            )
+            wp.launch(
+                _emit_patches,
+                dim=s.world_count,
+                inputs=[self.capacity, s.dense_max_constraints, s.constraint_count, s._row_dropped_dense, w],
+                device=device,
+            )
+        else:
+            wp.utils.radix_sort_pairs(w.keys, w.indices, self.capacity)
+            wp.launch(
+                _group_world,
+                dim=s.world_count,
+                inputs=[
+                    self.capacity,
+                    s.dense_max_constraints,
+                    int(patches),
+                    s.constraint_count,
+                    s._row_dropped_dense,
+                    s.row_parent,
+                    s.row_mu,
+                    w,
+                ],
+                device=device,
+            )
         if not self.deferred_errors:
             self.validate()
         wp.launch(

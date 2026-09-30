@@ -310,6 +310,43 @@ class TestDeviceTorsionPreparation(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 device.prepare(state, augmented, None)
 
+    def test_patch_segments_match_world_scan(self):
+        """Match the per-world patch scan exactly under selection, rejection and negative owners."""
+        devices = ["cpu", "cuda:0"] if wp.is_cuda_available() else ["cpu"]
+        for device in devices:
+            for seed in range(8):
+                results = []
+                for patch_segments in (False, True):
+                    solver, state, augmented, contacts = synthetic_fixture(
+                        worlds=4, witnesses=12, seed=seed, device=device
+                    )
+                    rng = np.random.default_rng(seed)
+                    solver._contact_torsion_shape_set = set(np.flatnonzero(rng.random(solver.model.shape_count) < 0.6))
+                    anchors = solver.contact_slots_needed.numpy()
+                    anchors[rng.random(anchors.size) < 0.3] = 1
+                    solver.contact_slots_needed.assign(anchors)
+                    points = contacts.rigid_contact_point0.numpy()
+                    points[rng.random(len(points)) < 0.3, 2] = 0.002
+                    contacts.rigid_contact_point0.assign(points)
+                    if seed % 2:
+                        owner = solver._friction_patches.current.owner.numpy()
+                        owner[owner == owner.max()] = -1
+                        solver._friction_patches.current.owner.assign(owner)
+                    preparer = DeviceTorsionPreparation(solver, patch_segments=patch_segments)
+                    try:
+                        preparer.prepare(state, augmented, contacts)
+                        error = None
+                    except RuntimeError as exc:
+                        error = str(exc)
+                    names = ("constraint_count", "row_type", "row_parent", "row_mu", "target_velocity")
+                    arrays = [getattr(solver, name).numpy() for name in (*names, "_contact_torsion_group")]
+                    arrays += [preparer.work.status.numpy(), preparer.work.spin_row.numpy()]
+                    results.append((error, arrays))
+                with self.subTest(device=device, seed=seed):
+                    self.assertEqual(results[0][0], results[1][0])
+                    for legacy, segmented in zip(results[0][1], results[1][1], strict=True):
+                        np.testing.assert_array_equal(segmented, legacy)
+
     def test_patch_eligibility_and_point_cluster_edges(self):
         """Match mixed-anchor patches, selector rejection and nontransitive clusters."""
         for scenario in ("nonanchor", "positive_gap", "selector", "nontransitive"):
