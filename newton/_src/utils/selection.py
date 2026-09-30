@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import functools
 import re
-import warnings
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -547,13 +546,13 @@ class ArticulationView:
             or list of absolute articulation indices. Regular expressions use full matching.
             Indices must be unique and in ascending order.
         include_joints: Glob pattern, list of glob patterns, compiled regular-expression
-            pattern, or list of joint indices to include. Unsorted integer indices are
-            deprecated and will be rejected in a future release.
+            pattern, or list of joint indices to include. Integer indices must be in
+            ascending order.
         exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
             pattern, or list of joint indices to exclude.
         include_links: Glob pattern, list of glob patterns, compiled regular-expression
-            pattern, or list of link indices to include. Unsorted integer indices are
-            deprecated and will be rejected in a future release.
+            pattern, or list of link indices to include. Integer indices must be in
+            ascending order.
         exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
             pattern, or list of link indices to exclude.
         include_joint_types: List of joint types to include.
@@ -588,13 +587,7 @@ class ArticulationView:
                 and all(isinstance(index, int) for index in indices)
                 and any(indices[i] < indices[i - 1] for i in range(1, len(indices)))
             ):
-                warnings.warn(
-                    f"Passing unsorted integer indices to ArticulationView({parameter_name}=...) is deprecated and "
-                    "will raise a ValueError in a future release. Sort the indices in ascending order before passing "
-                    "them.",
-                    DeprecationWarning,
-                    stacklevel=3,
-                )
+                raise ValueError(f"ArticulationView({parameter_name}=...) indices must be in ascending order")
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()

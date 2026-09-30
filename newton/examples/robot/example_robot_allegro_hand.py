@@ -91,6 +91,7 @@ class Example:
             enable_self_collisions=False,
             ignore_paths=[".*Dummy", ".*CollisionPlane"],
             hide_collision_shapes=True,
+            load_static_visual_shapes=False,
         )
 
         # set joint targets and joint drive gains (only on hand, not the floating-body cube)
@@ -205,6 +206,14 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Check compact viewer layout and stable hand and cube motion."""
+        # Scale the bound with the grid size so larger world counts remain valid.
+        offset_limit = np.ceil(np.sqrt(self.world_count))
+        max_world_offset = float(np.abs(self.viewer.world_offsets.numpy()).max())
+        assert max_world_offset < offset_limit, (
+            f"World offsets reach {max_world_offset:g} m, expected less than {offset_limit:g} m for a compact hand layout"
+        )
+
         num_bodies_per_world = self.model.body_count // self.world_count
         cubes_held = 0
 

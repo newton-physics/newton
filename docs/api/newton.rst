@@ -32,7 +32,6 @@ newton
    CollisionPipeline
    Contacts
    Control
-   EqType
    Gaussian
    GeoType
    Heightfield
@@ -63,6 +62,7 @@ newton
    eval_inverse_dynamics_passive
    eval_jacobian
    eval_mass_matrix
+   eval_mimic
    eval_rigid_contact_kinematics
    intersect_ray
 
