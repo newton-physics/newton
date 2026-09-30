@@ -2129,11 +2129,8 @@ class _DeformableViewBase:
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
 
-        # Keep finalized records private; applications address deformable objects
-        # through these views rather than depending on the record layout.
-        objects = [g for g in model._deformable_objects if g.family == family]
-        labels = [g.label for g in objects]
-        object_worlds = [g.world for g in objects]
+        labels = getattr(model, f"{family}_label")
+        object_worlds = getattr(model, f"{family}_world").numpy().tolist()
 
         object_ids, global_object_ids = find_matching_ids(pattern, labels, object_worlds, model.world_count)
 
@@ -2166,12 +2163,11 @@ class _DeformableViewBase:
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
         """Number of selected deformable objects per world, or None when the counts vary."""
         flat_ids = [i for ids in object_ids for i in ids]
-        selected = [objects[i] for i in flat_ids]
         self.family = family
         """Geometric family selected by this view."""
-        self.labels = [g.label for g in selected]
+        self.labels = [labels[i] for i in flat_ids]
         """Label of each selected deformable object, ordered world by world."""
-        self.worlds = [g.world for g in selected]
+        self.worlds = [object_worlds[i] for i in flat_ids]
         """World index of each selected deformable object."""
         deformable_object_boundaries = [0]
         for count in counts_per_world:
@@ -2189,7 +2185,6 @@ class _DeformableViewBase:
         """
         self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
         """World index of each selected deformable object, shape ``(count,)``."""
-        self._model_object_ids: list[int] = [g.id for g in selected]
 
         # Element ranges are always available; only rectangular operations require homogeneity.
         self._all_objects: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
@@ -2198,9 +2193,16 @@ class _DeformableViewBase:
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
         self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
-        self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in record.ranges for record in selected))
-        for kind in self._kinds:
-            kind_ranges = [g.ranges[kind] for g in selected]
+        range_attributes = {
+            "curve": {"body": "body", "joint": "joint"},
+            "surface": {"particle": "particle", "triangle": "tri", "edge": "edge"},
+            "volume": {"particle": "particle", "tetrahedron": "tet"},
+        }[family]
+        self._kinds = tuple(range_attributes)
+        for kind, attribute in range_attributes.items():
+            starts = getattr(model, f"{family}_{attribute}_start").numpy()
+            ends = getattr(model, f"{family}_{attribute}_end").numpy()
+            kind_ranges = [(int(starts[i]), int(ends[i])) for i in flat_ids]
             sizes = {end - start for start, end in kind_ranges}
             self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
             self._ranges[kind] = kind_ranges
