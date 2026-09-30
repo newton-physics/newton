@@ -73,60 +73,45 @@ def write_transforms(xform: wp.array[wp.transform], scale: wp.array[wp.vec3], of
 
 
 @wp.kernel(enable_backward=False)
-def update_and_write_shape_transforms(
-    shape_xforms: wp.array[wp.transform],
-    shape_parents: wp.array[int],
+def write_prim_world_matrices(
     body_q: wp.array[wp.transform],
-    shape_worlds: wp.array[int],
-    world_offsets: wp.array[wp.vec3],
-    layer_xform: wp.transform,
-    scales: wp.array[wp.vec3],
+    prim_body: wp.array[int],
+    prim_linear: wp.array[wp.mat33],
+    prim_translation: wp.array[wp.vec3],
+    prim_world: wp.array[int],
+    world_xforms: wp.array[wp.transform],
     mat44_offset: int,
     m_out: wp.array[wp.mat44d],
 ):
-    """Fused kernel: compute world transform from body state then write as mat44d.
+    """Write ``world · body · local`` prim matrices, transposed to USD's row-vector convention.
 
-    Combines the work of ``update_shape_xforms`` and ``write_transforms`` into a
-    single pass, eliminating the intermediate ``world_xforms`` write and read.
+    ``world_xforms[w + 1]`` places world ``w``; slot 0 serves global prims and
+    worlds without a placement. ``None`` means identity.
     """
     tid = wp.tid()
-    xf = shape_xforms[tid]
-    parent = shape_parents[tid]
-    if parent >= 0:
-        world_xf = wp.transform_multiply(body_q[parent], xf)
-    else:
-        world_xf = xf
-    if world_offsets:
-        w = shape_worlds[tid]
-        if w >= 0 and w < world_offsets.shape[0]:
-            world_xf = wp.transform(world_xf.p + world_offsets[w], world_xf.q)
-    world_xf = wp.transform_multiply(layer_xform, world_xf)
-    # promote to f64
-    p = world_xf.p
-    q = world_xf.q
-    sc = scales[tid]
-    p64 = wp.vec3d(wp.float64(p[0]), wp.float64(p[1]), wp.float64(p[2]))
-    q64 = wp.quatd(wp.float64(q[0]), wp.float64(q[1]), wp.float64(q[2]), wp.float64(q[3]))
-    s64 = wp.vec3d(wp.float64(sc[0]), wp.float64(sc[1]), wp.float64(sc[2]))
-    # NOTE: transpose needed
-    m_out[mat44_offset + tid] = wp.transpose(wp.transform_compose(p64, q64, s64))
-
-
-@wp.kernel(enable_backward=False)
-def write_borrowed_prim_transforms(
-    body_q: wp.array[wp.transform],
-    prim_body: wp.array[int],
-    prim_offsets: wp.array[wp.mat44d],
-    m_out: wp.array[wp.mat44d],
-):
-    """Write ``offset · body`` world matrices in USD row-vector convention."""
-    tid = wp.tid()
-    xf = body_q[prim_body[tid]]
-    p64 = wp.vec3d(wp.float64(xf[0]), wp.float64(xf[1]), wp.float64(xf[2]))
-    q64 = wp.quatd(wp.float64(xf[3]), wp.float64(xf[4]), wp.float64(xf[5]), wp.float64(xf[6]))
-    one = wp.float64(1.0)
-    body = wp.transpose(wp.transform_compose(p64, q64, wp.vec3d(one, one, one)))
-    m_out[tid] = prim_offsets[tid] @ body
+    lin = prim_linear[tid]
+    t = prim_translation[tid]
+    body = prim_body[tid]
+    if body >= 0:
+        xf = body_q[body]
+        rot = wp.quat_to_matrix(wp.transform_get_rotation(xf))
+        lin = rot @ lin
+        t = rot @ t + wp.transform_get_translation(xf)
+    if world_xforms:
+        slot = prim_world[tid] + 1
+        if slot < 0 or slot >= world_xforms.shape[0]:
+            slot = 0
+        wxf = world_xforms[slot]
+        lin = wp.quat_to_matrix(wp.transform_get_rotation(wxf)) @ lin
+        t = wp.transform_point(wxf, t)
+    # fmt: off
+    m_out[mat44_offset + tid] = wp.mat44d(wp.mat44(
+        lin[0, 0], lin[1, 0], lin[2, 0], 0.0,
+        lin[0, 1], lin[1, 1], lin[2, 1], 0.0,
+        lin[0, 2], lin[1, 2], lin[2, 2], 0.0,
+        t[0], t[1], t[2], 1.0,
+    ))
+    # fmt: on
 
 
 def _transforms_to_usd_matrices(xforms: np.ndarray) -> np.ndarray:
@@ -170,7 +155,8 @@ class ViewerRTX(ViewerUSD):
 
     _borrowed_stage = None
     _borrowed_reference = None
-    _borrowed_prim_paths: Sequence[str] = ()
+    _prim_paths: Sequence[str] = ()
+    _prim_count = 0
     _render_settings: Mapping[str, Any] = MappingProxyType({})
     _render_var_path = "/Render/Vars/LdrColor"
 
@@ -643,7 +629,6 @@ void main() {
         # Structure: /Render/OmniverseKit/HydraTextures/<product>
         #            /Render/Vars/LdrColor
         #            /Render/OmniverseGlobalRenderSettings
-        self._ensure_scopes_for_path(self.stage, self._render_product_path)
 
         rp = self.stage.DefinePrim(self._render_product_path, "RenderProduct")
         rp.SetMetadata(
@@ -674,7 +659,6 @@ void main() {
 
         # RenderVar lives at /Render/Vars/LdrColor (NOT nested under the product)
         rv_path = self._render_var_path
-        self._ensure_scopes_for_path(self.stage, rv_path)
         rv = self.stage.DefinePrim(rv_path, "RenderVar")
         rv.CreateAttribute("sourceName", Sdf.ValueTypeNames.String, custom=False).Set("LdrColor")
         rp.CreateRelationship("orderedVars").SetTargets([Sdf.Path(rv_path)])
@@ -931,8 +915,8 @@ void main() {
 
         self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
         if self._use_layered_transform_updates:
-            self._flat_total_shapes = 0
-        else:
+            self._prim_count = 0
+        elif self._borrowed_stage is None:
             self._build_flat_shape_arrays()
 
         self._phase = self._PHASE_RENDER
@@ -976,7 +960,8 @@ void main() {
     def _bind_borrowed_prims(self, model: newton.Model, prim_body_map: Mapping[str, int] | None) -> None:
         """Bind stage prims to bodies through their fixed offset at the model's initial pose.
 
-        A prim's world matrix is ``C · body`` with ``C = W0 · inv(body0)``, which
+        A prim's world matrix is ``C · body`` with ``C = W0 · inv(body0)`` in
+        USD's row-vector convention, which
         keeps authored scale, prims of collapsed bodies, and prim origins that
         differ from body frames without special cases.
         """
@@ -1008,10 +993,15 @@ void main() {
                 "world placements (e.g. replicate xforms) must match the stage"
             )
 
-        self._borrowed_prim_paths = paths
-        self._borrowed_prim_body = wp.array(bodies, dtype=int, device=model.device)
-        self._borrowed_prim_offsets = wp.array(offsets, dtype=wp.mat44d, device=model.device)
-        self._borrowed_matrices = wp.empty(len(paths), dtype=wp.mat44d, device=model.device)
+        # Row-vector ``C`` is the transpose of the column-form local affine.
+        self._set_prim_rows(
+            paths,
+            bodies,
+            linear=np.swapaxes(offsets[:, :3, :3], -1, -2),
+            translation=offsets[:, 3, :3],
+            worlds=None,
+            device=model.device,
+        )
 
     def _attach_borrowed_stage(self) -> None:
         """Attach the renderer and publish the viewer-owned subtree into the borrowed stage."""
@@ -1036,21 +1026,43 @@ void main() {
             self._ovstage, stage.GetRootLayer().ExportToString(), self._root_path
         )
         ovstage.population.apply_usd_changes(self._ovstage, ordinal=self._ovstage_ordinal)
-        if self._borrowed_prim_paths:
+        if self._prim_paths:
+            # Written matrices are world-space, so bound prims ignore their ancestors.
             self._write_runtime_attribute(
-                self._borrowed_prim_paths,
+                self._prim_paths,
                 "omni:resetXformStack",
-                np.ones(len(self._borrowed_prim_paths), dtype=np.bool_),
+                np.ones(len(self._prim_paths), dtype=np.bool_),
             )
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
 
-    def _build_flat_shape_arrays(self):
-        """Concatenate per-batch shape arrays into flat warp arrays matching the mat44d layout.
+    def _set_prim_rows(
+        self,
+        paths: Sequence[str],
+        bodies: np.ndarray,
+        linear: np.ndarray,
+        translation: np.ndarray,
+        worlds: np.ndarray | None,
+        device: Any,
+        mat44_offset: int = 0,
+    ) -> None:
+        """Store the static per-prim inputs of :func:`write_prim_world_matrices`."""
+        self._prim_paths = list(paths)
+        self._prim_count = len(self._prim_paths)
+        self._prim_body = wp.array(bodies, dtype=int, device=device)
+        self._prim_linear = wp.array(linear.astype(np.float32), dtype=wp.mat33, device=device)
+        self._prim_translation = wp.array(translation.astype(np.float32), dtype=wp.vec3, device=device)
+        self._prim_world = None if worlds is None else wp.array(worlds, dtype=int, device=device)
+        self._prim_mat44_offset = mat44_offset
+        if self._use_ovstage:
+            self._prim_matrices = wp.empty(self._prim_count, dtype=wp.mat44d, device=device)
 
-        Called once at the end of the build phase.  The resulting arrays are static
-        (topology does not change per-frame) and allow all shape transforms to be
-        updated with a single ``update_and_write_shape_transforms`` kernel launch instead of
-        one launch per shape batch.
+    def _build_flat_shape_arrays(self):
+        """Concatenate per-batch shape arrays into prim rows matching the mat44d layout.
+
+        Called once at the end of the build phase. The rows are static (topology
+        does not change per-frame) and allow all shape transforms to be updated
+        with a single :func:`write_prim_world_matrices` launch instead of one
+        launch per shape batch.
         """
         # _shape_instances is keyed by geometry hash (int), not by name; build a reverse map.
         name_to_shapes = {s.name: s for s in self._shape_instances.values()}
@@ -1078,16 +1090,61 @@ void main() {
         if not chunks_xforms:
             return
 
-        dev = self.device
-        self._flat_shape_xforms = wp.array(np.concatenate(chunks_xforms, axis=0), dtype=wp.transform, device=dev)
-        self._flat_shape_parents = wp.array(np.concatenate(chunks_parents, axis=0), dtype=int, device=dev)
-        self._flat_shape_worlds = wp.array(np.concatenate(chunks_worlds, axis=0), dtype=int, device=dev)
-        self._flat_shape_scales = wp.array(np.concatenate(chunks_scales, axis=0), dtype=wp.vec3, device=dev)
-        self._flat_total_shapes = len(self._flat_shape_xforms)
-        self._flat_shape_paths = flat_shape_paths
-        self._flat_mat44_offset = flat_mat44_offset
-        if self._use_ovstage:
-            self._flat_shape_matrices = wp.empty(self._flat_total_shapes, dtype=wp.mat44d, device=dev)
+        xforms = np.concatenate(chunks_xforms, axis=0).astype(np.float64)
+        scales = np.concatenate(chunks_scales, axis=0)
+        # Column-form rotation with the shape scale folded into its columns.
+        rotation = np.swapaxes(_transforms_to_usd_matrices(xforms)[:, :3, :3], -1, -2)
+        self._set_prim_rows(
+            flat_shape_paths,
+            np.concatenate(chunks_parents, axis=0),
+            linear=rotation * scales[:, None, :],
+            translation=xforms[:, :3],
+            worlds=np.concatenate(chunks_worlds, axis=0),
+            device=self.device,
+            mat44_offset=flat_mat44_offset,
+        )
+
+    def _get_world_xforms(self) -> wp.array | None:
+        """Return per-world placements (world offset, then layer xform), cached until either changes."""
+        layer_xform = tuple(float(v) for v in self.layer.xform)
+        key = (self.world_offsets, layer_xform)
+        cached = self._world_xforms_key
+        if cached is not None and cached[0] is key[0] and cached[1] == key[1]:
+            return self._world_xforms
+
+        offsets = self.world_offsets.numpy() if self.world_offsets is not None else np.zeros((0, 3))
+        identity_layer = layer_xform == tuple(wp.transform_identity())
+        if not len(offsets) and identity_layer:
+            placements = None
+        else:
+            layer = wp.transform(*layer_xform)
+            xforms = [layer] + [
+                wp.transform_multiply(layer, wp.transform(wp.vec3(*offset), wp.quat_identity())) for offset in offsets
+            ]
+            placements = wp.array(xforms, dtype=wp.transform, device=self.device)
+        self._world_xforms = placements
+        self._world_xforms_key = key
+        return placements
+
+    def _launch_prim_world_matrices(self, m_out: wp.array, mat44_offset: int = 0) -> None:
+        """Compute all prim world matrices into ``m_out`` with one launch."""
+        body_q = self._last_state.body_q if self._last_state is not None else None
+        world_xforms = self._get_world_xforms() if self._prim_world is not None else None
+        wp.launch(
+            write_prim_world_matrices,
+            dim=self._prim_count,
+            inputs=[
+                body_q,
+                self._prim_body,
+                self._prim_linear,
+                self._prim_translation,
+                self._prim_world,
+                world_xforms,
+                mat44_offset,
+            ],
+            outputs=[m_out],
+            device=m_out.device,
+        )
 
     def _bind_ovrtx_transforms(self):
         """Bind transforms for the scene assembled before rendering starts."""
@@ -2209,46 +2266,18 @@ void main() {
             self._camera_dirty = False
 
     def _update_ovrtx_transforms(self):
-        has_flat_shape_arrays = self._flat_total_shapes > 0
-        has_borrowed_prims = bool(self._borrowed_prim_paths)
-        if self._rtx is None or (not has_flat_shape_arrays and not has_borrowed_prims and not self._pending_xforms):
+        # Prims keep their authored transforms until the first logged state.
+        has_prim_rows = self._prim_count > 0 and self._last_state is not None
+        if self._rtx is None or (not has_prim_rows and not self._pending_xforms):
             return
         if self._use_ovstage and self._ovstage is None:
             return
 
         if self._use_ovstage:
             with wp.ScopedTimer("ViewerRTX::update_transforms", active=PROFILE_ENABLED, use_nvtx=True):
-                body_q = self._last_state.body_q if self._last_state is not None else None
-                world_offsets = self.world_offsets
-
-                if has_borrowed_prims and body_q is not None:
-                    wp.launch(
-                        write_borrowed_prim_transforms,
-                        dim=len(self._borrowed_prim_paths),
-                        inputs=[body_q, self._borrowed_prim_body, self._borrowed_prim_offsets],
-                        outputs=[self._borrowed_matrices],
-                        device=self._borrowed_matrices.device,
-                    )
-                    self._write_ovstage_matrix_attribute(self._borrowed_prim_paths, self._borrowed_matrices)
-
-                if has_flat_shape_arrays:
-                    wp.launch(
-                        update_and_write_shape_transforms,
-                        dim=self._flat_total_shapes,
-                        inputs=[
-                            self._flat_shape_xforms,
-                            self._flat_shape_parents,
-                            body_q,
-                            self._flat_shape_worlds,
-                            world_offsets,
-                            self.layer.xform,
-                            self._flat_shape_scales,
-                            0,
-                            self._flat_shape_matrices,
-                        ],
-                        device=self._flat_shape_matrices.device,
-                    )
-                    self._write_ovstage_matrix_attribute(self._flat_shape_paths, self._flat_shape_matrices)
+                if has_prim_rows:
+                    self._launch_prim_world_matrices(self._prim_matrices)
+                    self._write_ovstage_matrix_attribute(self._prim_paths, self._prim_matrices)
 
                 for name, (xforms, scales) in self._pending_xforms.items():
                     paths = self._instance_prim_paths.get(name)
@@ -2274,7 +2303,7 @@ void main() {
             name: binding for name, binding in self._runtime_transform_bindings.items() if name in self._pending_xforms
         }
         has_scene_updates = self._transform_binding is not None and (
-            has_flat_shape_arrays
+            has_prim_rows
             or any(
                 name in self._pending_xforms and name not in self._runtime_transform_bindings
                 for name in self._bound_instance_prim_paths
@@ -2290,27 +2319,9 @@ void main() {
                 with self._transform_binding.map(device=rtx_device) as mapping:
                     matrices = wp.from_dlpack(mapping.tensor, dtype=wp.mat44d)  # (N, 4, 4) float64
 
-                    body_q = self._last_state.body_q if self._last_state is not None else None
-                    world_offsets = self.world_offsets
-
-                    if has_flat_shape_arrays:
+                    if has_prim_rows:
                         # Single kernel launch for all shape batches.
-                        wp.launch(
-                            update_and_write_shape_transforms,
-                            dim=self._flat_total_shapes,
-                            inputs=[
-                                self._flat_shape_xforms,
-                                self._flat_shape_parents,
-                                body_q,
-                                self._flat_shape_worlds,
-                                world_offsets,
-                                self.layer.xform,
-                                self._flat_shape_scales,
-                                self._flat_mat44_offset,
-                                matrices,
-                            ],
-                            device=matrices.device,
-                        )
+                        self._launch_prim_world_matrices(matrices, self._prim_mat44_offset)
 
                     # Handle any remaining build-phase pre-computed transforms.
                     offset = 0
@@ -2783,14 +2794,16 @@ void main() {
         self._pending_transform_matrices = {}
         self._ovstage_population_dirty = False
 
-        self._flat_shape_xforms = None
-        self._flat_shape_parents = None
-        self._flat_shape_worlds = None
-        self._flat_shape_scales = None
-        self._flat_shape_paths = []
-        self._flat_shape_matrices = None
-        self._flat_total_shapes = 0
-        self._flat_mat44_offset = 0
+        self._prim_paths = []
+        self._prim_count = 0
+        self._prim_body = None
+        self._prim_linear = None
+        self._prim_translation = None
+        self._prim_world = None
+        self._prim_matrices = None
+        self._prim_mat44_offset = 0
+        self._world_xforms = None
+        self._world_xforms_key = None
         self._use_layered_transform_updates = False
 
         self._last_state = None
@@ -2808,11 +2821,6 @@ void main() {
             self._render_product_path = "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0"
             self._render_var_path = "/Render/Vars/LdrColor"
         self._camera_dirty = True
-
-        self._borrowed_prim_paths = []
-        self._borrowed_prim_body = None
-        self._borrowed_prim_offsets = None
-        self._borrowed_matrices = None
 
         super().clear_model()
 

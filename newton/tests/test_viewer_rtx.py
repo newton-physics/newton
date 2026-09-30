@@ -270,6 +270,64 @@ def Xform "World"
         self.assertEqual(events[:2], ["wait", "write"])
 
 
+def _column_matrix(xform: wp.transform) -> np.ndarray:
+    """Return the 4x4 column-vector matrix of a transform."""
+    x, y, z, w = (float(v) for v in xform[3:])
+    out = np.eye(4)
+    out[:3, :3] = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ]
+    out[:3, 3] = [float(v) for v in xform[:3]]
+    return out
+
+
+class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
+    def test_matrices_compose_local_body_and_world_placement(self):
+        """Write ``(world · body · local · scale)ᵀ`` for body-attached, static, and unplaced prims."""
+        from newton._src.viewer.viewer_rtx import write_prim_world_matrices  # noqa: PLC0415
+
+        rng = np.random.default_rng(0)
+
+        def random_xform():
+            quat = rng.normal(size=4)
+            return wp.transform(wp.vec3(*rng.normal(size=3)), wp.quat(*(quat / np.linalg.norm(quat))))
+
+        body_q = [random_xform(), random_xform()]
+        placements = [random_xform() for _ in range(3)]
+        # (body, world); world 5 has no placement slot and falls back to slot 0.
+        rows = [(0, 0), (-1, -1), (1, 1), (1, 5)]
+        local = [random_xform() for _ in rows]
+        scales = rng.uniform(0.5, 2.0, size=(len(rows), 3))
+
+        linear = np.stack([_column_matrix(xf)[:3, :3] * scale for xf, scale in zip(local, scales, strict=True)])
+        translation = np.stack([_column_matrix(xf)[:3, 3] for xf in local])
+        out = wp.empty(len(rows), dtype=wp.mat44d)
+        wp.launch(
+            write_prim_world_matrices,
+            dim=len(rows),
+            inputs=[
+                wp.array(body_q, dtype=wp.transform),
+                wp.array([body for body, _ in rows], dtype=int),
+                wp.array(linear, dtype=wp.mat33),
+                wp.array(translation, dtype=wp.vec3),
+                wp.array([world for _, world in rows], dtype=int),
+                wp.array(placements, dtype=wp.transform),
+                0,
+            ],
+            outputs=[out],
+        )
+
+        for row, ((body, world), xf, scale) in enumerate(zip(rows, local, scales, strict=True)):
+            expected = _column_matrix(xf) @ np.diag([*scale, 1.0])
+            if body >= 0:
+                expected = _column_matrix(body_q[body]) @ expected
+            slot = world + 1 if 0 <= world + 1 < len(placements) else 0
+            expected = _column_matrix(placements[slot]) @ expected
+            np.testing.assert_allclose(out.numpy()[row], expected.T, atol=1.0e-5)
+
+
 class TestViewerRTXRenderOutput(unittest.TestCase):
     def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):
         """Find the color output returned by legacy and OVRTX 0.5 renderers."""
