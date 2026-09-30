@@ -162,14 +162,6 @@ lists remain private; use the public model arrays to inspect finalized ranges.
 After finalization, use the family-specific views described in
 :ref:`deformable-selection` to select deformable objects and access their state.
 
-Native rods and USD cables have different joint ranges. Native rod records
-include free-root joints created by the call. USD records retain the existing
-importer's joint span. For a single curve, it excludes root attachments. For a
-prim with multiple curves, the span can include free-root joints between those
-curves. A curve welded into a shared graph has an empty joint range because the
-graph owns those joints. The curve view exposes these recorded spans through
-``ranges("joint")``; it does not change which joints each span contains.
-
 Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Complete
 curve records follow the remapped indices. If collapse removes part of a curve,
 Newton warns and omits its incomplete record. Use ``joints_to_keep`` to preserve

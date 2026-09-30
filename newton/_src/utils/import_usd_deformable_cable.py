@@ -909,10 +909,6 @@ def _deformable_prepare_cable_topology(
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
-        # Unlike single cables, the graph junction spanning tree is intrinsic topology, not a
-        # caller choice, and only a tree (not the all-incident-edges joint set produced when
-        # unwrapped) is articulation-safe. So the importer wraps each component into its own
-        # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
         # The graph spans several welded curves. Record a deformable object for each
         # curve below, rather than one for the whole component.
         rod = Rod(node_positions, edges=edges, radius=radius)
@@ -1217,6 +1213,7 @@ def _deformable_import_cable(
             has_particle_collision=collision_enabled,
         )
 
+        cable_joint_start = builder.joint_count
         cable_bodies: list[int] = []
         cable_joints: list[int] = []
         # vertex index -> [(segment body, body-local point)]
@@ -1401,11 +1398,10 @@ def _deformable_import_cable(
                 resolved_cable_density,
             )
             path_cable_map[path] = (cable_bodies, cable_joints)
-            # Bodies/joints for a cable prim are built back-to-back, so the index lists are contiguous.
+            # Include generated roots, as native recording does. The returned rod-joint list
+            # excludes roots and can have gaps when the prim contains multiple curves.
             body_range = (cable_bodies[0], cable_bodies[-1] + 1)
-            joint_range = (
-                (cable_joints[0], cable_joints[-1] + 1) if cable_joints else (builder.joint_count, builder.joint_count)
-            )
+            joint_range = (cable_joint_start, builder.joint_count)
             builder._record_curve_deformable_object(path, body_range, joint_range)
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments

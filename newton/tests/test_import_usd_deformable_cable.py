@@ -356,12 +356,12 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, return_deformable_results=True)
             b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
-            j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+            joints = result["path_cable_map"]["/World/Cable"][1]
             self.assertEqual(b1 - b0, 3)
 
             # Split rod joints store target_ke as stretch, shear, bend, twist.
             ke = builder.joint_target_ke
-            for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+            for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
                 expected = tuple(value / joint_length for value in (stretch, shear, bend, twist))
                 np.testing.assert_allclose(ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
@@ -391,8 +391,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             _author_deformable_element_array(curves.GetPrim(), "thicknesses", [thickness], "constant")
 
             builder = newton.ModelBuilder()
-            builder.add_usd(stage)
-            j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+            result = builder.add_usd(stage, return_deformable_results=True)
+            joints = result["path_cable_map"]["/World/Cable"][1]
             radius = 0.5 * thickness
             area = math.pi * radius**2
             area_moment = 0.25 * math.pi * radius**4
@@ -404,7 +404,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 youngs * area_moment,
                 shear_modulus * polar_moment,
             )
-            for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+            for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
                 expected = tuple(value / joint_length for value in structural)
                 np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
@@ -415,8 +415,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat")
 
             builder = newton.ModelBuilder()
-            builder.add_usd(stage)
-            j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+            result = builder.add_usd(stage, return_deformable_results=True)
+            joints = result["path_cable_map"]["/World/Cable"][1]
             radius, youngs, poissons = 0.0005, 1.0e6, 0.3
             area = math.pi * radius**2
             area_moment = 0.25 * math.pi * radius**4
@@ -429,7 +429,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 shear_modulus * polar_moment,
             )
             self.assertAlmostEqual(float(builder.shape_scale[0][0]), radius, places=7)
-            for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+            for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
                 expected = tuple(value / joint_length for value in structural)
                 np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
@@ -449,12 +449,12 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(DeprecationWarning, "unprefixed curve material attributes"):
-                builder.add_usd(stage)
-            j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+                result = builder.add_usd(stage, return_deformable_results=True)
+            joints = result["path_cable_map"]["/World/Cable"][1]
             radius = 0.5 * thickness
             stretch = stretch_modulus * math.pi * radius**2
             bend = bend_modulus * 0.25 * math.pi * radius**4
-            for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+            for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
                 expected = (stretch, stretch, bend, bend)
                 np.testing.assert_allclose(
@@ -477,9 +477,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, return_deformable_results=True)
-            j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
+            joint = result["path_cable_map"]["/World/Cable"][1][0]
             # The stretch-slot target_ke is the authored 0.0, not add_rod's 1.0e5 default.
-            dof0 = builder.joint_qd_start[j0]
+            dof0 = builder.joint_qd_start[joint]
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
             self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
@@ -526,8 +526,8 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, return_deformable_results=True)
-        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
-        for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+        joints = result["path_cable_map"]["/World/Cable"][1]
+        for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
             dof0 = builder.joint_qd_start[joint]
             expected = (6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
             np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 4], expected, rtol=1.0e-3)
@@ -578,11 +578,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder = newton.ModelBuilder()
         # restShapePoints does not establish an initial strain state, so it warns.
         with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
-            builder.add_usd(stage)
-        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+            result = builder.add_usd(stage, return_deformable_results=True)
+        joints = result["path_cable_map"]["/World/Cable"][1]
         # Dual lengths of the rest polyline. Both differ from the 0.2 deformed segments and from
         # the 0.2 rest mean, so this also pins the normalization to each joint's own neighbors.
-        for joint, joint_length in zip(range(j0, j1), (0.15, 0.25), strict=True):
+        for joint, joint_length in zip(joints, (0.15, 0.25), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
             self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
@@ -608,10 +608,10 @@ class TestUSDDeformableCable(unittest.TestCase):
                 )
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, "non-finite or zero-length segment"):
-                    builder.add_usd(stage)
-                j0, j1 = group_range(builder, "cable", "/World/Flat", "joint")
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                joints = result["path_cable_map"]["/World/Flat"][1]
                 expected = stretch / 0.2
-                for joint in range(j0, j1):
+                for joint in joints:
                     dof0 = builder.joint_qd_start[joint]
                     self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
 
@@ -656,8 +656,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
         # Without the family API the material is ignored: no attrs, default rod stiffness.
         self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
-        j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
-        dof0 = builder.joint_qd_start[j0]
+        joint = result["path_cable_map"]["/World/Cable"][1][0]
+        dof0 = builder.joint_qd_start[joint]
         self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
         self.assertEqual(builder.joint_target_kd[dof0], 0.0)
 
@@ -980,7 +980,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         for body in range(b0, b1):
@@ -988,9 +988,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(float(builder.shape_scale[shape][0]), 0.01, places=7)
             self.assertAlmostEqual(builder.body_mass[body], 1000.0 * math.pi * 0.01**2, places=5)
 
-        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
-        self.assertEqual(j1 - j0, 1)
-        dof = builder.joint_qd_start[j0]
+        (joint,) = result["path_cable_map"]["/World/Cable"][1]
+        dof = builder.joint_qd_start[joint]
         shear_modulus = 1.0e6 / (2.0 * (1.0 + 0.3))
         expected = (
             1.0e6 * math.pi * 0.01**2,
@@ -1037,7 +1036,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("segment")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         radii = [0.01, 0.02]
@@ -1047,8 +1046,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(builder.shape_collision_radius[shape], 0.5 + radius, places=7)
             self.assertAlmostEqual(builder.body_mass[body], 1000.0 * math.pi * radius**2, places=5)
 
-        j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
-        dof = builder.joint_qd_start[j0]
+        (joint,) = result["path_cable_map"]["/World/Cable"][1]
+        dof = builder.joint_qd_start[joint]
         section_stiffnesses = [1.0e6 * math.pi * radius**2 for radius in radii]
         expected_stretch = 1.0 / (0.5 / section_stiffnesses[0] + 0.5 / section_stiffnesses[1])
         self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
@@ -1073,12 +1072,12 @@ class TestUSDDeformableCable(unittest.TestCase):
         _author_deformable_element_array(curves.GetPrim(), "thicknesses", [0.02, 0.06, 0.02], "point")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         for body in range(builder.body_count):
             shape = builder.body_shapes[body][0]
             self.assertAlmostEqual(float(builder.shape_scale[shape][0]), 0.02, places=7)
-        joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
+        (joint,) = result["path_cable_map"]["/World/Cable"][1]
         dof = builder.joint_qd_start[joint]
         expected_stretch = 1.0e6 * math.pi * 0.02**2
         expected_bend = 1.0e6 * math.pi * 0.03**4 / 4.0
@@ -1217,20 +1216,24 @@ class TestUSDDeformableCable(unittest.TestCase):
             density=1234.0,
         )
 
-        def cable_stretch(builder):
-            joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
+        def cable_stretch(builder, result):
+            joint = result["path_cable_map"]["/World/Cable"][1][0]
             return builder.joint_target_ke[builder.joint_qd_start[joint]]
 
         # Default resolvers ignore the vendor value, so the current material derives from E/nu defaults.
         builder_default = newton.ModelBuilder()
-        builder_default.add_usd(stage)
+        result_default = builder_default.add_usd(stage, return_deformable_results=True)
         expected_default = 1.0e6 * math.pi * 0.01**2 / 0.1
-        self.assertAlmostEqual(cable_stretch(builder_default), expected_default, delta=expected_default * 1.0e-5)
+        self.assertAlmostEqual(
+            cable_stretch(builder_default, result_default), expected_default, delta=expected_default * 1.0e-5
+        )
 
         # The PhysX resolver admits the deformable vendor namespace.
         builder_compat = newton.ModelBuilder()
-        builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
-        self.assertAlmostEqual(cable_stretch(builder_compat), 770.0, delta=1.0e-3)
+        result_compat = builder_compat.add_usd(
+            stage, schema_resolvers=[SchemaResolverPhysx()], return_deformable_results=True
+        )
+        self.assertAlmostEqual(cable_stretch(builder_compat, result_compat), 770.0, delta=1.0e-3)
 
     def test_deformable_ignores_generic_physx_namespaces(self):
         """Verify that deformable materials ignore generic PhysX namespaces.
@@ -1246,8 +1249,8 @@ class TestUSDDeformableCable(unittest.TestCase):
                 stage, curves.GetPrim(), "/World/Mat", namespace=namespace, curvesStretchStiffness=77.0
             )
             builder = newton.ModelBuilder()
-            builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
-            joint, _ = group_range(builder, "cable", "/World/Cable", "joint")
+            result = builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()], return_deformable_results=True)
+            joint = result["path_cable_map"]["/World/Cable"][1][0]
             return builder.joint_target_ke[builder.joint_qd_start[joint]]
 
         self.assertAlmostEqual(cable_stretch("omniphysics"), 770.0, delta=1.0e-3)
@@ -1400,9 +1403,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
-            builder.add_usd(stage)
+            result = builder.add_usd(stage, return_deformable_results=True)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
-        j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
+        joint = result["path_cable_map"]["/World/Cable"][1][0]
         self.assertEqual(b1 - b0, 3)
 
         tangent = np.array([1.0, 0.0, k]) / math.sqrt(1.0 + k * k)
@@ -1425,7 +1428,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         # per-joint stretch stiffness accordingly; a decomposed scale cannot represent this.
         rest_len = seg_len * math.sqrt(1.0 + k * k)
         expected_ke = stretch / rest_len
-        dof0 = builder.joint_qd_start[j0]
+        dof0 = builder.joint_qd_start[joint]
         self.assertAlmostEqual(builder.joint_target_ke[dof0], expected_ke, delta=expected_ke * 1e-3)
 
     def test_instanced_cable_imports_proxies_not_prototype(self):
@@ -1462,15 +1465,16 @@ class TestUSDDeformableCable(unittest.TestCase):
         _author_deformable_element_array(curves.GetPrim(), "thicknesses", [0.02], "constant")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        result = builder.add_usd(stage, return_deformable_results=True)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
-        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+        joints = result["path_cable_map"]["/World/Cable"][1]
         self.assertEqual(b1 - b0, 3, "expected one body per segment, incl. the closing segment")
-        self.assertEqual(j1 - j0, 3, "expected 2 chain joints + 1 loop joint")
+        self.assertEqual(len(joints), 3, "expected 2 chain joints + 1 loop joint")
+        self.assertEqual(group_range(builder, "cable", "/World/Cable", "joint"), (0, 4))
         # The importer wraps the closed cable; add_rod keeps the loop-closing joint out of the tree.
         self.assertIn("/World/Cable_articulation", builder.articulation_label)
         # The closing joint is appended last and pairs the 0.5 and 0.3 segments.
-        for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
+        for joint, joint_length in zip(joints, (0.35, 0.45, 0.4), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
             self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
@@ -1675,11 +1679,12 @@ class TestUSDDeformableCable(unittest.TestCase):
                 UserWarning,
                 r"Parallel joints between the same pair of bodies have undefined semantics",
             ):
-                builder.add_usd(stage)
+                result = builder.add_usd(stage, return_deformable_results=True)
             b0, b1 = group_range(builder, "cable", "/World/Loop2", "body")
             self.assertEqual(b1 - b0, 2, "two segments after closure")
-            j0, j1 = group_range(builder, "cable", "/World/Loop2", "joint")
-            self.assertEqual(j1 - j0, 2, "one chain joint plus the loop-closing joint")
+            self.assertEqual(
+                len(result["path_cable_map"]["/World/Loop2"][1]), 2, "one chain joint plus the loop-closing joint"
+            )
             builder.finalize()
 
     def test_welded_periodic_curve_rejects_cycle_and_falls_back(self):
@@ -1709,8 +1714,9 @@ class TestUSDDeformableCable(unittest.TestCase):
         # Both curves import individually: 3 loop bodies + 2 branch bodies, two articulations.
         lb0, lb1 = group_range(builder, "cable", "/World/Loop", "body")
         self.assertEqual(lb1 - lb0, 3)
-        lj0, lj1 = group_range(builder, "cable", "/World/Loop", "joint")
-        self.assertEqual(lj1 - lj0, 3, "the periodic loop keeps its closing joint")
+        self.assertEqual(
+            len(result["path_cable_map"]["/World/Loop"][1]), 3, "the periodic loop keeps its closing joint"
+        )
         bb0, bb1 = group_range(builder, "cable", "/World/Branch", "body")
         self.assertEqual(bb1 - bb0, 2)
         self.assertEqual(builder.articulation_count, 2)
