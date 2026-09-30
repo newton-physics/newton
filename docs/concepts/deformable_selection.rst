@@ -36,6 +36,29 @@ expose particle positions and velocities. A family does not prescribe a solver o
 storage layout. Particle-based curves and solver-owned MPM data are not supported
 yet. There is no simulation-representation filter in this version.
 
+Inspect all deformable objects
+------------------------------
+
+Views read the public model data described in :ref:`deformable-objects`.
+Use those arrays directly when all labels, worlds, or ranges are needed,
+without applying a selection pattern:
+
+.. code-block:: python
+
+    # Read metadata once during setup, outside simulation steps or graph capture.
+    worlds = model.surface_world.numpy()
+    starts = model.surface_particle_start.numpy()
+    ends = model.surface_particle_end.numpy()
+    for label, world, start, end in zip(
+        model.surface_label, worlds, starts, ends, strict=True
+    ):
+        print(label, "world:", world, "particles:", end - start)
+
+Like ``model.articulation_label`` and ``model.articulation_world``, these arrays
+describe recorded objects before selection. They include global objects and
+objects in uneven worlds. A view contains only its matches, ordered by world.
+Its destination indices refer to that selection, not the model inventory.
+
 Read and reset state
 --------------------
 
@@ -233,10 +256,11 @@ cables' body ranges even though their selected deformable object indices are con
 sizes differ. Raw ranges remain available for deformable objects with different sizes.
 
 Joint ranges depend on how a cable was created. Native rod calls include any
-free-root joints they create. USD curves record their per-curve rod joints, not
-the root attachment joint. Curves welded into a shared rod graph have empty
-joint ranges because those joints belong to the shared graph. Do not infer the
-joint count from the segment count.
+free-root joints they create. For a single USD curve, the recorded joint span
+excludes its root attachment. A USD prim containing several curves can include
+root joints between those curves in its span. Curves welded into a shared rod
+graph have empty joint ranges because those joints belong to the shared graph.
+Do not infer the joint count from the segment count. See :ref:`deformable-objects`.
 
 Recording labels does not prevent fixed-joint collapse. A deformable curve is omitted
 with a warning if collapse removes one of its bodies or joints. Preserve required

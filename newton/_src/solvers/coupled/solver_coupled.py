@@ -425,7 +425,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.compaction_policy,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"}
+            if spec.compaction_policy in {"generic", "end", "range_start"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -1185,6 +1185,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
+        built_in_frequency_orders.update(self._compact_deformable_orders(built_in_frequency_orders))
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
             return None, "a selected custom-frequency domain does not have a homogeneous world layout"
@@ -1206,6 +1207,29 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ),
             None,
         )
+
+    def _compact_deformable_orders(
+        self, frequency_orders: dict[Model.AttributeFrequency, list[int]]
+    ) -> dict[Model.AttributeFrequency, list[int]]:
+        """Keep whole deformable objects; a partial range cannot describe the same object."""
+        model = self.model
+        frequency = model.AttributeFrequency
+        orders = {}
+        for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME):
+            count = model._attribute_frequency_count(family_frequency)
+            keep = np.ones(count, dtype=bool)
+            if count:
+                for attribute in self._attribute_projections:
+                    if attribute.frequency != family_frequency or attribute.compaction_policy != "range_start":
+                        continue
+                    starts = getattr(model, attribute.name).numpy()
+                    ends = getattr(model, attribute.name.removesuffix("_start") + "_end").numpy()
+                    selected = np.asarray(frequency_orders[attribute.references], dtype=np.int32)
+                    # Count retained elements in each range without scanning its contents.
+                    retained = np.searchsorted(selected, ends) - np.searchsorted(selected, starts)
+                    keep &= retained == ends - starts
+            orders[family_frequency] = np.flatnonzero(keep).tolist()
+        return orders
 
     def _compact_articulation_order(
         self,
@@ -1408,6 +1432,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
         view.muscle_count = 0
+        view.curve_count = len(compact.order(frequency.CURVE))
+        view.surface_count = len(compact.order(frequency.SURFACE))
+        view.volume_count = len(compact.order(frequency.VOLUME))
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)
@@ -1523,8 +1550,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         f"Cannot compact model attribute {full_name!r}: no projection for reference frequency "
                         f"{attribute.references!r}"
                     )
-                if attribute.compaction_policy == "end":
-                    selected = self._remap_compact_end_value(selected, reference_projection, full_name)
+                if attribute.compaction_policy in {"end", "range_start"}:
+                    selected = self._remap_compact_boundary_value(selected, reference_projection, full_name)
                 else:
                     selected = self._remap_compact_reference_value(
                         selected,
@@ -1796,22 +1823,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return remap_array(np.asarray(value)).tolist()
         return value
 
-    def _remap_compact_end_value(
+    def _remap_compact_boundary_value(
         self,
         value,
         projection: _CompactIndexProjection,
         attribute_name: str,
     ):
-        """Remap exclusive source-domain boundaries into compact indices."""
+        """Count retained elements before each inclusive start or exclusive end."""
         order = np.asarray(projection.local_to_global, dtype=np.int64)
         if order.size > 1 and np.any(order[1:] < order[:-1]):
-            raise ValueError(f"Cannot compact end attribute {attribute_name!r}: reference order is not monotonic")
+            raise ValueError(f"Cannot compact boundary attribute {attribute_name!r}: reference order is not monotonic")
 
         host = value.numpy() if isinstance(value, wp.array) else np.asarray(value)
         source_count = len(projection.global_to_local)
         if np.any(host < 0) or np.any(host > source_count):
             raise ValueError(
-                f"Cannot compact end attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
+                f"Cannot compact boundary attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
             )
         remapped = np.searchsorted(order, host, side="left")
         if isinstance(value, wp.array):
@@ -2169,11 +2196,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
                 global entities are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -2779,6 +2801,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if contacts.rigid_contact_surface_velocity is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_surface_velocity_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_surface_velocity,
+                        filtered.rigid_contact_surface_velocity,
+                    ],
+                    device=self.model.device,
+                )
             if contacts.rigid_contact_stiffness is not None and filtered.rigid_contact_stiffness is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_properties_kernel,
@@ -2875,6 +2909,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
                 requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
+                rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
             self._entry_contact_buffers[entry.name] = filtered
             self._entry_contact_sources[entry.name] = contacts
@@ -2928,6 +2963,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
             and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
+            and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
@@ -3583,6 +3619,22 @@ def _filter_rigid_contacts_global_shape_ids_kernel(
     dst_margin0[dst_id] = src_margin0[contact_id]
     dst_margin1[dst_id] = src_margin1[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_surface_velocity_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_surface_velocity: wp.array[wp.vec3],
+    dst_surface_velocity: wp.array[wp.vec3],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id >= 0:
+        dst_surface_velocity[dst_id] = src_surface_velocity[src_id]
 
 
 @wp.kernel(enable_backward=False)
