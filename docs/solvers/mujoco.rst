@@ -238,6 +238,19 @@ implicit MJCF default. This extra flag is needed because the two-component
 authored native value such as ``solreflimit="0 0"`` or USD
 ``mjc:solreflimit = [0, 0]``.
 
+Authored raw ``solreflimit`` values are validated during solver construction
+and eager :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on
+both backends. CUDA graph capture skips this host validation and leaves it
+pending until the next eager solref update. Graph replay does not validate
+values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+``JOINT_DOF_PROPERTIES`` outside capture after reassigning raw values to
+check them.
+
+On the MuJoCo Warp backend, runtime joint-limit updates are stored in
+``solver.mjw_model.jnt_solref`` per world. The host template's
+``solver.mj_model.jnt_solref`` is not updated; inspect the Warp array for
+current values.
+
 .. note::
 
    ``SolverMuJoCo(..., save_to_mjcf=path)`` is not a fully semantic

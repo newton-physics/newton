@@ -4090,8 +4090,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_naconmax: int | None = None
 
         # One-shot dedup for ``_update_solref_from_invweight0``'s authored
-        # ``mujoco.solreflimit`` domain validator. Re-armed on the MuJoCo CPU
-        # backend by ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
+        # ``mujoco.solreflimit`` domain validator. Re-armed by
+        # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)`` on both backends.
         self._raw_solreflimit_validated: bool = False
 
         self._cone_shape_indices = np.empty(0, dtype=np.int32)
@@ -4846,11 +4846,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
             self._invalidate_contact_fast_path()
-            # The CPU backend validates authored ``mujoco.solreflimit`` values
-            # after reassignment. MuJoCo Warp validates them only during
-            # construction so this update path stays graph-capturable.
-            if self.use_mujoco_cpu:
-                self._raw_solreflimit_validated = False
+            # Defer host validation during capture until the next eager solref update.
+            self._raw_solreflimit_validated = False
             need_const_0 = True
             need_length_range = True
         if flags & ModelFlags.SHAPE_PROPERTIES:
@@ -8462,6 +8459,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Compute the qpos0 mass-matrix statistic with authored armature.
             # This small pre-pass is branchless with respect to body_flags and
             # avoids a second, much more expensive set_const_0 invocation.
+            # Keep its mass-matrix assembly and compute_physical_meaninertia_kernel
+            # aligned with MuJoCo Warp's set_const_0 when upgrading that dependency.
             wp.copy(self._notify_qpos_saved, self.mjw_data.qpos)
             wp.copy(self.mjw_data.qpos, self.mjw_model.qpos0)
             self._update_body_properties(apply_kinematic_armature=False)
@@ -8971,19 +8970,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.jnt_connect_constraint_q_rel,
                     self.jnt_connect_constraint_t_rel,
                 )
-        # connect_constraint_q_rel is guaranteed non-None when update_anchors
-        # is True because _convert_to_mjc calls notify_model_changed(ALL),
-        # which includes JOINT_DOF_PROPERTIES and therefore always computes
-        # q_rel before any CONSTRAINT_PROPERTIES-only notification can occur.
-        # The None check is a defensive guard for the case where the model
-        # has no explicit connect constraints (has_connect_constraints is
-        # False and both flags are False, so this branch is unreachable).
         wrote_eq_data = False
-        if (
-            self.has_connect_constraints
-            and (update_anchor_rel_xform_at_ref_pose or update_anchors)
-            and self.connect_constraint_q_rel is not None
-        ):
+        if self.has_connect_constraints and (update_anchor_rel_xform_at_ref_pose or update_anchors):
             SolverMuJoCo._update_connect_constraint_anchors(
                 self.model,
                 self.mjw_model,
@@ -9289,6 +9277,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             joint_limit_solref_mode is not None
             and joint_limit_solref is not None
             and not self._raw_solreflimit_validated
+            and not self.model.device.is_capturing
         ):
             mode_np = joint_limit_solref_mode.numpy()
             raw_np = joint_limit_solref.numpy()
@@ -9311,8 +9300,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # ``mujoco.solreflimit`` reassignments arrive; other
             # ``need_const_0`` notifies (BODY_INERTIAL_PROPERTIES, etc.) do
             # not reset it because they cannot change the authored solreflimit
-            # values themselves. The MuJoCo Warp backend validates only during
-            # construction because later notifies may be graph-captured.
+            # values themselves. Capture skips validation and leaves it pending
+            # until the next eager solref update.
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:

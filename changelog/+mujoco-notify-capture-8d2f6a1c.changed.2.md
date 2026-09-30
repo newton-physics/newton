@@ -1,0 +1,1 @@
+Stop mirroring runtime joint-limit `solref` updates into `SolverMuJoCo.mj_model` on the MuJoCo Warp backend. Read `solver.mjw_model.jnt_solref` for current per-world values instead of the host template's `solver.mj_model.jnt_solref`.
