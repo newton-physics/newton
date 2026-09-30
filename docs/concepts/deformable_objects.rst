@@ -98,13 +98,6 @@ remain on the builder; :meth:`~newton.ModelBuilder.finalize` does not copy them
 to the model. The simulation ranges remain private, and the identity lists do
 not provide a public state-selection API.
 
-Native rods and USD cables have different joint ranges. Native rod records
-include free-root joints created by the call. USD records retain the existing
-importer's joint span. For a single curve, it excludes root attachments. For a
-prim with multiple curves, the span can include free-root joints between those
-curves. A curve welded into a shared graph has an empty joint range because the
-graph owns those joints. These private spans are not a public joint-selection API.
-
 Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Complete
 curve records follow the remapped indices. If collapse removes part of a curve,
 Newton warns and omits its incomplete record. Use ``joints_to_keep`` to preserve
