@@ -10,6 +10,7 @@ from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
 import warp as wp
 from warp.types import is_array, type_size_in_bytes
 
@@ -2418,7 +2419,7 @@ class _DeformableViewBase:
             return indices
         idx = []
         for value in indices:
-            if isinstance(value, bool):
+            if isinstance(value, (bool, np.bool_)):
                 raise TypeError(f"{argument_name} entries must be integers, got {value!r}")
             try:
                 idx.append(operator.index(value))

@@ -683,6 +683,25 @@ class TestDeformableSelection(unittest.TestCase):
         wp.capture_launch(capture.graph)
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
 
+    def test_host_selectors_reject_numpy_booleans(self):
+        """Reject NumPy Boolean source and destination selectors without changing state."""
+        model = _replicated_model(3, device="cpu")
+        cloth = DeformableSurfaceView(model, "/World/Cloth")
+        values = wp.full((2, cloth.particles_per_deformable_object), 9.0, dtype=wp.vec3, device="cpu")
+
+        for argument in ("deformable_object_indices", "source_indices"):
+            for invalid_indices in ([np.bool_(False)], [np.bool_(True)], np.array([False]), np.array([True])):
+                with self.subTest(argument=argument, invalid_indices=invalid_indices):
+                    state = model.state()
+                    before = state.particle_q.numpy().copy()
+                    selectors = {"deformable_object_indices": [0], "source_indices": [0]}
+                    selectors[argument] = invalid_indices
+
+                    with self.assertRaisesRegex(TypeError, argument):
+                        cloth.set_particle_positions(state, values, **selectors)
+
+                    np.testing.assert_array_equal(state.particle_q.numpy(), before)
+
     def test_host_indices_require_integral_values(self):
         """Host selectors reject lossy coercions before they can write another deformable object."""
         model = _replicated_model(3, device="cpu")
