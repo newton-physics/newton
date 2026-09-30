@@ -4066,17 +4066,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
-        # Track the Contacts instance and its capacity, plus the MJWarp
-        # naconmax used during the last full pass.  Any change to these
+        # Track the Contacts instance and its capacity.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
-        # cached cid values would index into a different output buffer.
+        # cached tid values would refer to a different input buffer.
         # Note: we key on id(contacts.contact_generation) (a stable per-Contacts
         # device array) rather than id(contacts).  Empirically, keying on the
         # outer Contacts wrapper produces broken binaries in the dexsuite
         # workload (root cause unclear; the inner array's id is what works).
         self._last_contacts_id: int | None = None
         self._last_rigid_contact_max: int | None = None
-        self._last_naconmax: int | None = None
 
         # One-shot dedup for ``_update_solref_from_invweight0``'s authored
         # ``mujoco.solreflimit`` domain validator. Re-armed by
@@ -4498,9 +4496,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Called when cached MJWarp contact fields (friction, solref, solimp,
         etc.) may be stale — e.g. after :meth:`notify_model_changed` updates
-        geom or body properties, or when the bound Contacts instance / MJWarp
-        ``naconmax`` changes (which would make cached ``cid`` values index
-        into a different output buffer).
+        geom or body properties, or when the bound Contacts instance changes
+        (which would make cached ``tid`` values refer to a different input
+        buffer).
         """
         self._last_contact_generation.fill_(_GENERATION_SENTINEL)
         self._last_nacon_count.zero_()
@@ -4636,36 +4634,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         naconmax = self.mjw_data.naconmax
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
-        # Grow the tid_to_cid buffer if the MJWarp data capacity changed after
-        # construction.
         # Invalidate the cached tid_to_cid mapping whenever any of the
-        # invariants it depends on change:
+        # invariants it depends on change.  _contact_tid_to_cid is allocated
+        # in __init__ at naconmax, which is fixed after construction, so it
+        # never needs to grow here.
         #
         #  - Contacts identity: keyed on id(contacts.contact_generation), the
         #    inner per-Contacts device array.  Empirically, keying on the outer
         #    id(contacts) wrapper produces broken binaries in dexsuite training
         #    (root cause unclear; the inner array's id is what works).
         #  - rigid_contact_max: changes the meaning of tid indices.
-        #  - mjw_data.naconmax: changes the meaning of cid indices; if the
-        #    underlying contact buffers were reallocated (e.g. set_const_fixed
-        #    after notify_model_changed), cached cid values could index into
-        #    freed memory or out-of-bounds.
         contacts_id = id(contacts.contact_generation)
-        needs_realloc = self._contact_tid_to_cid is None or self._contact_tid_to_cid.shape[0] < launch_dim
-        contacts_changed = (
-            self._last_contacts_id != contacts_id
-            or self._last_rigid_contact_max != contacts.rigid_contact_max
-            or self._last_naconmax != naconmax
-        )
-
-        if needs_realloc or contacts_changed:
-            if needs_realloc:
-                self._contact_tid_to_cid = wp.full(launch_dim, -1, dtype=wp.int32, device=model.device)
-            # Reset existing device buffers (always pre-allocated in __init__).
+        if self._last_contacts_id != contacts_id or self._last_rigid_contact_max != contacts.rigid_contact_max:
             self._invalidate_contact_fast_path()
             self._last_contacts_id = contacts_id
             self._last_rigid_contact_max = contacts.rigid_contact_max
-            self._last_naconmax = naconmax
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
         # contacts; the fast path restores the count from last_nacon_count.
