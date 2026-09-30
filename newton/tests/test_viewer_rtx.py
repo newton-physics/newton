@@ -71,23 +71,46 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         ):
             ViewerRTX(headless=True, ovstage=object())
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
-    def test_body_prim_paths_must_cover_every_body(self):
-        """Reject body prim paths that do not match the model's body count."""
+    def _borrowed_viewer(self, labels, found):
+        """Build a borrowed-stage viewer whose stage holds the labels in ``found``."""
         import ovrtx
         import ovstage
 
         builder = newton.ModelBuilder()
-        builder.add_body()
-        builder.add_body()
+        for label in labels:
+            builder.add_body(label=label)
         model = builder.finalize(device="cpu")
         with (
             mock.patch.object(ovrtx, "__version__", "0.5.0"),
             mock.patch.object(ovstage, "__version__", "0.2.0"),
         ):
-            viewer = ViewerRTX(headless=True, ovstage=object(), body_prim_paths=["/World/a"])
+            viewer = ViewerRTX(headless=True, ovstage=object())
+        scale = np.diag([2.0, 2.0, 2.0, 1.0])
+
+        def read(paths):
+            return np.stack([scale if path in found else np.full((4, 4), np.nan) for path in paths])
+
+        viewer._read_borrowed_world_matrices = read
+        return viewer, model
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_binds_bodies_by_label(self):
+        """Drive the stage prim at each body's label and warn about bodies without one."""
+        viewer, model = self._borrowed_viewer(["/World/a", "/World/missing", "code_body"], {"/World/a"})
         try:
-            with self.assertRaisesRegex(ValueError, "1 entries for a model with 2 bodies"):
+            with self.assertWarnsRegex(UserWarning, "2 of 3 bodies"):
+                viewer.set_model(model)
+            self.assertEqual(viewer._prim_paths, ("/World/a",))
+            np.testing.assert_allclose(viewer._prim_linear.numpy()[0], np.diag([2.0, 2.0, 2.0]))
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_shared_labels(self):
+        """Reject bodies that would drive the same stage prim."""
+        viewer, model = self._borrowed_viewer(["/World/a", "/World/a"], {"/World/a"})
+        try:
+            with self.assertRaisesRegex(ValueError, "share a label"):
                 viewer.set_model(model)
         finally:
             viewer.close()
