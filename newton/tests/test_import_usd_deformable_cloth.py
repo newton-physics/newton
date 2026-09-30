@@ -57,6 +57,27 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(builder.particle_count, 4)
         self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=6)
 
+    def test_cloth_display_appearance_imports_to_triangles(self):
+        """Import cloth display color and opacity onto every generated triangle."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        primvars = UsdGeom.PrimvarsAPI(mesh)
+        primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1).Set(
+            [(0.2, 0.4, 0.6)]
+        )
+        primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1).Set([0.44])
+
+        expected_color = newton.utils.color_linear_to_srgb((0.2, 0.4, 0.6))
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.tri_count, 2)
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(2, 0.44), atol=1e-6, rtol=1e-6)
+
     def test_cloth_left_handed_orientation_flips_winding(self):
         """Verify that left-handed cloth flips winding like the rigid-mesh path."""
         from pxr import UsdGeom

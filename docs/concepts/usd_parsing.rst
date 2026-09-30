@@ -416,7 +416,9 @@ to display/sRGB. If the attribute has authored ``colorSpace`` metadata or
 inherits a color space through ``UsdColorSpaceAPI``, Newton uses
 ``Usd.ColorSpaceAPI.ComputeColorSpaceName`` to determine the effective color
 space. Linear/raw color spaces are converted to display/sRGB; display/sRGB
-colors such as ``srgb_rec709_scene`` are kept as authored.
+colors such as ``srgb_rec709_scene`` are kept as authored. Authored color
+components outside [0, 1] are clamped and non-finite colors are ignored, with a
+warning; imported opacity is handled the same way.
 
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
