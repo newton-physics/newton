@@ -935,7 +935,7 @@ def init(parser=None):
             benchmark_timeout=args.benchmark or None,
         )
     elif args.viewer == "viser":
-        viewer = newton.viewer.ViewerViser()
+        viewer = newton.viewer.ViewerViser(paused=args.paused)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 

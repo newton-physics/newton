@@ -8,16 +8,20 @@ import inspect
 import logging
 import os
 import queue
+import time
 import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
 
 import newton
+
+if TYPE_CHECKING:
+    import viser
 
 from ..core.types import Axis, override
 from .camera import Camera
@@ -87,6 +91,8 @@ class ViewerViser(ViewerBase):
             self._viewer = viewer
             self._callback_id = -1
             self._widget_index = 0
+            self._disabled: list[bool] = []
+            self._last_key: tuple[int, int] | None = None
             # This is not an ImGui context. ViewerGL-only extensions can use
             # this flag to decline registration while common controls still
             # work through the callback argument.
@@ -95,6 +101,8 @@ class ViewerViser(ViewerBase):
         def begin_callback(self, callback_id: int) -> None:
             self._callback_id = callback_id
             self._widget_index = 0
+            self._disabled.clear()
+            self._last_key = None
 
         def end_callback(self) -> None:
             stale = [
@@ -105,6 +113,7 @@ class ViewerViser(ViewerBase):
             for key in stale:
                 _kind, handle = self._viewer._example_gui_handles.pop(key)
                 self._viewer._example_gui_pending.pop(key, None)
+                self._viewer._example_gui_held.pop(key, None)
                 try:
                     handle.remove()
                 except Exception:
@@ -113,10 +122,13 @@ class ViewerViser(ViewerBase):
         def _next_handle(self, kind: str, create: Callable[[tuple[int, int]], Any]) -> tuple[tuple[int, int], Any]:
             key = (self._callback_id, self._widget_index)
             self._widget_index += 1
+            self._last_key = key
             existing = self._viewer._example_gui_handles.get(key)
             if existing is not None and existing[0] == kind:
                 return key, existing[1]
             if existing is not None:
+                self._viewer._example_gui_pending.pop(key, None)
+                self._viewer._example_gui_held.pop(key, None)
                 try:
                     existing[1].remove()
                 except Exception:
@@ -146,7 +158,43 @@ class ViewerViser(ViewerBase):
             @handle.on_update
             def _on_update(event):
                 if event.client_id is not None:
-                    self._viewer._interaction_events.put(("example_gui", key, cast(event.target.value)))
+                    self._viewer._interaction_events.put(("example_gui", key, handle, cast(event.target.value)))
+
+        def begin_disabled(self, disabled: bool = True) -> None:
+            self._disabled.append(disabled or any(self._disabled))
+
+        def end_disabled(self) -> None:
+            self._disabled.pop()
+
+        @staticmethod
+        def same_line() -> None:
+            """Keep native controls in the panel's vertical layout."""
+
+        def button(self, label: str) -> bool:
+            def create(key):
+                handle = self._add(lambda: self._viewer._server.gui.add_button(label.split("##", 1)[0]))
+
+                @handle.on_click
+                def _on_click(event):
+                    if event.client_id is not None:
+                        self._viewer._interaction_events.put(("example_gui", key, handle, True))
+
+                @handle.on_hold(callback_hz=30.0)
+                def _on_hold(event):
+                    self._viewer._interaction_events.put(
+                        ("example_hold", key, handle, event.client_id, time.monotonic())
+                    )
+
+                return handle
+
+            key, handle = self._next_handle(f"button:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
+            return bool(self._viewer._example_gui_pending.pop(key, False)) and not handle.disabled
+
+        def is_item_active(self) -> bool:
+            """Treat Viser hold heartbeats as a bounded press, including disconnects."""
+            held = self._viewer._example_gui_held.get(self._last_key)
+            return not any(self._disabled) and held is not None and time.monotonic() - held[1] < 0.15
 
         @staticmethod
         def _float_step(format: str | None, minimum: float, maximum: float) -> float:
@@ -177,7 +225,8 @@ class ViewerViser(ViewerBase):
                 self._queue_updates(handle, key, bool)
                 return handle
 
-            key, handle = self._next_handle("checkbox", create)
+            key, handle = self._next_handle(f"checkbox:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
             self._sync(handle, "label", label)
             changed, new_value = self._consume(key, handle, bool(value))
             return changed, bool(new_value)
@@ -188,7 +237,8 @@ class ViewerViser(ViewerBase):
                 self._queue_updates(handle, key, bool)
                 return handle
 
-            key, handle = self._next_handle("radio", create)
+            key, handle = self._next_handle(f"radio:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
             self._sync(handle, "label", label)
             changed, new_value = self._consume(key, handle, bool(active))
             return changed and bool(new_value)
@@ -217,7 +267,8 @@ class ViewerViser(ViewerBase):
                 self._queue_updates(handle, key, float)
                 return handle
 
-            key, handle = self._next_handle("slider_float", create)
+            key, handle = self._next_handle(f"slider_float:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
             self._sync(handle, "label", label)
             self._sync(handle, "min", float(minimum))
             self._sync(handle, "max", float(maximum))
@@ -247,7 +298,8 @@ class ViewerViser(ViewerBase):
                 self._queue_updates(handle, key, int)
                 return handle
 
-            key, handle = self._next_handle("slider_int", create)
+            key, handle = self._next_handle(f"slider_int:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
             self._sync(handle, "label", label)
             self._sync(handle, "min", int(minimum))
             self._sync(handle, "max", int(maximum))
@@ -276,7 +328,8 @@ class ViewerViser(ViewerBase):
                 self._queue_updates(handle, key, float)
                 return handle
 
-            key, handle = self._next_handle("input_float", create)
+            key, handle = self._next_handle(f"input_float:{label}", create)
+            self._sync(handle, "disabled", any(self._disabled))
             self._sync(handle, "label", label)
             self._sync(handle, "step", step)
             changed, new_value = self._consume(key, handle, float(value))
@@ -382,6 +435,7 @@ class ViewerViser(ViewerBase):
         self,
         *,
         port: int = 8080,
+        paused: bool = False,
         label: str | None = None,
         verbose: bool = True,
         share: bool = False,
@@ -396,6 +450,7 @@ class ViewerViser(ViewerBase):
 
         Args:
             port: Port number for the web server. Defaults to 8080.
+            paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
             verbose: If True, print the server URL when starting. Defaults to True.
             share: If True, create a publicly accessible URL via viser's share feature.
@@ -431,7 +486,7 @@ class ViewerViser(ViewerBase):
         self._picking_click_callbacks: dict[int, tuple[Any, Any]] = {}
         self._active_picking_layer_id: str | None = None
         self._interaction_events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
-        self._paused = False
+        self._paused = bool(paused)
         self._step_requested = False
         self._reset_callback: Callable[[], None] | None = None
         self._wireframe = False
@@ -447,8 +502,11 @@ class ViewerViser(ViewerBase):
         self._example_gui_callbacks: dict[int, tuple[Callable[[Any], None], str]] = {}
         self._example_gui_handles: dict[tuple[int, int], tuple[str, Any]] = {}
         self._example_gui_pending: dict[tuple[int, int], Any] = {}
+        self._example_gui_held: dict[tuple[int, int], tuple[int, float]] = {}
         self._example_gui_next_id = 0
         self._example_gui_folder: Any = None
+        self._layer_gui_folder: Any = None
+        self._layer_gui_handles: dict[str, tuple[Any, Any]] = {}
         self._example_gui_adapter = self._ImmediateGuiAdapter(self)
         self._logged_image_names: dict[str, None] = {}
         self._image_atlas_buffers: dict[str, tuple[tuple[Any, ...], wp.array[Any]]] = {}
@@ -474,7 +532,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
+        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -486,7 +544,7 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._camera_up_axis)
 
         # Store configuration before any URL generation.
-        self._port = port
+        self._port = self._server.get_port()
         self.is_jupyter_notebook = is_jupyter_notebook()
 
         if share:
@@ -554,6 +612,12 @@ class ViewerViser(ViewerBase):
             self._line_segment_counts.pop(name, None)
             self._line_versions.pop(name, None)
 
+        # Mesh assets logged with hidden=True never have a scene handle.
+        # Release them as well when switching models, preserving other layers.
+        for name in list(getattr(self, "_meshes", {})):
+            if owns(name):
+                self._meshes.pop(name)
+
         # Remove only scalar plot state owned by the active layer.
         for name, handle in list(self._plot_handles.items()):
             if not owns(name):
@@ -586,6 +650,12 @@ class ViewerViser(ViewerBase):
 
         super().clear_model()
         self._sync_gui_controls()
+
+    @override
+    def clear_all_layers(self) -> None:
+        """Clear all scenes and restore the default camera for example switching."""
+        super().clear_all_layers()
+        self._reset_camera_to_default(self._get_camera_up_axis())
 
     @override
     def _init_extra_layer_state(self, layer):
@@ -762,6 +832,16 @@ class ViewerViser(ViewerBase):
                 self._viewer_option_handles[attribute] = handle
 
     @property
+    def server(self) -> viser.ViserServer:
+        """The Viser server for adding native GUI controls and scene content.
+
+        The viewer owns the server and stops it in :meth:`close`. Viser callbacks
+        run asynchronously; schedule simulation mutations on the simulation
+        thread, for example through a queue consumed before stepping.
+        """
+        return self._server
+
+    @property
     def ui(self) -> _ImmediateGuiAdapter:
         """Return the example-GUI compatibility adapter.
 
@@ -829,6 +909,7 @@ class ViewerViser(ViewerBase):
         for key in [key for key in self._example_gui_handles if key[0] in removed_ids]:
             _kind, handle = self._example_gui_handles.pop(key)
             self._example_gui_pending.pop(key, None)
+            self._example_gui_held.pop(key, None)
             try:
                 handle.remove()
             except Exception:
@@ -843,6 +924,8 @@ class ViewerViser(ViewerBase):
 
     def _sync_gui_controls(self) -> None:
         """Synchronize native GUI values with viewer state."""
+        if hasattr(self, "_server"):
+            self._sync_layer_controls()
         for attribute, handle in getattr(self, "_viewer_option_handles", {}).items():
             value = self._wireframe if attribute == "wireframe" else bool(getattr(self, attribute))
             if handle.value != value:
@@ -859,12 +942,47 @@ class ViewerViser(ViewerBase):
             if simulation["reset"].disabled != reset_disabled:
                 simulation["reset"].disabled = reset_disabled
 
+    def _sync_layer_controls(self) -> None:
+        """Expose named simulation layers without retaining controls from discarded scenes."""
+        layers = {name: layer for name, layer in self._layers.items() if layer.name_prefix}
+        for name, (layer, handle) in list(self._layer_gui_handles.items()):
+            if layers.get(name) is not layer:
+                handle.remove()
+                del self._layer_gui_handles[name]
+        if self._layer_gui_folder is None:
+            if not layers:
+                return
+            self._layer_gui_folder = self._server.gui.add_folder("Layers", order=15.0)
+        if self._layer_gui_folder.visible != bool(layers):
+            self._layer_gui_folder.visible = bool(layers)
+        with self._layer_gui_folder:
+            for name, layer in layers.items():
+                if name not in self._layer_gui_handles:
+                    handle = self._server.gui.add_checkbox(f"Show '{name}'", initial_value=layer.visible)
+
+                    @handle.on_update
+                    def _on_layer(event, owner=layer):
+                        if event.client_id is not None:
+                            self._interaction_events.put(("layer_visibility", owner, bool(event.target.value)))
+
+                    self._layer_gui_handles[name] = (layer, handle)
+                handle = self._layer_gui_handles[name][1]
+                if handle.value != layer.visible:
+                    handle.value = layer.visible
+
     def _set_wireframe(self, enabled: bool) -> None:
         """Set wireframe rendering on Viser mesh batches that support it."""
         self._wireframe = bool(enabled)
         for name, handle in self._scene_handles.items():
             instance = self._instances.get(name)
-            if instance is None or instance["use_trimesh"]:
+            mesh = self._meshes.get(name)
+            if instance is not None:
+                textured = instance["use_trimesh"]
+            elif mesh is not None:
+                textured = mesh["trimesh"] is not None
+            else:
+                continue
+            if textured:
                 continue
             try:
                 handle.wireframe = self._wireframe
@@ -1088,7 +1206,18 @@ class ViewerViser(ViewerBase):
             )
 
             @handle.on_update
-            def _on_update(event, gizmo_name=name):
+            async def _on_update(event, gizmo_name=name):
+                # Viser awaits async callbacks in arrival order. Thread-pool
+                # callbacks can deliver an old pose after the release/snap.
+                if event.phase == "start":
+                    if self._is_current_gizmo(gizmo_name, handles):
+                        self._active_gizmos.add(gizmo_name)
+                        self.gizmo_is_using = True
+                    self._interaction_events.put(("gizmo_drag_start", gizmo_name, handles, event.client_id))
+                    return
+                if event.phase == "end":
+                    self._interaction_events.put(("gizmo_drag_end", gizmo_name, handles))
+                    return
                 self._interaction_events.put(
                     (
                         "gizmo_update",
@@ -1098,21 +1227,6 @@ class ViewerViser(ViewerBase):
                         tuple(float(v) for v in event.target.wxyz),
                     )
                 )
-
-            @handle.on_drag_start
-            def _on_drag_start(event, gizmo_name=name):
-                if self._is_current_gizmo(gizmo_name, handles):
-                    # Mark active immediately so the simulation thread cannot push
-                    # its previous transform over an in-flight browser drag.
-                    self._active_gizmos.add(gizmo_name)
-                    self.gizmo_is_using = True
-                self._interaction_events.put(
-                    ("gizmo_drag_start", gizmo_name, handles, getattr(event, "client_id", None))
-                )
-
-            @handle.on_drag_end
-            def _on_drag_end(_event, gizmo_name=name):
-                self._interaction_events.put(("gizmo_drag_end", gizmo_name, handles))
 
             handles[kind] = handle
 
@@ -1260,7 +1374,12 @@ class ViewerViser(ViewerBase):
         )
 
         @handle.on_update
-        def _on_update(event, picked_layer_id=layer_id):
+        async def _on_update(event, picked_layer_id=layer_id):
+            if event.phase == "start":
+                return
+            if event.phase == "end":
+                self._interaction_events.put(("picking_release", picked_layer_id, handle))
+                return
             self._interaction_events.put(
                 (
                     "picking_target",
@@ -1269,10 +1388,6 @@ class ViewerViser(ViewerBase):
                     tuple(float(v) for v in event.target.position),
                 )
             )
-
-        @handle.on_drag_end
-        def _on_drag_end(_event, picked_layer_id=layer_id):
-            self._interaction_events.put(("picking_release", picked_layer_id, handle))
 
         self._picking_controls[layer_id] = handle
         self._picking_control_clients[layer_id] = client_id
@@ -1350,6 +1465,9 @@ class ViewerViser(ViewerBase):
                     self._remove_picking_control(layer_id, release=True)
             elif event_type == "client_disconnect":
                 client_id = event[1]
+                for key, (owner, _timestamp) in list(self._example_gui_held.items()):
+                    if owner == client_id:
+                        self._example_gui_held.pop(key, None)
                 for layer_id, owner in list(self._picking_control_clients.items()):
                     if owner == client_id:
                         self._remove_picking_control(layer_id, release=True)
@@ -1362,10 +1480,22 @@ class ViewerViser(ViewerBase):
                     self._set_wireframe(value)
                 else:
                     setattr(self, attribute, value)
+            elif event_type == "layer_visibility":
+                _, layer, visible = event
+                if self._layers.get(layer.layer_id) is layer:
+                    self.set_layer_visible(layer.layer_id, visible)
+                    if not visible:
+                        self._remove_picking_control(layer.layer_id, release=True)
             elif event_type == "example_gui":
-                _, key, value = event
-                if key in self._example_gui_handles:
+                _, key, handle, value = event
+                current = self._example_gui_handles.get(key)
+                if current is not None and current[1] is handle and not handle.disabled:
                     self._example_gui_pending[key] = value
+            elif event_type == "example_hold":
+                _, key, handle, client_id, timestamp = event
+                current = self._example_gui_handles.get(key)
+                if current is not None and current[1] is handle and not handle.disabled:
+                    self._example_gui_held[key] = (client_id, timestamp)
             elif event_type == "image_select":
                 name = event[1]
                 if name in self._logged_image_names:
@@ -1744,16 +1874,18 @@ class ViewerViser(ViewerBase):
         Args:
             pos: Camera position [m].
             target: Orbit target [m].
-            fov: Optional vertical field of view [deg].
+            fov: Optional vertical field of view [deg], finite and strictly between 0 and 180.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        self._validate_camera_fov(fov)
         if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
             raise ValueError("Camera position and target must be finite")
         direction = look_at - position
         direction_norm = float(np.linalg.norm(direction))
         if direction_norm <= 1.0e-12:
             super().set_camera_look_at(pos, target, fov=fov)
+            self._set_camera_request(*self._camera_request, fov=fov)
             return
 
         # Track the equivalent angles so later set_camera() calls that omit
@@ -1962,7 +2094,7 @@ class ViewerViser(ViewerBase):
                 "vertices": points_np,
                 "faces": indices_np,
                 "color": mesh_color,
-                "wireframe": False,
+                "wireframe": self._wireframe,
                 "side": mesh_side,
             }
             if opacity is not None:
@@ -2163,16 +2295,11 @@ class ViewerViser(ViewerBase):
         mesh_opacity = mesh_data.get("opacity")
 
         if hidden:
-            # Remove existing instances if present
+            # Retain geometry and appearance so restoring a batch does not
+            # replace its colors with defaults or resend unchanged topology.
             if name in self._scene_handles:
+                self._scene_handles[name].visible = False
                 self._detach_picking_callback(self._scene_handles[name])
-                try:
-                    self._scene_handles[name].remove()
-                except Exception:
-                    pass
-                del self._scene_handles[name]
-                if name in self._instances:
-                    del self._instances[name]
             return
 
         # Convert transforms and properties to numpy
@@ -2231,6 +2358,9 @@ class ViewerViser(ViewerBase):
                 # Update transforms in-place
                 try:
                     instance = self._instances[name]
+                    self._set_handle_property_if_changed(handle, "visible", True)
+                    if instance["pickable"]:
+                        self._attach_picking_callback(handle, instance["layer_id"])
                     if not np.array_equal(instance["positions"], positions):
                         handle.batched_positions = positions
                         instance["positions"] = positions.copy()
@@ -2487,7 +2617,9 @@ class ViewerViser(ViewerBase):
         self._update_example_gui()
         self._sync_gui_controls()
         self._gizmo_seen.clear()
-        self._frame_dt = time - self.time
+        # Example reset/switch restarts simulation time; recordings still
+        # need a monotonic playback clock.
+        self._frame_dt = max(0.0, time - self.time)
         self.time = time
         self._begin_atomic_frame()
 
@@ -2588,7 +2720,8 @@ class ViewerViser(ViewerBase):
                 else:
                     handle.data = (x, y)
         except Exception:
-            pass
+            _logger.exception("Failed to update Viser scalar plots")
+            raise
 
         self._scalar_dirty.clear()
 
@@ -2623,17 +2756,16 @@ class ViewerViser(ViewerBase):
 
     @override
     def apply_forces(self, state: newton.State):
-        """Apply the force from an active Viser picking handle.
+        """Apply picking forces for the active viewer layer.
 
         Args:
-            state: Current simulation state.
+            state: Current simulation state belonging to the active layer.
         """
-        if not self.picking_enabled or self._active_picking_layer_id is None:
-            return
-        layer = self._layers.get(self._active_picking_layer_id)
-        picking = getattr(layer, "picking", None) if layer is not None else None
-        if picking is not None and picking.is_picking():
-            picking._apply_picking_force(state)
+        # Capture the kernel before any browser interaction. The device-side
+        # pick-body sentinel controls whether graph replay applies a force.
+        # Disabling picking releases that sentinel, including captured graphs.
+        if self.picking is not None:
+            self.picking._apply_picking_force(state)
 
     def save_recording(self):
         """

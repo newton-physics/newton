@@ -933,8 +933,9 @@ class ViewerGL(ViewerBase):
         Args:
             pos: Camera position [m].
             target: World-space orbit target [m].
-            fov: Optional vertical field of view [deg].
+            fov: Optional vertical field of view [deg], finite and strictly between 0 and 180.
         """
+        self._validate_camera_fov(fov)
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
         if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):

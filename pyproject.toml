@@ -130,7 +130,7 @@ docs = [
     "pypandoc_binary>=1.11",        # bundled pandoc binary
     "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
     # Pin the backend and web client to one Viser build because playback embeds the installed client.
-    "viser==1.0.30",
+    "viser==1.1.1",
 ]
 
 # Dependencies for Jupyter notebook compatibility
@@ -140,7 +140,7 @@ notebook = [
     "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
     # Pin the backend and web client to one Viser build because playback embeds the installed client.
-    "viser==1.0.30",
+    "viser==1.1.1",
 ]
 
 [tool.uv.build-backend]

@@ -122,7 +122,20 @@ class TestViewerCameraOrbit(unittest.TestCase):
 
 
 class TestViewerCameraLookAtValidation(unittest.TestCase):
+    def test_reject_invalid_fov_before_mutation(self):
+        """Reject invalid projection angles consistently before changing camera state."""
+        gl = object.__new__(ViewerGL)
+        gl.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
+        for viewer in (ViewerNull(num_frames=1), gl):
+            for fov in (float("nan"), float("inf"), 0.0, -1.0, 180.0):
+                with self.subTest(viewer=type(viewer).__name__, fov=fov):
+                    with self.assertRaises(ValueError):
+                        viewer.set_camera_look_at(wp.vec3(5.0), wp.vec3(0.0), fov=fov)
+        np.testing.assert_array_equal(_as_np(gl.camera.pos), (1.0, 2.0, 3.0))
+        self.assertEqual(gl.camera.fov, Camera.DEFAULT_FOV)
+
     def test_base_rejects_nonfinite_coordinates(self):
+        """Reject non-finite coordinates in the shared viewer API."""
         viewer = ViewerNull(num_frames=1)
 
         for pos, target in (
@@ -133,6 +146,7 @@ class TestViewerCameraLookAtValidation(unittest.TestCase):
                 viewer.set_camera_look_at(pos, target)
 
     def test_viewer_gl_rejects_nonfinite_coordinates_before_mutation(self):
+        """Keep the GL camera unchanged when a look-at request is invalid."""
         viewer = object.__new__(ViewerGL)
         viewer.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
 

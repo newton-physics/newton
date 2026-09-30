@@ -592,7 +592,7 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
 .. code-block:: bash
 
-    pip install viser
+    pip install viser==1.1.1
 
 **Usage**:
 
@@ -612,6 +612,34 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
+
+``--paused`` also applies when launching examples with ``--viewer viser``.
+The native Simulation panel provides Pause, Step, and Reset; the Examples
+panel can switch scenarios without reconnecting the browser. Example controls
+run on the simulation thread. A Layers panel toggles visibility of named
+simulation layers, including the multi-solver overlay example.
+Press-and-hold buttons use browser heartbeats
+and release within 150 ms of the last heartbeat, or immediately on disconnect.
+
+For application-specific panels, lighting, or scene tools, use the read-only
+:attr:`~newton.viewer.ViewerViser.server` property to access the native Viser API:
+
+.. code-block:: python
+
+    with viewer.server.gui.add_folder("Diagnostics"):
+        viewer.server.gui.add_markdown("Application-specific status")
+    viewer.server.scene.configure_environment_map(hdri="studio", background=False)
+
+The viewer owns this server and stops it when closed. Native Viser callbacks
+run asynchronously; enqueue changes to simulation state and consume them on
+the simulation thread before stepping. The common ImGui-style callback adapter
+is intentionally limited; use the native API for richer interfaces.
+
+Bind each layer's model with ``activate()`` and ``set_model()`` before capturing
+its CUDA graph, and call ``apply_forces(state)`` for that active layer during
+capture. Picking uses device state, so picks made later in the browser take
+effect on graph replay. ``clear_all_layers()`` restores the default Viser camera
+when switching examples; clearing one layer preserves the current view.
 
 **Recording and playback**
 
