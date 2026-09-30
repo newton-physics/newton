@@ -144,6 +144,14 @@ jobs:
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
+      - name: Restore Warp kernel cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: warp-kernels-gpu-bench-${{ hashFiles('uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
+          restore-keys: |
+            warp-kernels-gpu-bench-
+
       - name: Run Benchmarks
         env:
           # Keep resolution 128 in the shared benchmark for nightly ASV collection.
