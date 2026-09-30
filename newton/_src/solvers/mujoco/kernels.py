@@ -1434,10 +1434,6 @@ def update_jnt_connect_constraint_anchors_kernel(
 def create_convert_mjw_contacts_to_newton_kernel():
     """Create contact conversion kernel; deferred so ``wp.static`` doesn't import mujoco_warp at module load."""
 
-    from mujoco_warp import Contact
-
-    has_adhesion = "adhesion" in Contact.__dataclass_fields__
-
     @wp.kernel
     def convert_mjw_contacts_to_newton_kernel(
         # inputs
@@ -1514,35 +1510,20 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            if wp.static(has_adhesion):
-                contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
-                    mj_opt_cone,
-                    mj_contact_frame,
-                    mj_contact_friction,
-                    mj_contact_dim,
-                    mj_contact_efc_address,
-                    mj_contact_adhesion,
-                    mj_efc_force,
-                    njmax,
-                    mj_nacon,
-                    world,
-                    contact_idx,
-                    True,
-                )
-            else:
-                contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
-                    mj_opt_cone,
-                    mj_contact_frame,
-                    mj_contact_friction,
-                    mj_contact_dim,
-                    mj_contact_efc_address,
-                    mj_efc_force,
-                    njmax,
-                    mj_nacon,
-                    world,
-                    contact_idx,
-                    True,
-                )
+            contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
+                mj_opt_cone,
+                mj_contact_frame,
+                mj_contact_friction,
+                mj_contact_dim,
+                mj_contact_efc_address,
+                mj_contact_adhesion,
+                mj_efc_force,
+                njmax,
+                mj_nacon,
+                world,
+                contact_idx,
+                True,
+            )
 
     return convert_mjw_contacts_to_newton_kernel
 
@@ -2497,8 +2478,8 @@ def update_geom_properties_kernel(
     else:
         geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
-    # Mesh size is compiled from the scaled vertices.
-    if geom_type[geom_idx] != GEOM_TYPE_MESH:
+    # Per-world mesh bounds are compiled from the scaled vertices.
+    if geom_type[geom_idx] != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
         geom_size[world, geom_idx] = shape_size[shape_idx]
 
     # update position and orientation

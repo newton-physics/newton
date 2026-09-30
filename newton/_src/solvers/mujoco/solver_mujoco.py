@@ -5449,8 +5449,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if remaining_pairs.shape[0] == 0:
             return True
 
-        body_filter_set = {tuple(sorted((int(body_a), int(body_b)))) for body_a, body_b in body_filters}
         shape_body = model.shape_body.numpy()
+        body_filter_set = {tuple(sorted((int(body_a), int(body_b)))) for body_a, body_b in body_filters}
         for shape_a, shape_b in remaining_pairs:
             body_a = int(shape_body[shape_a])
             body_b = int(shape_body[shape_b])
@@ -5573,7 +5573,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mj_contact.dim,
                 mj_contact.geom,
                 mj_contact.efc_address,
-                getattr(mj_contact, "adhesion", None),
+                mj_contact.adhesion,
                 mj_contact.worldid,
                 mj_data.efc.force,
                 self.mjw_model.geom_bodyid,
@@ -5935,7 +5935,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
-        shape_body = model.shape_body.numpy()
         shape_mu = model.shape_material_mu.numpy()
         shape_ke = model.shape_material_ke.numpy()
         shape_kd = model.shape_material_kd.numpy()
@@ -6321,22 +6320,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         shape_layout = None
-        shape_columns = {}
+        shape_world_mapping = {}
         export_body_shapes = model.body_shapes
         heterogeneous_geoms = False
         padded_shapes = False
         if separate_worlds and model.world_count > 1:
-            selected_shapes, shape_layout = build_shape_layout(
+            shape_layout = build_shape_layout(
                 model,
                 skip_visual_only_geoms=skip_visual_only_geoms,
                 include_sites=include_sites,
                 required_shapes=required_shapes,
             )
-            padded_shapes = bool(np.any(shape_layout < 0))
+            selected_shapes = shape_layout.representative_shapes
+            padded_shapes = shape_layout.has_missing_shapes
             heterogeneous_geoms = padded_shapes
             if not padded_shapes:
                 mesh_columns = np.isin(shape_type[selected_shapes], (GeoType.MESH, GeoType.CONVEX_MESH))
-                for shapes in shape_layout[:, mesh_columns].T:
+                for shapes in shape_layout.world_shapes[:, mesh_columns].T:
+                    source = model.shape_source[shapes[0]]
+                    if all(model.shape_source[shape] is source for shape in shapes) and np.all(
+                        shape_size[shapes] == shape_size[shapes[0]]
+                    ):
+                        continue
                     keys = {_mesh_scale_key(model.shape_source[shape], shape_size[shape]) for shape in shapes}
                     if len(keys) > 1:
                         heterogeneous_geoms = True
@@ -6346,17 +6351,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if padded_shapes and pair_count:
                 raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")
             selected_shapes_set = set(selected_shapes)
-            shape_columns = {int(shape): column for column, shape in enumerate(selected_shapes)}
-            bodies_per_world = model.body_count // model.world_count
+            shape_world_mapping = dict(zip(selected_shapes, shape_layout.world_shapes.T, strict=True))
             export_body_shapes = {}
-            for shape in selected_shapes:
-                body = int(shape_body[shape])
-                template_body = body % bodies_per_world if body >= 0 else -1
-                export_body_shapes.setdefault(template_body, []).append(int(shape))
+            for shape, body in zip(selected_shapes, shape_layout.body_indices, strict=True):
+                export_body_shapes.setdefault(int(body), []).append(int(shape))
 
         # find graph coloring of collision filter pairs
         # filter out shapes that are not colliding with anything
-        colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
+        collision_slots = np.flatnonzero(shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES)
+        colliding_shapes = selected_shapes[collision_slots]
 
         # number of shapes we are instantiating in MuJoCo (which will be replicated for the number of envs)
         colliding_shapes_per_world = len(colliding_shapes)
@@ -6396,9 +6399,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         compiled_collision_affinity = None
         shape_color = None
         if heterogeneous_geoms:
-            collision_columns = [shape_columns[int(shape)] for shape in colliding_shapes]
             if self._use_mujoco_contacts and not disable_contacts:
-                compiled_masks = compile_layout_collision_masks(model, shape_layout[:, collision_columns])
+                compiled_masks = compile_layout_collision_masks(model, shape_layout.select(collision_slots))
                 compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
                 compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
                 compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
@@ -6479,8 +6481,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             shape_mesh_names[shape] = name
             return name
 
-        if shape_layout is not None:
-            for shape in np.unique(shape_layout[shape_layout >= 0]):
+        if heterogeneous_geoms:
+            for shape in np.unique(shape_layout.world_shapes[shape_layout.world_shapes >= 0]):
                 if (
                     shape_type[shape] in (GeoType.MESH, GeoType.CONVEX_MESH)
                     and not shape_flags[shape] & ShapeFlags.SITE
@@ -7762,7 +7764,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if shape_layout is None:
                         mapping[:, index] = shape
                     else:
-                        mapping[:, index] = shape_layout[:, shape_columns[shape]]
+                        mapping[:, index] = shape_world_mapping[shape]
                 return mapping
 
             geom_shape_mapping = entity_shape_mapping(geom_to_shape_idx, self.mj_model.ngeom)
@@ -7770,12 +7772,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mjc_site_to_newton_shape = wp.array(
                 entity_shape_mapping(site_to_shape_idx, self.mj_model.nsite), dtype=wp.int32
             )
-            self._initialize_mesh_assets(spec, mesh_assets, shape_mesh_names, geom_shape_mapping)
+            if heterogeneous_geoms:
+                self._initialize_mesh_assets(spec, mesh_assets, shape_mesh_names, geom_shape_mapping)
 
             converted_shapes = np.unique(geom_shape_mapping[geom_shape_mapping >= 0])
-            self._compiled_mesh_shape_indices = converted_shapes[
-                np.isin(shape_type[converted_shapes], (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE))
-            ]
+            compiled_types = (
+                (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE) if heterogeneous_geoms else (GeoType.CONE,)
+            )
+            self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
             self._compiled_mesh_shape_scales = model.shape_scale.numpy()[self._compiled_mesh_shape_indices].copy()
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body

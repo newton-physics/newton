@@ -642,37 +642,13 @@ Multi-world support
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a shared MuJoCo topology and populates per-world properties
-via ``mujoco_warp``. Bodies, joints, equality constraints, and mimic
-relationships must have matching layouts across worlds.
-
-With ``use_mujoco_cpu=False``, mesh colliders may use different assets,
-scales, and convex-hull counts in each world. This works with both
-``use_mujoco_contacts=True`` and Newton-generated contacts. The solver
-collects unique scaled meshes from all worlds and allocates enough mesh
-geom slots for each body and compatible geom type, contact dimension,
-and priority. Unused slots have ``geom_dataid=-1``. Primitive geoms and
-sites must have matching counts and shared properties.
-
-Native contacts with absent mesh slots require the
-`MJWarp broadphase fix <https://github.com/google-deepmind/mujoco_warp/pull/1689>`_.
-The 3.14.0 release alone is insufficient: absent slots inside another mesh
-can generate penetrating contacts and active solver constraints. The solver
-rejects native padding on builds without this fix; Newton-generated
-contacts remain supported.
-
-Mesh assets, their scales, and slot assignments are fixed at construction.
-Changing a mesh scale requires recreating the solver. Existing shape pose
-and material updates through ``notify_model_changed`` remain supported.
-Newton's finalized body mass and inertia remain authoritative regardless
-of how many mesh slots are present.
-
-For per-world mesh assets, native contacts require one shared collision
-filter graph for corresponding slots that are simultaneously present.
-The solver rejects conflicting filters or graphs that the MuJoCo mask
-compiler cannot represent. Differing mesh counts combined with explicit
-MuJoCo contact pairs are currently unsupported. These checks do not relax
-the separate homogeneity requirements of selection views.
+worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+Bodies, joints, equality constraints, mimic relationships, primitive geoms,
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
+assets, scales, and convex-hull counts may differ across worlds. Native
+MuJoCo contacts require matching collision groups and exclusions for
+corresponding geom slots. The solver validates compatibility at construction
+and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world

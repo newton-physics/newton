@@ -58,8 +58,8 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         builder.add_world(build_world(2))
         builder.add_world(build_world(257))
         model = builder.finalize()
-        _, mapping = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
-        masks = compile_layout_collision_masks(model, mapping)
+        layout = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
+        masks = compile_layout_collision_masks(model, layout)
         self.assertTrue(masks.exact)
         self.assertTrue(np.all((masks.collision_type[0] & masks.collision_affinity[1:]) != 0))
 
@@ -84,12 +84,12 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                 world.add_shape_convex_hull(-1, mesh=mesh)
             builder.add_world(world)
         model = builder.finalize()
-        _, mapping = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
+        layout = build_shape_layout(model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set())
         with np.errstate(divide="raise", invalid="raise"):
-            self.assertTrue(compile_layout_collision_masks(model, mapping).exact)
+            self.assertTrue(compile_layout_collision_masks(model, layout).exact)
 
-    def test_collision_group_on_absent_pair(self):
-        """Use the compiled slot masks when a representative shape has group zero."""
+    def test_native_collision_groups_must_match(self):
+        """Require shared slot groups even when the differing pair is sometimes absent."""
         if not supports_missing_meshes():
             self.skipTest("Requires MuJoCo Warp #1689")
         builder = newton.ModelBuilder()
@@ -103,10 +103,9 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                 world.add_shape_convex_hull(second_body, mesh=newton.Mesh.create_box(0.1))
             builder.add_world(world)
         model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        types = solver.mj_model.geom_contype
-        affinities = solver.mj_model.geom_conaffinity
-        self.assertTrue((types[0] & affinities[1]) or (types[1] & affinities[0]))
+        with self.assertRaisesRegex(ValueError, "collision groups must match"):
+            SolverMuJoCo(model)
+        SolverMuJoCo(model, use_mujoco_contacts=False)
 
     def test_different_hull_counts(self):
         """Simulate unequal decompositions with both contact pipelines."""
@@ -115,7 +114,26 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                 with self.subTest(native=native, counts=counts):
                     self._simulate(native, counts)
 
-    def _simulate(self, native, counts, *, mesh_floor=False):
+    def test_replicated_mesh_worlds(self):
+        """Preserve contacts and property updates when every world shares the same mesh assets."""
+        for native in (False, True):
+            with self.subTest(native=native):
+                self._simulate(native, (5, 5), replicated=True)
+
+    def test_replicated_mesh_updates_stay_on_device(self):
+        """Keep homogeneous mesh property updates free of scale readbacks."""
+        builder = newton.ModelBuilder()
+        world = build_world(2)
+        builder.add_world(world)
+        builder.add_world(world)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        model.shape_material_mu.fill_(0.42)
+        with patch.object(model.shape_scale, "numpy", side_effect=AssertionError("Unexpected scale readback")):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.geom_friction.numpy()[:, :, 0], 0.42)
+
+    def _simulate(self, native, counts, *, mesh_floor=False, replicated=False):
         builder = newton.ModelBuilder()
         if mesh_floor:
             builder.add_shape_convex_hull(
@@ -125,8 +143,9 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
             )
         else:
             builder.add_ground_plane()
-        builder.add_world(build_world(counts[0], offset=0.13))
-        builder.add_world(build_world(counts[1], offset=-0.21))
+        first = build_world(counts[0], offset=0.13)
+        builder.add_world(first)
+        builder.add_world(first if replicated else build_world(counts[1], offset=-0.21))
         model = builder.finalize()
         if native and counts[0] != counts[1] and not supports_missing_meshes():
             with self.assertRaisesRegex(ValueError, "mujoco_warp#1689"):
@@ -134,11 +153,12 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
             return
         solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=native, nconmax=64, njmax=128)
         self.assertEqual(solver.mj_model.ngeom, max(counts) + 1)
-        self.assertEqual(solver.mjw_model.nmesh, 3 if mesh_floor else 2)
+        self.assertEqual(solver.mjw_model.nmesh, (1 if replicated else 2) + int(mesh_floor))
         mapping = solver.mjc_geom_to_newton_shape.numpy()
         self.assertEqual(np.count_nonzero(mapping[0] >= 0), counts[0] + 1)
         self.assertEqual(np.count_nonzero(mapping[1] >= 0), counts[1] + 1)
-        np.testing.assert_array_equal(solver.mjw_model.geom_dataid.numpy()[mapping < 0], -1)
+        mesh_ids = np.broadcast_to(solver.mjw_model.geom_dataid.numpy(), mapping.shape)
+        np.testing.assert_array_equal(mesh_ids[mapping < 0], -1)
         np.testing.assert_allclose(solver.mjw_model.body_mass.numpy()[:, 1], 1.0)
         np.testing.assert_allclose(solver.mjw_model.site_pos.numpy()[:, 0], [[0, 0, 0.2]] * 2)
         sizes = solver.mjw_model.geom_size.numpy().copy()
@@ -258,6 +278,42 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
                     tensors.append(rotation @ np.diag(diagonal) @ rotation.T)
                 np.testing.assert_allclose(tensors[0], tensors[1], atol=1.0e-6)
 
+    def test_shared_collision_filters(self):
+        """Preserve body exclusions and global contacts with unequal hull counts."""
+        for global_first in (False, True):
+            for group in (0, 1, -1):
+                with self.subTest(global_first=global_first, group=group):
+                    builder = newton.ModelBuilder()
+                    if global_first:
+                        builder.add_ground_plane()
+                    for count in (2, 5):
+                        world = build_world(count)
+                        world.shape_collision_group[:count] = [group] * count
+                        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                        joint = world.add_joint_free(child=body)
+                        world.add_articulation([joint])
+                        sphere = world.add_shape_sphere(
+                            body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(collision_group=-2)
+                        )
+                        for hull in range(count):
+                            world.add_shape_collision_filter_pair(hull, sphere)
+                        builder.add_world(world)
+                    if not global_first:
+                        builder.add_ground_plane()
+                    model = builder.finalize()
+                    layout = build_shape_layout(
+                        model, skip_visual_only_geoms=True, include_sites=False, required_shapes=set()
+                    )
+                    masks = compile_layout_collision_masks(model, layout)
+                    allowed = (masks.collision_type[:, None] & masks.collision_affinity[None, :]) != 0
+                    allowed |= allowed.T.copy()
+                    hulls = np.flatnonzero(layout.body_indices == 0)
+                    sphere = np.flatnonzero(layout.body_indices == 1)[0]
+                    ground = np.flatnonzero(layout.body_indices == -1)[0]
+                    self.assertFalse(np.any(allowed[hulls, sphere]))
+                    self.assertTrue(allowed[sphere, ground])
+                    np.testing.assert_array_equal(allowed[hulls, ground], group != 0)
+
     def test_conflicting_collision_filters(self):
         """Reject per-world filters that disagree for simultaneously present slots."""
         first, second = build_world(2), build_world(5)
@@ -268,7 +324,7 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         builder.add_world(first)
         builder.add_world(second)
         model = builder.finalize()
-        with self.assertRaisesRegex(ValueError, "collision filters differ in world 1"):
+        with self.assertRaisesRegex(ValueError, "collision filters differ in world"):
             SolverMuJoCo(model, separate_worlds=True)
 
     def test_mixed_mesh_and_cone_asset_names(self):
