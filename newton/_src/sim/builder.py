@@ -53,7 +53,7 @@ from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.types import Heightfield
-from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex_hull, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
@@ -8609,19 +8609,29 @@ class ModelBuilder:
                     else:
                         decomposition = []
                         # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
+                        components = split_mesh_components(mesh)
+                        if method == "coacd":
+                            coacd_settings = {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                                "max_convex_hull": mesh.maxhullvert,
+                            }
+                            coacd_settings.update(remeshing_kwargs)
+                            hull_budget = coacd_settings["max_convex_hull"] if coacd_settings["merge"] else 0
+                            hull_budgets = [coacd_settings["max_convex_hull"]] * len(components)
+                            if hull_budget > 0 and len(components) > 1:
+                                hull_budgets = _split_hull_budget(hull_budget, components)
+                        for component_index, (component_vertices, component_faces) in enumerate(components):
                             if method == "coacd":
                                 cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                    "max_convex_hull": mesh.maxhullvert,
+                                component_settings = {
+                                    **coacd_settings,
+                                    "max_convex_hull": hull_budgets[component_index],
                                 }
-                                coacd_settings.update(remeshing_kwargs)
-                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                                decomposition.extend(coacd.run_coacd(cmesh, **component_settings))
                             else:
                                 tmesh = trimesh.Trimesh(component_vertices, component_faces)
                                 vhacd_settings = {
@@ -8632,6 +8642,16 @@ class ModelBuilder:
                                     tmesh, **vhacd_settings
                                 )
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                        if method == "coacd" and 0 < hull_budget < len(decomposition):
+                            warnings.warn(
+                                f"Shape {shape} has more disconnected components than its convex hull budget of "
+                                f"{hull_budget}; merging the nearest hulls across the gaps.",
+                                stacklevel=2,
+                            )
+                            vertex_limit = (
+                                coacd_settings.get("max_ch_vertex", 0) if coacd_settings.get("decimate") else 0
+                            )
+                            decomposition = _merge_nearest_hulls(decomposition, hull_budget, vertex_limit)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
@@ -14748,6 +14768,38 @@ _ARRAY_BACKED_ATTRIBUTE_DTYPES: dict[str, Any] = {
 }
 """Builder attributes retained as NumPy arrays between replication and finalization."""
 # could be replaced by introspection if Model instance attribute annotations were moved to class level
+
+
+def _split_hull_budget(budget: int, components: list[tuple[np.ndarray, np.ndarray]]) -> list[int]:
+    """Share a whole-mesh hull budget across components in proportion to surface area, at least one each."""
+    areas = np.array(
+        [
+            0.5 * np.linalg.norm(np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]), axis=1).sum()
+            for v, f in components
+        ]
+    )
+    spare = max(budget - len(components), 0)
+    shares = areas / areas.sum() * spare if areas.sum() > 0 else np.zeros(len(components))
+    budgets = 1 + np.floor(shares).astype(int)
+    # Largest remainders take the hulls that flooring left over.
+    for i in np.argsort(-(shares - np.floor(shares)), kind="stable")[: spare - int(np.floor(shares).sum())]:
+        budgets[i] += 1
+    return budgets.tolist()
+
+
+def _merge_nearest_hulls(
+    hulls: list[tuple[np.ndarray, np.ndarray]], budget: int, vertex_limit: int
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Replace the two hulls with the nearest centroids by their joint convex hull until ``budget`` remain."""
+    hulls = [(np.asarray(v, dtype=np.float64), np.asarray(f)) for v, f in hulls]
+    while len(hulls) > budget:
+        centroids = np.array([v.mean(axis=0) for v, _ in hulls])
+        distances = np.linalg.norm(centroids[:, None] - centroids[None], axis=-1)
+        np.fill_diagonal(distances, np.inf)
+        i, j = sorted(np.unravel_index(np.argmin(distances), distances.shape))
+        merged = remesh_convex_hull(np.concatenate((hulls[i][0], hulls[j][0])), maxhullvert=vertex_limit)
+        hulls = [hull for k, hull in enumerate(hulls) if k not in (i, j)] + [merged]
+    return hulls
 
 
 def _list_for_iteration(values: list[Any] | np.ndarray) -> list[Any]:
