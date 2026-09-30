@@ -6475,12 +6475,25 @@ class SolverFeatherPGS(SolverBase):
                     prefetch=os.environ.get("FEATHER_PGS_COLORED_PREFETCH", "1") != "0",
                     staged=staged,
                 )
+            # The coloring keeps a world's used-color masks (16 words per body) in shared
+            # memory when its unit bodies span few enough indices. Size that span from the
+            # bodies a world can touch (its own and the global ones), capped at 256.
+            color_words = (PROPAGATION_COLOR_TAIL + 31) // 32
+            world_start = getattr(model, "body_world_start", None)
+            span = int(model.body_count)
+            if world_start is not None and self.world_count > 1:
+                starts = world_start.numpy()
+                per_world = int(np.max(starts[1 : self.world_count + 1] - starts[: self.world_count]))
+                global_bodies = int(starts[-1] - starts[-2] + starts[0])
+                span = max(per_world, global_bodies)
+            max_body_span = min(max(span, 1), 16384 // (color_words * 4))
             self._color_propagation_prebuild_kernel = _get_color_propagation_prebuild_kernel(
                 self.propagation_max_constraints,
                 PROPAGATION_COLOR_TAIL + 2,
                 self._propagation_color_prebuild_block_dim,
                 self._propagation_color_order_stride,
                 device_arch,
+                max_body_span=max_body_span,
             )
         if (
             model.device.is_cuda
@@ -16569,6 +16582,7 @@ def _get_color_propagation_prebuild_kernel(
     block_dim: int,
     order_stride: int,
     device_arch: str,
+    max_body_span: int = 0,
 ) -> "wp.Kernel":
     """Build the pre-build contact-unit coloring kernel (v4 layout).
 
@@ -16592,6 +16606,49 @@ def _get_color_propagation_prebuild_kernel(
     cap = NE - 2  # color cap; index NE-2 is the tail bucket
     WORDS = (cap + 31) // 32  # used-color bitmask words per body
     OS = int(order_stride)  # per-world stride of the sort scratch, a power of two >= M
+    # Span of body indices whose used-color masks fit in shared memory; a world whose
+    # unit bodies span more keeps them in global memory. 0 always uses global memory.
+    MBW = int(max_body_span)
+    # Shared buffers follow the per-world unit capacity: with many small worlds one
+    # block runs per world, and a fixed large footprint would cut occupancy.
+    CH = min(512, OS)  # units staged in shared memory per chunk of the serial passes
+    SORT_CAP = min(4096, OS)  # units a world may have for the sort to run on packed keys in shared memory
+    # One raw buffer: the sort's keys first, then the masks and the staged chunks.
+    RAW_WORDS = max(2 * SORT_CAP, max(MBW, 1) * WORDS + 4 * CH)
+
+    def greedy(mask: str, index_a: str, index_b: str) -> str:
+        return f"""
+                for (int i = 0; i < cnt; ++i) {{{{
+                    const int ba = s_x[i];
+                    const int bb = s_y[i];
+                    const int ia = {index_a};
+                    const int ib = {index_b};
+                    int color = {cap};
+                    for (int word = 0; word < {WORDS}; ++word) {{{{
+                        unsigned used = 0u;
+                        if (ba >= 0) used |= (unsigned){mask.format(x="ia")};
+                        if (bb >= 0) used |= (unsigned){mask.format(x="ib")};
+                        const unsigned free_bits = ~used;
+                        if (free_bits != 0u) {{{{
+                            const int bit = __ffs(free_bits) - 1;
+                            const int c = word * 32 + bit;
+                            if (c < {cap}) {{{{
+                                color = c;
+                                if (ba >= 0) {mask.format(x="ia")} |= (int)(1u << bit);
+                                if (bb >= 0) {mask.format(x="ib")} |= (int)(1u << bit);
+                            }}}}
+                            break;
+                        }}}}
+                    }}}}
+                    s_z[i] = color;
+                    ++s_counts[color];
+                }}}}"""
+
+    greedy_global = greedy("body_used_mask.data[{x} * " + str(WORDS) + " + word]", "ba", "bb")
+    greedy_shared = greedy("s_mask[{x} * " + str(WORDS) + " + word]", "ba - body_base", "bb - body_base")
+    mask_decl = """    __shared__ int s_body_lo, s_body_hi;
+    if (t == 0) { s_body_lo = 0x7FFFFFFF; s_body_hi = -1; }
+    __syncthreads();"""
 
     snippet = f"""
 #if defined(__CUDA_ARCH__)
@@ -16612,72 +16669,121 @@ def _get_color_propagation_prebuild_kernel(
     __shared__ int s_counts[{NE}];
     __shared__ int s_offsets[{NE}];
 
+    __shared__ __align__(8) int s_raw[{RAW_WORDS}];
+    int* s_mask = s_raw;
+    int* s_u = s_raw + {max(MBW, 1) * WORDS};
+    int* s_x = s_u + {CH};
+    int* s_y = s_u + 2 * {CH};
+    int* s_z = s_u + 3 * {CH};
+{mask_decl}
     // Sort scratch holds the unit permutation, padded with -1 (sorts last).
-    // body_used_mask holds one {WORDS}-word used-color bitmask per body.
+    // The used-color masks hold one {WORDS}-word bitmask per body: in shared memory,
+    // indexed from the world's first body, when every unit body lies in this world.
     for (int i = t; i < n_pad; i += {B}) unit_order.data[order_base + i] = (i < n_units) ? i : -1;
     for (int u = t; u < n_units; u += {B}) {{
         const int ba = unit_body_a.data[world_base + u];
         const int bb = unit_body_b.data[world_base + u];
-        for (int word = 0; word < {WORDS}; ++word) {{
-            if (ba >= 0) body_used_mask.data[ba * {WORDS} + word] = 0;
-            if (bb >= 0) body_used_mask.data[bb * {WORDS} + word] = 0;
-        }}
+        if (ba >= 0) {{ atomicMin(&s_body_lo, ba); atomicMax(&s_body_hi, ba); }}
+        if (bb >= 0) {{ atomicMin(&s_body_lo, bb); atomicMax(&s_body_hi, bb); }}
     }}
     for (int c = t; c < {NE}; c += {B}) s_counts[c] = 0;
     __syncthreads();
-
     // Bitonic sort of the permutation by global contact index: the greedy pass below
     // is order-dependent, and this order is independent of the atomic list build.
-    for (int k = 2; k <= n_pad; k <<= 1) {{
-        for (int j = k >> 1; j > 0; j >>= 1) {{
-            for (int i = t; i < n_pad; i += {B}) {{
-                const int partner = i ^ j;
-                if (partner <= i) continue;
-                const int ui = unit_order.data[order_base + i];
-                const int up = unit_order.data[order_base + partner];
-                const int ki = (ui >= 0) ? unit_contact.data[world_base + ui] : 0x7FFFFFFF;
-                const int kp = (up >= 0) ? unit_contact.data[world_base + up] : 0x7FFFFFFF;
-                const bool ascending = (i & k) == 0;
-                if ((ki > kp) == ascending) {{
-                    unit_order.data[order_base + i] = up;
-                    unit_order.data[order_base + partner] = ui;
+    if (n_pad <= {SORT_CAP}) {{
+        // Packed (contact index, unit) keys sort in shared memory; contact indices are
+        // unique per unit, so the order matches the permutation sort below.
+        unsigned long long* s_key = reinterpret_cast<unsigned long long*>(s_raw);
+        for (int i = t; i < n_pad; i += {B})
+            s_key[i] = (i < n_units)
+                ? ((unsigned long long)(unsigned)unit_contact.data[world_base + i] << 32) | (unsigned)i
+                : 0xFFFFFFFFFFFFFFFFull;
+        __syncthreads();
+        for (int k = 2; k <= n_pad; k <<= 1) {{
+            for (int j = k >> 1; j > 0; j >>= 1) {{
+                for (int i = t; i < n_pad; i += {B}) {{
+                    const int partner = i ^ j;
+                    if (partner <= i) continue;
+                    const unsigned long long ki = s_key[i];
+                    const unsigned long long kp = s_key[partner];
+                    if ((ki > kp) == ((i & k) == 0)) {{
+                        s_key[i] = kp;
+                        s_key[partner] = ki;
+                    }}
                 }}
+                __syncthreads();
             }}
-            __syncthreads();
+        }}
+        for (int i = t; i < n_units; i += {B}) unit_order.data[order_base + i] = (int)(s_key[i] & 0xFFFFFFFFull);
+        __syncthreads();
+    }} else {{
+        for (int k = 2; k <= n_pad; k <<= 1) {{
+            for (int j = k >> 1; j > 0; j >>= 1) {{
+                for (int i = t; i < n_pad; i += {B}) {{
+                    const int partner = i ^ j;
+                    if (partner <= i) continue;
+                    const int ui = unit_order.data[order_base + i];
+                    const int up = unit_order.data[order_base + partner];
+                    const int ki = (ui >= 0) ? unit_contact.data[world_base + ui] : 0x7FFFFFFF;
+                    const int kp = (up >= 0) ? unit_contact.data[world_base + up] : 0x7FFFFFFF;
+                    const bool ascending = (i & k) == 0;
+                    if ((ki > kp) == ascending) {{
+                        unit_order.data[order_base + i] = up;
+                        unit_order.data[order_base + partner] = ui;
+                    }}
+                }}
+                __syncthreads();
+            }}
         }}
     }}
 
-    if (t == 0) {{
-        // First-fit greedy edge coloring: a unit takes the lowest color neither of its
-        // bodies uses yet. At most 2*degree-1 colors, every color a near-maximal
-        // matching. (Round-based ticket bidding only admitted mutual-minimum units per
-        // round and degenerated to ~3 units per color with half the units in the
-        // serial tail on a dense 235-body pile.)
-        for (int pos = 0; pos < n_units; ++pos) {{
-            const int u = unit_order.data[order_base + pos];
+    // The sort keys are dead: clear the used-color masks where the greedy keeps them.
+    const int body_base = s_body_lo;
+    const bool shared_masks = {MBW} > 0 && s_body_hi - s_body_lo < {MBW};
+    if (shared_masks) {{
+        for (int i = t; i < {max(MBW, 1) * WORDS}; i += {B}) s_mask[i] = 0;
+    }} else {{
+        for (int u = t; u < n_units; u += {B}) {{
             const int ba = unit_body_a.data[world_base + u];
             const int bb = unit_body_b.data[world_base + u];
-            int color = {cap};
             for (int word = 0; word < {WORDS}; ++word) {{
-                unsigned used = 0u;
-                if (ba >= 0) used |= (unsigned)body_used_mask.data[ba * {WORDS} + word];
-                if (bb >= 0) used |= (unsigned)body_used_mask.data[bb * {WORDS} + word];
-                const unsigned free_bits = ~used;
-                if (free_bits != 0u) {{
-                    const int bit = __ffs(free_bits) - 1;
-                    const int c = word * 32 + bit;
-                    if (c < {cap}) {{
-                        color = c;
-                        if (ba >= 0) body_used_mask.data[ba * {WORDS} + word] |= (int)(1u << bit);
-                        if (bb >= 0) body_used_mask.data[bb * {WORDS} + word] |= (int)(1u << bit);
-                    }}
-                    break;
-                }}
+                if (ba >= 0) body_used_mask.data[ba * {WORDS} + word] = 0;
+                if (bb >= 0) body_used_mask.data[bb * {WORDS} + word] = 0;
             }}
-            unit_color.data[world_base + u] = color;
-            ++s_counts[color];
         }}
+    }}
+    __syncthreads();
 
+    // The serial passes below run on thread 0 over chunks of units that every thread
+    // stages in shared memory first: thread 0 then touches no global memory, which on a
+    // serial walk would put a dependent global round trip on every unit.
+    for (int base = 0; base < n_units; base += {CH}) {{
+        const int cnt = min({CH}, n_units - base);
+        for (int i = t; i < cnt; i += {B}) {{
+            const int u = unit_order.data[order_base + base + i];
+            s_u[i] = u;
+            s_x[i] = unit_body_a.data[world_base + u];
+            s_y[i] = unit_body_b.data[world_base + u];
+        }}
+        __syncthreads();
+        if (t == 0) {{
+            // First-fit greedy edge coloring: a unit takes the lowest color neither of its
+            // bodies uses yet. At most 2*degree-1 colors, every color a near-maximal
+            // matching. (Round-based ticket bidding only admitted mutual-minimum units per
+            // round and degenerated to ~3 units per color with half the units in the
+            // serial tail on a dense 235-body pile.)
+            if (shared_masks) {{
+{greedy_shared}
+            }} else {{
+{greedy_global}
+            }}
+        }}
+        __syncthreads();
+        for (int i = t; i < cnt; i += {B}) unit_color.data[world_base + s_u[i]] = s_z[i];
+        __syncthreads();
+    }}
+
+    if (t == 0) {{
         // Per-color unit offsets; entry NE-1 receives the unit total.
         int acc = 0;
         for (int c = 0; c < {NE}; ++c) {{
@@ -16685,28 +16791,56 @@ def _get_color_propagation_prebuild_kernel(
             world_color_offsets.data[world * {NE} + c] = acc;
             acc += s_counts[c];
         }}
+    }}
+    __syncthreads();
 
-        // Stable counting sort by color in sorted-contact order, so the serial tail
-        // keeps a deterministic sweep order. world_row_order temporarily holds the
-        // unit index at each color-ordered position until the slot prefix below.
-        for (int pos = 0; pos < n_units; ++pos) {{
-            const int u = unit_order.data[order_base + pos];
-            const int c = unit_color.data[world_base + u];
-            world_row_order.data[world_base + s_offsets[c]] = u;
-            ++s_offsets[c];
+    // Stable counting sort by color in sorted-contact order, so the serial tail
+    // keeps a deterministic sweep order. world_row_order temporarily holds the
+    // unit index at each color-ordered position until the slot prefix below.
+    for (int base = 0; base < n_units; base += {CH}) {{
+        const int cnt = min({CH}, n_units - base);
+        for (int i = t; i < cnt; i += {B}) {{
+            const int u = unit_order.data[order_base + base + i];
+            s_u[i] = u;
+            s_x[i] = unit_color.data[world_base + u];
         }}
+        __syncthreads();
+        if (t == 0) {{
+            for (int i = 0; i < cnt; ++i) s_z[i] = s_offsets[s_x[i]]++;
+        }}
+        __syncthreads();
+        for (int i = t; i < cnt; i += {B}) world_row_order.data[world_base + s_z[i]] = s_u[i];
+        __syncthreads();
+    }}
 
-        // Serial slot prefix in color order: rows of consecutive units are
-        // adjacent, so every color segment is contiguous row memory.
-        int row_acc = 0;
-        for (int pos = 0; pos < n_units; ++pos) {{
-            const int u = world_row_order.data[world_base + pos];
-            const int cid = unit_contact.data[world_base + u];
-            world_row_order.data[world_base + pos] = row_acc;
-            unit_sorted_contact.data[world_base + pos] = cid;
-            contact_slot.data[cid] = row_acc;
-            row_acc += unit_len.data[world_base + u];
+    // Slot prefix in color order: rows of consecutive units are adjacent, so every
+    // color segment is contiguous row memory.
+    __shared__ int s_row_acc;
+    if (t == 0) s_row_acc = 0;
+    __syncthreads();
+    for (int base = 0; base < n_units; base += {CH}) {{
+        const int cnt = min({CH}, n_units - base);
+        for (int i = t; i < cnt; i += {B}) {{
+            const int u = world_row_order.data[world_base + base + i];
+            s_x[i] = unit_contact.data[world_base + u];
+            s_y[i] = unit_len.data[world_base + u];
         }}
+        __syncthreads();
+        if (t == 0) {{
+            int row_acc = s_row_acc;
+            for (int i = 0; i < cnt; ++i) {{
+                s_z[i] = row_acc;
+                row_acc += s_y[i];
+            }}
+            s_row_acc = row_acc;
+        }}
+        __syncthreads();
+        for (int i = t; i < cnt; i += {B}) {{
+            world_row_order.data[world_base + base + i] = s_z[i];
+            unit_sorted_contact.data[world_base + base + i] = s_x[i];
+            contact_slot.data[s_x[i]] = s_z[i];
+        }}
+        __syncthreads();
     }}
 #endif
 """
@@ -16762,7 +16896,7 @@ def _get_color_propagation_prebuild_kernel(
             unit_sorted_contact,
         )
 
-    name = f"color_propagation_prebuild_{M}_{NE}_bd{B}_os{OS}"
+    name = f"color_propagation_prebuild_{M}_{NE}_bd{B}_os{OS}_mbw{MBW}"
     color_propagation_prebuild_template.__name__ = name
     color_propagation_prebuild_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(color_propagation_prebuild_template)

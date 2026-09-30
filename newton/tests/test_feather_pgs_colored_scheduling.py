@@ -73,6 +73,38 @@ def _settle(model, steps=12, **solver_kwargs):
     return solver, state_0, int(contacts.rigid_contact_count.numpy()[0])
 
 
+def _first_fit_reference(solver, world=0):
+    """Reference coloring of world 0's units: sort by contact, first-fit, stable counting sort."""
+    entries = PROPAGATION_COLOR_TAIL + 2
+    stride = solver.propagation_max_constraints
+    n = min(int(solver.color_world_unit_cursor.numpy()[world]), stride)
+    base = world * stride
+    contact = solver.color_unit_contact.numpy()[base : base + n]
+    body_a = solver.color_unit_body_a.numpy()[base : base + n]
+    body_b = solver.color_unit_body_b.numpy()[base : base + n]
+    length = solver.color_unit_len.numpy()[base : base + n]
+    order = np.argsort(contact, kind="stable")
+    used = {}
+    color = np.zeros(n, dtype=np.int64)
+    for u in order:
+        c = 0
+        while c < PROPAGATION_COLOR_TAIL and any(x >= 0 and c in used.get(x, ()) for x in (body_a[u], body_b[u])):
+            c += 1
+        color[u] = c
+        if c < PROPAGATION_COLOR_TAIL:
+            for x in (body_a[u], body_b[u]):
+                if x >= 0:
+                    used.setdefault(x, set()).add(c)
+    offsets = np.concatenate([[0], np.cumsum(np.bincount(color, minlength=entries))])[:entries]
+    cursor = offsets.copy()
+    position_unit = np.zeros(n, dtype=np.int64)
+    for u in order:
+        position_unit[cursor[color[u]]] = u
+        cursor[color[u]] += 1
+    row_start = np.concatenate([[0], np.cumsum(length[position_unit])])[:n]
+    return n, color, offsets, row_start, contact[position_unit]
+
+
 @unittest.skipUnless(wp.get_device().is_cuda, "propagation-colored requires CUDA")
 class TestFeatherPGSColoredScheduling(unittest.TestCase):
     def test_dense_heap_colors_without_a_serial_tail(self):
@@ -227,6 +259,26 @@ class TestFeatherPGSColoredScheduling(unittest.TestCase):
         self.assertEqual(int(prescribed[free_dynamic]), 0)
         self.assertEqual(int(prescribed[root]), 0)
         self.assertEqual(int(prescribed[link]), 0)
+
+    def test_prebuild_matches_the_first_fit_reference(self):
+        """The device coloring reproduces sort-by-contact first-fit exactly.
+
+        The prebuild stages units in shared memory for its serial passes, sorts packed
+        keys in shared memory when a world has at most 4096 units, and keeps the
+        used-color masks in shared memory when the unit bodies span at most 256
+        indices. The large heap spans more bodies than that and takes the global masks.
+        """
+        for shape in ((6, 6, 3), (7, 7, 6)):
+            model, _ = _heap(*shape)
+            solver, state, _ = _settle(model, steps=4)
+            self.assertTrue(np.isfinite(state.body_q.numpy()).all())
+            n, color, offsets, row_start, sorted_contact = _first_fit_reference(solver)
+            self.assertGreater(n, 400)
+            entries = PROPAGATION_COLOR_TAIL + 2
+            np.testing.assert_array_equal(solver.color_unit_color.numpy()[:n], color, err_msg=f"{shape} colors")
+            np.testing.assert_array_equal(solver.color_world_offsets.numpy()[:entries], offsets, err_msg=f"{shape}")
+            np.testing.assert_array_equal(solver.color_world_row_order.numpy()[:n], row_start, err_msg=f"{shape}")
+            np.testing.assert_array_equal(solver.color_unit_sorted.numpy()[:n], sorted_contact, err_msg=f"{shape}")
 
     def test_colored_accepts_a_large_row_budget(self):
         """The coloring keeps per-unit state in global scratch, so no staging cap applies."""

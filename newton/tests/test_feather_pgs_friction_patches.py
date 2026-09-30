@@ -690,6 +690,86 @@ def _run_rolling(geometry, device, *, friction_anchor_beta=None, segments=64, hz
     return pose, velocity, np.mean(final_velocity, axis=0)
 
 
+@unittest.skipUnless(wp.get_device().is_cuda, "the device flood runs on CUDA")
+class TestFrictionPatchDeviceFlood(unittest.TestCase):
+    def test_device_flood_matches_the_serial_flood(self):
+        """Growing regions one warp per body pair gives the serial flood's patches exactly.
+
+        Plates made of 3x3 box tiles stack with small tilts, so their contacts form
+        regions that span convex seams and several regions per body pair. The same
+        state and contacts are solved with the device flood on and off; body state,
+        row impulses and every patch output must match bit for bit.
+        """
+        rng = np.random.default_rng(3)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.rigid_gap = 0.002
+        builder.add_ground_plane()
+        tile = 0.03
+        for level in range(6):
+            angle = rng.uniform(-0.08, 0.08, size=3)
+            rotation = wp.quat_rpy(float(angle[0]), float(angle[1]), float(angle[2]))
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.012 + 0.024 * level), rotation))
+            for ix in range(3):
+                for iy in range(3):
+                    builder.add_shape_box(
+                        body,
+                        xform=wp.transform(wp.vec3((ix - 1) * 2 * tile, (iy - 1) * 2 * tile, 0.0), wp.quat_identity()),
+                        hx=tile,
+                        hy=tile,
+                        hz=0.01,
+                    )
+        model = builder.finalize()
+        model.rigid_contact_max = 4096
+        solver = newton.solvers.SolverFeatherPGS(
+            model,
+            pgs_mode="matrix_free",
+            articulated_contact_response="propagation-colored",
+            pgs_iterations=8,
+            mf_max_constraints=4096,
+        )
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=4096)
+        contacts = pipeline.contacts()
+        control = model.control()
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(20):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        pipeline.collide(state_0, contacts)
+        start = {name: getattr(state_0, name).numpy().copy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
+        patches = solver._friction_patches
+
+        def run(device_flood):
+            patches.device_flood = device_flood
+            a, b = model.state(), model.state()
+            for field, value in start.items():
+                getattr(a, field).assign(value)
+            solver.reset(a, flags=0)
+            for _ in range(3):
+                solver.step(a, b, control, contacts, 1.0 / 240.0)
+                a, b = b, a
+            frame, view = patches.current, patches.view
+            outputs = {"body_q": a.body_q, "body_qd": a.body_qd, "impulses": solver.propagation_impulses}
+            for name in ("owner", "members", "valid", "source", "anchor_a", "anchor_b", "displacement"):
+                outputs["frame." + name] = getattr(frame, name)
+            for name in ("weight", "next_contact", "point_a", "point_b", "phi"):
+                outputs["view." + name] = getattr(view, name)
+            return {name: array.numpy().copy() for name, array in outputs.items()}
+
+        serial = run(False)
+        device = run(True)
+        self.assertGreater(
+            int(patches._flood_pair_count.numpy()[0]), 0, "no body pair was large enough for the device flood"
+        )
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        owner = device["frame.owner"][:count]
+        regions, sizes = np.unique(owner[owner >= 0], return_counts=True)
+        self.assertGreater(len(regions), 4, "too few friction regions to exercise the flood")
+        self.assertGreater(int(sizes.max()), 4, "no region spans several convex pieces")
+        for name, value in serial.items():
+            np.testing.assert_array_equal(device[name], value, err_msg=f"{name} differs between the floods")
+
+
 class TestFeatherPGSFrictionPatches(unittest.TestCase):
     def test_default_friction_preserves_free_rolling(self):
         """Match velocity-only free rolling without adding a persistent rearward friction force."""
