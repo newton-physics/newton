@@ -13779,95 +13779,63 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
-            if len(self.body_mass) > 0:
-                if self.validate_inertia_detailed:
-                    # Use detailed Python validation with per-body warnings.
-                    # Build corrected copies without modifying builder lists.
-                    corrected_mass = list(self.body_mass)
-                    corrected_inertia = list(self.body_inertia)
-                    corrected_inv_mass = list(self.body_inv_mass)
-                    corrected_inv_inertia = list(self.body_inv_inertia)
-
-                    for i in range(len(self.body_mass)):
-                        mass = self.body_mass[i]
-                        inertia = self.body_inertia[i]
-                        body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
-
-                        new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
-                            mass,
-                            inertia,
-                            self.balance_inertia,
-                            self.bound_mass,
-                            self.bound_inertia,
-                            body_label,
-                        )
-
-                        if was_corrected:
-                            corrected_mass[i] = new_mass
-                            corrected_inertia[i] = new_inertia
-                            if new_mass > 0.0:
-                                corrected_inv_mass[i] = 1.0 / new_mass
-                            else:
-                                corrected_inv_mass[i] = 0.0
-
-                            if any(x for x in new_inertia):
-                                corrected_inv_inertia[i] = wp.inverse(new_inertia)
-                            else:
-                                corrected_inv_inertia[i] = new_inertia
-
-                    # Create arrays from corrected copies
-                    m.body_mass = wp.array(corrected_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inv_mass = wp.array(corrected_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(corrected_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(corrected_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                else:
-                    # Use fast Warp kernel validation
-                    body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inv_inertia_array = wp.array(
-                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+            body_mass = self.body_mass
+            body_inertia = self.body_inertia
+            body_inv_mass = self.body_inv_mass
+            body_inv_inertia = self.body_inv_inertia
+            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+                # Use detailed Python validation with per-body warnings on copies of the builder lists.
+                body_mass = list(body_mass)
+                body_inertia = list(body_inertia)
+                body_inv_mass = list(body_inv_mass)
+                body_inv_inertia = list(body_inv_inertia)
+                for i in range(len(body_mass)):
+                    body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
+                    new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
+                        body_mass[i],
+                        body_inertia[i],
+                        self.balance_inertia,
+                        self.bound_mass,
+                        self.bound_inertia,
+                        body_label,
                     )
-                    correction_count = wp.zeros(1, dtype=wp.int32)
+                    if was_corrected:
+                        body_mass[i] = new_mass
+                        body_inertia[i] = new_inertia
+                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
+                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
 
-                    # Launch validation kernel (corrects arrays in-place on device)
-                    wp.launch(
-                        kernel=validate_and_correct_inertia_kernel,
-                        dim=len(self.body_mass),
-                        inputs=[
-                            body_mass_array,
-                            body_inertia_array,
-                            body_inv_mass_array,
-                            body_inv_inertia_array,
-                            self.balance_inertia,
-                            self.bound_mass if self.bound_mass is not None else 0.0,
-                            self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            correction_count,
-                        ],
+            m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inertia = wp.array(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.array(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+
+            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+                # Use fast Warp kernel validation, correcting the Model arrays in place on device.
+                correction_count = wp.zeros(1, dtype=wp.int32)
+                wp.launch(
+                    kernel=validate_and_correct_inertia_kernel,
+                    dim=len(self.body_mass),
+                    inputs=[
+                        m.body_mass,
+                        m.body_inertia,
+                        m.body_inv_mass,
+                        m.body_inv_inertia,
+                        self.balance_inertia,
+                        self.bound_mass if self.bound_mass is not None else 0.0,
+                        self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        correction_count,
+                    ],
+                )
+
+                # Check if any corrections were made (single int transfer)
+                num_corrections = int(correction_count.numpy()[0])
+                if num_corrections > 0:
+                    warnings.warn(
+                        f"Inertia validation corrected {num_corrections} bodies. "
+                        f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                        stacklevel=3,
                     )
-
-                    # Check if any corrections were made (single int transfer)
-                    num_corrections = int(correction_count.numpy()[0])
-                    if num_corrections > 0:
-                        warnings.warn(
-                            f"Inertia validation corrected {num_corrections} bodies. "
-                            f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=3,
-                        )
-
-                    # Use the corrected arrays directly on the Model.
-                    # Builder state is intentionally left unchanged — corrected
-                    # values live only on the returned Model.
-                    m.body_mass = body_mass_array
-                    m.body_inv_mass = body_inv_mass_array
-                    m.body_inertia = body_inertia_array
-                    m.body_inv_inertia = body_inv_inertia_array
-            else:
-                # No bodies, create empty arrays
-                m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
