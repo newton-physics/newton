@@ -785,7 +785,7 @@ void main() {
         if not plane_prims:
             return
 
-        mat_path = "/root/Materials/mat_ground"
+        mat_path = f"{self._root_path}/Materials/mat_ground"
         self._ensure_scopes_for_path(self.stage, mat_path)
 
         material = UsdShade.Material.Define(self.stage, mat_path)
@@ -1018,7 +1018,7 @@ void main() {
         mat44_offset: int = 0,
     ) -> None:
         """Store the static per-prim inputs of :func:`write_prim_world_matrices`."""
-        self._prim_paths = list(paths)
+        self._prim_paths = tuple(paths)
         self._prim_count = len(self._prim_paths)
         self._prim_body = wp.array(bodies, dtype=int, device=device)
         self._prim_linear = wp.array(linear.astype(np.float32), dtype=wp.mat33, device=device)
@@ -2757,7 +2757,7 @@ void main() {
         self._pending_transform_matrices = {}
         self._ovstage_population_dirty = False
 
-        self._prim_paths = []
+        self._prim_paths = ()
         self._prim_count = 0
         self._prim_body = None
         self._prim_linear = None
