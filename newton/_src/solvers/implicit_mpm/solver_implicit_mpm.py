@@ -1831,11 +1831,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 entry selects global objects whose world index is ``-1``. If
                 ``None``, reset all worlds and global objects.
 
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
-
                 .. experimental::
 
                     Selective per-world MPM reset behavior may change without prior notice.
@@ -4014,9 +4009,9 @@ def _harvest_mpm_proxy_particle_forces_kernel(
     dst_k = collider.collider_particle_ids[vertex_offset + local_k]
 
     f = collider_impulses[i] / dt
-    w_j = query.u
-    w_k = query.v
-    w_i = 1.0 - w_j - w_k
+    w_i = query.u
+    w_j = query.v
+    w_k = 1.0 - w_i - w_j
 
     if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
         proxy_global_i = particle_local_to_proxy_global[dst_i]
