@@ -41,7 +41,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/CableA/sim", "body")
         self.assertEqual(b1 - b0, 3)
         j0, j1 = group_range(builder, "cable", "/World/CableA/sim", "joint")
-        self.assertEqual(j1 - j0, 2)  # open 3-segment chain
+        self.assertEqual(j1 - j0, 3)  # free root and two rod joints
         p0, p1 = group_range(builder, "cloth", "/World/Cloth/sim", "particle")
         self.assertEqual(p1 - p0, 4)
         t0, t1 = group_range(builder, "soft", "/World/SoftA/sim", "tet")
@@ -127,6 +127,9 @@ class TestUSDDeformableGroups(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in builder.body_label[b] for b in range(b0, b1)))
+        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+        self.assertEqual(builder.joint_type[j0:j1], [newton.JointType.FREE, newton.JointType.ROD, newton.JointType.ROD])
+        self.assertEqual(builder.joint_child[j0:j1], list(range(b0, b1)))
         model = builder.finalize()
         self.assertEqual(model.body_count, 4)
 
@@ -157,9 +160,10 @@ class TestUSDDeformableGroups(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, collapse_fixed_joints=True)
+        result = builder.add_usd(stage, collapse_fixed_joints=True, return_deformable_results=True)
 
         for path in ("/World/Trunk", "/World/Branch"):
+            self.assertEqual(result["path_cable_map"][path][1], [])
             j0, j1 = group_range(builder, "cable", path, "joint")
             self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
             self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
@@ -170,19 +174,56 @@ class TestUSDDeformableGroups(unittest.TestCase):
             self.assertEqual(j0, j1)
             self.assertLessEqual(j1, model.joint_count)
 
-    def test_cable_prim_with_multiple_curves_records_once(self):
-        """Record one USD prim rather than one record per native rod construction call."""
-        stage = _deformable_stage()
-        points = [*_CABLE_PTS, *((x, 1.0, z) for x, _, z in _CABLE_PTS)]
-        curve = _add_cable_curve(stage, "/World/Cables", points)
-        curve.CreateCurveVertexCountsAttr([4, 4])
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, return_deformable_results=True)
-        self.assertEqual(builder.curve_label, ["/World/Cables"])
-        self.assertEqual(len(result["path_cable_map"]["/World/Cables"][0]), 6)
-        model = builder.finalize(device="cpu")
-        self.assertEqual(model.body_count, 6)
-        self.assertEqual(group_range(builder, "cable", "/World/Cables", "body"), (0, 6))
+    def test_native_and_usd_cables_record_generated_roots(self):
+        """Record every component's root while keeping returned rod joints unchanged."""
+        for curve_count in (1, 2):
+            with self.subTest(curve_count=curve_count):
+                points = [(x, float(curve), z) for curve in range(curve_count) for x, _, z in _CABLE_PTS]
+                edges = [(4 * curve + i, 4 * curve + i + 1) for curve in range(curve_count) for i in range(3)]
+                native = newton.ModelBuilder()
+                native_result = native.add_rod(
+                    rod=newton.Rod(points, edges=edges, radius=0.02),
+                    label="/World/Cables",
+                    body_frame_origin="com",
+                )
+
+                stage = _deformable_stage()
+                curve = _add_cable_curve(stage, "/World/Cables", points)
+                curve.CreateCurveVertexCountsAttr([4] * curve_count)
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, return_deformable_results=True)
+                expected_joints = [1, 2] if curve_count == 1 else [1, 2, 4, 5]
+                self.assertEqual(result["path_cable_map"]["/World/Cables"], native_result)
+                self.assertEqual(native_result[1], expected_joints)
+                self.assertEqual(builder.joint_type, native.joint_type)
+                self.assertEqual(builder.joint_parent, native.joint_parent)
+                self.assertEqual(builder.joint_child, native.joint_child)
+                self.assertEqual(builder.curve_label, ["/World/Cables"])
+                for source in (native, builder):
+                    for kind in ("body", "joint"):
+                        self.assertEqual(group_range(source, "cable", "/World/Cables", kind), (0, 3 * curve_count))
+                model = builder.finalize(device="cpu")
+                self.assertEqual((model.body_count, model.joint_count), (3 * curve_count, 3 * curve_count))
+
+    def test_skipped_curves_do_not_add_joint_records(self):
+        """Skip invalid curves without losing the valid curve's root or adding empty objects."""
+        for include_valid in (False, True):
+            with self.subTest(include_valid=include_valid):
+                stage = _deformable_stage()
+                points = _CABLE_PTS[:2] + (_CABLE_PTS if include_valid else [])
+                curve = _add_cable_curve(stage, "/World/Cables", points)
+                curve.CreateCurveVertexCountsAttr([2, 4] if include_valid else [2])
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "need >= 3"):
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                if include_valid:
+                    self.assertEqual(builder.curve_label, ["/World/Cables"])
+                    self.assertEqual(group_range(builder, "cable", "/World/Cables", "joint"), (0, 3))
+                    self.assertEqual(result["path_cable_map"]["/World/Cables"], ([0, 1, 2], [1, 2]))
+                else:
+                    self.assertEqual(builder.curve_label, [])
+                    self.assertEqual(builder.joint_count, 0)
+                    self.assertNotIn("/World/Cables", result["path_cable_map"])
 
     def test_cable_records_replicate_with_free_and_attached_roots(self):
         """Preserve a cable's recorded ranges when either endpoint is attached to a rigid body."""
@@ -210,6 +251,16 @@ class TestUSDDeformableGroups(unittest.TestCase):
                 result = source.add_usd(stage, return_deformable_results=True)
                 bodies, joints = result["path_cable_map"]["/World/Cable"]
                 self.assertEqual(source.curve_label, ["/World/Cable"])
+                root = 0 if attached_point is None else 1
+                self.assertEqual(joints, [root + 1, root + 2])
+                self.assertEqual(group_range(source, "cable", "/World/Cable", "joint"), (root, root + 3))
+                self.assertEqual(
+                    source.joint_type[root], newton.JointType.FREE if attached_point is None else newton.JointType.BALL
+                )
+                if attached_point is not None:
+                    self.assertEqual(result["path_attachment_map"]["/World/Attachment"], [root])
+                    self.assertEqual(source.joint_type[0], newton.JointType.FREE)
+                    self.assertEqual(source.joint_child[0], result["path_body_map"]["/World/Plug"])
                 scene = newton.ModelBuilder()
                 scene.replicate(source, 2)
                 model = scene.finalize(device="cpu")
@@ -221,7 +272,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
                 )
                 self.assertEqual(
                     [group_range(scene, "cable", "/World/Cable", "joint", world=w) for w in range(2)],
-                    [(joints[0] + w * source.joint_count, joints[-1] + 1 + w * source.joint_count) for w in range(2)],
+                    [(root + w * source.joint_count, root + 3 + w * source.joint_count) for w in range(2)],
                 )
 
 
