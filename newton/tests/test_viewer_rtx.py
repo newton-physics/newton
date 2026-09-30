@@ -115,6 +115,19 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         finally:
             viewer.close()
 
+    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
+    def test_borrowed_stage_rejects_lighting_preset(self):
+        """Reject a lighting preset, since a borrowed stage brings its own lights."""
+        import ovrtx
+        import ovstage
+
+        with (
+            mock.patch.object(ovrtx, "__version__", "0.5.0"),
+            mock.patch.object(ovstage, "__version__", "0.2.0"),
+            self.assertRaisesRegex(ValueError, "lighting from the stage"),
+        ):
+            ViewerRTX(headless=True, ovstage=object(), environment="studio")
+
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXWindowCleanup(unittest.TestCase):

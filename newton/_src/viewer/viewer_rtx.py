@@ -190,7 +190,7 @@ class ViewerRTX(ViewerUSD):
         *,
         plot_history_size: int = 250,
         ovstage: ovstage.Stage | None = None,
-        render_settings: Mapping[str, tuple[str, Any]] | None = None,
+        render_settings: dict[str, tuple[str, Any]] | None = None,
     ):
         """Initialize the OVRTX-backed real-time ray-tracing viewer.
 
@@ -218,7 +218,9 @@ class ViewerRTX(ViewerUSD):
                 scale; bodies without such a prim are not rendered. The caller
                 owns the stage's content, lights, and lifetime; the viewer adds
                 its camera, render product, and debug geometry under
-                ``/__newton_viewer``. ``environment`` is ignored. Requires
+                ``/__newton_viewer``. :meth:`set_visible_worlds`,
+                ``show_collision``, and ``show_visual`` affect only the debug
+                geometry, and ``environment`` must stay ``"default"``. Requires
                 OVRTX 0.4 and OVStage 0.2 or newer, and a stage created with
                 GPU hierarchy computation.
             render_settings: ``omni:rtx:*`` attributes to author on the
@@ -263,6 +265,8 @@ class ViewerRTX(ViewerUSD):
                 raise ValueError("ViewerRTX(ovstage=...) requires OVStage 0.2 or newer")
             if scaling != 1.0:
                 raise ValueError("ViewerRTX(ovstage=...) does not support scaling")
+            if environment != "default":
+                raise ValueError("ViewerRTX(ovstage=...) takes its lighting from the stage; leave environment unset")
             self._root_path = "/__newton_viewer"
         self._rtx_render_settings = dict(render_settings or {})
         self._borrowed_reference = None
