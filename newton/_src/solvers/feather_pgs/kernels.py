@@ -12315,6 +12315,72 @@ PROPAGATION_MAX_COLORS = 512
 PROPAGATION_COLOR_TAIL = 512
 
 
+PROPAGATION_UNIT_RING = 4
+"""Patch-ring members carried in a unit record; longer rings resume the walk after them."""
+
+PROPAGATION_UNIT_META = 5 + PROPAGATION_UNIT_RING
+"""Per-unit static record for the colored solve (see :func:`gather_propagation_unit_meta`)."""
+
+
+@wp.kernel(enable_backward=False)
+def gather_propagation_unit_meta(
+    propagation_max_constraints: int,
+    n_color_entries: int,
+    world_color_offsets: wp.array[int],
+    world_row_order: wp.array[int],
+    row_type: wp.array2d[int],
+    row_parent: wp.array2d[int],
+    body_a: wp.array2d[int],
+    body_b: wp.array2d[int],
+    body_local_slot: wp.array[int],
+    # out
+    unit_meta: wp.array[int],
+):
+    """Pack what the colored solve needs before it can solve a unit.
+
+    Indexed by the unit's position in color order: ``[start slot, local slot of body a,
+    local slot of body b, patch-ring length, the first PROPAGATION_UNIT_RING ring
+    members, the member after them]``. A contact row's ``row_parent`` links the other
+    contact rows sharing its friction patch into a ring. All of it is fixed for a
+    sweep, so the solve loads the next colors' records while the current color runs
+    and loads the ring members' impulses in parallel instead of walking the ring one
+    dependent load at a time.
+    """
+    tid = wp.tid()
+    world = tid // propagation_max_constraints
+    pos = tid - world * propagation_max_constraints
+    if pos >= world_color_offsets[world * n_color_entries + n_color_entries - 1]:
+        return
+    slot = world_row_order[tid]
+    ba = body_a[world, slot]
+    bb = body_b[world, slot]
+    la = int(-1)
+    lb = int(-1)
+    if ba >= 0:
+        la = body_local_slot[ba]
+    if bb >= 0:
+        lb = body_local_slot[bb]
+    base = tid * PROPAGATION_UNIT_META
+    unit_meta[base + 0] = slot
+    unit_meta[base + 1] = la
+    unit_meta[base + 2] = lb
+    n = int(0)
+    member = int(-1)
+    if row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT:
+        member = row_parent[world, slot]
+        while member >= 0 and member != slot and n < PROPAGATION_UNIT_RING:
+            unit_meta[base + 4 + n] = member
+            n += 1
+            member = row_parent[world, member]
+    for q in range(n, PROPAGATION_UNIT_RING):
+        unit_meta[base + 4 + q] = -1
+    # Past the stored members: -1 when the ring closed within them.
+    if member == slot:
+        member = -1
+    unit_meta[base + 3] = n
+    unit_meta[base + 4 + PROPAGATION_UNIT_RING] = member
+
+
 @wp.kernel(enable_backward=False)
 def collect_propagation_units(
     contact_count: wp.array[int],

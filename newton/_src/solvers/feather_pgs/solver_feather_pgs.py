@@ -72,6 +72,8 @@ from .kernels import (
     PGS_LOCAL_SOLVE_OWNER_SINGLE,
     PREELIM_MAX_ROWS,
     PROPAGATION_COLOR_TAIL,
+    PROPAGATION_UNIT_META,
+    PROPAGATION_UNIT_RING,
     _get_tree_fk_kernel,
     _get_tree_tau_kernel,
     accumulate_articulation_tau,
@@ -149,6 +151,7 @@ from .kernels import (
     gather_dense_warmstart,
     gather_JY_to_world,
     gather_mf_warmstart,
+    gather_propagation_unit_meta,
     gather_propagation_warmstart,
     gather_tau_to_groups,
     hinv_jt_diagonal,
@@ -6059,6 +6062,7 @@ class SolverFeatherPGS(SolverBase):
             self.color_unit_len = wp.zeros((total_rows,), dtype=wp.int32, device=device)
             self.color_unit_sorted = wp.zeros((total_rows,), dtype=wp.int32, device=device)
             self.color_world_unit_cursor = wp.zeros((worlds,), dtype=wp.int32, device=device)
+            self.color_unit_meta = wp.zeros((total_rows * PROPAGATION_UNIT_META,), dtype=wp.int32, device=device)
 
     def _allocate_debug_buffers(self, model):
         """Allocate buffers for PGS convergence diagnostics."""
@@ -6453,6 +6457,11 @@ class SolverFeatherPGS(SolverBase):
             mb = int(getattr(self, "max_propagation_bodies", 0))
             lanes = int(os.environ.get("FEATHER_PGS_COLORED_LANES", "1"))
             wpb = int(os.environ.get("FEATHER_PGS_COLORED_WPB", "2"))
+            staged = os.environ.get("FEATHER_PGS_COLORED_STAGED", "1") != "0" and _colored_staging_supported(
+                int(getattr(model.device, "arch", 0)), lanes, self.world_count, mb
+            )
+            if staged:
+                wpb = 1
             self._propagation_colored_worlds_per_block = wpb
             # per-warp staging: 48B/body/world; keep total static shared under ~44KB
             if lanes in (1, 2, 4, 8, 16, 32) and wpb >= 1 and mb * wpb * 48 <= 45056:
@@ -6463,6 +6472,8 @@ class SolverFeatherPGS(SolverBase):
                     lanes,
                     wpb,
                     device_arch,
+                    prefetch=os.environ.get("FEATHER_PGS_COLORED_PREFETCH", "1") != "0",
+                    staged=staged,
                 )
             self._color_propagation_prebuild_kernel = _get_color_propagation_prebuild_kernel(
                 self.propagation_max_constraints,
@@ -7767,6 +7778,23 @@ class SolverFeatherPGS(SolverBase):
     ) -> None:
         device = self.model.device
         if self._pgs_solve_propagation_colored_warp_kernel is not None:
+            wp.launch(
+                gather_propagation_unit_meta,
+                dim=self.world_count * self.propagation_max_constraints,
+                inputs=[
+                    self.propagation_max_constraints,
+                    PROPAGATION_COLOR_TAIL + 2,
+                    self.color_world_offsets,
+                    self.color_world_row_order,
+                    self.propagation_row_type,
+                    self.propagation_row_parent,
+                    self.propagation_body_a,
+                    self.propagation_body_b,
+                    self.propagation_body_local_slot,
+                ],
+                outputs=[self.color_unit_meta],
+                device=device,
+            )
             wpb = self._propagation_colored_worlds_per_block
             wp.launch_tiled(
                 self._pgs_solve_propagation_colored_warp_kernel,
@@ -7791,6 +7819,7 @@ class SolverFeatherPGS(SolverBase):
                     self.propagation_body_list,
                     self.propagation_body_count,
                     self.propagation_body_local_slot,
+                    self.color_unit_meta,
                     omega,
                     int(regularize and self._regularization_enabled),
                     int(friction_start_iteration),
@@ -16739,6 +16768,352 @@ def _get_color_propagation_prebuild_kernel(
     return wp.kernel(enable_backward=False, module="unique")(color_propagation_prebuild_template)
 
 
+PAYLOAD_LANE_WORDS = 100
+"""Shared staging words per lane for one unit: 3 rows x 32 words, then its 3 impulses, padded."""
+
+
+def _colored_staging_supported(device_arch: int, lanes: int, world_count: int, max_bodies: int) -> bool:
+    """Whether the colored solve stages each color's payload in shared memory.
+
+    A few large worlds stage, one world per block; many worlds keep the packing for
+    occupancy. Staging needs the lane-per-unit body, compute capability 8.0 or newer
+    for ``cp.async``, and the staging buffers within the static shared-memory budget.
+    """
+    shared_bytes = (
+        2 * 32 * PAYLOAD_LANE_WORDS * 4
+        + 3 * 32 * PROPAGATION_UNIT_META * 4
+        + (PROPAGATION_COLOR_TAIL + 2) * 4
+        + max_bodies * 48
+    )
+    return device_arch >= 80 and lanes == 1 and world_count <= 16 and shared_bytes <= 45056
+
+
+def _colored_payload_copy(P: int = 3) -> str:
+    """CUDA issuing ``cp.async`` copies of one unit's static payload into ``s_pay``.
+
+    Expects ``cps`` (the lane's staging base, a shared-space address), ``cp_slot`` (the
+    unit's start slot), ``m`` and ``world_base``. Per row, at 32-word blocks: row type,
+    effective mass inverse, body a, body b, rhs, regularization weight, friction
+    coefficient, parent, then J_a, J_b, MiJt_a, MiJt_b (6 words each, copied as 8-byte
+    pairs). The unit's own impulses follow at word 96: only this unit writes them, so
+    they cannot change between the copy and its solve. The regularization weight is
+    copied only when ``regularize`` is set: otherwise its buffer is a one-element
+    placeholder.
+    """
+    scalars = [
+        "propagation_row_type",
+        "propagation_eff_mass_inv",
+        "propagation_body_a",
+        "propagation_body_b",
+        "propagation_rhs",
+        "propagation_row_w",
+        "propagation_row_mu",
+        "propagation_row_parent",
+    ]
+    vectors = ["propagation_J_a", "propagation_J_b", "propagation_MiJt_a", "propagation_MiJt_b"]
+    rows = []
+    for r in range(P):
+        lines = [f"const int off = world_base + ((cp_slot + {r} < m) ? cp_slot + {r} : cp_slot);"]
+        for n, name in enumerate(scalars):
+            copy = f"cp_async4(cps + {(r * 32 + n) * 4}u, &{name}.data[off]);"
+            lines.append(f"if (regularize) {copy}" if name == "propagation_row_w" else copy)
+        for v, name in enumerate(vectors):
+            for p in range(3):
+                lines.append(f"cp_async8(cps + {(r * 32 + 8 + 6 * v + 2 * p) * 4}u, &{name}.data[off * 6 + {2 * p}]);")
+        lines.append(f"cp_async4(cps + {(3 * 32 + r) * 4}u, &propagation_impulses.data[off]);")
+        rows.append("                { " + " ".join(lines) + " }")
+    return "\n".join(rows)
+
+
+def _colored_prefetch_unit_body(
+    contact_type: int, friction_type: int, prefetch_rows: int = 3, staged: bool = False
+) -> str:
+    """CUDA body solving one contact unit on a single lane with its rows prefetched.
+
+    The unit's first ``prefetch_rows`` rows (the contact row and its friction pair in
+    the common layout) are loaded in one batch before any arithmetic, so the solve
+    pays one memory round trip for its row payload instead of a chain of dependent
+    loads per row. Rows past the window fall back to direct loads. The arithmetic,
+    its order, and every write match the lane-per-unit (``R == 1``) body, so the
+    results are bitwise identical to it; the second friction row of a pair, which
+    that body stores back unchanged, is skipped.
+
+    With ``staged`` the lane's first unit of each color reads its payload from the
+    shared buffer ``s_pay`` that the color loop filled with ``cp.async`` during the
+    previous color (layout: :func:`_colored_payload_copy`); other units load directly.
+    """
+    P = int(prefetch_rows)
+
+    def reg(i: int) -> dict:
+        return {
+            "type": f"p_type[{i}]",
+            "eff": f"p_eff[{i}]",
+            "ba": f"p_ba[{i}]",
+            "bb": f"p_bb[{i}]",
+            "rhs": f"p_rhs[{i}]",
+            "w": f"p_w[{i}]",
+            "mu": f"p_mu[{i}]",
+            "par": f"p_par[{i}]",
+            "imp": f"u_imp[{i}]",
+            "Ja": lambda k: f"p_Ja[{i}][{k}]",
+            "Jb": lambda k: f"p_Jb[{i}][{k}]",
+            "Ma": lambda k: f"p_Ma[{i}][{k}]",
+            "Mb": lambda k: f"p_Mb[{i}][{k}]",
+            "store": lambda v: f"u_imp[{i}] = {v}; propagation_impulses.data[world_base + start_slot + {i}] = {v};",
+        }
+
+    def glob(o: str) -> dict:
+        return {
+            "type": f"propagation_row_type.data[{o}]",
+            "eff": f"propagation_eff_mass_inv.data[{o}]",
+            "ba": f"propagation_body_a.data[{o}]",
+            "bb": f"propagation_body_b.data[{o}]",
+            "rhs": f"propagation_rhs.data[{o}]",
+            "w": f"propagation_row_w.data[{o}]",
+            "mu": f"propagation_row_mu.data[{o}]",
+            "par": f"propagation_row_parent.data[{o}]",
+            "imp": f"propagation_impulses.data[{o}]",
+            "Ja": lambda k: f"propagation_J_a.data[({o}) * 6 + {k}]",
+            "Jb": lambda k: f"propagation_J_b.data[({o}) * 6 + {k}]",
+            "Ma": lambda k: f"propagation_MiJt_a.data[({o}) * 6 + {k}]",
+            "Mb": lambda k: f"propagation_MiJt_b.data[({o}) * 6 + {k}]",
+            "store": lambda v: f"propagation_impulses.data[{o}] = {v};",
+        }
+
+    def body_update(x: dict, delta: str) -> str:
+        la = " ".join(
+            f"s_qd[la * 6 + {e}] += {x['Ma'](e)} * {delta}; s_imp[la * 6 + {e}] += {x['Ja'](e)} * {delta};"
+            for e in range(6)
+        )
+        lb = " ".join(
+            f"s_qd[lb * 6 + {e}] += {x['Mb'](e)} * {delta}; s_imp[lb * 6 + {e}] += {x['Jb'](e)} * {delta};"
+            for e in range(6)
+        )
+        return f"if (la >= 0) {{ {la} }} if (lb >= 0) {{ {lb} }}"
+
+    def solve_row(me: dict, sib: dict, end_unit: str, sib_decl: str = "") -> str:
+        # The reference body interleaves the sibling residual and the cross term per k;
+        # keep that summation order.
+        sib_loop = " ".join(
+            f"if (la >= 0) sibling_residual += {sib['Ja'](k)} * s_qd[la * 6 + {k}]; "
+            f"if (la >= 0) cross += {me['Ja'](k)} * {sib['Ma'](k)}; "
+            f"if (lb >= 0) sibling_residual += {sib['Jb'](k)} * s_qd[lb * 6 + {k}]; "
+            f"if (lb >= 0) cross += {me['Jb'](k)} * {sib['Mb'](k)};"
+            for k in range(6)
+        )
+        jv_a = " ".join(f"jv += {me['Ja'](k)} * s_qd[la * 6 + {k}];" for k in range(6))
+        jv_b = " ".join(f"jv += {me['Jb'](k)} * s_qd[lb * 6 + {k}];" for k in range(6))
+        return f"""
+                const int row_type = {me["type"]};
+                if (rr > 0 && row_type != {friction_type}) {end_unit}
+                if (row_type == {friction_type} && global_iter < friction_start_iteration) {{
+                    {me["store"]("0.0f")}
+                    continue;
+                }}
+                const float eff_inv = {me["eff"]};
+                if (eff_inv <= 0.0f && row_type != 2) continue;
+                const int parent_idx = {me["par"]};
+                // The pair's second row is solved together with slot parent_idx + 1.
+                if (row_type == {friction_type} && slot != parent_idx + 1) continue;
+                const int ba = {me["ba"]};
+                const int bb = {me["bb"]};
+                const int la = (ba == u_ba) ? u_la : ((ba >= 0) ? propagation_body_local_slot.data[ba] : -1);
+                const int lb = (bb == u_bb) ? u_lb : ((bb >= 0) ? propagation_body_local_slot.data[bb] : -1);
+                float jv = 0.0f;
+                if (la >= 0) {{ {jv_a} }}
+                if (lb >= 0) {{ {jv_b} }}
+                const float residual = jv + {me["rhs"]};
+                const float old_impulse = {me["imp"]};
+                const float w = regularize ? {me["w"]} : 1.0f;
+                float new_impulse = old_impulse + omega * (-residual * eff_inv * w - (1.0f - w) * old_impulse);
+                if (row_type == {contact_type}) {{
+                    if (new_impulse < 0.0f) new_impulse = 0.0f;
+                }} else if (row_type == {friction_type}) {{
+                    float lambda_n = (parent_idx == start_slot) ? u_imp[0] : propagation_impulses.data[world_base + parent_idx];
+                    int patch_row = (parent_idx == start_slot) ? p_par[0] : propagation_row_parent.data[world_base + parent_idx];
+                    // The unit's own patch ring was loaded in the prologue; sum it in ring order.
+                    if (parent_idx == start_slot) {{
+                        #pragma unroll
+                        for (int q = 0; q < {PROPAGATION_UNIT_RING}; ++q)
+                            if (q < u_ring_n) lambda_n += u_ring_imp[q];
+                        patch_row = u_ring_after;
+                    }}
+                    for (; patch_row >= 0 && patch_row != parent_idx; patch_row = propagation_row_parent.data[world_base + patch_row])
+                        lambda_n += propagation_impulses.data[world_base + patch_row];
+                    const float radius = fmaxf({me["mu"]} * lambda_n, 0.0f);
+                    {sib_decl}
+                    const float sb_other = {sib["imp"]};
+                    float sibling_residual = {sib["rhs"]};
+                    float cross = 0.0f;
+                    {sib_loop}
+                    const float sb_eff = {sib["eff"]};
+                    float2 pair = friction_pair_candidate(eff_inv > 0.0f ? 1.0f / eff_inv : 0.0f, cross, sb_eff > 0.0f ? 1.0f / sb_eff : 0.0f,
+                        residual, sibling_residual, old_impulse, sb_other, radius, omega);
+                    new_impulse = pair.x;
+                    const float trial_sib = pair.y;
+                    const float mag = sqrtf(new_impulse * new_impulse + trial_sib * trial_sib);
+                    const float scale = mag > radius ? radius / mag : 1.0f;
+                    new_impulse *= scale;
+                    const float sib_new = trial_sib * scale;
+                    const float sib_delta = sib_new - sb_other;
+                    {sib["store"]("sib_new")}
+                    if (sib_delta != 0.0f) {{ {body_update(sib, "sib_delta")} }}
+                }}
+                const float delta_impulse = new_impulse - old_impulse;
+                {me["store"]("new_impulse")}
+                if (delta_impulse != 0.0f) {{ {body_update(me, "delta_impulse")} }}
+"""
+
+    def in_registers(code: str) -> str:
+        """Retarget a row body from the shared-memory twists to the unit's register copies."""
+        code = re.sub(r"s_qd\[la \* 6 \+ (\w+)\]", r"qa[\1]", code)
+        code = re.sub(r"s_qd\[lb \* 6 \+ (\w+)\]", r"qb[\1]", code)
+        code = re.sub(r"s_imp\[la \* 6 \+ (\w+)\]", r"ia[\1]", code)
+        code = re.sub(r"s_imp\[lb \* 6 \+ (\w+)\]", r"ib[\1]", code)
+        return code
+
+    def window_rows(registers: bool) -> str:
+        rows = []
+        for r in range(P):
+            sib = reg(r + 1) if r + 1 < P else glob("world_base + slot + 1")
+            code = solve_row(reg(r), sib, "{ unit_done = true; break; }")
+            if registers:
+                code = in_registers(code)
+            rows.append(
+                f"""
+                    do {{  // prefetched row {r}
+                        const int rr = {r};
+                        const int slot = start_slot + {r};
+                        if (slot >= m) {{ unit_done = true; break; }}
+{code}
+                    }} while (0);
+                    if (unit_done) break;"""
+            )
+        return "".join(rows)
+
+    tail = solve_row(glob("off"), glob("off + 1"), "break;")
+    prefetch = "\n".join(
+        f"""
+                {{
+                    const int slot = start_slot + {r};
+                    const int off = world_base + ((slot < m) ? slot : start_slot);
+                    p_type[{r}] = (slot < m) ? __ldg(&propagation_row_type.data[off]) : -1;
+                    p_eff[{r}] = __ldg(&propagation_eff_mass_inv.data[off]);
+                    p_ba[{r}] = __ldg(&propagation_body_a.data[off]);
+                    p_bb[{r}] = __ldg(&propagation_body_b.data[off]);
+                    p_rhs[{r}] = __ldg(&propagation_rhs.data[off]);
+                    // Without regularization the weight buffer is a one-element placeholder.
+                    p_w[{r}] = regularize ? __ldg(&propagation_row_w.data[off]) : 1.0f;
+                    p_mu[{r}] = __ldg(&propagation_row_mu.data[off]);
+                    p_par[{r}] = __ldg(&propagation_row_parent.data[off]);
+                    u_imp[{r}] = propagation_impulses.data[off];
+                    #pragma unroll
+                    for (int k = 0; k < 6; ++k) {{
+                        p_Ja[{r}][k] = __ldg(&propagation_J_a.data[off * 6 + k]);
+                        p_Jb[{r}][k] = __ldg(&propagation_J_b.data[off * 6 + k]);
+                        p_Ma[{r}][k] = __ldg(&propagation_MiJt_a.data[off * 6 + k]);
+                        p_Mb[{r}][k] = __ldg(&propagation_MiJt_b.data[off * 6 + k]);
+                    }}
+                }}"""
+        for r in range(P)
+    )
+    if staged:
+        from_smem = "\n".join(
+            f"""
+                    {{
+                        const int slot = start_slot + {r};
+                        p_type[{r}] = (slot < m) ? __float_as_int(sp[{r * 32 + 0}]) : -1;
+                        p_eff[{r}] = sp[{r * 32 + 1}];
+                        p_ba[{r}] = __float_as_int(sp[{r * 32 + 2}]);
+                        p_bb[{r}] = __float_as_int(sp[{r * 32 + 3}]);
+                        p_rhs[{r}] = sp[{r * 32 + 4}];
+                        p_w[{r}] = regularize ? sp[{r * 32 + 5}] : 1.0f;
+                        p_mu[{r}] = sp[{r * 32 + 6}];
+                        p_par[{r}] = __float_as_int(sp[{r * 32 + 7}]);
+                        u_imp[{r}] = sp[{3 * 32 + r}];
+                        #pragma unroll
+                        for (int k = 0; k < 6; ++k) {{
+                            p_Ja[{r}][k] = sp[{r * 32 + 8} + k];
+                            p_Jb[{r}][k] = sp[{r * 32 + 14} + k];
+                            p_Ma[{r}][k] = sp[{r * 32 + 20} + k];
+                            p_Mb[{r}][k] = sp[{r * 32 + 26} + k];
+                        }}
+                    }}"""
+            for r in range(P)
+        )
+        prefetch = f"""
+                if (w == seg_start + lane) {{
+                    const float* sp = &s_pay[(c & 1) * {PAYLOAD_LANE_WORDS * 32} + lane * {PAYLOAD_LANE_WORDS}];
+{from_smem}
+                }} else {{
+{prefetch}
+                }}"""
+    # A unit's rows normally all act on the unit's two bodies. Then the unit owns
+    # both twists for the whole color and keeps them in registers: the generic
+    # shared-memory accesses would otherwise serialize against every global store.
+    same_bodies = (
+        " && ".join(
+            f"(p_type[{r}] != {friction_type} || (p_ba[{r}] == u_ba && p_bb[{r}] == u_bb))" for r in range(1, P)
+        )
+        or "true"
+    )
+    return f"""
+            {{
+                int p_type[{P}], p_ba[{P}], p_bb[{P}], p_par[{P}];
+                float p_eff[{P}], p_rhs[{P}], p_w[{P}], p_mu[{P}], u_imp[{P}];
+                float p_Ja[{P}][6], p_Jb[{P}][6], p_Ma[{P}][6], p_Mb[{P}][6];
+{prefetch}
+                const int u_ba = p_ba[0];
+                const int u_bb = p_bb[0];
+                // From the unit record (um): the bodies' local slots and the contact row's
+                // first patch-ring link. Ring members are contact rows of other units on these
+                // bodies, so their impulses are fixed while this color solves.
+                const int u_la = um[1];
+                const int u_lb = um[2];
+                const int u_ring_n = um[3];
+                const int u_ring_after = um[4 + {PROPAGATION_UNIT_RING}];
+                float u_ring_imp[{PROPAGATION_UNIT_RING}];
+                #pragma unroll
+                for (int q = 0; q < {PROPAGATION_UNIT_RING}; ++q)
+                    u_ring_imp[q] = (q < u_ring_n) ? propagation_impulses.data[world_base + um[4 + q]] : 0.0f;
+                bool unit_done = false;
+                bool window_done = false;
+                if ((u_la != u_lb || u_la < 0) && {same_bodies}) {{
+                    float qa[6], qb[6], ia[6], ib[6];
+                    #pragma unroll
+                    for (int k = 0; k < 6; ++k) {{
+                        qa[k] = (u_la >= 0) ? s_qd[u_la * 6 + k] : 0.0f;
+                        ia[k] = (u_la >= 0) ? s_imp[u_la * 6 + k] : 0.0f;
+                        qb[k] = (u_lb >= 0) ? s_qd[u_lb * 6 + k] : 0.0f;
+                        ib[k] = (u_lb >= 0) ? s_imp[u_lb * 6 + k] : 0.0f;
+                    }}
+                    for (int once = 0; once < 1; ++once) {{
+{window_rows(True)}
+                        window_done = true;
+                    }}
+                    #pragma unroll
+                    for (int k = 0; k < 6; ++k) {{
+                        if (u_la >= 0) {{ s_qd[u_la * 6 + k] = qa[k]; s_imp[u_la * 6 + k] = ia[k]; }}
+                        if (u_lb >= 0) {{ s_qd[u_lb * 6 + k] = qb[k]; s_imp[u_lb * 6 + k] = ib[k]; }}
+                    }}
+                }} else {{
+                    for (int once = 0; once < 1; ++once) {{
+{window_rows(False)}
+                        window_done = true;
+                    }}
+                }}
+                if (window_done) {{
+                    for (int rr = {P}; ; ++rr) {{
+                        const int slot = start_slot + rr;
+                        if (slot >= m) break;
+                        const int off = world_base + slot;
+{tail}
+                    }}
+                }}
+            }}
+"""
+
+
 @cache
 def _get_pgs_solve_propagation_colored_warp_kernel(
     propagation_max_constraints: int,
@@ -16747,6 +17122,8 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     lanes_per_unit: int,
     worlds_per_block: int,
     device_arch: str,
+    prefetch: bool = True,
+    staged: bool = False,
 ) -> "wp.Kernel":
     """Build the warp-per-world colored solver with sub-warp unit cooperation.
 
@@ -16966,6 +17343,107 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             }}
 """
 
+    _prefetch = R == 1 and bool(prefetch)
+    if _prefetch:
+        coop_body = _colored_prefetch_unit_body(contact_type, friction_type, staged=staged)
+    staged = bool(staged) and _prefetch
+    if staged:
+        # Two-deep software pipeline for one world per block. While color c solves, the
+        # warp copies color c+1's unit payloads into shared memory with cp.async (no
+        # registers held, no stall) and loads color c+2's unit records, so a lane starts
+        # each color with its unit's rows one shared-memory load away.
+        assert W == 1
+        MR = int(PROPAGATION_UNIT_META)
+        PL = int(PAYLOAD_LANE_WORDS)
+        copy = _colored_payload_copy()
+        meta_copy = "\n".join(
+            f"cp_async4(cms + {4 * e}u, &propagation_unit_meta.data[(world_base + mp) * {MR} + {e}]);"
+            for e in range(MR)
+        )
+        color_loop_head = f"""    __shared__ __align__(16) float s_pay[2 * 32 * {PL}];
+    __shared__ __align__(16) int s_meta[3 * 32 * {MR}];
+    __shared__ int s_off[{NE}];
+    const auto cp_async4 = [](unsigned dst, const void* src) {{
+        asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\\n" :: "r"(dst), "l"(src) : "memory");
+    }};
+    const auto cp_async8 = [](unsigned dst, const void* src) {{
+        asm volatile("cp.async.ca.shared.global [%0], [%1], 8;\\n" :: "r"(dst), "l"(src) : "memory");
+    }};
+    const unsigned s_pay_base = (unsigned)__cvta_generic_to_shared(s_pay) + lane * {PL * 4}u;
+    const unsigned s_meta_base = (unsigned)__cvta_generic_to_shared(s_meta) + lane * {MR * 4}u;
+    for (int i = lane; i < {NE}; i += 32) s_off[i] = world_color_offsets.data[off_base + i];
+    __syncwarp();
+    // Unit records of colors 0 and 1, then the payload of color 0.
+    {{
+        int mp = lane;
+        unsigned cms = s_meta_base;
+        if (mp < n_units) {{ {meta_copy} }}
+        mp = s_off[1] + lane;
+        cms = s_meta_base + {32 * MR * 4}u;
+        if (mp < n_units) {{ {meta_copy} }}
+    }}
+    asm volatile("cp.async.commit_group;\\n" ::: "memory");
+    asm volatile("cp.async.wait_all;\\n" ::: "memory");
+    if (lane < s_off[1]) {{
+        const unsigned cps = s_pay_base;
+        const int cp_slot = s_meta[lane * {MR}];
+{copy}
+    }}
+    asm volatile("cp.async.commit_group;\\n" ::: "memory");
+    int seg_start = 0;
+    for (int c = 0; c + 1 < {NE} && seg_start < n_units; ++c) {{
+        const int seg_end = s_off[c + 1];
+        const int next_end = (c + 2 < {NE}) ? s_off[c + 2] : seg_end;
+        // This color's payload and the next color's unit records have arrived.
+        asm volatile("cp.async.wait_all;\\n" ::: "memory");
+        if (seg_end + lane < next_end) {{
+            const unsigned cps = s_pay_base + ((c + 1) & 1) * {32 * PL * 4}u;
+            const int cp_slot = s_meta[(((c + 1) % 3) * 32 + lane) * {MR}];
+{copy}
+        }}
+        {{
+            const int mp = next_end + lane;
+            const unsigned cms = s_meta_base + ((c + 2) % 3) * {32 * MR * 4}u;
+            if (mp < n_units) {{ {meta_copy} }}
+        }}
+        asm volatile("cp.async.commit_group;\\n" ::: "memory");
+        const int* cm = &s_meta[((c % 3) * 32 + lane) * {MR}];"""
+        unit_head = f"""                int um[{MR}];
+                #pragma unroll
+                for (int e = 0; e < {MR}; ++e)
+                    um[e] = (w == seg_start + lane) ? cm[e] : __ldg(&propagation_unit_meta.data[(world_base + w) * {MR} + e]);
+                const int start_slot = um[0];"""
+        color_loop_tail = ""
+    elif _prefetch:
+        # Software-pipelined color loop: the next color's segment end and each lane's
+        # next unit record are static, so they load while the current color solves.
+        MR = int(PROPAGATION_UNIT_META)
+        color_loop_head = f"""    int seg_start = 0;
+    int seg_end_next = world_color_offsets.data[off_base + 1];
+    int nm[{MR}];
+    #pragma unroll
+    for (int e = 0; e < {MR}; ++e) nm[e] = (lane < n_units) ? __ldg(&propagation_unit_meta.data[(world_base + lane) * {MR} + e]) : -1;
+    for (int c = 0; c + 1 < {NE} && seg_start < n_units; ++c) {{
+        const int seg_end = seg_end_next;
+        seg_end_next = (c + 2 < {NE}) ? world_color_offsets.data[off_base + c + 2] : seg_end;
+        int cm[{MR}];
+        #pragma unroll
+        for (int e = 0; e < {MR}; ++e) cm[e] = nm[e];
+        #pragma unroll
+        for (int e = 0; e < {MR}; ++e)
+            nm[e] = (seg_end + lane < n_units) ? __ldg(&propagation_unit_meta.data[(world_base + seg_end + lane) * {MR} + e]) : -1;"""
+        unit_head = f"""                int um[{MR}];
+                #pragma unroll
+                for (int e = 0; e < {MR}; ++e)
+                    um[e] = (w == seg_start + lane) ? cm[e] : __ldg(&propagation_unit_meta.data[(world_base + w) * {MR} + e]);
+                const int start_slot = um[0];"""
+        color_loop_tail = ""
+    else:
+        color_loop_head = f"""    int seg_start = 0;
+    for (int c = 0; c + 1 < {NE} && seg_start < n_units; ++c) {{
+        const int seg_end = world_color_offsets.data[off_base + c + 1];"""
+        unit_head = "                const int start_slot = world_row_order.data[world_base + w];"
+        color_loop_tail = ""
     snippet = f"""
 #if defined(__CUDA_ARCH__)
     const int t = threadIdx.x;
@@ -16995,12 +17473,10 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     const int grp = lane / {R};
     const int gl = lane - grp * {R};
 
-    int seg_start = 0;
-    for (int c = 0; c + 1 < {NE} && seg_start < n_units; ++c) {{
-        const int seg_end = world_color_offsets.data[off_base + c + 1];
+{color_loop_head}
         if (c + 2 < {NE}) {{
             for (int w = seg_start + grp; w < seg_end; w += (32 / {R})) {{
-                const int start_slot = world_row_order.data[world_base + w];
+{unit_head}
 {coop_body}
             }}
         }} else if (lane == 0) {{
@@ -17011,6 +17487,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         }}
         __syncwarp();
         seg_start = seg_end;
+{color_loop_tail}
     }}
 
     __syncwarp();
@@ -17046,6 +17523,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_body_list: wp.array2d[int],
         propagation_body_count: wp.array[int],
         propagation_body_local_slot: wp.array[int],
+        propagation_unit_meta: wp.array[int],
         omega: float,
         regularize: int,
         friction_start_iteration: int,
@@ -17075,6 +17553,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
         propagation_body_list: wp.array2d[int],
         propagation_body_count: wp.array[int],
         propagation_body_local_slot: wp.array[int],
+        propagation_unit_meta: wp.array[int],
         omega: float,
         regularize: int,
         friction_start_iteration: int,
@@ -17105,6 +17584,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             propagation_body_list,
             propagation_body_count,
             propagation_body_local_slot,
+            propagation_unit_meta,
             omega,
             regularize,
             friction_start_iteration,
@@ -17114,7 +17594,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
             propagation_body_impulses,
         )
 
-    name = f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}"
+    name = f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}_pf{int(_prefetch)}_st{int(staged)}"
     pgs_solve_propagation_colored_warp_template.__name__ = name
     pgs_solve_propagation_colored_warp_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation_colored_warp_template)
