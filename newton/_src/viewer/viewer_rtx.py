@@ -213,7 +213,9 @@ class ViewerRTX(ViewerUSD):
                 and lifetime; the viewer only writes transforms of the prims
                 bound in :meth:`set_model` and adds its camera, render
                 product, and debug geometry under ``/__newton_viewer``.
-                ``environment`` is ignored. Requires OVRTX 0.4 or newer.
+                ``environment`` is ignored. Requires OVRTX 0.4 or newer and
+                a stage created with GPU hierarchy computation, so that
+                descendants of bound prims follow the written transforms.
             render_settings: ``omni:rtx:*`` attribute overrides applied to the
                 viewer's render product, e.g.
                 ``{"omni:rtx:pt:samplesPerPixel": 4}``. A value may be a
