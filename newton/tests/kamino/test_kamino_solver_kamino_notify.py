@@ -182,6 +182,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
             newton.ModelFlags.SHAPE_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES,
             newton.ModelFlags.ACTUATOR_PROPERTIES,
             newton.ModelFlags.CONSTRAINT_PROPERTIES,
             newton.ModelFlags.TENDON_PROPERTIES,
@@ -628,8 +631,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 model.joint_target_ke.assign([value])
                 model.joint_target_kd.assign([value])
 
-                with self.assertRaisesRegex(RuntimeError, "recreate"):
-                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                for flag in (newton.ModelFlags.JOINT_DOF_PROPERTIES, newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES):
+                    with self.subTest(flag=flag), self.assertRaisesRegex(RuntimeError, "recreate"):
+                        solver.notify_model_changed(flag)
 
     def test_dynamic_coefficient_edit_is_allowed(self):
         """Dynamic coefficient edits are allowed while the dynamic predicate stays true."""
@@ -759,8 +763,21 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
         model.joint_friction.assign([1.0])
 
-        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        for flag in (
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES,
+        ):
+            with self.subTest(flag=flag), self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
+                solver.notify_model_changed(flag)
+
+    def test_friction_damping_flag_checks_damping_allocation(self):
+        """Reject damping edits that require new dynamic constraint rows with the narrow flag."""
+        model = _build_revolute()
+        solver = SolverKamino(model)
+        model.joint_damping.fill_(1.0)
+        with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
 
     def test_enabling_friction_on_unallocated_axis_raises(self):
         """Reject friction enabled on an axis without a preallocated row."""

@@ -590,10 +590,17 @@ class SolverBase:
         internal buffers without having to recreate the whole solver object.
         Valid flags are:
 
-        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
-          have changed.
-        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
-          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, coordinates,
+          or reference poses have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Full joint DOF update, including
+          force, armature, and reference-pose properties (legacy behavior).
+        * ``ModelFlags.JOINT_DOF_FORCE_PROPERTIES``: Joint friction, damping,
+          target gains/modes, effort limits, passive stiffness, or limit
+          coefficients/bounds have changed.
+        * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
+        * ``ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES``: Joint friction,
+          passive damping, or their associated solver parameters have changed.
+          This excludes target gains, passive stiffness, and joint limits.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia

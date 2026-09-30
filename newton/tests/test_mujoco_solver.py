@@ -1100,8 +1100,12 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
 
         with wp.ScopedDevice(device):
-            for kinematic in (False, True):
-                with self.subTest(kinematic=kinematic):
+            for kinematic, flags in (
+                (kinematic, flags)
+                for kinematic in (False, True)
+                for flags in (ModelFlags.JOINT_DOF_PROPERTIES, ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            ):
+                with self.subTest(kinematic=kinematic, flags=flags):
                     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
                     SolverMuJoCo.register_custom_attributes(builder)
                     body = builder.add_link(
@@ -1130,7 +1134,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                         iterations=1,
                     )
                     with wp.ScopedCapture(device=device) as capture:
-                        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                        solver.notify_model_changed(flags)
 
                     wp.capture_launch(capture.graph)
                     np.testing.assert_array_equal(model.mujoco.solreflimit_mode.numpy(), SOLREF_MODE_MJCF_DEFAULT)

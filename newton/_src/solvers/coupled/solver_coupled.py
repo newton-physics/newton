@@ -2956,7 +2956,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._refresh_body_inertial_view_overrides(entry)
                 entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
 
-            if flags & int(ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+            if flags & int(
+                ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
@@ -2979,12 +2981,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             if frequency == model_frequency.BODY:
                 return True
+        configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD):
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or configuration_dof:
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
             if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
                 return True
+        if flags & int(ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            if (
+                frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
+            ) or attribute.name == "joint_target_q":
+                return True
+        if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
+            return True
+        if flags & int(ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES) and attribute.name in (
+            "joint_friction",
+            "joint_damping",
+            "mujoco:solreffriction",
+            "mujoco:solimpfriction",
+        ):
+            return True
         if flags & int(ModelFlags.SHAPE_PROPERTIES):
             if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
                 return True

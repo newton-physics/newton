@@ -14,10 +14,10 @@ class ModelFlags(IntEnum):
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, and reference poses (including MuJoCo dof_ref and dof_springref)."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Retains the full joint DOF update, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -40,6 +40,15 @@ class ModelFlags(IntEnum):
     ACTUATOR_PROPERTIES = 1 << 8
     """Indicates actuator property updates: gains, biases, limits, etc."""
 
+    JOINT_DOF_FORCE_PROPERTIES = 1 << 9
+    """Indicates joint force updates: friction, damping, target gains/modes, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
+
+    JOINT_DOF_INERTIAL_PROPERTIES = 1 << 10
+    """Indicates joint inertial property updates: joint_armature."""
+
+    JOINT_DOF_FRICTION_DAMPING_PROPERTIES = 1 << 11
+    """Indicates joint_friction, joint_damping, and associated solver parameter updates (MuJoCo solreffriction and solimpfriction). Excludes target gains, passive stiffness, limits, armature, and reference poses."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -50,6 +59,9 @@ class ModelFlags(IntEnum):
         | CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
+        | JOINT_DOF_FORCE_PROPERTIES
+        | JOINT_DOF_INERTIAL_PROPERTIES
+        | JOINT_DOF_FRICTION_DAMPING_PROPERTIES
     )
     """Indicates all property updates."""
 

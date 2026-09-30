@@ -101,6 +101,7 @@ at the solver boundary:
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` or the broad
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
@@ -1004,56 +1005,67 @@ for a fixed-root articulation after constructing the solver, call
 synchronize the updated fixed-root poses into MuJoCo.
 
 
-Per-step joint friction and damping
--------------------------------------
+Updating joint force properties
+-------------------------------
 
-Actuator models with load-dependent friction can write their effective budgets
-to :attr:`~newton.Model.joint_friction` and :attr:`~newton.Model.joint_damping`,
-then call :meth:`~newton.solvers.SolverMuJoCo.update_joint_dof_passive_properties`
-before stepping. This method copies those arrays and the optional MuJoCo
-``solreffriction`` and ``solimpfriction`` custom attributes to the solver for
-all mapped DOFs. It preserves the solver values of absent optional attributes.
+Use :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` with
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` to publish joint
+friction, damping, target gains/modes, effort limits, passive stiffness, and
+limit coefficients/bounds. This includes the MuJoCo ``solreffriction``,
+``solimpfriction``, ``dof_passive_stiffness``, ``limit_margin``, ``solimplimit``,
+and ``solreflimit`` custom attributes. Optional attributes that are absent
+retain their solver values. General MuJoCo actuator properties still use
+:attr:`~newton.ModelFlags.ACTUATOR_PROPERTIES`.
 
-The MuJoCo Warp path supports CUDA graph capture. It runs a single scatter
-kernel when sleeping is disabled, without recomputing constants, actuator
-length ranges, reference poses, or joint-limit parameters, and without
-invalidating cached contact data. When sleeping is enabled, it also wakes all
-worlds so changed parameters take effect. The MuJoCo CPU backend copies the
-same fields to its host model and cannot be captured.
+The force flag skips mass-constant recomputation, reference-pose updates, and
+contact-cache invalidation. Joint-limit coefficients use the cached inverse
+weights. Compiled actuator length ranges are preserved.
+When sleeping is enabled, updated parameters wake all worlds. The MuJoCo Warp
+path supports CUDA graph capture; the MuJoCo CPU backend copies values to its
+host model and cannot be captured.
 
-For example, given device arrays ``friction_budget`` and ``damping_budget``
-with one entry per Newton DOF, the publication and simulation step can share a
-graph:
+For per-step friction and damping alone, use
+:attr:`~newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES`. It publishes
+``joint_friction``, ``joint_damping``, ``mujoco.solreffriction``, and
+``mujoco.solimpfriction`` with a single scatter kernel on MuJoCo Warp when
+sleeping is disabled. It skips gain, stiffness, and joint-limit updates as
+well as constant recomputation. Sleeping worlds are
+still awakened when sleeping is enabled. Both broader DOF flags include this
+update; combining flags publishes the shared fields only once.
+
+Use :attr:`~newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES` for
+:attr:`~newton.Model.joint_armature` changes. Reference-pose changes, including
+MuJoCo ``dof_ref`` and ``dof_springref``, use
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES`. These paths recompute constants;
+configuration updates also shift limit ranges to the new reference. Combine
+flags with ``|`` when several categories change. The existing
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` flag retains its integer value
+and full-update behavior, including force, armature, and reference properties.
+
+For example, actuator models with load-dependent friction can compute effective
+budgets and publish them in the same graph as the simulation step. Given device
+arrays ``friction_budget`` and ``damping_budget`` with one entry per Newton DOF:
 
 .. code-block:: python
 
     with wp.ScopedCapture(device=model.device) as capture:
         wp.copy(model.joint_friction, friction_budget)
         wp.copy(model.joint_damping, damping_budget)
-        solver.update_joint_dof_passive_properties()
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
         solver.step(state_in, state_out, control, contacts, dt)
 
 The budget computation can precede these copies in the same graph. For an
-actuator controlling only some DOFs, scatter into just those Newton model
-entries before calling the method; other model entries retain their authored
-values. No MuJoCo DOF mapping or backend array access is needed.
+actuator controlling only some DOFs, scatter into those Newton model entries
+before notifying the solver; other entries retain their authored values. No
+MuJoCo DOF mapping or backend array access is needed.
 
 The model arrays hold the **effective total** friction and damping. Publication
 replaces solver values rather than adding an actuator contribution to authored
-passive damping. The caller owns combining those contributions, if desired,
-and should retain any authored baseline separately instead of adding it to the
-previous step's total. Apply reset-time property changes first, then compute
-and publish the next step's budgets. A full
-``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)`` copies the same model
-arrays: it preserves the live budget unless another writer has changed those
-source entries. Direct writes to MuJoCo backend arrays are overwritten by the
-next publication or full notification.
-
-Armature, passive spring stiffness, limits, actuator gains, and reference poses
-still require the corresponding full model notification. This method addresses
-parameter publication; it does not provide actuator external-load feedback.
-It introduces no new authored properties or USD schema: it synchronizes the
-existing runtime model arrays.
+passive damping. Retain any authored baseline separately when combining
+contributions. Apply reset-time inertia and configuration changes first, then
+compute and publish the next step's budgets. Full notifications also copy the
+current budgets. This API synchronizes existing runtime model arrays; it does
+not add actuator external-load feedback or authored USD properties.
 
 
 .. _mujoco-code-pointers:

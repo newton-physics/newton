@@ -96,13 +96,14 @@ from .kernels import (
     update_body_properties_kernel,
     update_connect_constraint_anchors_kernel,
     update_connect_constraint_rel_body_poses_at_qref_kernel,
-    update_dof_properties_kernel,
+    update_dof_force_properties_kernel,
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
     update_jnt_connect_constraint_anchors_kernel,
     update_jnt_connect_constraint_rel_body_poses_at_qref_kernel,
     update_jnt_properties_kernel,
+    update_jnt_reference_kernel,
     update_jnt_solref_from_invweight0_kernel,
     update_joint_limit_solref_mode_kernel,
     update_joint_mimic_eq_data_kernel,
@@ -4916,63 +4917,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with self._scoped_mujoco_warp_execution():
                 self._notify_model_changed(flags)
 
-    def update_joint_dof_passive_properties(self) -> None:
-        """Synchronize joint friction and damping from the Newton model.
-
-        Copy :attr:`Model.joint_friction`, :attr:`Model.joint_damping`, and the
-        optional ``model.mujoco.solreffriction`` and ``solimpfriction`` arrays
-        for all mapped DOFs. Missing optional attributes retain their current
-        MuJoCo values. This excludes armature, passive spring stiffness,
-        limits, actuator gains, and reference poses;
-        changes to those properties still require :meth:`notify_model_changed`.
-
-        The MuJoCo Warp path supports CUDA graph capture and does not recompute
-        model constants or invalidate cached contact data. Sleeping worlds are
-        awakened when sleeping is enabled. The CPU backend synchronizes the
-        same fields to the host model and does not support graph capture.
-
-        Write the effective friction and damping into the model before calling
-        this method and stepping. Values replace rather than add to authored
-        passive damping; callers must compose any desired contributions.
-        Full notifications copy these same model arrays, so they preserve the
-        current budget unless another writer has changed the source values.
-        Apply reset-time property edits before publishing each step's budget.
-        """
-        if self.model.joint_dof_count == 0:
-            return
-        attrs = getattr(self.model, "mujoco", None)
-        with self._scoped_mujoco_warp_execution():
-            wp.launch(
-                update_dof_properties_kernel,
-                dim=self.mjc_dof_to_newton_dof.shape,
-                inputs=[
-                    self.mjc_dof_to_newton_dof,
-                    None,  # Armature and body properties are outside this update scope.
-                    None,
-                    None,
-                    self.model.joint_friction,
-                    self.model.joint_damping,
-                    getattr(attrs, "solimpfriction", None),
-                    getattr(attrs, "solreffriction", None),
-                ],
-                outputs=[
-                    None,
-                    self.mjw_model.dof_frictionloss,
-                    self.mjw_model.dof_damping,
-                    self.mjw_model.dof_solimp,
-                    self.mjw_model.dof_solref,
-                ],
-                device=self.model.device,
-            )
-            if not self.use_mujoco_cpu and self.enable_sleeping:
-                self._wake_sleeping_worlds()
-        if self.use_mujoco_cpu:
-            for name in ("dof_frictionloss", "dof_damping", "dof_solimp", "dof_solref"):
-                getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
-
     def _notify_model_changed(self, flags: ModelFlags | int) -> None:
         need_const_fixed = False
         need_const_0 = False
+        update_force = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
+        update_friction_damping = update_force or bool(flags & ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
+        update_inertia = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES))
+        update_configuration = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES))
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_cone_shape_scales()
@@ -4989,16 +4940,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_const_0 = True
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
-        if flags & ModelFlags.BODY_PROPERTIES:
+        if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
             self._update_body_properties()
             self._invalidate_contact_fast_path()
             need_const_0 = True
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            self._update_joint_dof_properties()
+        if update_configuration:
+            self._update_joint_dof_configuration_properties()
             self._invalidate_contact_fast_path()
+            need_const_0 = True
+        if update_friction_damping:
+            self._update_joint_dof_friction_damping_properties()
+        if update_force:
+            self._update_joint_dof_force_properties()
             # Defer host validation during capture until the next eager solref update.
             self._raw_solreflimit_validated = False
-            need_const_0 = True
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
             self._update_site_properties()
@@ -5025,10 +4980,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             flags & ModelFlags.CONSTRAINT_PROPERTIES
         )
 
-        # ``need_const_0`` already covers every update that changes the derived
-        # ``dof_invweight0`` factors or the source joint-limit data, so it also
-        # captures every case that needs ``jnt_solref`` to be re-scaled.
-        need_solref_update = need_const_0
+        # Force-only updates reuse the cached inverse weights. Inertial and
+        # configuration changes refresh them before converting limit gains.
+        need_solref_update = need_const_0 or update_force
 
         if self.use_mujoco_cpu:
             if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
@@ -5036,15 +4990,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
                 self._sync_mjw_inertias_to_mjc_cpu()
-            if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+            if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+            if update_force:
+                self.mj_model.actuator_gainprm[:] = self.mjw_model.actuator_gainprm.numpy()[0]
+                self.mj_model.actuator_biasprm[:] = self.mjw_model.actuator_biasprm.numpy()[0]
+            if update_friction_damping:
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
                 self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
                 self.mj_model.dof_solimp[:] = self.mjw_model.dof_solimp.numpy()[0]
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
+            if update_configuration:
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
-            if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+                self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
+            if update_force:
                 self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
                 self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
@@ -5055,16 +5015,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
-                # ``mj_setConst`` refreshes the derived ``dof_invweight0``
-                # factors; ``jnt_solimp`` was already written by
-                # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
                 self._update_tendon_limit_gains()
             # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
-            self._notify_connect_constraints_changed(
-                update_connect_constraint_anchor_rel_xform_at_ref_pose,
-                update_connect_constraint_anchors,
-            )
+            if (
+                need_const_0
+                or update_connect_constraint_anchor_rel_xform_at_ref_pose
+                or update_connect_constraint_anchors
+            ):
+                self._notify_connect_constraints_changed(
+                    update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                    update_connect_constraint_anchors,
+                )
             if flags & ModelFlags.CONSTRAINT_PROPERTIES:
                 self._sync_equality_properties_to_mujoco_cpu()
 
@@ -5084,16 +5046,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     if need_const_0:
                         self._set_const_0_with_physical_meaninertia()
                     if need_solref_update:
-                        # ``set_const_0`` refreshes ``dof_invweight0`` and
-                        # ``jnt_solimp`` was already written by
-                        # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
                         self._update_tendon_limit_gains()
                     # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
-                    self._notify_connect_constraints_changed(
-                        update_connect_constraint_anchor_rel_xform_at_ref_pose,
-                        update_connect_constraint_anchors,
-                    )
+                    if (
+                        need_const_0
+                        or update_connect_constraint_anchor_rel_xform_at_ref_pose
+                        or update_connect_constraint_anchors
+                    ):
+                        self._notify_connect_constraints_changed(
+                            update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                            update_connect_constraint_anchors,
+                        )
 
             if flags & ModelFlags.SHAPE_PROPERTIES:
                 self._sync_worldbody_geom_xposes()
@@ -8617,13 +8581,38 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_joint_dof_properties(self):
-        """Update joint DOF properties in the MuJoCo model.
+    def _update_joint_dof_friction_damping_properties(self):
+        """Publish friction, damping, and their solver parameters with one scatter kernel."""
+        if self.model.joint_dof_count == 0:
+            return
+        # Publish passive force parameters for every mapped MuJoCo DOF.
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
+        dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
 
-        Updates effort limits, friction, damping, solimp/solref, passive
-        stiffness, and limit ranges. Armature is updated for dynamic DOFs only;
-        DOFs attached to kinematic bodies are preserved.
-        """
+        nworld = self.mjc_dof_to_newton_dof.shape[0]
+        nv = self.mjc_dof_to_newton_dof.shape[1]
+        wp.launch(
+            update_dof_force_properties_kernel,
+            dim=(nworld, nv),
+            inputs=[
+                self.mjc_dof_to_newton_dof,
+                self.model.joint_friction,
+                self.model.joint_damping,
+                dof_solimp,
+                dof_solref,
+            ],
+            outputs=[
+                self.mjw_model.dof_frictionloss,
+                self.mjw_model.dof_damping,
+                self.mjw_model.dof_solimp,
+                self.mjw_model.dof_solref,
+            ],
+            device=self.model.device,
+        )
+
+    def _update_joint_dof_force_properties(self):
+        """Publish joint gains, stiffness, and limits without refreshing inertia or reference poses."""
         if self.model.joint_dof_count == 0:
             return
         if self.newton_dof_to_body is None:
@@ -8653,42 +8642,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature, friction, damping, solimp, solref) - iterate over MuJoCo DOFs
         mujoco_attrs = getattr(self.model, "mujoco", None)
-        dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
-        dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
-
-        nworld = self.mjc_dof_to_newton_dof.shape[0]
-        nv = self.mjc_dof_to_newton_dof.shape[1]
-        wp.launch(
-            update_dof_properties_kernel,
-            dim=(nworld, nv),
-            inputs=[
-                self.mjc_dof_to_newton_dof,
-                self.newton_dof_to_body,
-                self.model.body_flags,
-                self.model.joint_armature,
-                self.model.joint_friction,
-                self.model.joint_damping,
-                dof_solimp,
-                dof_solref,
-            ],
-            outputs=[
-                self.mjw_model.dof_armature,
-                self.mjw_model.dof_frictionloss,
-                self.mjw_model.dof_damping,
-                self.mjw_model.dof_solimp,
-                self.mjw_model.dof_solref,
-            ],
-            device=self.model.device,
-        )
+        nworld = self.mjc_jnt_to_newton_dof.shape[0]
 
         # Update joint properties (limits, stiffness, solimp) per MuJoCo joint.
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
 
-        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         njnt = self.mjc_jnt_to_newton_dof.shape[1]
         wp.launch(
             update_jnt_properties_kernel,
@@ -8701,7 +8662,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 solimplimit,
                 joint_stiffness,
                 joint_dof_limit_margin,
-                dof_ref,
+                self.mjw_model.jnt_type,
+                self.mjw_model.jnt_qposadr,
+                self.mjw_model.qpos0,
             ],
             outputs=[
                 self.mjw_model.jnt_solimp,
@@ -8712,9 +8675,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-        # Joint-limit solref is updated later, after ``set_const_0`` /
-        # ``mj_setConst`` refresh ``dof_invweight0``. ``jnt_solimp`` already
-        # comes from the launch above.
+        # Limit solref is converted after any requested inertia refresh.
+
+    def _update_joint_dof_configuration_properties(self):
+        """Refresh reference poses and shift existing limit ranges by the reference change."""
+        if self.model.joint_dof_count == 0 or self.newton_dof_to_body is None:
+            return
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None)
+        nworld = self.mjc_jnt_to_newton_dof.shape[0]
+        wp.launch(
+            update_jnt_reference_kernel,
+            dim=self.mjc_jnt_to_newton_dof.shape,
+            inputs=[
+                self.mjc_jnt_to_newton_dof,
+                self.mjw_model.jnt_type,
+                self.mjw_model.jnt_qposadr,
+                self.mjw_model.qpos0,
+                dof_ref,
+            ],
+            outputs=[self.mjw_model.jnt_range],
+            device=self.model.device,
+        )
 
         # Sync qpos0 and qpos_spring from Newton model data before set_const.
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
@@ -9286,11 +9268,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Joints that rely on MuJoCo's implicit default ``(0.02, 1.0)`` keep that
         native default until ``joint_limit_ke`` / ``joint_limit_kd`` are changed.
 
-        This must run **after** ``_update_joint_dof_properties`` writes the
-        current ``jnt_solimp`` values and after MuJoCo refreshes
-        ``dof_invweight0`` via ``set_const_0`` / ``mj_setConst`` on the
-        current ``ModelBuilder`` / ``notify_model_changed`` cycle (and once
-        right after ``put_model`` during initialisation).
+        Run after publishing ``jnt_solimp`` and after any requested constant
+        recomputation. Force-only notifications reuse the cached
+        ``dof_invweight0``; inertia and configuration updates refresh it via
+        ``set_const_0`` / ``mj_setConst`` first.
 
         ``geom_solref`` is **not** scaled the same way: MuJoCo mixes the
         two contacting geoms' ``solref`` linearly in ``(timeconst,
@@ -9376,7 +9357,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
             # One-shot guard: avoids warning every step for the steady-state
             # callers. The flag is re-armed only by ``notify_model_changed``
-            # under ``ModelFlags.JOINT_DOF_PROPERTIES``, which is where
+            # for joint force updates (including the legacy broad flag), where
             # ``mujoco.solreflimit`` reassignments arrive; other
             # ``need_const_0`` notifies (BODY_INERTIAL_PROPERTIES, etc.) do
             # not reset it because they cannot change the authored solreflimit
