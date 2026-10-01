@@ -2526,26 +2526,11 @@ class CollisionPipeline:
             **narrow_phase_extension_kwargs,
         )
 
-        # Match contacts against previous frame before sorting.
-        if self._contact_matcher is not None:
-            if contacts.rigid_contact_match_index is None:
-                raise ValueError(
-                    "CollisionPipeline has contact_matching enabled but the "
-                    "Contacts buffer was created without contact_matching. "
-                    "Use pipeline.contacts() to create a compatible buffer."
-                )
-            self._contact_matcher.match(
-                sort_keys=self._sort_key_array,
-                contact_count=contacts.rigid_contact_count,
-                point0=contacts.rigid_contact_point0,
-                point1=contacts.rigid_contact_point1,
-                shape0=contacts.rigid_contact_shape0,
-                shape1=contacts.rigid_contact_shape1,
-                normal=contacts.rigid_contact_normal,
-                body_q=state.body_q,
-                shape_body=model.shape_body,
-                match_index_out=contacts.rigid_contact_match_index,
-                device=self.device,
+        if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
+            raise ValueError(
+                "CollisionPipeline has contact_matching enabled but the "
+                "Contacts buffer was created without contact_matching. "
+                "Use pipeline.contacts() to create a compatible buffer."
             )
 
         if self.deterministic and self._contact_sorter is not None:
@@ -2565,12 +2550,32 @@ class CollisionPipeline:
                 stiffness=contacts.rigid_contact_stiffness,
                 damping=contacts.rigid_contact_damping,
                 friction=contacts.rigid_contact_friction,
-                match_index=contacts.rigid_contact_match_index,
                 device=self.device,
             )
 
+        # Match the sorted stream against the previous frame, so every match
+        # index names a final row of this frame's buffer.
+        if self._contact_matcher is not None:
+            self._contact_matcher.match(
+                sort_keys=self._contact_sorter.sorted_keys_view,
+                contact_count=contacts.rigid_contact_count,
+                point0=contacts.rigid_contact_point0,
+                point1=contacts.rigid_contact_point1,
+                shape0=contacts.rigid_contact_shape0,
+                shape1=contacts.rigid_contact_shape1,
+                normal=contacts.rigid_contact_normal,
+                body_q=state.body_q,
+                shape_body=model.shape_body,
+                match_index_out=contacts.rigid_contact_match_index,
+                device=self.device,
+            )
+        elif contacts.rigid_contact_match_index is not None:
+            # A buffer allocated for matching may be reused by a pipeline that
+            # does not match; do not leave a previous producer's indices behind.
+            contacts.rigid_contact_match_index.fill_(-1)
+
         # Sticky mode: overwrite matched rows with the saved previous-frame
-        # contact geometry.  Must run after sort_full (so match_index points at
+        # contact geometry.  Must run after matching (so match_index points at
         # the sorted prev-frame layout *and* we target the final sorted rows)
         # and before save_sorted_state (we save the record we actually used
         # this frame, carrying the sticky history forward).
