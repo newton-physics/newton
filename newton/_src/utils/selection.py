@@ -363,6 +363,8 @@ class FrequencyLayout:
         indices: list[int],
         device,
         model_starts: list[list[int]] | None = None,
+        *,
+        model_indices: np.ndarray | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
@@ -372,6 +374,9 @@ class FrequencyLayout:
         # rows are not regularly strided (sparse/uneven worlds); ``None`` for regular layouts.
         self._selected_indices = indices
         self._model_starts = model_starts
+        # Absolute row of every selected value, shaped ``(world_count, count_per_world, len(indices))``,
+        # when the selected values are not at the same offsets in every articulation.
+        self._model_indices = None if model_indices is None else np.asarray(model_indices, dtype=np.int64)
         self._device = device
         self._model_index_cache = {}
         self.slice = None
@@ -385,7 +390,7 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None
+        return self.slice is not None and self._model_indices is None
 
     @property
     def selected_value_count(self):
@@ -408,7 +413,7 @@ class FrequencyLayout:
     @property
     def uses_explicit_model_indices(self):
         """Whether attributes require gather/scatter through absolute model indices."""
-        return self._model_starts is not None
+        return self._model_starts is not None or self._model_indices is not None
 
     def get_model_indices(self, value_slice: Slice | int | None = None):
         """Return absolute model indices for a sparse/non-uniform view layout."""
@@ -440,7 +445,17 @@ class FrequencyLayout:
         else:
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(value_slice)}")
 
-        if squeeze_value_axis:
+        if self._model_indices is not None:
+            # value offsets of the first articulation select positions among each articulation's values
+            positions = {index: position for position, index in enumerate(self._selected_indices)}
+            missing = [index for index in local_indices if index not in positions]
+            if missing:
+                raise ValueError(
+                    f"Values {missing} are not selected; this layout addresses only its selected values per articulation"
+                )
+            host_indices = self._model_indices[..., [positions[index] for index in local_indices]]
+            host_indices = np.ascontiguousarray(host_indices[..., 0] if squeeze_value_axis else host_indices)
+        elif squeeze_value_axis:
             host_indices = [[start + local_indices[0] for start in world_starts] for world_starts in self._model_starts]
         else:
             host_indices = [
@@ -583,12 +598,16 @@ def _select_positions(positions, selected):
     return lookup[positions]
 
 
-def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device):
+def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device, explicit_values=False):
     """Check one frequency of every selected articulation against the first one.
 
     Each articulation (slot) must select the same number of values, with the same offsets from its
-    origin and the same owning joint or link, and origins must be uniformly strided within and
-    between worlds.
+    origin and the same owning joint or link, and origins must be uniformly strided within worlds.
+    Origins that are not uniformly strided between worlds yield a layout with explicit model indices.
+
+    With ``explicit_values``, matching counts and owners suffice: when the offsets differ between
+    articulations or the origins are irregular within worlds, the layout records the absolute row
+    of every selected value instead.
 
     Returns:
         The layout, or ``None`` with the reason it is unavailable, and whether selected counts match.
@@ -599,30 +618,40 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
     failed = counts != count
     uniform_count = not failed.any()
     reasons = [] if uniform_count else ["selected count differs between articulations"]
+    offset_mismatch = False
     if uniform_count:
-        failed = np.zeros(slot_count, dtype=bool)
-        for values in (offsets.reshape(slot_count, count), owners.reshape(slot_count, count)):
-            mismatch = values != values[0]
-            if mismatch.any():
-                failed |= mismatch.any(axis=1)
+        slot_offsets = offsets.reshape(slot_count, count)
+        owner_mismatch = (owners.reshape(slot_count, count) != owners[:count]).any(axis=1)
+        offset_mismatch = (slot_offsets != slot_offsets[0]).any(axis=1)
+        failed = owner_mismatch if explicit_values else owner_mismatch | offset_mismatch
+        offset_mismatch = bool(offset_mismatch.any())
         if failed.any():
             reasons.append("selected values or their owners differ between articulations")
+    # rows can be addressed one value at a time when only their offsets or origins are irregular
+    index_values = explicit_values and not reasons
     grid = origins.reshape(world_count, count_per_world)
     between = int(grid[1, 0] - grid[0, 0]) if world_count > 1 else 0
     within = int(grid[0, 1] - grid[0, 0]) if count_per_world > 1 else 0
     model_starts = None
+    model_indices = None
     if count:
-        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within * np.arange(count_per_world)
-        if misplaced.any():
-            uneven_within = grid != grid[:, :1] + within * np.arange(count_per_world)
-            if uneven_within.any():
-                reasons.append("start indices are not uniformly strided")
-                failed |= misplaced.ravel()
-            else:
+        within_offsets = within * np.arange(count_per_world)
+        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within_offsets
+        regular_within = np.array_equal(grid - grid[:, :1], np.broadcast_to(within_offsets, grid.shape))
+        if index_values and (offset_mismatch or not regular_within):
+            # e.g. shapes of other bodies interleaved differently between the selected ones
+            model_indices = (origins[:, None] + offsets.reshape(slot_count, count)).reshape(
+                world_count, count_per_world, count
+            )
+        elif misplaced.any():
+            if regular_within:
                 # Sparse or uneven worlds: rows are regular within every world but the worlds are not
                 # evenly spaced (e.g. other articulation types occupy the worlds in between). Address
                 # them through explicit absolute row maps (gather/scatter) instead of one strided view.
                 model_starts = grid.tolist()
+            else:
+                reasons.append("start indices are not uniformly strided")
+                failed |= misplaced.ravel()
     if reasons:
         world, articulation = divmod(int(np.argmax(failed)), count_per_world)
         return None, f"{'; '.join(reasons)} (first at world {world}, articulation {articulation})", uniform_count
@@ -633,7 +662,10 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
         within = extent
     if world_count == 1:
         between = within * count_per_world
-    return FrequencyLayout(int(grid[0, 0]), between, within, extent, offsets, device, model_starts), None, True
+    layout = FrequencyLayout(
+        int(grid[0, 0]), between, within, extent, offsets, device, model_starts, model_indices=model_indices
+    )
+    return layout, None, True
 
 
 def _validate_layouts(
@@ -667,8 +699,10 @@ def _validate_layouts(
     ends = articulation_start[ids + 1] if include_loop_closing_joints else articulation_end[ids]
     zeros = np.zeros(slot_count, dtype=int)
 
-    def check(slots, offsets, owners, origins):
-        return _check_layout(slots, offsets, owners, origins, world_count, count_per_world, model.device)
+    def check(slots, offsets, owners, origins, explicit_values=False):
+        return _check_layout(
+            slots, offsets, owners, origins, world_count, count_per_world, model.device, explicit_values
+        )
 
     def selected_origins(slots, rows, fallback):
         """Return each slot's first selected row, retaining its fallback when no rows are selected."""
@@ -726,7 +760,9 @@ def _validate_layouts(
         selected_link_origins,
     )
 
-    # shapes belong to the articulation that owns their link and are ordered by ID within it
+    # shapes belong to the articulation that owns their link and are ordered by ID within it; other
+    # shapes may be interleaved between them differently in each articulation, so matching shape counts
+    # and owning links suffice and irregular rows are addressed one by one
     link_slot = np.full(model.body_count, -1)
     link_slot[links] = link_slots
     link_owner = np.full(model.body_count, -1)
@@ -747,6 +783,7 @@ def _validate_layouts(
         selected_shapes - selected_shape_origins[selected_shape_slots],
         owners[selected],
         selected_shape_origins,
+        explicit_values=True,
     )
     return results
 
@@ -792,6 +829,11 @@ class ArticulationView:
     - A value in ``custom_frequency_counts`` and ``custom_frequency_labels`` is
       ``None`` when custom row counts differ. The corresponding tendon compatibility
       aliases follow those values.
+
+    When every selected articulation has the same shape count and owning links but other
+    shapes are interleaved between its shapes at different positions, shapes are addressed
+    through explicit absolute model indices (``uses_explicit_model_indices``): shape getters
+    return a gathered copy, and setters scatter the values back.
 
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
