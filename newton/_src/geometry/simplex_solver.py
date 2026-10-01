@@ -322,6 +322,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
+        max_dist: float = 0.0,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """
         Core GJK distance algorithm implementation.
@@ -343,6 +344,12 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             MAX_ITER: Maximum number of GJK iterations (default: 30)
             COLLIDE_EPSILON: Relative duality-gap tolerance, also used as an absolute distance
                 threshold [m] for overlap and duplicate vertices (default: 1e-4).
+            max_dist: Separation cutoff [m]. When positive, iteration stops once a
+                support plane proves that the shapes are farther apart than
+                ``max_dist``. The returned distance is then an upper bound on the true
+                distance that still exceeds ``max_dist``, and the witness points are the
+                current simplex estimate rather than the closest points. ``0.0``
+                (default) disables the cutoff.
 
         Returns:
             Tuple of:
@@ -417,6 +424,12 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             # Check for convergence using Frank-Wolfe duality gap
             # Use BtoA directly (Minkowski difference)
             w_v = w.BtoA
+            # The support plane orthogonal to v lower-bounds the distance by
+            # dot(v, w_v) / |v|. Once that exceeds max_dist, the exit below returns
+            # |v| >= true distance > max_dist, so callers comparing the distance with
+            # max_dist reach the same decision without further refinement.
+            if simplex_usage_mask != wp.uint32(0) and max_dist > 0.0 and wp.dot(v, w_v) > max_dist * wp.sqrt(dist_sq):
+                break
             delta_dist = wp.dot(v, v - w_v)
             # Compare the gap relative to squared distance; an absolute cutoff is too loose at small gaps.
             # An empty simplex cannot supply surface witnesses, even when the center offset passes this test.
