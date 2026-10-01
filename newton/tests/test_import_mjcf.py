@@ -62,6 +62,16 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_non_shell_geom_preserves_hollow_shape_default(self):
+        """Keep an explicit hollow default for ordinary geoms."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.is_solid = False
+        builder.default_shape_cfg.margin = 0.01
+        builder.add_mjcf(
+            '<mujoco><worldbody><body><geom type="sphere" size="0.2" density="3"/></body></worldbody></mujoco>'
+        )
+        self.assertFalse(builder.shape_is_solid[0])
+
     def test_primitive_shellinertia_matches_native_mujoco(self):
         """Compute primitive shell mass properties like native MuJoCo."""
         cases = {

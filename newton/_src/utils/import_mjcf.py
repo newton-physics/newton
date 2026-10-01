@@ -1142,7 +1142,8 @@ def parse_mjcf(
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = 0.0 if primitive_shell_inertia else geom_density
-            shape_cfg.is_solid = not primitive_shell_inertia
+            if primitive_shell_inertia:
+                shape_cfg.is_solid = False
 
             # Respect MJCF contype/conaffinity=0: disable automatic broadphase contacts
             # while keeping the shape as a collider for explicit <pair> contacts.
