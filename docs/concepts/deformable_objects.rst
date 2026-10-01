@@ -103,3 +103,18 @@ curve records follow the remapped indices. If collapse removes part of a curve,
 Newton warns and omits its incomplete record. Use ``joints_to_keep`` to preserve
 required joints. Particle, triangle, and tetrahedron ranges are not affected by
 fixed-joint collapse.
+
+.. _deformable-objects-welded-usd-graphs:
+
+Welded USD graphs
+-----------------
+
+Native rod graph records include their created bodies and joints. For a welded
+USD graph, the importer instead preserves each source curve's label, world
+index, and segment bodies. It does not add a separate deformable object for the
+whole graph.
+
+Per-curve joint membership is not yet recorded for welded USD graphs. The
+joints are still created and belong to the graph's articulation; they are not
+missing from the simulation. Supporting joint membership shared by several
+curves is follow-up work.
