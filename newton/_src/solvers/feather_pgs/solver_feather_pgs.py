@@ -6063,6 +6063,7 @@ class SolverFeatherPGS(SolverBase):
             self.color_unit_sorted = wp.zeros((total_rows,), dtype=wp.int32, device=device)
             self.color_world_unit_cursor = wp.zeros((worlds,), dtype=wp.int32, device=device)
             self.color_unit_meta = wp.zeros((total_rows * PROPAGATION_UNIT_META,), dtype=wp.int32, device=device)
+            self._color_unit_meta_stale = True
 
     def _allocate_debug_buffers(self, model):
         """Allocate buffers for PGS convergence diagnostics."""
@@ -6455,6 +6456,7 @@ class SolverFeatherPGS(SolverBase):
             )
             self._pgs_solve_propagation_colored_warp_kernel = None
             mb = int(getattr(self, "max_propagation_bodies", 0))
+            self._propagation_colored_prefetch = os.environ.get("FEATHER_PGS_COLORED_PREFETCH", "1") != "0"
             lanes = int(os.environ.get("FEATHER_PGS_COLORED_LANES", "1"))
             wpb = int(os.environ.get("FEATHER_PGS_COLORED_WPB", "2"))
             staged = os.environ.get("FEATHER_PGS_COLORED_STAGED", "1") != "0" and _colored_staging_supported(
@@ -6472,7 +6474,7 @@ class SolverFeatherPGS(SolverBase):
                     lanes,
                     wpb,
                     device_arch,
-                    prefetch=os.environ.get("FEATHER_PGS_COLORED_PREFETCH", "1") != "0",
+                    prefetch=self._propagation_colored_prefetch,
                     staged=staged,
                 )
             # The coloring keeps a world's used-color masks (16 words per body) in shared
@@ -7780,6 +7782,25 @@ class SolverFeatherPGS(SolverBase):
                     device=self.model.device,
                 )
 
+    def _launch_gather_unit_meta(self, device) -> None:
+        wp.launch(
+            gather_propagation_unit_meta,
+            dim=self.world_count * self.propagation_max_constraints,
+            inputs=[
+                self.propagation_max_constraints,
+                PROPAGATION_COLOR_TAIL + 2,
+                self.color_world_offsets,
+                self.color_world_row_order,
+                self.propagation_row_type,
+                self.propagation_row_parent,
+                self.propagation_body_a,
+                self.propagation_body_b,
+                self.propagation_body_local_slot,
+            ],
+            outputs=[self.color_unit_meta],
+            device=device,
+        )
+
     def _propagation_pgs_solve_colored_iteration(
         self,
         *,
@@ -7791,23 +7812,11 @@ class SolverFeatherPGS(SolverBase):
     ) -> None:
         device = self.model.device
         if self._pgs_solve_propagation_colored_warp_kernel is not None:
-            wp.launch(
-                gather_propagation_unit_meta,
-                dim=self.world_count * self.propagation_max_constraints,
-                inputs=[
-                    self.propagation_max_constraints,
-                    PROPAGATION_COLOR_TAIL + 2,
-                    self.color_world_offsets,
-                    self.color_world_row_order,
-                    self.propagation_row_type,
-                    self.propagation_row_parent,
-                    self.propagation_body_a,
-                    self.propagation_body_b,
-                    self.propagation_body_local_slot,
-                ],
-                outputs=[self.color_unit_meta],
-                device=device,
-            )
+            # The unit records depend only on this step's colored row layout, so they are
+            # gathered once per step, before its first sweep, and only for the prefetch body.
+            if self._color_unit_meta_stale and self._propagation_colored_prefetch:
+                self._color_unit_meta_stale = False
+                self._launch_gather_unit_meta(device)
             wpb = self._propagation_colored_worlds_per_block
             wp.launch_tiled(
                 self._pgs_solve_propagation_colored_warp_kernel,
@@ -11731,6 +11740,8 @@ class SolverFeatherPGS(SolverBase):
                     ],
                     device=model.device,
                 )
+                # This step's colored rows are rebuilt below; the unit records follow them.
+                self._color_unit_meta_stale = True
                 wp.launch_tiled(
                     self._color_propagation_prebuild_kernel,
                     dim=[self.world_count],
