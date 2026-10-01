@@ -56,7 +56,7 @@ jobs:
     needs: [check-warp-update]
     if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~90 min)
+    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~115 min)
     permissions:
       actions: write
       contents: read
@@ -67,6 +67,8 @@ jobs:
       minimum-deps-tests-url: ${{ steps.minimum-deps-tests.outputs.run-url }}
       warp-nightly-tests-conclusion: ${{ steps.warp-nightly-tests.outputs.conclusion }}
       warp-nightly-tests-url: ${{ steps.warp-nightly-tests.outputs.run-url }}
+      benchmark-cache-conclusion: ${{ steps.benchmark-cache.outputs.conclusion }}
+      benchmark-cache-url: ${{ steps.benchmark-cache.outputs.run-url }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -101,6 +103,10 @@ jobs:
         if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
         run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml -f "inputs[trigger-category]=scheduled-nightly"
 
+      - name: Dispatch and wait for benchmark kernel cache fill
+        id: benchmark-cache
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[trigger-category]=scheduled-nightly"
+
   notify-on-failure:
     name: Notify on failure
     needs: [run-nightly-tests]
@@ -111,7 +117,9 @@ jobs:
        (needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != '' &&
         needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != 'success') ||
        (needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != '' &&
-        needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != 'success'))
+        needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != 'success') ||
+       (needs.run-nightly-tests.outputs.benchmark-cache-conclusion != '' &&
+        needs.run-nightly-tests.outputs.benchmark-cache-conclusion != 'success'))
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -144,6 +152,12 @@ jobs:
                 workflow: 'warp_nightly_tests.yml',
                 conclusion: '${{ needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion }}',
                 url: '${{ needs.run-nightly-tests.outputs.warp-nightly-tests-url }}'
+              },
+              {
+                name: 'Benchmark kernel cache fill',
+                workflow: 'aws_gpu_benchmarks.yml',
+                conclusion: '${{ needs.run-nightly-tests.outputs.benchmark-cache-conclusion }}',
+                url: '${{ needs.run-nightly-tests.outputs.benchmark-cache-url }}'
               }
             ];
 

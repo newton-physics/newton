@@ -2,7 +2,8 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 
 # This is a reusable workflow that uses machulav/ec2-github-runner to run GPU benchmarks.
 # Called by:
-#   - pr_target_aws_gpu.yml (for pull requests)
+#   - pr_target_aws_gpu_benchmarks.yml (for pull requests)
+#   - scheduled_nightly.yml (dispatch on main: quick run that fills the Warp kernel cache)
 
 # Workflow configuration variables
 env:
@@ -41,6 +42,16 @@ on:
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
+  workflow_dispatch:
+    inputs:
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: false
+        type: choice
+        options:
+          - manual
+          - scheduled-nightly
+        default: 'manual'
 
 jobs:
   start-runner:
@@ -144,15 +155,38 @@ jobs:
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
+      - name: Compute Warp kernel cache key
+        id: warp-cache-key
+        run: echo "key=warp-kernels-bench-gpu-${{ hashFiles('asv.conf.json', 'uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}" >> "$GITHUB_OUTPUT"
+
+      # PR runs use pull_request_target and can only read the cache; the
+      # nightly dispatch on main fills it. The fill starts empty so each
+      # entry holds only the kernels of its commit instead of accumulating.
       - name: Restore Warp kernel cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-bench-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
+          key: ${{ steps.warp-cache-key.outputs.key }}
           restore-keys: |
             warp-kernels-bench-gpu-
 
+      - name: Compile benchmark kernels
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NEWTON_ASV_PR_GATE: "1"
+        run: uv run --no-project asv/run_pr_benchmarks.py --quick ${{ github.sha }}
+
+      # Save even if a benchmark failed, since most kernels still compiled.
+      - name: Save Warp kernel cache
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: ${{ steps.warp-cache-key.outputs.key }}
+
       - name: Run Benchmarks
+        if: github.event_name != 'workflow_dispatch'
         env:
           # Keep resolution 128 in the shared benchmark for nightly ASV collection.
           NEWTON_ASV_PR_GATE: "1"
