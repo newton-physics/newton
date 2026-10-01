@@ -2271,10 +2271,10 @@ class _DeformableViewBase:
         hand per-instance offsets to a renderer sync or to custom kernels. See
         :meth:`elements_per_deformable_object` for the valid ``kind`` values.
 
-        Native and non-welded USD curves include their construction-time root
-        joints. Welded USD curves have empty joint ranges because their joints
-        belong to a shared graph. See :ref:`deformable-objects` for joint-range
-        ownership and the distinction from returned rod-joint lists.
+        Native and USD curves include their construction-time root joints.
+        A welded USD graph is one deformable object with the whole graph's
+        body and joint ranges. Its per-curve import maps are separate and keep
+        empty joint lists. See :ref:`deformable-objects-welded-usd-graphs`.
 
         Args:
             kind: Element kind recorded by every selected deformable object.

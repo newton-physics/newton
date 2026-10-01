@@ -21,7 +21,6 @@ from newton.tests._usd_deformable_test_utils import (
     _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
-    group_range,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 
@@ -207,19 +206,11 @@ class TestUSDDeformableObjects(unittest.TestCase):
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))
 
-    def test_welded_graph_empty_joint_ranges_survive_collapse(self):
-        """A welded-graph curve records an empty joint range at its insertion boundary; when
-        an earlier fixed joint is collapsed away, that boundary must shift with the retained
-        joints instead of pointing past the final joint array."""
+    def test_welded_graph_ranges_survive_collapse_and_replication(self):
+        """Select a complete welded graph after finalization, collapse, and world cloning."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
-        for name in ("A", "B"):
-            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
-            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
-        fixed.CreateBody0Rel().SetTargets(["/World/A"])
-        fixed.CreateBody1Rel().SetTargets(["/World/B"])
         _add_cable_curve(stage, "/World/Trunk", _CABLE_PTS)
         _add_cable_curve(stage, "/World/Branch", [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)])
         _add_physics_attachment(
@@ -233,19 +224,68 @@ class TestUSDDeformableObjects(unittest.TestCase):
             indices1=[1],
         )
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage, collapse_fixed_joints=True)
+        for collapse, body_start in ((False, 0), (True, 1)):
+            if collapse:
+                # This pair shifts the graph's indices when its fixed joint is removed.
+                for name in ("A", "B"):
+                    body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
+                fixed.CreateBody0Rel().SetTargets(["/World/A"])
+                fixed.CreateBody1Rel().SetTargets(["/World/B"])
+            prototype = newton.ModelBuilder()
+            result = prototype.add_usd(stage, collapse_fixed_joints=collapse, return_deformable_results=True)
+            graph_label = result["path_cable_attrs"]["/World/Branch"]["graph_component"]
+            self.assertEqual(result["path_cable_attrs"]["/World/Trunk"]["graph_component"], graph_label)
+            self.assertEqual(
+                result["path_cable_map"],
+                {
+                    "/World/Branch": ([body_start, body_start + 1], []),
+                    "/World/Trunk": ([body_start + 2, body_start + 3, body_start + 4], []),
+                },
+            )
 
-        for path in ("/World/Trunk", "/World/Branch"):
-            j0, j1 = group_range(builder, "cable", path, "joint")
-            self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
-            self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
-        model = builder.finalize()
-        for path in ("/World/Trunk", "/World/Branch"):
-            view = DeformableCurveView(model, path)
-            ((j0, j1),) = view.ranges("joint")
-            self.assertEqual(j0, j1, "finalized welded-graph curves own no tree joints")
-            self.assertLessEqual(j1, model.joint_count, f"{path}: finalized empty range points past the joint array")
+            for cloning in ("none", "add_world", "replicate"):
+                scene = prototype
+                copies = 1 if cloning == "none" else 2
+                if cloning != "none":
+                    scene = newton.ModelBuilder()
+                    if cloning == "replicate":
+                        scene.replicate(prototype, copies)
+                    else:
+                        for _ in range(copies):
+                            scene.add_world(prototype)
+                body_ranges = [(body_start + i * (body_start + 5), (i + 1) * (body_start + 5)) for i in range(copies)]
+                joint_ranges = [(5 * i, 5 * i + 5) for i in range(copies)]
+                worlds = [-1] if cloning == "none" else [0, 1]
+                for device in get_test_devices():
+                    with self.subTest(collapse=collapse, cloning=cloning, device=device):
+                        model = scene.finalize(device=device)
+                        self.assertEqual(model.curve_count, copies)
+                        self.assertEqual(model.curve_label, [graph_label] * copies)
+                        self.assertEqual(model.curve_world.numpy().tolist(), worlds)
+                        self.assertEqual(model.curve_body_start.numpy().tolist(), [start for start, _ in body_ranges])
+                        self.assertEqual(model.curve_body_end.numpy().tolist(), [end for _, end in body_ranges])
+                        self.assertEqual(model.curve_joint_start.numpy().tolist(), [start for start, _ in joint_ranges])
+                        self.assertEqual(model.curve_joint_end.numpy().tolist(), [end for _, end in joint_ranges])
+
+                        view = DeformableCurveView(model, graph_label)
+                        self.assertEqual((view.count, view.bodies_per_deformable_object), (copies, 5))
+                        self.assertEqual(view.worlds, worlds)
+                        self.assertEqual(view.ranges("body"), body_ranges)
+                        self.assertEqual(view.ranges("joint"), joint_ranges)
+                        self.assertEqual(view.elements_per_deformable_object("joint"), 5)
+                        self.assertEqual(view.get_body_transforms(model).shape, (copies, 5))
+                        joint_types = model.joint_type.numpy().tolist()
+                        for start, end in joint_ranges:
+                            self.assertEqual(
+                                joint_types[start:end], [newton.JointType.FREE, *[newton.JointType.ROD] * 4]
+                            )
+
+                        # Only the graph label selects an object; the other source path is an import-map key.
+                        other_path = next(path for path in result["path_cable_map"] if path != graph_label)
+                        with self.assertRaises(KeyError):
+                            DeformableCurveView(model, other_path)
 
 
 if __name__ == "__main__":
