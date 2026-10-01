@@ -20,7 +20,6 @@ from newton.tests.utils import basics
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
-        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.0025
@@ -100,10 +99,6 @@ class Example:
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
