@@ -612,11 +612,14 @@ def _validate_layouts(
         origins = selected_origins(value_slots, rows, starts[begins])
         results[frequency] = check(value_slots, rows - origins[value_slots], owners[entries], origins)
 
-    results["root_joint"] = check(np.arange(slot_count), zeros, zeros, begins)
+    root_slots = np.arange(slot_count)
+    root_origins = selected_origins(root_slots, begins, begins)
+    results["root_joint"] = check(root_slots, begins - root_origins, zeros, root_origins)
     for key, starts in (("root_coord", joint_q_start), ("root_dof", joint_qd_start)):
-        origins = starts[begins]
-        entries, offsets = _ragged_arange(zeros, starts[begins + 1] - origins)
-        results[key] = check(entries, offsets, np.zeros_like(entries), origins)
+        fallback = starts[begins]
+        entries, rows = _ragged_arange(fallback, starts[begins + 1] - fallback)
+        origins = selected_origins(entries, rows, fallback)
+        results[key] = check(entries, rows - origins[entries], np.zeros_like(entries), origins)
 
     slot_of = np.full(len(articulation_start), -1)
     slot_of[ids] = np.arange(slot_count)
