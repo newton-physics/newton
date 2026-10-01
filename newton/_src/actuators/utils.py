@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import zipfile
 from typing import Any
 
@@ -81,12 +82,12 @@ def load_checkpoint(
             current default device.
         batch_size: Fixed batch dimension used to pre-allocate intermediate
             buffers.
-        input_batch_axes: Optional ONNX graph-input batch-axis override passed
-            to :class:`warp_nn.runtime.OnnxRuntime`.
+        input_batch_axes: Optional ONNX graph-input batch-axis override. These
+            axes are made dynamic before preparing the Warp-NN runtime.
         requires_grad: Whether the runtime allocates gradient storage for its
             own tensors. Required to differentiate the network, since the
             runtime owns intermediate buffers that cannot be given gradients
-            after construction. Ignored for Torch checkpoints.
+            after allocation. Ignored for Torch checkpoints.
 
     Returns:
         ``(model, metadata)`` where *model* is a Warp-NN runtime for ONNX
@@ -95,15 +96,42 @@ def load_checkpoint(
     if _looks_like_torch_checkpoint(path):
         return _load_torch_raw(path)
 
+    if batch_size <= 0:
+        raise ValueError(f"ONNX batch_size must be positive, got {batch_size}")
     metadata = load_metadata(path)
     OnnxRuntime = _require_warp_nn_runtime()
-    runtime = OnnxRuntime(
-        path,
-        device=device,
-        batch_size=batch_size,
-        input_batch_axes=input_batch_axes,
-        requires_grad=requires_grad,
-    )
+    if input_batch_axes is None:
+        runtime = OnnxRuntime(path, device=device, requires_grad=requires_grad)
+    else:
+        # Relax explicitly overridden batch axes before the runtime validates inputs.
+        onnx = _require_onnx()
+        model = onnx.load(path)
+        initializers = {value.name for value in model.graph.initializer}
+        graph_inputs = [value for value in model.graph.input if value.name not in initializers]
+        if isinstance(input_batch_axes, dict):
+            unknown = set(input_batch_axes) - {value.name for value in graph_inputs}
+            if unknown:
+                raise KeyError(f"Unknown ONNX graph inputs in input_batch_axes: {sorted(unknown)}")
+        for value in graph_inputs:
+            axis = input_batch_axes.get(value.name) if isinstance(input_batch_axes, dict) else input_batch_axes
+            if axis is not None:
+                dimensions = value.type.tensor_type.shape.dim
+                if not -len(dimensions) <= axis < len(dimensions):
+                    raise ValueError(f"ONNX input '{value.name}' batch axis {axis} is out of range")
+                dimensions[axis].dim_param = "newton_batch"
+        with tempfile.TemporaryDirectory() as directory:
+            prepared_path = os.path.join(directory, "model.onnx")
+            onnx.save(model, prepared_path)
+            runtime = OnnxRuntime(prepared_path, device=device, requires_grad=requires_grad)
+    inputs = {
+        spec.name: wp.ones(
+            tuple(batch_size if dimension is None else dimension for dimension in spec.shape),
+            dtype=spec.dtype,
+            device=device,
+        )
+        for spec in runtime.inputs
+    }
+    runtime.prepare(inputs)
     return runtime, metadata
 
 
@@ -155,20 +183,6 @@ def _parse_metadata_scale(
             f"Invalid metadata value for '{value_key}' in '{model_path}': expected a finite non-zero number, got {value!r}"
         )
     return scale
-
-
-def _runtime_shape(runtime, name: str) -> tuple[int, ...]:
-    """Return a runtime tensor shape while isolating Warp-NN private access."""
-    shapes = getattr(runtime, "_shapes", None)
-    if shapes is None:
-        raise AttributeError(
-            f"{type(runtime).__name__} does not expose tensor shapes; update Warp-NN to provide shape metadata"
-        )
-    if name not in shapes:
-        raise ValueError(
-            f"{type(runtime).__name__} has no shape for tensor '{name}'; available tensors: {sorted(shapes)}"
-        )
-    return tuple(shapes[name])
 
 
 def _require_torch():

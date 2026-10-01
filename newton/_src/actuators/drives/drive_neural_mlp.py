@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, _runtime_shape, load_checkpoint, load_metadata
+from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, load_checkpoint, load_metadata
 from ._linearization import (
     IMPLICIT_JACOBIAN_MARGIN as _JACOBIAN_MARGIN,
 )
@@ -305,8 +305,8 @@ class DriveNeuralMLP(DriveBase):
         )
         self._network = runtime
         self.network = runtime
-        self._net_input_name = runtime.input_names[0]
-        self._net_output_name = runtime.output_names[0]
+        self._net_input_name = runtime.inputs[0].name
+        self._net_output_name = runtime.outputs[0].name
 
         feat = 2 * len(self.input_idx)
         self._net_input = wp.zeros((num_actuators, feat), dtype=wp.float32, device=device)
@@ -327,11 +327,7 @@ class DriveNeuralMLP(DriveBase):
         self._net_input.requires_grad = True
         self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
 
-        try:
-            out_shape = _runtime_shape(runtime, self._net_output_name)
-        except ValueError:
-            runtime({self._net_input_name: self._net_input})
-            out_shape = _runtime_shape(runtime, self._net_output_name)
+        out_shape = runtime({self._net_input_name: self._net_input})[self._net_output_name].shape
         if out_shape != (num_actuators, 1):
             raise ValueError(
                 f"DriveNeuralMLP: network output '{self._net_output_name}' has shape {out_shape}, "
