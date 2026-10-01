@@ -2174,6 +2174,25 @@ class TestMimicConstraints(unittest.TestCase):
                 self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
                 np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], expected)
 
+    def test_zero_scale_prismatic_mimic_reference_reports_error(self):
+        """Avoid dividing by a collapsed prismatic coordinate scale."""
+        urdf = """
+        <robot name="zero_scale">
+            <link name="base"/><link name="l1"/><link name="l2"/>
+            <joint name="j1" type="prismatic">
+                <parent link="base"/><child link="l1"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="j2" type="prismatic">
+                <parent link="l1"/><child link="l2"/>
+                <limit lower="-1" upper="1"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        with self.assertRaisesRegex(ValueError, "scale must be nonzero"):
+            newton.ModelBuilder().add_urdf(urdf, scale=0.0)
+
     def test_mimic_cycle_reports_joint_names(self):
         """Reject cyclic URDF mimic references with named joints."""
         urdf = """
