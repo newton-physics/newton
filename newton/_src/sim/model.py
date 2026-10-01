@@ -977,7 +977,9 @@ class Model:
         self.joint_ancestor: wp.array[wp.int32] | None = None
         """Incoming joint of each joint's parent body (-1 if none exists), shape [joint_count], int.
 
-        Articulation tree joints take precedence over loop-closing joints.
+        Articulated joints resolve ancestors only within their own articulation,
+        terminating at external roots. For unarticulated joints, articulation
+        tree joints take precedence over loop-closing joints.
         """
         self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""

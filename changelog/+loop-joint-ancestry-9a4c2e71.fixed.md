@@ -1,1 +1,1 @@
-Fix loop-closing joints replacing articulation tree ancestors, preventing cycles in Jacobian and Featherstone ancestry traversal regardless of joint creation order.
+Fix loop-closing joints replacing articulation tree ancestors, keeping ancestry within each articulation and terminating at external roots to prevent cycles in Jacobian and Featherstone traversal regardless of joint creation order.
