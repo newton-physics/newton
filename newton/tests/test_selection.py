@@ -11,7 +11,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
 def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
@@ -1751,6 +1751,76 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         model = scene.finalize()
 
         assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
+
+
+class _AttributeSource:
+    """Holds a selectable array with a trailing axis, which no built-in attribute has."""
+
+
+def test_indexed_gradient_gather_uses_model_device(test, device):
+    """Gather indexed selections with gradients on the model's device, whatever the current device is."""
+    robot = newton.ModelBuilder()
+    parent = robot.add_link(label="robot/root")
+    joints = [robot.add_joint_free(child=parent, label="robot/root_joint")]
+    for index in range(3):
+        child = robot.add_link(label=f"robot/link_{index}")
+        joints.append(robot.add_joint_revolute(parent=parent, child=child, label=f"robot/joint_{index}"))
+        parent = child
+    robot.add_articulation(joints, label="robot")
+    scene = newton.ModelBuilder()
+    for _ in range(2):
+        scene.add_world(robot)
+    model = scene.finalize(device=device, requires_grad=True)
+    # skipping joint_1 makes the coordinate and DOF selections indexed
+    view = ArticulationView(model, "robot", include_joints=["root_joint", "joint_0", "joint_2"], verbose=False)
+    selected_coords = [0, 1, 2, 3, 4, 5, 6, 7, 9]
+    selected_dofs = [0, 1, 2, 3, 4, 5, 6, 8]
+
+    q = np.arange(model.joint_coord_count, dtype=np.float32) + 1.0
+    model.joint_q.assign(q)
+    model.joint_q.grad.assign(-q)
+    # a DOF-frequency array with a trailing axis takes the 4D gather
+    values = np.arange(model.joint_dof_count * 3, dtype=np.float32).reshape(-1, 3) + 0.5
+    source = _AttributeSource()
+    source.joint_qd = wp.array(values, dtype=float, device=device, requires_grad=True)
+    source.joint_qd.grad.assign(-values)
+
+    launch = wp.launch
+
+    def launch_on_model_device(kernel, *args, **kwargs):
+        launch_device = wp.get_device(kwargs.get("device"))
+        if launch_device != model.device:
+            raise AssertionError(f"{kernel.key} launched on {launch_device} for a model on {model.device}")
+        return launch(kernel, *args, **kwargs)
+
+    # make the current device differ from the model's device
+    if wp.get_device(device).is_cuda:
+        current = "cpu"
+    else:
+        current = "cuda:0" if wp.is_cuda_available() else "cpu"
+    with wp.ScopedDevice(current), mock.patch.object(wp, "launch", side_effect=launch_on_model_device):
+        positions = view.get_dof_positions(model)
+        trailing = view.get_attribute("joint_qd", source)
+
+    expected = q.reshape(2, 1, -1)[:, :, selected_coords]
+    assert_np_equal(positions.numpy(), expected)
+    assert_np_equal(positions.grad.numpy(), -expected)
+    expected = values.reshape(2, 1, -1, 3)[:, :, selected_dofs]
+    test.assertEqual(trailing.shape, (2, 1, len(selected_dofs), 3))
+    assert_np_equal(trailing.numpy(), expected)
+    assert_np_equal(trailing.grad.numpy(), -expected)
+
+
+class TestSelectionLaunchDevice(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSelectionLaunchDevice,
+    "test_indexed_gradient_gather_uses_model_device",
+    test_indexed_gradient_gather_uses_model_device,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":
