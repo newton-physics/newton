@@ -12398,8 +12398,9 @@ PROPAGATION_COLOR_TAIL = 512
 PROPAGATION_UNIT_RING = 4
 """Patch-ring members carried in a unit record; longer rings resume the walk after them."""
 
-PROPAGATION_UNIT_META = 5 + PROPAGATION_UNIT_RING
-"""Per-unit static record for the colored solve (see :func:`gather_propagation_unit_meta`)."""
+PROPAGATION_UNIT_META = 12
+"""Per-unit static record for the colored solve (see :func:`gather_propagation_unit_meta`):
+``7 + PROPAGATION_UNIT_RING`` words, padded to a multiple of four for 16-byte copies."""
 
 
 @wp.kernel(enable_backward=False)
@@ -12413,15 +12414,21 @@ def gather_propagation_unit_meta(
     body_a: wp.array2d[int],
     body_b: wp.array2d[int],
     body_local_slot: wp.array[int],
+    constraint_count: wp.array[int],
+    ring_overflow_cursor: wp.array[int],
+    straight_line: int,
     # out
     unit_meta: wp.array[int],
+    ring_overflow: wp.array[int],
 ):
     """Pack what the colored solve needs before it can solve a unit.
 
     Indexed by the unit's position in color order: ``[start slot, local slot of body a,
     local slot of body b, patch-ring length, the first PROPAGATION_UNIT_RING ring
-    members, the member after them]``. A contact row's ``row_parent`` links the other
-    contact rows sharing its friction patch into a ring. All of it is fixed for a
+    members, the member after them, the unit's row count, its straight-line kind (1 a
+    contact row with its friction pair, 2 a lone contact row, 0 neither), the rest of its
+    ring in ``ring_overflow`` (offset | count << 20, or -1)]``. A contact row's
+    ``row_parent`` links the other contact rows sharing its friction patch into a ring. All of it is fixed for a
     sweep, so the solve loads the next colors' records while the current color runs
     and loads the ring members' impulses in parallel instead of walking the ring one
     dependent load at a time.
@@ -12459,6 +12466,52 @@ def gather_propagation_unit_meta(
         member = -1
     unit_meta[base + 3] = n
     unit_meta[base + 4 + PROPAGATION_UNIT_RING] = member
+    # The rest of a long ring, in ring order, in the world's overflow list, so the solve
+    # loads it in parallel instead of walking it: offset | count << 20, or -1.
+    overflow = int(-1)
+    if member >= 0:
+        count = int(0)
+        walk = member
+        while walk >= 0 and walk != slot:
+            count += 1
+            walk = row_parent[world, walk]
+        offset = wp.atomic_add(ring_overflow_cursor, world, count)
+        if offset + count <= propagation_max_constraints and offset < (1 << 20) and count < 1024:
+            walk = member
+            q = int(0)
+            while walk >= 0 and walk != slot:
+                ring_overflow[world * propagation_max_constraints + offset + q] = walk
+                q += 1
+                walk = row_parent[world, walk]
+            overflow = offset | (count << 20)
+    unit_meta[base + 7 + PROPAGATION_UNIT_RING] = overflow
+    # Rows of the unit: its first row and the friction rows following it.
+    m = wp.min(constraint_count[world], int(row_type.shape[1]))
+    rows = int(1)
+    while slot + rows < m and row_type[world, slot + rows] == PGS_CONSTRAINT_TYPE_FRICTION:
+        rows += 1
+    unit_meta[base + 5 + PROPAGATION_UNIT_RING] = rows
+    # Straight-line kinds (see _colored_standard_unit): a contact row and its friction
+    # pair, all on the unit's two bodies, or a lone contact row. 0 takes the row loop.
+    standard = int(0)
+    if (
+        straight_line != 0
+        and rows == 3
+        and row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT
+        and (la != lb or la < 0)
+    ):
+        if row_parent[world, slot + 1] == slot and row_parent[world, slot + 2] == slot:
+            if body_a[world, slot + 1] == ba and body_b[world, slot + 1] == bb:
+                if body_a[world, slot + 2] == ba and body_b[world, slot + 2] == bb:
+                    standard = 1
+    if (
+        straight_line != 0
+        and rows == 1
+        and row_type[world, slot] == PGS_CONSTRAINT_TYPE_CONTACT
+        and (la != lb or la < 0)
+    ):
+        standard = 2  # a lone contact row
+    unit_meta[base + 6 + PROPAGATION_UNIT_RING] = standard
 
 
 @wp.kernel(enable_backward=False)

@@ -118,19 +118,25 @@ def friction_pair_candidate(
 
 # Native kernels use the same bounded solve as the Warp function above.
 FRICTION_PAIR_CUDA = """
-    const auto friction_pair_candidate = [](
-        float a, float c, float d, float r0, float r1,
-        float old0, float old1, float radius, float omega) {
-        if (radius <= 0.0f) return make_float2(0.0f, 0.0f);
-        float scale = fmaxf(fmaxf(a, d), 1.0e-20f);
+    // The pair's 2x2 operator [a c; c d] in its scaled eigenbasis. It depends only on the
+    // rows, so a solve that sees the same pair every sweep can compute it once.
+    const auto friction_pair_setup = [](
+        float a, float c, float d,
+        float& scale, float& largest, float& smallest, float& vx, float& vy) {
+        scale = fmaxf(fmaxf(a, d), 1.0e-20f);
         a /= scale; c /= scale; d /= scale;
-        float largest = 0.5f * (a + d + sqrtf((a-d)*(a-d) + 4.0f*c*c));
-        float smallest = largest > 0.0f ? fmaxf((a*d-c*c) / largest, 0.0f) : 0.0f;
-        float vx = c, vy = largest-a;
+        largest = 0.5f * (a + d + sqrtf((a-d)*(a-d) + 4.0f*c*c));
+        smallest = largest > 0.0f ? fmaxf((a*d-c*c) / largest, 0.0f) : 0.0f;
+        vx = c; vy = largest-a;
         if (a >= d) { vx = largest-d; vy = c; }
         float norm = sqrtf(vx*vx + vy*vy);
         if (norm > 0.0f) { vx /= norm; vy /= norm; }
         else { vx = 1.0f; vy = 0.0f; }
+    };
+    const auto friction_pair_solve = [](
+        float scale, float largest, float smallest, float vx, float vy,
+        float r0, float r1, float old0, float old1, float radius, float omega) {
+        if (radius <= 0.0f) return make_float2(0.0f, 0.0f);
         float r0_rotated = (vx*r0 + vy*r1) / scale;
         float r1_rotated = (-vy*r0 + vx*r1) / scale;
         float result0 = old0, result1 = old1;
@@ -197,5 +203,13 @@ FRICTION_PAIR_CUDA = """
             result1 = old1 + vy*(x-old_x) + vx*(y-old_y);
         }
         return make_float2(old0 + omega*(result0-old0), old1 + omega*(result1-old1));
+    };
+    const auto friction_pair_candidate = [&](
+        float a, float c, float d, float r0, float r1,
+        float old0, float old1, float radius, float omega) {
+        if (radius <= 0.0f) return make_float2(0.0f, 0.0f);
+        float scale, largest, smallest, vx, vy;
+        friction_pair_setup(a, c, d, scale, largest, smallest, vx, vy);
+        return friction_pair_solve(scale, largest, smallest, vx, vy, r0, r1, old0, old1, radius, omega);
     };
 """

@@ -4,9 +4,10 @@
 """Tests for the pipelined colored solve behind ``articulated_contact_response='propagation-colored'``.
 
 The lane-per-unit colored kernel prefetches each unit's rows, keeps the unit's body
-twists in registers, and, for a few worlds, stages the next color's payload in shared
-memory ahead of the solve. None of that may change the result: every variant must
-match the reference unit body bitwise on the same state and contacts.
+twists in registers, solves standard units on a straight-line path, and, for a few
+worlds, reads each unit's rows from a packed per-step record (optionally staged in shared
+memory). None of that may change the result: every variant must match the reference unit
+body bitwise on the same state and contacts.
 """
 
 import os
@@ -17,11 +18,17 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.feather_pgs.kernels import PROPAGATION_UNIT_META, PROPAGATION_UNIT_RING
 from newton._src.solvers.feather_pgs.solver_feather_pgs import _colored_staging_supported
 
 from .test_feather_pgs_colored_scheduling import _heap
 
-_VARIANT_ENV = ("FEATHER_PGS_COLORED_PREFETCH", "FEATHER_PGS_COLORED_STAGED")
+_VARIANT_ENV = (
+    "FEATHER_PGS_COLORED_PREFETCH",
+    "FEATHER_PGS_COLORED_STAGED",
+    "FEATHER_PGS_COLORED_PACKED",
+    "FEATHER_PGS_COLORED_STRAIGHT_LINE",
+)
 
 
 def _solver(model, env, regularization=0.0):
@@ -60,6 +67,59 @@ class TestFeatherPGSColoredPipeline(unittest.TestCase):
             with self.subTest(regularization=regularization):
                 self._check_variants(regularization)
 
+    def test_straight_line_units_match_the_row_loop(self):
+        """Standard units solved straight-line agree with the generic row loop.
+
+        Every variant shares the straight-line code, so the bitwise check above cannot see
+        a mistake in it; this compares it with the row loop it replaces. The two differ
+        only in summation order (pairwise dot products), so one step (eight sweeps) agrees
+        to rounding, impulses included. Later steps are not compared: friction-patch
+        decisions taken from those impulses may relayout the rows.
+        """
+        for regularization in (0.0, 0.01):
+            with self.subTest(regularization=regularization):
+                model, contacts, control, start = self._settled_heap(regularization)
+                results = {}
+                for name, env in (("row loop", {"FEATHER_PGS_COLORED_STRAIGHT_LINE": "0"}), ("straight line", {})):
+                    solver = _solver(model, env, regularization)
+                    results[name] = self._run(solver, model, contacts, control, start, 1)
+                    if name == "straight line":
+                        n = int(solver.color_world_offsets.numpy()[-1])
+                        kinds = solver.color_unit_meta.numpy().reshape(-1, PROPAGATION_UNIT_META)[:n]
+                        kinds = kinds[:, 6 + PROPAGATION_UNIT_RING]
+                        self.assertGreater(int(np.sum(kinds == 1)), n // 2, "few units took the straight-line path")
+                for label, got, want in zip(
+                    ("body_q", "body_qd", "impulses"), results["straight line"], results["row loop"], strict=True
+                ):
+                    np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-6, err_msg=label)
+
+    def _settled_heap(self, regularization):
+        model, _ = _heap(nx=6, ny=6, nz=3)
+        model.rigid_contact_max = 8192
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=8192)
+        contacts = pipeline.contacts()
+        control = model.control()
+        state_0, state_1 = model.state(), model.state()
+        warm = _solver(model, {}, regularization)
+        for _ in range(8):  # settle into resting contact with patch history
+            pipeline.collide(state_0, contacts)
+            warm.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        pipeline.collide(state_0, contacts)
+        start = {name: getattr(state_0, name).numpy().copy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
+        return model, contacts, control, start
+
+    @staticmethod
+    def _run(solver, model, contacts, control, start, steps):
+        a, b = model.state(), model.state()
+        for field, value in start.items():
+            getattr(a, field).assign(value)
+        solver.reset(a, flags=0)
+        for _ in range(steps):
+            solver.step(a, b, control, contacts, 1.0 / 240.0)
+            a, b = b, a
+        return a.body_q.numpy(), a.body_qd.numpy(), solver.propagation_impulses.numpy()
+
     def _check_variants(self, regularization):
         """Prefetched and shared-memory-staged sweeps reproduce the reference unit body.
 
@@ -86,9 +146,10 @@ class TestFeatherPGSColoredPipeline(unittest.TestCase):
         start = {name: getattr(state_0, name).numpy().copy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
 
         variants = {
-            "reference": ({"FEATHER_PGS_COLORED_PREFETCH": "0", "FEATHER_PGS_COLORED_STAGED": "0"}, "_pf0_st0"),
-            "prefetch": ({"FEATHER_PGS_COLORED_STAGED": "0"}, "_pf1_st0"),
-            "default": ({}, None),
+            "reference": ({"FEATHER_PGS_COLORED_PREFETCH": "0"}, "_pf0_st0"),
+            "prefetch": ({"FEATHER_PGS_COLORED_PACKED": "0"}, "_pf1_st0_pk0"),
+            "default": ({}, "_pf1_st0_pk1"),
+            "staged": ({"FEATHER_PGS_COLORED_STAGED": "1"}, None),
         }
         results = {}
         for name, (env, expected) in variants.items():
@@ -97,12 +158,12 @@ class TestFeatherPGSColoredPipeline(unittest.TestCase):
             self.assertIsNotNone(kernel)
             tag = expected
             if tag is None:
-                # The default stages the payload only where cp.async exists (SM80+); older
-                # devices take the unstaged prefetch kernel, which must match as well.
+                # Staging needs cp.async (SM80+); older devices take the unstaged packed
+                # kernel, which must match as well.
                 staged = _colored_staging_supported(
                     int(model.device.arch), 1, solver.world_count, int(solver.max_propagation_bodies)
                 )
-                tag = "_pf1_st1" if staged else "_pf1_st0"
+                tag = "_pf1_st1" if staged else "_pf1_st0_pk1"
             self.assertIn(tag, kernel.key, f"{name} did not build its kernel variant")
             a, b = model.state(), model.state()
             for field, value in start.items():
@@ -116,7 +177,7 @@ class TestFeatherPGSColoredPipeline(unittest.TestCase):
         ref = results["reference"]
         self.assertTrue(all(np.isfinite(x).all() for x in ref))
         self.assertGreater(np.abs(ref[2]).max(), 0.0, "no contact impulses were solved")
-        for name in ("prefetch", "default"):
+        for name in ("prefetch", "default", "staged"):
             for label, got, want in zip(("body_q", "body_qd", "impulses"), results[name], ref, strict=True):
                 np.testing.assert_array_equal(got, want, err_msg=f"{name} {label} differs from the reference")
 
