@@ -17,7 +17,6 @@ newton
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
-- :doc:`newton.tuning <newton_tuning>`
 - :doc:`newton.usd <newton_usd>`
 - :doc:`newton.utils <newton_utils>`
 - :doc:`newton.viewer <newton_viewer>`
