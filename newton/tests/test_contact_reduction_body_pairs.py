@@ -21,7 +21,6 @@ The tests here assert both halves of the contract:
 """
 
 import gc
-import os
 import unittest
 import unittest.mock
 import weakref
@@ -741,26 +740,14 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         pipeline.collide(state_0, contacts)
         cases = (
             ("pgs_warmstart=True", {"pgs_mode": "split", "pgs_warmstart": True}),
-            ("pgs_warmstart=True", {"pgs_mode": "split", "mf_warmstart": True}),
+            ("mf_warmstart=True", {"pgs_mode": "split", "mf_warmstart": True}),
         )
         for label, kwargs in cases:
             with self.subTest(configuration=label):
                 solver = newton.solvers.SolverFeatherPGS(model, **kwargs)
+                self.assertTrue(solver._mf_warmstart_enabled)
                 with self.assertRaisesRegex(NotImplementedError, "contact_matching"):
                     solver.step(state_0, state_1, model.control(), contacts, DT)
-
-    def test_feather_pgs_environment_mf_warmstart_rejected_at_step(self):
-        """Reject the environment-enabled MF warm-start route on reduced contacts."""
-        model = self._foot_model()
-        state_0, state_1 = model.state(), model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state_0, contacts)
-        with unittest.mock.patch.dict(os.environ, {"IL_NEWTON_FPGS_MF_WARMSTART": "1"}):
-            solver = newton.solvers.SolverFeatherPGS(model, pgs_mode="split")
-        self.assertTrue(solver._mf_warmstart_enabled)
-        with self.assertRaisesRegex(NotImplementedError, "contact_matching"):
-            solver.step(state_0, state_1, model.control(), contacts, DT)
 
 
 class TestBodyPairReductionMultiPatch(unittest.TestCase):

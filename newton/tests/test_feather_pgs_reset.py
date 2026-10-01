@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -24,15 +22,14 @@ def _build_two_world_free_model(device):
 
 
 def _make_solver(model, *, pgs_mode: str, dense_warmstart: bool, mf_warmstart: bool):
-    with mock.patch.dict(os.environ, {"IL_NEWTON_FPGS_MF_WARMSTART": "0"}):
-        return SolverFeatherPGS(
-            model,
-            pgs_mode=pgs_mode,
-            pgs_warmstart=dense_warmstart,
-            mf_warmstart=mf_warmstart,
-            dense_max_constraints=4,
-            mf_max_constraints=4,
-        )
+    return SolverFeatherPGS(
+        model,
+        pgs_mode=pgs_mode,
+        pgs_warmstart=dense_warmstart,
+        mf_warmstart=mf_warmstart,
+        dense_max_constraints=4,
+        mf_max_constraints=4,
+    )
 
 
 def _history_specs(solver):

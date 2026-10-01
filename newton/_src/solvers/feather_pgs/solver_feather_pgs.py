@@ -1918,16 +1918,11 @@ class SolverFeatherPGS(SolverBase):
             "propagation",
             "propagation-colored",
         )
-        # ``mf_warmstart`` and its environment switch predate the unified
-        # contact-warm-start contract. Keep them as compatibility aliases, but
-        # map them onto the one all-route mode rather than retaining a second
-        # MF-only behavior.
-        _env_ws = os.getenv("IL_NEWTON_FPGS_MF_WARMSTART", "0").lower() in {"1", "true", "yes", "on"}
-        legacy_mf_warmstart = bool(mf_warmstart) or _env_ws
-        try:
-            legacy_mf_decay = float(os.getenv("IL_NEWTON_FPGS_MF_WARMSTART_DECAY", str(mf_warmstart_decay)))
-        except (TypeError, ValueError):
-            legacy_mf_decay = float(mf_warmstart_decay)
+        # ``mf_warmstart`` predates the unified contact-warm-start contract. Keep
+        # it as a compatibility alias, but map it onto the one all-route mode
+        # rather than retaining a second MF-only behavior.
+        legacy_mf_warmstart = bool(mf_warmstart)
+        legacy_mf_decay = float(mf_warmstart_decay)
         if not math.isfinite(legacy_mf_decay) or legacy_mf_decay < 0.0:
             raise ValueError(f"mf_warmstart_decay must be finite and non-negative, got {legacy_mf_decay!r}")
 

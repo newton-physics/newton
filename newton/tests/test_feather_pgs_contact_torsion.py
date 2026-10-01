@@ -5,7 +5,6 @@
 import unittest
 import warnings
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -443,6 +442,8 @@ class TestContactTorsion(unittest.TestCase):
             {"contact_torsion_shape_patterns": ("missing-label",)},
             {"contact_torsion_shape_indices": (), "contact_torsion_shape_patterns": ()},
             {"pgs_warmstart": True},
+            # Legacy warm-start alias: it enables the same unified warm start, so it is rejected too.
+            {"mf_warmstart": True},
             {"pgs_velocity_iterations": 1, "enable_bilateral_preelimination": True},
             {"articulated_contact_response": "propagation"},
             {"friction_mode": "bisection"},
@@ -450,9 +451,6 @@ class TestContactTorsion(unittest.TestCase):
         ):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 fixture(0.01, **options)
-        with patch.dict("os.environ", {"IL_NEWTON_FPGS_MF_WARMSTART": "1"}):
-            with self.assertRaises(ValueError):
-                fixture(0.01)
 
     def test_compliance_combination_rejected_at_construction(self):
         """Fail before stepping when both experimental responses are requested."""

@@ -14,7 +14,6 @@ closed-form rather than inferred from a later bounce height.
 """
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -143,10 +142,7 @@ def _make_solver(
         kwargs["enable_restitution"] = enable_restitution
     if restitution_velocity_threshold is not None:
         kwargs["restitution_velocity_threshold"] = restitution_velocity_threshold
-    # Keep a developer's environment from silently turning warm starting on in
-    # tests that are intended to be cold.
-    with mock.patch.dict("os.environ", {"IL_NEWTON_FPGS_MF_WARMSTART": "0"}):
-        return newton.solvers.SolverFeatherPGS(model, **kwargs)
+    return newton.solvers.SolverFeatherPGS(model, **kwargs)
 
 
 def _reset_state(model, state, vertical_velocity):
