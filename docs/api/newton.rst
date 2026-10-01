@@ -47,8 +47,9 @@ newton
    ShapeFlags
    State
    StateFlags
-   TendonLinkFlags
-   TendonLinkType
+   TendonGuide
+   TendonGuideFlags
+   TendonGuideType
    TetMesh
 
 .. rubric:: Functions

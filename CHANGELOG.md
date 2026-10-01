@@ -4,9 +4,6 @@
 
 <!-- towncrier release notes start -->
 
-### Added
-
-- Add massless routed tendons with attachment, pinhole, rolling, finite-friction, and isolated dynamic-routing support in XPBD and VBD.
 ## [1.6.0] - 2026-09-10
 
 ### Added

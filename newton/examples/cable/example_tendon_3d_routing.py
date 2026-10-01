@@ -20,7 +20,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Axis, TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.examples.cable.cable import (
     assert_tendon_total_length,
     get_tendon_attachment_worlds,
@@ -152,58 +152,60 @@ class Example:
 
         axis_z = (0.0, 0.0, 1.0)
         drive_mu = 1000.0
-        builder.add_tendon()
-
-        builder.add_tendon_link(
-            body=left,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.10),
-            axis=(0.0, 1.0, 0.0),
-        )
-        builder.add_tendon_link(
-            body=p1,
-            link_type=TendonLinkType.ROLLING,
-            radius=self.r1,
-            orientation=1,
-            mu=drive_mu,
-            offset=(0.0, 0.0, 0.0),
-            axis=axis_z,
-            compliance=1.0e-5,
-            damping=0.1,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=p2,
-            link_type=TendonLinkType.ROLLING,
-            radius=self.r2,
-            orientation=-1,
-            mu=drive_mu,
-            offset=(0.0, 0.0, 0.0),
-            axis=axis_z,
-            compliance=1.0e-5,
-            damping=0.1,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=p3,
-            link_type=TendonLinkType.ROLLING,
-            radius=self.r3,
-            orientation=1,
-            mu=drive_mu,
-            offset=(0.0, 0.0, 0.0),
-            axis=axis_z,
-            compliance=1.0e-5,
-            damping=0.1,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=right,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.12),
-            axis=(0.0, 1.0, 0.0),
-            compliance=1.0e-5,
-            damping=0.1,
-            rest_length=-1.0,
+        builder.add_tendon(
+            [
+                newton.TendonGuide(
+                    body=left,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.10),
+                    axis=(0.0, 1.0, 0.0),
+                ),
+                newton.TendonGuide(
+                    body=p1,
+                    guide_type=TendonGuideType.ROLLER,
+                    radius=self.r1,
+                    orientation=1,
+                    mu=drive_mu,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=axis_z,
+                    compliance=1.0e-5,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=p2,
+                    guide_type=TendonGuideType.ROLLER,
+                    radius=self.r2,
+                    orientation=-1,
+                    mu=drive_mu,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=axis_z,
+                    compliance=1.0e-5,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=p3,
+                    guide_type=TendonGuideType.ROLLER,
+                    radius=self.r3,
+                    orientation=1,
+                    mu=drive_mu,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=axis_z,
+                    compliance=1.0e-5,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=right,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.12),
+                    axis=(0.0, 1.0, 0.0),
+                    compliance=1.0e-5,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+            ]
         )
 
         builder.add_ground_plane()

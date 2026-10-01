@@ -9,7 +9,7 @@ import warp as wp
 
 from ..core.reset import reset_world_selected
 from ..math import quat_velocity
-from ..sim.tendon import TendonLinkFlags, TendonLinkType
+from ..sim.tendon import TendonGuideFlags, TendonGuideType
 
 
 @wp.func
@@ -60,7 +60,7 @@ def signed_arc_length(
     plane_normal: wp.vec3,
     orientation: int,
 ) -> float:
-    """Signed arc length from old_pt to new_pt on a circular rolling link."""
+    """Signed arc length from old_pt to new_pt on a circular rolling guide."""
     r_old = old_pt - center
     r_new = new_pt - center
     r_old = r_old - wp.dot(r_old, plane_normal) * plane_normal
@@ -86,7 +86,7 @@ def wrapped_arc_length(
     radius: float,
     plane_normal: wp.vec3,
 ) -> float:
-    """Unsigned arc length between two points on a circular rolling link."""
+    """Unsigned arc length between two points on a circular rolling guide."""
     r_left = pt_left - center
     r_right = pt_right - center
     r_left = r_left - wp.dot(r_left, plane_normal) * plane_normal
@@ -103,18 +103,18 @@ def wrapped_arc_length(
 
 
 @wp.kernel
-def snapshot_tendon_link_active(
-    tendon_link_active: wp.array[bool],
-    tendon_link_active_step: wp.array[bool],
-    tendon_link_flags: wp.array[int],
+def snapshot_tendon_guide_active(
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_active_step: wp.array[bool],
+    tendon_guide_flags: wp.array[int],
 ):
     """Snapshot dynamic state while preserving fixed route ownership."""
-    link_idx = wp.tid()
-    if (tendon_link_flags[link_idx] & int(TendonLinkFlags.DYNAMIC)) != 0:
-        tendon_link_active_step[link_idx] = tendon_link_active[link_idx]
+    guide_idx = wp.tid()
+    if (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) != 0:
+        tendon_guide_active_step[guide_idx] = tendon_guide_active[guide_idx]
     else:
-        tendon_link_active[link_idx] = True
-        tendon_link_active_step[link_idx] = True
+        tendon_guide_active[guide_idx] = True
+        tendon_guide_active_step[guide_idx] = True
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -143,96 +143,98 @@ def mark_tendon_rebaseline_worlds(
 
 
 @wp.kernel
-def update_tendon_link_active(
+def update_tendon_guide_active(
     body_q: wp.array[wp.transform],
     tendon_start: wp.array[int],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_flags: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_orientation: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_flags: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     tendon_activation_tol: float,
-    tendon_link_active: wp.array[bool],
+    tendon_guide_active: wp.array[bool],
 ):
-    """Update dynamic rolling links from oriented distance to their bypass span."""
+    """Update dynamic rolling guides from oriented distance to their bypass span."""
     tendon_id = wp.tid()
-    link_start = tendon_start[tendon_id]
-    link_end = tendon_start[tendon_id + 1]
+    guide_start = tendon_start[tendon_id]
+    guide_end = tendon_start[tendon_id + 1]
 
-    for link_idx in range(link_start + 1, link_end - 1):
-        if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+    for guide_idx in range(guide_start + 1, guide_end - 1):
+        if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
             continue
-        if (tendon_link_flags[link_idx] & int(TendonLinkFlags.DYNAMIC)) == 0 or tendon_link_radius[link_idx] <= 0.0:
+        if (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) == 0 or tendon_guide_radius[
+            guide_idx
+        ] <= 0.0:
             continue
 
-        prev_link = link_idx - 1
-        next_link = link_idx + 1
+        prev_guide = guide_idx - 1
+        next_guide = guide_idx + 1
 
-        prev_pose = body_q[tendon_link_body[prev_link]]
-        next_pose = body_q[tendon_link_body[next_link]]
-        candidate_pose = body_q[tendon_link_body[link_idx]]
-        prev_center = wp.transform_point(prev_pose, tendon_link_offset[prev_link])
-        next_center = wp.transform_point(next_pose, tendon_link_offset[next_link])
-        candidate_center = wp.transform_point(candidate_pose, tendon_link_offset[link_idx])
+        prev_pose = body_q[tendon_guide_body[prev_guide]]
+        next_pose = body_q[tendon_guide_body[next_guide]]
+        candidate_pose = body_q[tendon_guide_body[guide_idx]]
+        prev_center = wp.transform_point(prev_pose, tendon_guide_offset[prev_guide])
+        next_center = wp.transform_point(next_pose, tendon_guide_offset[next_guide])
+        candidate_center = wp.transform_point(candidate_pose, tendon_guide_offset[guide_idx])
 
         prev_rolling = (
-            tendon_link_type[prev_link] == int(TendonLinkType.ROLLING)
-            and tendon_link_active[prev_link]
-            and tendon_link_radius[prev_link] > 0.0
+            tendon_guide_type[prev_guide] == int(TendonGuideType.ROLLER)
+            and tendon_guide_active[prev_guide]
+            and tendon_guide_radius[prev_guide] > 0.0
         )
         next_rolling = (
-            tendon_link_type[next_link] == int(TendonLinkType.ROLLING)
-            and tendon_link_active[next_link]
-            and tendon_link_radius[next_link] > 0.0
+            tendon_guide_type[next_guide] == int(TendonGuideType.ROLLER)
+            and tendon_guide_active[next_guide]
+            and tendon_guide_radius[next_guide] > 0.0
         )
 
         bypass_l = prev_center
         bypass_r = next_center
         if prev_rolling and next_rolling:
-            prev_normal = wp.transform_vector(prev_pose, tendon_link_axis[prev_link])
-            next_normal = wp.transform_vector(next_pose, tendon_link_axis[next_link])
+            prev_normal = wp.transform_vector(prev_pose, tendon_guide_axis[prev_guide])
+            next_normal = wp.transform_vector(next_pose, tendon_guide_axis[next_guide])
             for _iter in range(10):
                 bypass_r = tangent_point_circle(
                     bypass_l,
                     next_center,
-                    tendon_link_radius[next_link],
+                    tendon_guide_radius[next_guide],
                     next_normal,
-                    tendon_link_orientation[next_link],
+                    tendon_guide_orientation[next_guide],
                 )
                 bypass_l = tangent_point_circle(
                     bypass_r,
                     prev_center,
-                    tendon_link_radius[prev_link],
+                    tendon_guide_radius[prev_guide],
                     prev_normal,
-                    -tendon_link_orientation[prev_link],
+                    -tendon_guide_orientation[prev_guide],
                 )
         elif prev_rolling:
-            prev_normal = wp.transform_vector(prev_pose, tendon_link_axis[prev_link])
+            prev_normal = wp.transform_vector(prev_pose, tendon_guide_axis[prev_guide])
             bypass_l = tangent_point_circle(
                 next_center,
                 prev_center,
-                tendon_link_radius[prev_link],
+                tendon_guide_radius[prev_guide],
                 prev_normal,
-                -tendon_link_orientation[prev_link],
+                -tendon_guide_orientation[prev_guide],
             )
         elif next_rolling:
-            next_normal = wp.transform_vector(next_pose, tendon_link_axis[next_link])
+            next_normal = wp.transform_vector(next_pose, tendon_guide_axis[next_guide])
             bypass_r = tangent_point_circle(
                 prev_center,
                 next_center,
-                tendon_link_radius[next_link],
+                tendon_guide_radius[next_guide],
                 next_normal,
-                tendon_link_orientation[next_link],
+                tendon_guide_orientation[next_guide],
             )
 
         # Routing is defined in the candidate's cable plane. Projecting the
         # bypass span makes the test independent of harmless out-of-plane drift.
-        normal = wp.transform_vector(candidate_pose, tendon_link_axis[link_idx])
+        normal = wp.transform_vector(candidate_pose, tendon_guide_axis[guide_idx])
         normal_length = wp.length(normal)
         if normal_length <= 1.0e-8:
-            tendon_link_active[link_idx] = False
+            tendon_guide_active[guide_idx] = False
             continue
         normal = normal / normal_length
         span = bypass_r - bypass_l
@@ -247,26 +249,26 @@ def update_tendon_link_active(
             span_normal = wp.cross(normal, span) / wp.sqrt(span_length_sq)
             # Orient the signed distance so it is positive on the inactive side.
             distance = wp.dot(candidate_offset - closest_offset, span_normal)
-            if tendon_link_orientation[link_idx] <= 0:
+            if tendon_guide_orientation[guide_idx] <= 0:
                 distance = -distance
-            activation_radius = tendon_link_radius[link_idx]
-            if not tendon_link_active[link_idx]:
+            activation_radius = tendon_guide_radius[guide_idx]
+            if not tendon_guide_active[guide_idx]:
                 activation_radius = activation_radius * (1.0 - tendon_activation_tol)
             if alpha > 0.0 and alpha < 1.0 and distance <= activation_radius:
                 active = True
-        tendon_link_active[link_idx] = active
+        tendon_guide_active[guide_idx] = active
 
 
 @wp.func
 def _tendon_segment_length_rate_from_twists(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
-    link_l: int,
-    link_r: int,
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    guide_l: int,
+    guide_r: int,
     x_l: wp.vec3,
     x_r: wp.vec3,
     velocity_l: wp.vec3,
@@ -281,8 +283,8 @@ def _tendon_segment_length_rate_from_twists(
         return 0.0
 
     direction = diff / length
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
     pose_l = body_q[body_l]
     pose_r = body_q[body_r]
     world_com_l = wp.transform_point(pose_l, body_com[body_l])
@@ -294,14 +296,14 @@ def _tendon_segment_length_rate_from_twists(
     angular_r = wp.cross(x_r - world_com_r, direction)
 
     # Rolling contact does not transmit spin about the roller axis.
-    if tendon_link_type[link_l] == int(TendonLinkType.ROLLING):
-        center_l = wp.transform_point(pose_l, tendon_link_offset[link_l])
-        normal_l = wp.transform_vector(pose_l, tendon_link_axis[link_l])
+    if tendon_guide_type[guide_l] == int(TendonGuideType.ROLLER):
+        center_l = wp.transform_point(pose_l, tendon_guide_offset[guide_l])
+        normal_l = wp.transform_vector(pose_l, tendon_guide_axis[guide_l])
         radial_l = x_l - center_l
         angular_l = angular_l - wp.dot(wp.cross(radial_l, linear_l), normal_l) * normal_l
-    if tendon_link_type[link_r] == int(TendonLinkType.ROLLING):
-        center_r = wp.transform_point(pose_r, tendon_link_offset[link_r])
-        normal_r = wp.transform_vector(pose_r, tendon_link_axis[link_r])
+    if tendon_guide_type[guide_r] == int(TendonGuideType.ROLLER):
+        center_r = wp.transform_point(pose_r, tendon_guide_offset[guide_r])
+        normal_r = wp.transform_vector(pose_r, tendon_guide_axis[guide_r])
         radial_r = x_r - center_r
         angular_r = angular_r - wp.dot(wp.cross(radial_r, linear_r), normal_r) * normal_r
 
@@ -318,27 +320,27 @@ def tendon_segment_length_rate(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
-    link_l: int,
-    link_r: int,
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    guide_l: int,
+    guide_r: int,
     x_l: wp.vec3,
     x_r: wp.vec3,
 ):
     """Return the free-span length rate used by the stretch constraint."""
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
     return _tendon_segment_length_rate_from_twists(
         body_q,
         body_com,
-        tendon_link_body,
-        tendon_link_type,
-        tendon_link_offset,
-        tendon_link_axis,
-        link_l,
-        link_r,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        guide_l,
+        guide_r,
         x_l,
         x_r,
         wp.spatial_top(body_qd[body_l]),
@@ -354,27 +356,27 @@ def tendon_segment_length_rate_from_poses(
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
-    link_l: int,
-    link_r: int,
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    guide_l: int,
+    guide_r: int,
     x_l_local: wp.vec3,
     x_r_local: wp.vec3,
     x_l: wp.vec3,
     x_r: wp.vec3,
 ):
     """Return free-span length rate from the current and previous body poses."""
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
     pose_l = body_q[body_l]
     pose_r = body_q[body_r]
     pose_l_prev = body_q_prev[body_l]
     pose_r_prev = body_q_prev[body_r]
     # Preserve VBD's discrete damping except where rolling contact requires removing roller-axis spin.
-    if tendon_link_type[link_l] != int(TendonLinkType.ROLLING) and tendon_link_type[link_r] != int(
-        TendonLinkType.ROLLING
+    if tendon_guide_type[guide_l] != int(TendonGuideType.ROLLER) and tendon_guide_type[guide_r] != int(
+        TendonGuideType.ROLLER
     ):
         x_l_prev = wp.transform_point(pose_l_prev, x_l_local)
         x_r_prev = wp.transform_point(pose_r_prev, x_r_local)
@@ -399,12 +401,12 @@ def tendon_segment_length_rate_from_poses(
     return _tendon_segment_length_rate_from_twists(
         body_q,
         body_com,
-        tendon_link_body,
-        tendon_link_type,
-        tendon_link_offset,
-        tendon_link_axis,
-        link_l,
-        link_r,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        guide_l,
+        guide_r,
         x_l,
         x_r,
         velocity_l,
@@ -418,19 +420,19 @@ def tendon_segment_length_rate_from_poses(
 def prepare_tendon_route(
     body_q: wp.array[wp.transform],
     tendon_start: wp.array[int],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_flags: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_flags: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_authored_rest_length: wp.array[float],
     seg_rest_length_step: wp.array[float],
     seg_compliance: wp.array[float],
     seg_damping: wp.array[float],
-    tendon_link_active: wp.array[bool],
-    tendon_link_active_step: wp.array[bool],
-    tendon_link_route_rest_length: wp.array[float],
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_active_step: wp.array[bool],
+    tendon_guide_route_rest_length: wp.array[float],
     seg_attachment_l_local_step: wp.array[wp.vec3],
     seg_attachment_r_local_step: wp.array[wp.vec3],
     initialize: int,
@@ -438,73 +440,73 @@ def prepare_tendon_route(
     # outputs
     seg_route_rest_length: wp.array[float],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     seg_active_compliance: wp.array[float],
     seg_active_damping: wp.array[float],
 ):
     """Build the active segment route held fixed during one solver step."""
     tendon_id = wp.tid()
-    link_start = tendon_start[tendon_id]
-    link_end = tendon_start[tendon_id + 1]
-    num_links = link_end - link_start
-    num_segs = num_links - 1
+    guide_start = tendon_start[tendon_id]
+    guide_end = tendon_start[tendon_id + 1]
+    num_guides = guide_end - guide_start
+    num_segs = num_guides - 1
     if num_segs < 1:
         return
 
-    seg_offset = link_start - tendon_id
+    seg_offset = guide_start - tendon_id
     min_rest = 1.0e-6
 
     for s in range(num_segs):
         seg = seg_offset + s
         seg_active[seg] = 1
-        seg_active_link_l[seg] = link_start + s
-        seg_active_link_r[seg] = link_start + s + 1
+        seg_active_guide_l[seg] = guide_start + s
+        seg_active_guide_r[seg] = guide_start + s + 1
         seg_active_compliance[seg] = wp.max(seg_compliance[seg], compliance_floor)
         seg_active_damping[seg] = seg_damping[seg]
         seg_route_rest_length[seg] = seg_rest_length_step[seg]
 
-    tendon_link_active[link_start] = True
-    tendon_link_active[link_end - 1] = True
+    tendon_guide_active[guide_start] = True
+    tendon_guide_active[guide_end - 1] = True
 
-    for i in range(1, num_links - 1):
-        link_idx = link_start + i
-        if (tendon_link_flags[link_idx] & int(TendonLinkFlags.DYNAMIC)) == 0:
-            tendon_link_active[link_idx] = True
-            tendon_link_active_step[link_idx] = True
-        if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+    for i in range(1, num_guides - 1):
+        guide_idx = guide_start + i
+        if (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) == 0:
+            tendon_guide_active[guide_idx] = True
+            tendon_guide_active_step[guide_idx] = True
+        if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
             continue
-        if tendon_link_route_rest_length[link_idx] <= 0.0:
+        if tendon_guide_route_rest_length[guide_idx] <= 0.0:
             continue
-        if tendon_link_active[link_idx]:
+        if tendon_guide_active[guide_idx]:
             continue
 
         seg_left = seg_offset + i - 1
         seg_right = seg_left + 1
-        prev_link = link_idx - 1
-        next_link = link_idx + 1
+        prev_guide = guide_idx - 1
+        next_guide = guide_idx + 1
 
         seg_active[seg_left] = 1
         seg_active[seg_right] = 0
-        seg_active_link_l[seg_left] = prev_link
-        seg_active_link_r[seg_left] = next_link
+        seg_active_guide_l[seg_left] = prev_guide
+        seg_active_guide_r[seg_left] = next_guide
         seg_active_compliance[seg_left] = wp.max(seg_compliance[seg_left], compliance_floor) + wp.max(
             seg_compliance[seg_right], compliance_floor
         )
         seg_active_damping[seg_left] = seg_damping[seg_left] + seg_damping[seg_right]
 
         merged_rest = seg_rest_length_step[seg_left]
-        if tendon_link_active_step[link_idx]:
-            body = tendon_link_body[link_idx]
+        if tendon_guide_active_step[guide_idx]:
+            body = tendon_guide_body[guide_idx]
             pose = body_q[body]
-            center = wp.transform_point(pose, tendon_link_offset[link_idx])
-            normal = wp.transform_vector(pose, tendon_link_axis[link_idx])
+            center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
+            normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
             pt_left = wp.transform_point(pose, seg_attachment_r_local_step[seg_left])
             pt_right = wp.transform_point(pose, seg_attachment_l_local_step[seg_right])
             merged_rest = (
                 seg_rest_length_step[seg_left]
                 + seg_rest_length_step[seg_right]
-                + wrapped_arc_length(pt_left, pt_right, center, tendon_link_radius[link_idx], normal)
+                + wrapped_arc_length(pt_left, pt_right, center, tendon_guide_radius[guide_idx], normal)
             )
         elif initialize != 0:
             merged_rest = seg_rest_length_step[seg_left] + seg_rest_length_step[seg_right]
@@ -512,9 +514,9 @@ def prepare_tendon_route(
             auto_right = seg_authored_rest_length[seg_right] < 0.0
             if auto_left or auto_right:
                 # Automatic material fills the unresolved part of the initial bypass.
-                merged_rest = wp.max(merged_rest, tendon_link_route_rest_length[link_idx])
+                merged_rest = wp.max(merged_rest, tendon_guide_route_rest_length[guide_idx])
         elif merged_rest <= 0.0:
-            merged_rest = tendon_link_route_rest_length[link_idx]
+            merged_rest = tendon_guide_route_rest_length[guide_idx]
 
         seg_route_rest_length[seg_left] = wp.max(merged_rest, min_rest)
         seg_route_rest_length[seg_right] = min_rest
@@ -538,7 +540,7 @@ def _tendon_segment_attachment_points(
     """Compute one active free span's tangent points."""
     new_al = center_l
     new_ar = center_r
-    both_rolling = (type_l == int(TendonLinkType.ROLLING)) and (type_r == int(TendonLinkType.ROLLING))
+    both_rolling = (type_l == int(TendonGuideType.ROLLER)) and (type_r == int(TendonGuideType.ROLLER))
 
     if both_rolling and radius_l > 0.0 and radius_r > 0.0:
         new_al = seed_al
@@ -551,10 +553,10 @@ def _tendon_segment_attachment_points(
             tangent_delta_sq = wp.length_sq(new_al - previous_al) + wp.length_sq(new_ar - previous_ar)
             if tangent_delta_sq == 0.0:
                 break
-    elif type_l == int(TendonLinkType.ROLLING) and radius_l > 0.0:
+    elif type_l == int(TendonGuideType.ROLLER) and radius_l > 0.0:
         new_ar = center_r
         new_al = tangent_point_circle(center_r, center_l, radius_l, normal_l, -orient_l)
-    elif type_r == int(TendonLinkType.ROLLING) and radius_r > 0.0:
+    elif type_r == int(TendonGuideType.ROLLER) and radius_r > 0.0:
         new_al = center_l
         new_ar = tangent_point_circle(center_l, center_r, radius_r, normal_r, orient_r)
 
@@ -564,18 +566,20 @@ def _tendon_segment_attachment_points(
 @wp.kernel
 def update_tendon_attachments(
     body_q: wp.array[wp.transform],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_flags: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_orientation: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_start: wp.array[int],
+    tendon_guide_tendon: wp.array[int],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_flags: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
-    tendon_link_active: wp.array[bool],
-    tendon_link_active_step: wp.array[bool],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_active_step: wp.array[bool],
     seg_attachment_l_local_step: wp.array[wp.vec3],
     seg_attachment_r_local_step: wp.array[wp.vec3],
     apply_rolling_transfer: int,
@@ -600,21 +604,21 @@ def update_tendon_attachments(
         seg_length[seg] = 0.0
         return
 
-    link_l = seg_active_link_l[seg]
-    link_r = seg_active_link_r[seg]
+    guide_l = seg_active_guide_l[seg]
+    guide_r = seg_active_guide_r[seg]
 
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
-    type_l = tendon_link_type[link_l]
-    type_r = tendon_link_type[link_r]
-    radius_l = tendon_link_radius[link_l]
-    radius_r = tendon_link_radius[link_r]
-    orient_l = tendon_link_orientation[link_l]
-    orient_r = tendon_link_orientation[link_r]
-    offset_l = tendon_link_offset[link_l]
-    offset_r = tendon_link_offset[link_r]
-    axis_l = tendon_link_axis[link_l]
-    axis_r = tendon_link_axis[link_r]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
+    type_l = tendon_guide_type[guide_l]
+    type_r = tendon_guide_type[guide_r]
+    radius_l = tendon_guide_radius[guide_l]
+    radius_r = tendon_guide_radius[guide_r]
+    orient_l = tendon_guide_orientation[guide_l]
+    orient_r = tendon_guide_orientation[guide_r]
+    offset_l = tendon_guide_offset[guide_l]
+    offset_r = tendon_guide_offset[guide_r]
+    axis_l = tendon_guide_axis[guide_l]
+    axis_r = tendon_guide_axis[guide_r]
 
     pose_l = body_q[body_l]
     pose_r = body_q[body_r]
@@ -629,16 +633,22 @@ def update_tendon_attachments(
     base_ar_step_seg = seg
 
     # Route transitions move the persistent right endpoint between adjacent segment slots.
-    transition_link = link_l + 1 if link_r == link_l + 2 else link_l
+    transition_guide = guide_l + 1 if guide_r == guide_l + 2 else guide_l
     if (
-        tendon_link_type[transition_link] == int(TendonLinkType.ROLLING)
-        and (tendon_link_flags[transition_link] & int(TendonLinkFlags.DYNAMIC)) != 0
+        tendon_guide_type[transition_guide] == int(TendonGuideType.ROLLER)
+        and (tendon_guide_flags[transition_guide] & int(TendonGuideFlags.DYNAMIC)) != 0
     ):
-        if tendon_link_active[transition_link] and not tendon_link_active_step[transition_link]:
-            assert transition_link == link_l and seg > 0
+        # The builder forbids terminal/consecutive dynamic guides. Assert the
+        # resulting history slot belongs to this tendon, not just the array.
+        tendon_id = tendon_guide_tendon[transition_guide]
+        seg_start = tendon_start[tendon_id] - tendon_id
+        seg_end = tendon_start[tendon_id + 1] - tendon_id - 1
+        if tendon_guide_active[transition_guide] and not tendon_guide_active_step[transition_guide]:
+            assert transition_guide == guide_l and seg > seg_start
             base_ar_step_seg = seg - 1
-        elif not tendon_link_active[transition_link] and tendon_link_active_step[transition_link]:
-            assert transition_link == link_l + 1 and link_r == transition_link + 1
+        elif not tendon_guide_active[transition_guide] and tendon_guide_active_step[transition_guide]:
+            assert transition_guide == guide_l + 1 and guide_r == transition_guide + 1
+            assert seg + 1 < seg_end
             base_ar_step_seg = seg + 1
 
     base_ar = wp.transform_point(pose_r, seg_attachment_r_local_step[base_ar_step_seg])
@@ -660,16 +670,16 @@ def update_tendon_attachments(
 
     if apply_rolling_transfer != 0:
         if (
-            type_l == int(TendonLinkType.ROLLING)
+            type_l == int(TendonGuideType.ROLLER)
             and radius_l > 0.0
-            and tendon_link_active[link_l] == tendon_link_active_step[link_l]
+            and tendon_guide_active[guide_l] == tendon_guide_active_step[guide_l]
         ):
             seg_rolling_delta_l[seg] = signed_arc_length(base_al, new_al, center_l, radius_l, normal_l, orient_l)
 
         if (
-            type_r == int(TendonLinkType.ROLLING)
+            type_r == int(TendonGuideType.ROLLER)
             and radius_r > 0.0
-            and tendon_link_active[link_r] == tendon_link_active_step[link_r]
+            and tendon_guide_active[guide_r] == tendon_guide_active_step[guide_r]
         ):
             seg_rolling_delta_r[seg] = -signed_arc_length(base_ar, new_ar, center_r, radius_r, normal_r, orient_r)
 
@@ -683,15 +693,15 @@ def update_tendon_attachments(
 @wp.kernel
 def rebaseline_tendon_attachments(
     body_q: wp.array[wp.transform],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_orientation: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     seg_world: wp.array[int],
     rebaseline_world_mask: wp.array[wp.bool],
     world_count: int,
@@ -725,16 +735,16 @@ def rebaseline_tendon_attachments(
         seg_length[seg] = 0.0
         return
 
-    link_l = seg_active_link_l[seg]
-    link_r = seg_active_link_r[seg]
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
+    guide_l = seg_active_guide_l[seg]
+    guide_r = seg_active_guide_r[seg]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
     pose_l = body_q[body_l]
     pose_r = body_q[body_r]
-    center_l = wp.transform_point(pose_l, tendon_link_offset[link_l])
-    center_r = wp.transform_point(pose_r, tendon_link_offset[link_r])
-    normal_l = wp.transform_vector(pose_l, tendon_link_axis[link_l])
-    normal_r = wp.transform_vector(pose_r, tendon_link_axis[link_r])
+    center_l = wp.transform_point(pose_l, tendon_guide_offset[guide_l])
+    center_r = wp.transform_point(pose_r, tendon_guide_offset[guide_r])
+    normal_l = wp.transform_vector(pose_l, tendon_guide_axis[guide_l])
+    normal_r = wp.transform_vector(pose_r, tendon_guide_axis[guide_r])
     seed_al = wp.transform_point(pose_l, seg_attachment_l_local[seg])
     seed_ar = wp.transform_point(pose_r, seg_attachment_r_local[seg])
     new_al, new_ar = _tendon_segment_attachment_points(
@@ -742,12 +752,12 @@ def rebaseline_tendon_attachments(
         center_r,
         normal_l,
         normal_r,
-        tendon_link_type[link_l],
-        tendon_link_type[link_r],
-        tendon_link_radius[link_l],
-        tendon_link_radius[link_r],
-        tendon_link_orientation[link_l],
-        tendon_link_orientation[link_r],
+        tendon_guide_type[guide_l],
+        tendon_guide_type[guide_r],
+        tendon_guide_radius[guide_l],
+        tendon_guide_radius[guide_r],
+        tendon_guide_orientation[guide_l],
+        tendon_guide_orientation[guide_r],
         seed_al,
         seed_ar,
     )
@@ -766,52 +776,52 @@ def rebaseline_tendon_attachments(
 def update_tendon_cone_rows(
     body_q: wp.array[wp.transform],
     tendon_start: wp.array[int],
-    tendon_link_tendon: wp.array[int],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_flags: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_orientation: wp.array[int],
-    tendon_link_mu: wp.array[float],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
-    tendon_link_active: wp.array[bool],
+    tendon_guide_tendon: wp.array[int],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_flags: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_orientation: wp.array[int],
+    tendon_guide_mu: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
+    tendon_guide_active: wp.array[bool],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
     seg_length: wp.array[float],
     report_unsupported_wrap: int,
     # outputs
-    tendon_link_cone_seg_l: wp.array[int],
-    tendon_link_cone_seg_r: wp.array[int],
-    tendon_link_cap_ratio: wp.array[float],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
 ):
     """Cache one capstan-cone row's segment pair and tension ratio."""
-    link_idx = wp.tid()
-    link_type = tendon_link_type[link_idx]
-    link_is_active = tendon_link_active[link_idx]
-    is_rolling = link_type == int(TendonLinkType.ROLLING) and link_is_active
-    is_pinhole = link_type == int(TendonLinkType.PINHOLE)
+    guide_idx = wp.tid()
+    guide_type = tendon_guide_type[guide_idx]
+    guide_is_active = tendon_guide_active[guide_idx]
+    is_rolling = guide_type == int(TendonGuideType.ROLLER) and guide_is_active
+    is_pinhole = guide_type == int(TendonGuideType.PINHOLE)
 
-    tendon_link_cone_seg_l[link_idx] = -1
-    tendon_link_cone_seg_r[link_idx] = -1
-    tendon_link_cap_ratio[link_idx] = 1.0
+    tendon_guide_cone_seg_l[guide_idx] = -1
+    tendon_guide_cone_seg_r[guide_idx] = -1
+    tendon_guide_cap_ratio[guide_idx] = 1.0
 
     if not (is_rolling or is_pinhole):
         return
 
-    tendon_id = tendon_link_tendon[link_idx]
-    link_start = tendon_start[tendon_id]
-    link_end = tendon_start[tendon_id + 1]
-    i = link_idx - link_start
-    num_links = link_end - link_start
-    num_segs = num_links - 1
-    if i <= 0 or i >= num_links - 1:
+    tendon_id = tendon_guide_tendon[guide_idx]
+    guide_start = tendon_start[tendon_id]
+    guide_end = tendon_start[tendon_id + 1]
+    i = guide_idx - guide_start
+    num_guides = guide_end - guide_start
+    num_segs = num_guides - 1
+    if i <= 0 or i >= num_guides - 1:
         return
 
-    seg_offset = link_start - tendon_id
+    seg_offset = guide_start - tendon_id
     seg_adj_left = seg_offset + i - 1
     seg_adj_right = seg_offset + i
     seg_left = int(-1)
@@ -825,14 +835,14 @@ def update_tendon_cone_rows(
                 seg_left = seg_adj_left
             elif i > 1:
                 previous_seg = seg_adj_left - 1
-                if seg_active[previous_seg] != 0 and seg_active_link_r[previous_seg] == link_idx:
+                if seg_active[previous_seg] != 0 and seg_active_guide_r[previous_seg] == guide_idx:
                     seg_left = previous_seg
 
             if seg_active[seg_adj_right] != 0:
                 seg_right = seg_adj_right
-            elif i < num_links - 2:
+            elif i < num_guides - 2:
                 next_seg = seg_adj_right + 1
-                if seg_active[next_seg] != 0 and seg_active_link_l[next_seg] == link_idx:
+                if seg_active[next_seg] != 0 and seg_active_guide_l[next_seg] == guide_idx:
                     seg_right = next_seg
     else:
         for probe in range(num_segs):
@@ -853,12 +863,12 @@ def update_tendon_cone_rows(
     if seg_left < 0 or seg_right < 0:
         return
 
-    is_dynamic = (tendon_link_flags[link_idx] & int(TendonLinkFlags.DYNAMIC)) != 0
+    is_dynamic = (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) != 0
     if is_rolling and not is_dynamic and report_unsupported_wrap != 0:
-        body = tendon_link_body[link_idx]
+        body = tendon_guide_body[guide_idx]
         pose = body_q[body]
-        center = wp.transform_point(pose, tendon_link_offset[link_idx])
-        normal = wp.transform_vector(pose, tendon_link_axis[link_idx])
+        center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
+        normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
         r_left = seg_attachment_r[seg_left] - center
         r_right = seg_attachment_l[seg_right] - center
         r_left = r_left - wp.dot(r_left, normal) * normal
@@ -869,31 +879,31 @@ def update_tendon_cone_rows(
             u_left = r_left / len_r_left
             u_right = r_right / len_r_right
             signed_wrap_angle = wp.atan2(wp.dot(wp.cross(u_left, u_right), normal), wp.dot(u_left, u_right))
-            oriented_wrap_angle = signed_wrap_angle * float(tendon_link_orientation[link_idx])
+            oriented_wrap_angle = signed_wrap_angle * float(tendon_guide_orientation[guide_idx])
             # atan2 may represent the supported pi boundary as either +pi or -pi.
             wrap_tol = 1.0e-6
             if oriented_wrap_angle < -wrap_tol and oriented_wrap_angle > -wp.pi + wrap_tol:
                 wp.printf(
-                    "ERROR: Tendon %d ROLLING link %d crossed the supported wrap range [0, pi] "
+                    "ERROR: Tendon %d ROLLER guide %d crossed the supported wrap range [0, pi] "
                     "(oriented angle %f deg). Cable rest length and tension may be invalid. "
-                    "Correct the link orientation or route geometry, or use dynamic routing.\n",
+                    "Correct the guide orientation or route geometry, or use dynamic routing.\n",
                     tendon_id,
-                    link_idx,
+                    guide_idx,
                     oriented_wrap_angle * 180.0 / wp.pi,
                 )
 
-    link_first = seg_active_link_r[seg_left]
-    link_last = seg_active_link_l[seg_right]
-    if link_last < link_first:
-        tmp_link = link_first
-        link_first = link_last
-        link_last = tmp_link
+    guide_first = seg_active_guide_r[seg_left]
+    guide_last = seg_active_guide_l[seg_right]
+    if guide_last < guide_first:
+        tmp_guide = guide_first
+        guide_first = guide_last
+        guide_last = tmp_guide
 
     cap_ratio = float(1.0)
-    if link_first == link_last:
-        cone_link_type = tendon_link_type[link_first]
-        cone_link_is_active = tendon_link_active[link_first]
-        if cone_link_type == int(TendonLinkType.PINHOLE):
+    if guide_first == guide_last:
+        cone_guide_type = tendon_guide_type[guide_first]
+        cone_guide_is_active = tendon_guide_active[guide_first]
+        if cone_guide_type == int(TendonGuideType.PINHOLE):
             pin = seg_attachment_r[seg_left]
             u_left = seg_attachment_l[seg_left] - pin
             u_right = seg_attachment_r[seg_right] - pin
@@ -904,13 +914,13 @@ def update_tendon_cone_rows(
                 incoming = -u_left / len_ul
                 outgoing = u_right / len_ur
                 theta = wp.atan2(wp.length(wp.cross(incoming, outgoing)), wp.dot(incoming, outgoing))
-            cap_ratio = wp.exp(wp.min(wp.max(tendon_link_mu[link_first], 0.0) * theta, 20.0))
-        elif cone_link_type == int(TendonLinkType.ROLLING) and cone_link_is_active:
-            body = tendon_link_body[link_first]
+            cap_ratio = wp.exp(wp.min(wp.max(tendon_guide_mu[guide_first], 0.0) * theta, 20.0))
+        elif cone_guide_type == int(TendonGuideType.ROLLER) and cone_guide_is_active:
+            body = tendon_guide_body[guide_first]
             pose = body_q[body]
-            center = wp.transform_point(pose, tendon_link_offset[link_first])
-            normal = wp.transform_vector(pose, tendon_link_axis[link_first])
-            radius = tendon_link_radius[link_first]
+            center = wp.transform_point(pose, tendon_guide_offset[guide_first])
+            normal = wp.transform_vector(pose, tendon_guide_axis[guide_first])
+            radius = tendon_guide_radius[guide_first]
             r_left = seg_attachment_r[seg_left] - center
             r_right = seg_attachment_l[seg_right] - center
             r_left = r_left - wp.dot(r_left, normal) * normal
@@ -922,21 +932,21 @@ def update_tendon_cone_rows(
                 u_left = r_left / len_rl
                 u_right = r_right / len_rr
                 theta = wp.abs(wp.atan2(wp.dot(wp.cross(u_left, u_right), normal), wp.dot(u_left, u_right)))
-            cap_ratio = wp.exp(wp.min(wp.max(tendon_link_mu[link_first], 0.0) * theta, 20.0))
+            cap_ratio = wp.exp(wp.min(wp.max(tendon_guide_mu[guide_first], 0.0) * theta, 20.0))
     else:
         max_mu = float(0.0)
-        for link in range(link_first, link_last + 1):
-            cone_link_type = tendon_link_type[link]
-            cone_link_is_active = tendon_link_active[link]
-            if cone_link_type == int(TendonLinkType.PINHOLE):
-                max_mu = wp.max(max_mu, tendon_link_mu[link])
-            elif cone_link_type == int(TendonLinkType.ROLLING) and cone_link_is_active:
-                max_mu = wp.max(max_mu, tendon_link_mu[link])
+        for guide in range(guide_first, guide_last + 1):
+            cone_guide_type = tendon_guide_type[guide]
+            cone_guide_is_active = tendon_guide_active[guide]
+            if cone_guide_type == int(TendonGuideType.PINHOLE):
+                max_mu = wp.max(max_mu, tendon_guide_mu[guide])
+            elif cone_guide_type == int(TendonGuideType.ROLLER) and cone_guide_is_active:
+                max_mu = wp.max(max_mu, tendon_guide_mu[guide])
         cap_ratio = wp.exp(wp.min(wp.max(max_mu, 0.0) * wp.pi, 20.0))
 
-    tendon_link_cone_seg_l[link_idx] = seg_left
-    tendon_link_cone_seg_r[link_idx] = seg_right
-    tendon_link_cap_ratio[link_idx] = wp.max(cap_ratio, 1.0)
+    tendon_guide_cone_seg_l[guide_idx] = seg_left
+    tendon_guide_cone_seg_r[guide_idx] = seg_right
+    tendon_guide_cap_ratio[guide_idx] = wp.max(cap_ratio, 1.0)
 
 
 @wp.kernel
@@ -946,24 +956,24 @@ def solve_tendon_material(
     body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     tendon_start: wp.array[int],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
     seg_rest_length_step: wp.array[float],
     seg_route_rest_length: wp.array[float],
     seg_stretch: wp.array[float],
     seg_damping_tension: wp.array[float],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     seg_active_compliance: wp.array[float],
     seg_active_damping: wp.array[float],
-    tendon_link_active: wp.array[bool],
-    tendon_link_active_step: wp.array[bool],
-    tendon_link_route_rest_length: wp.array[float],
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_active_step: wp.array[bool],
+    tendon_guide_route_rest_length: wp.array[float],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
     seg_length: wp.array[float],
@@ -971,9 +981,9 @@ def solve_tendon_material(
     seg_attachment_r_local: wp.array[wp.vec3],
     seg_rolling_delta_l: wp.array[float],
     seg_rolling_delta_r: wp.array[float],
-    tendon_link_cone_seg_l: wp.array[int],
-    tendon_link_cone_seg_r: wp.array[int],
-    tendon_link_cap_ratio: wp.array[float],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_cap_ratio: wp.array[float],
     tendon_cone_sweep_count: wp.array[int],
     damping_from_pose_delta: int,
     dt: float,
@@ -994,17 +1004,17 @@ def solve_tendon_material(
     to use the current and previous accepted poses, matching its force evaluation.
     """
     tendon_id = wp.tid()
-    link_start = tendon_start[tendon_id]
-    link_end = tendon_start[tendon_id + 1]
-    num_links = link_end - link_start
-    num_segs = num_links - 1
+    guide_start = tendon_start[tendon_id]
+    guide_end = tendon_start[tendon_id + 1]
+    num_guides = guide_end - guide_start
+    num_segs = num_guides - 1
     tendon_cone_sweep_count[tendon_id] = 0
     if num_segs < 1:
         return
 
-    # Each preceding tendon contributes one fewer segment than links, so the
-    # segment prefix is the link prefix minus the number of preceding tendons.
-    seg_offset = link_start - tendon_id
+    # Each preceding tendon contributes one fewer segment than guides, so the
+    # segment prefix is the guide prefix minus the number of preceding tendons.
+    seg_offset = guide_start - tendon_id
 
     min_rest = 1.0e-6
 
@@ -1013,25 +1023,25 @@ def solve_tendon_material(
         seg_damping_tension[seg] = 0.0
         seg_rest_length[seg] = seg_route_rest_length[seg]
 
-    for i in range(1, num_links - 1):
-        link_idx = link_start + i
-        if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+    for i in range(1, num_guides - 1):
+        guide_idx = guide_start + i
+        if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
             continue
-        if tendon_link_route_rest_length[link_idx] <= 0.0:
+        if tendon_guide_route_rest_length[guide_idx] <= 0.0:
             continue
-        if not tendon_link_active[link_idx]:
+        if not tendon_guide_active[guide_idx]:
             continue
-        if tendon_link_active_step[link_idx]:
+        if tendon_guide_active_step[guide_idx]:
             continue
 
         seg_left = seg_offset + i - 1
         seg_right = seg_left + 1
-        body = tendon_link_body[link_idx]
+        body = tendon_guide_body[guide_idx]
         pose = body_q[body]
-        center = wp.transform_point(pose, tendon_link_offset[link_idx])
-        normal = wp.transform_vector(pose, tendon_link_axis[link_idx])
+        center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
+        normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
         arc_rest = wrapped_arc_length(
-            seg_attachment_r[seg_left], seg_attachment_l[seg_right], center, tendon_link_radius[link_idx], normal
+            seg_attachment_r[seg_left], seg_attachment_l[seg_right], center, tendon_guide_radius[guide_idx], normal
         )
         free_rest = seg_rest_length_step[seg_left] - arc_rest
         if free_rest < 2.0 * min_rest:
@@ -1066,12 +1076,12 @@ def solve_tendon_material(
                             body_q,
                             body_q_prev,
                             body_com,
-                            tendon_link_body,
-                            tendon_link_type,
-                            tendon_link_offset,
-                            tendon_link_axis,
-                            seg_active_link_l[seg],
-                            seg_active_link_r[seg],
+                            tendon_guide_body,
+                            tendon_guide_type,
+                            tendon_guide_offset,
+                            tendon_guide_axis,
+                            seg_active_guide_l[seg],
+                            seg_active_guide_r[seg],
                             seg_attachment_l_local[seg],
                             seg_attachment_r_local[seg],
                             seg_attachment_l[seg],
@@ -1082,12 +1092,12 @@ def solve_tendon_material(
                             body_q,
                             body_qd,
                             body_com,
-                            tendon_link_body,
-                            tendon_link_type,
-                            tendon_link_offset,
-                            tendon_link_axis,
-                            seg_active_link_l[seg],
-                            seg_active_link_r[seg],
+                            tendon_guide_body,
+                            tendon_guide_type,
+                            tendon_guide_offset,
+                            tendon_guide_axis,
+                            seg_active_guide_l[seg],
+                            seg_active_guide_r[seg],
                             seg_attachment_l[seg],
                             seg_attachment_r[seg],
                         )
@@ -1097,8 +1107,8 @@ def solve_tendon_material(
             material_sweep_count = wp.min(tendon_max_sweeps, 256)
         else:
             # Preserve the established fixed policy for callers that disable adaptive convergence.
-            for i_policy in range(1, num_links - 1):
-                if tendon_link_type[link_start + i_policy] == int(TendonLinkType.PINHOLE):
+            for i_policy in range(1, num_guides - 1):
+                if tendon_guide_type[guide_start + i_policy] == int(TendonGuideType.PINHOLE):
                     material_sweep_count = int(32)
 
         converged = int(0)
@@ -1110,22 +1120,22 @@ def solve_tendon_material(
             tendon_cone_sweep_count[tendon_id] = tendon_cone_sweep_count[tendon_id] + 1
             sweep_dtension = float(0.0)
             sweep_maxtension = float(0.0)
-            for order in range(1, num_links - 1):
+            for order in range(1, num_guides - 1):
                 i = order
                 if material_sweep % 2 == 1:
-                    i = num_links - order - 1
+                    i = num_guides - order - 1
 
-                link_idx = link_start + i
-                link_type = tendon_link_type[link_idx]
-                link_is_active = tendon_link_active[link_idx]
-                is_rolling = link_type == int(TendonLinkType.ROLLING) and link_is_active
-                is_pinhole = link_type == int(TendonLinkType.PINHOLE)
+                guide_idx = guide_start + i
+                guide_type = tendon_guide_type[guide_idx]
+                guide_is_active = tendon_guide_active[guide_idx]
+                is_rolling = guide_type == int(TendonGuideType.ROLLER) and guide_is_active
+                is_pinhole = guide_type == int(TendonGuideType.PINHOLE)
 
                 if not ((apply_rolling_transfer != 0 and is_rolling) or (apply_pinhole_slip != 0 and is_pinhole)):
                     continue
 
-                seg_left = tendon_link_cone_seg_l[link_idx]
-                seg_right = tendon_link_cone_seg_r[link_idx]
+                seg_left = tendon_guide_cone_seg_l[guide_idx]
+                seg_right = tendon_guide_cone_seg_r[guide_idx]
 
                 if seg_left < 0 or seg_right < 0:
                     continue
@@ -1137,7 +1147,7 @@ def solve_tendon_material(
                     seg_stretch[seg_left] = seg_stretch[seg_left] - common_rest_delta
                     seg_stretch[seg_right] = seg_stretch[seg_right] - common_rest_delta
 
-                cap_ratio = tendon_link_cap_ratio[link_idx]
+                cap_ratio = tendon_guide_cap_ratio[guide_idx]
 
                 len_l = seg_length[seg_left]
                 len_r = seg_length[seg_right]
@@ -1202,19 +1212,19 @@ def solve_tendon_material(
         # Apply the friction-limited differential transport once after material relaxation so
         # cone sweeps cannot iteratively erode it.
         if apply_rolling_transfer != 0:
-            for i_roll in range(1, num_links - 1):
-                link_idx = link_start + i_roll
-                if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+            for i_roll in range(1, num_guides - 1):
+                guide_idx = guide_start + i_roll
+                if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
                     continue
-                if not tendon_link_active[link_idx]:
+                if not tendon_guide_active[guide_idx]:
                     continue
 
-                seg_left = tendon_link_cone_seg_l[link_idx]
-                seg_right = tendon_link_cone_seg_r[link_idx]
+                seg_left = tendon_guide_cone_seg_l[guide_idx]
+                seg_right = tendon_guide_cone_seg_r[guide_idx]
                 if seg_left < 0 or seg_right < 0:
                     continue
 
-                cap_ratio = tendon_link_cap_ratio[link_idx]
+                cap_ratio = tendon_guide_cap_ratio[guide_idx]
                 beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
 
                 # Apply only the friction-limited differential mode after relaxation. The common

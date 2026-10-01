@@ -19,7 +19,7 @@ from .joint_mimic import eval_mimic
 from .model import Model
 from .rod import Rod
 from .state import State
-from .tendon import TendonLinkFlags, TendonLinkType
+from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 __all__ = [
     "BodyFlags",
@@ -34,8 +34,9 @@ __all__ = [
     "Rod",
     "State",
     "StateFlags",
-    "TendonLinkFlags",
-    "TendonLinkType",
+    "TendonGuide",
+    "TendonGuideFlags",
+    "TendonGuideType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",

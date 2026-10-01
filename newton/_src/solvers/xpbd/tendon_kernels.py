@@ -5,12 +5,12 @@
 
 Route geometry follows Müller et al., "Cable Joints" (SCA 2018). The solver
 supports rolling contacts, fixed attachments, frictional pinholes, and finite
-capstan slip through the link friction coefficient.
+capstan slip through the guide friction coefficient.
 """
 
 import warp as wp
 
-from ...sim.tendon import TendonLinkType
+from ...sim.tendon import TendonGuideType
 from ..tendon_kernels import tendon_material_tension, tendon_segment_length_rate
 
 
@@ -19,18 +19,18 @@ def update_tendon_diagnostics(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
     seg_compliance: wp.array[float],
     seg_damping: wp.array[float],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     seg_material_tension: wp.array[float],
     seg_damping_tension: wp.array[float],
 ):
@@ -41,8 +41,8 @@ def update_tendon_diagnostics(
     if seg_active[seg] == 0:
         return
 
-    link_l = seg_active_link_l[seg]
-    link_r = seg_active_link_r[seg]
+    guide_l = seg_active_guide_l[seg]
+    guide_r = seg_active_guide_r[seg]
     attachment_l = seg_attachment_l[seg]
     attachment_r = seg_attachment_r[seg]
     length = wp.length(attachment_r - attachment_l)
@@ -51,12 +51,12 @@ def update_tendon_diagnostics(
         body_q,
         body_qd,
         body_com,
-        tendon_link_body,
-        tendon_link_type,
-        tendon_link_offset,
-        tendon_link_axis,
-        link_l,
-        link_r,
+        tendon_guide_body,
+        tendon_guide_type,
+        tendon_guide_offset,
+        tendon_guide_axis,
+        guide_l,
+        guide_r,
         attachment_l,
         attachment_r,
     )
@@ -69,10 +69,10 @@ def solve_tendon_stretch(
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
@@ -83,8 +83,8 @@ def solve_tendon_stretch(
     seg_lambda: wp.array[float],
     seg_delta_lambda: wp.array[float],
     seg_active: wp.array[int],
-    seg_active_link_l: wp.array[int],
-    seg_active_link_r: wp.array[int],
+    seg_active_guide_l: wp.array[int],
+    seg_active_guide_r: wp.array[int],
     compliance_lambda_scale: float,
     relaxation: float,
     dt: float,
@@ -104,13 +104,13 @@ def solve_tendon_stretch(
         seg_delta_lambda[seg] = 0.0
         return
 
-    link_l = seg_active_link_l[seg]
-    link_r = seg_active_link_r[seg]
+    guide_l = seg_active_guide_l[seg]
+    guide_r = seg_active_guide_r[seg]
 
-    body_l = tendon_link_body[link_l]
-    body_r = tendon_link_body[link_r]
-    link_type_l = tendon_link_type[link_l]
-    link_type_r = tendon_link_type[link_r]
+    body_l = tendon_guide_body[guide_l]
+    body_r = tendon_guide_body[guide_r]
+    guide_type_l = tendon_guide_type[guide_l]
+    guide_type_r = tendon_guide_type[guide_r]
 
     pose_l = body_q[body_l]
     pose_r = body_q[body_r]
@@ -164,14 +164,14 @@ def solve_tendon_stretch(
     angular_r = wp.cross(r_r, n)
     # Remove only spin about the roller center; motion of an off-center roller
     # remains part of the rigid-body Jacobian.
-    if link_type_l == int(TendonLinkType.ROLLING):
-        center_l = wp.transform_point(pose_l, tendon_link_offset[link_l])
-        normal_l = wp.transform_vector(pose_l, tendon_link_axis[link_l])
+    if guide_type_l == int(TendonGuideType.ROLLER):
+        center_l = wp.transform_point(pose_l, tendon_guide_offset[guide_l])
+        normal_l = wp.transform_vector(pose_l, tendon_guide_axis[guide_l])
         radial_l = x_l - center_l
         angular_l = angular_l - wp.dot(wp.cross(radial_l, linear_l), normal_l) * normal_l
-    if link_type_r == int(TendonLinkType.ROLLING):
-        center_r = wp.transform_point(pose_r, tendon_link_offset[link_r])
-        normal_r = wp.transform_vector(pose_r, tendon_link_axis[link_r])
+    if guide_type_r == int(TendonGuideType.ROLLER):
+        center_r = wp.transform_point(pose_r, tendon_guide_offset[guide_r])
+        normal_r = wp.transform_vector(pose_r, tendon_guide_axis[guide_r])
         radial_r = x_r - center_r
         angular_r = angular_r - wp.dot(wp.cross(radial_r, linear_r), normal_r) * normal_r
 
@@ -236,15 +236,15 @@ def solve_tendon_stretch(
 @wp.kernel
 def solve_tendon_slip(
     body_q: wp.array[wp.transform],
-    tendon_link_cone_seg_l: wp.array[int],
-    tendon_link_cone_seg_r: wp.array[int],
-    tendon_link_body: wp.array[int],
-    tendon_link_type: wp.array[int],
-    tendon_link_radius: wp.array[float],
-    tendon_link_mu: wp.array[float],
-    tendon_link_active: wp.array[bool],
-    tendon_link_offset: wp.array[wp.vec3],
-    tendon_link_axis: wp.array[wp.vec3],
+    tendon_guide_cone_seg_l: wp.array[int],
+    tendon_guide_cone_seg_r: wp.array[int],
+    tendon_guide_body: wp.array[int],
+    tendon_guide_type: wp.array[int],
+    tendon_guide_radius: wp.array[float],
+    tendon_guide_mu: wp.array[float],
+    tendon_guide_active: wp.array[bool],
+    tendon_guide_offset: wp.array[wp.vec3],
+    tendon_guide_axis: wp.array[wp.vec3],
     seg_attachment_l: wp.array[wp.vec3],
     seg_attachment_r: wp.array[wp.vec3],
     seg_compliance: wp.array[float],
@@ -255,27 +255,27 @@ def solve_tendon_slip(
     # outputs
     body_deltas: wp.array[wp.spatial_vector],
 ):
-    """Solve one rolling slip/friction row per authored tendon link.
+    """Solve one rolling slip/friction row per authored tendon guide.
 
     Stretch carries the common cable load.  This pass handles the tangential
     coupling between adjacent spans and pulley rim motion.  The capstan cone
     controls both rest-length transfer and the admissible spin-axis torque.
     """
-    link_idx = wp.tid()
-    if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+    guide_idx = wp.tid()
+    if tendon_guide_type[guide_idx] != int(TendonGuideType.ROLLER):
         return
-    if not tendon_link_active[link_idx]:
+    if not tendon_guide_active[guide_idx]:
         return
 
-    radius = tendon_link_radius[link_idx]
-    seg_left = tendon_link_cone_seg_l[link_idx]
-    seg_right = tendon_link_cone_seg_r[link_idx]
+    radius = tendon_guide_radius[guide_idx]
+    seg_left = tendon_guide_cone_seg_l[guide_idx]
+    seg_right = tendon_guide_cone_seg_r[guide_idx]
     if radius <= 0.0 or seg_left < 0 or seg_right < 0:
         return
-    body = tendon_link_body[link_idx]
+    body = tendon_guide_body[guide_idx]
     pose = body_q[body]
-    center = wp.transform_point(pose, tendon_link_offset[link_idx])
-    normal = wp.transform_vector(pose, tendon_link_axis[link_idx])
+    center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
+    normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
 
     pt_left = seg_attachment_r[seg_left]
     pt_right = seg_attachment_l[seg_right]
@@ -291,7 +291,7 @@ def solve_tendon_slip(
         u_right = r_right / len_rr
         theta = wp.abs(wp.atan2(wp.dot(wp.cross(u_left, u_right), normal), wp.dot(u_left, u_right)))
 
-    cap_ratio = wp.exp(wp.min(wp.max(tendon_link_mu[link_idx], 0.0) * theta, 20.0))
+    cap_ratio = wp.exp(wp.min(wp.max(tendon_guide_mu[guide_idx], 0.0) * theta, 20.0))
     beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
 
     # Match the stretch row's constitutive tension and add its damping component.

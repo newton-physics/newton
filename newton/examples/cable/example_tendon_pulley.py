@@ -18,7 +18,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Axis, TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.examples.cable.cable import assert_tendon_total_length
 
 
@@ -61,21 +61,24 @@ class Example:
         )
         builder.add_articulation([j])
 
-        builder.add_tendon()
-        builder.add_tendon_link(
-            body=anchor,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.0),
-            axis=(0.0, 1.0, 0.0),
-        )
-        builder.add_tendon_link(
-            body=weight,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.10),
-            axis=(0.0, 1.0, 0.0),
-            compliance=1.0e-5,
-            damping=0.1,
-            rest_length=-1.0,
+        builder.add_tendon(
+            [
+                newton.TendonGuide(
+                    body=anchor,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=(0.0, 1.0, 0.0),
+                ),
+                newton.TendonGuide(
+                    body=weight,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.10),
+                    axis=(0.0, 1.0, 0.0),
+                    compliance=1.0e-5,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+            ]
         )
 
         builder.add_ground_plane()

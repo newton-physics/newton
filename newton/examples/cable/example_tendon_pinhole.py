@@ -20,7 +20,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Axis, TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_cable_lines
 
 
@@ -80,30 +80,33 @@ class Example:
         builder.add_articulation([j2])
 
         axis = (0.0, 1.0, 0.0)
-        builder.add_tendon()
-        builder.add_tendon_link(
-            body=left,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.06),
-            axis=axis,
-        )
-        builder.add_tendon_link(
-            body=guide,
-            link_type=TendonLinkType.PINHOLE,
-            offset=(0.0, 0.0, 0.0),
-            axis=axis,
-            compliance=1.0e-6,
-            damping=0.1,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=right,
-            link_type=TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.10),
-            axis=axis,
-            compliance=1.0e-6,
-            damping=0.1,
-            rest_length=-1.0,
+        builder.add_tendon(
+            [
+                newton.TendonGuide(
+                    body=left,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.06),
+                    axis=axis,
+                ),
+                newton.TendonGuide(
+                    body=guide,
+                    guide_type=TendonGuideType.PINHOLE,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=axis,
+                    compliance=1.0e-6,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=right,
+                    guide_type=TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.10),
+                    axis=axis,
+                    compliance=1.0e-6,
+                    damping=0.1,
+                    rest_length=-1.0,
+                ),
+            ]
         )
 
         builder.add_ground_plane()

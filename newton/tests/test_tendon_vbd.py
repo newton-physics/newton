@@ -9,8 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.tests.test_tendon_capstan import (
     _moving_rolling_route_material_error,
     build_dynamic_pulley_atwood,
@@ -43,6 +42,7 @@ def add_test(cls, name, devices, test_fn):
         test_name = f"test_{sanitize_identifier(name)}_{sanitize_identifier(device)}"
 
         def test_method(self, d=device, fn=test_fn):
+            """Run the tendon regression on the selected device."""
             return fn(self, d)
 
         expected_failure_devices = getattr(test_fn, "__unittest_expected_failure_devices__", set())
@@ -86,20 +86,25 @@ def build_single_span_tendon():
     builder.add_shape_sphere(anchor, radius=0.01)
     builder.add_shape_sphere(body, radius=0.01)
 
-    builder.add_tendon()
-    builder.add_tendon_link(
-        body=anchor,
-        link_type=int(TendonLinkType.ATTACHMENT),
-        offset=(0.0, 0.0, 0.0),
+    route = []
+    route.append(
+        newton.TendonGuide(
+            body=anchor,
+            guide_type=int(TendonGuideType.ANCHOR),
+            offset=(0.0, 0.0, 0.0),
+        )
     )
-    builder.add_tendon_link(
-        body=body,
-        link_type=int(TendonLinkType.ATTACHMENT),
-        offset=(0.0, 0.0, 0.0),
-        compliance=1.0e-5,
-        damping=0.0,
-        rest_length=0.5,
+    route.append(
+        newton.TendonGuide(
+            body=body,
+            guide_type=int(TendonGuideType.ANCHOR),
+            offset=(0.0, 0.0, 0.0),
+            compliance=1.0e-5,
+            damping=0.0,
+            rest_length=0.5,
+        )
     )
+    builder.add_tendon(route)
 
     builder.color()
     model = builder.finalize()
@@ -120,33 +125,42 @@ def build_fixed_rolling_chain(compliance=1.0e-5):
         ),
     ]
 
-    builder.add_tendon()
-    builder.add_tendon_link(
-        body=bodies[0],
-        link_type=int(TendonLinkType.ATTACHMENT),
-        offset=positions[0],
+    route = []
+    route.append(
+        newton.TendonGuide(
+            body=bodies[0],
+            guide_type=int(TendonGuideType.ANCHOR),
+            offset=positions[0],
+        )
     )
-    builder.add_tendon_link(
-        body=bodies[1],
-        link_type=int(TendonLinkType.ROLLING),
-        radius=0.1,
-        orientation=-1,
-        offset=positions[1],
-        compliance=compliance,
+    route.append(
+        newton.TendonGuide(
+            body=bodies[1],
+            guide_type=int(TendonGuideType.ROLLER),
+            radius=0.1,
+            orientation=-1,
+            offset=positions[1],
+            compliance=compliance,
+        )
     )
-    builder.add_tendon_link(
-        body=bodies[2],
-        link_type=int(TendonLinkType.ROLLING),
-        radius=0.1,
-        orientation=1,
-        offset=positions[2],
-        compliance=compliance,
+    route.append(
+        newton.TendonGuide(
+            body=bodies[2],
+            guide_type=int(TendonGuideType.ROLLER),
+            radius=0.1,
+            orientation=1,
+            offset=positions[2],
+            compliance=compliance,
+        )
     )
-    builder.add_tendon_link(
-        body=bodies[3],
-        link_type=int(TendonLinkType.ATTACHMENT),
-        compliance=compliance,
+    route.append(
+        newton.TendonGuide(
+            body=bodies[3],
+            guide_type=int(TendonGuideType.ANCHOR),
+            compliance=compliance,
+        )
     )
+    builder.add_tendon(route)
     builder.color()
     return builder.finalize(), bodies[-1]
 
@@ -169,27 +183,33 @@ def build_dynamic_rolling_route():
         is_kinematic=True,
     )
 
-    builder.add_tendon()
-    builder.add_tendon_link(body=lower, link_type=int(TendonLinkType.ATTACHMENT), axis=(0.0, 1.0, 0.0))
-    candidate_link = builder.add_tendon_link(
-        body=candidate,
-        link_type=int(TendonLinkType.ROLLING),
-        radius=0.1,
-        orientation=1,
-        dynamic=True,
-        axis=(0.0, 1.0, 0.0),
-        compliance=1.0e-4,
-        rest_length=-1.0,
+    route = []
+    route.append(newton.TendonGuide(body=lower, guide_type=int(TendonGuideType.ANCHOR), axis=(0.0, 1.0, 0.0)))
+    candidate_guide = len(builder.tendon_guide_body) + len(route)
+    route.append(
+        newton.TendonGuide(
+            body=candidate,
+            guide_type=int(TendonGuideType.ROLLER),
+            radius=0.1,
+            orientation=1,
+            dynamic=True,
+            axis=(0.0, 1.0, 0.0),
+            compliance=1.0e-4,
+            rest_length=-1.0,
+        )
     )
-    builder.add_tendon_link(
-        body=upper,
-        link_type=int(TendonLinkType.ATTACHMENT),
-        axis=(0.0, 1.0, 0.0),
-        compliance=1.0e-4,
-        rest_length=-1.0,
+    route.append(
+        newton.TendonGuide(
+            body=upper,
+            guide_type=int(TendonGuideType.ANCHOR),
+            axis=(0.0, 1.0, 0.0),
+            compliance=1.0e-4,
+            rest_length=-1.0,
+        )
     )
+    builder.add_tendon(route)
     builder.color()
-    return builder.finalize(), candidate, candidate_link, lower, upper
+    return builder.finalize(), candidate, candidate_guide, lower, upper
 
 
 def run_vbd_model(model, num_frames=80, substeps=12, fps=60):
@@ -298,7 +318,7 @@ def _dynamic_capstan_metrics(device, mu, num_frames=40):
     left_travel = float(body_q[left_idx][2]) - 2.0
     right_travel = 2.0 - float(body_q[right_idx][2])
     cable_travel = 0.5 * (left_travel + right_travel)
-    radius = float(model.tendon_link_radius.numpy()[1])
+    radius = float(model.tendon_guide_radius.numpy()[1])
     rim_travel = theta * radius
     slip = abs(cable_travel - rim_travel)
     return body_q, left_travel, right_travel, cable_travel, theta, rim_travel, slip
@@ -395,7 +415,7 @@ def test_vbd_rolling_chain_tension_matches_accepted_pose(test, device):
 def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
     """VBD should update dynamic routing and its active segment endpoints inside ``step``."""
     with wp.ScopedDevice(device):
-        model, candidate, candidate_link, lower, upper = build_dynamic_rolling_route()
+        model, candidate, candidate_guide, lower, upper = build_dynamic_rolling_route()
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
         state_1 = model.state()
@@ -419,7 +439,7 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
             body_q[candidate, :3] = (x, 0.0, 0.0)
             state_0.body_q.assign(body_q)
             solver.step(state_0, state_1, control, None, 1.0 / 120.0)
-            active_history.append(bool(solver.tendon_link_active.numpy()[candidate_link]))
+            active_history.append(bool(solver.tendon_guide_active.numpy()[candidate_guide]))
             segment_history.append(solver.tendon_seg_active.numpy().tolist())
             material_tension_history.append(solver.tendon_seg_material_tension.numpy().tolist())
             if first_upper_z is None:
@@ -438,13 +458,13 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
 def test_vbd_dynamic_route_activation_uses_accepted_pose(test, device):
     """Route activation should not use the VBD inertial predictor pose."""
     with wp.ScopedDevice(device):
-        model, candidate, candidate_link = build_force_driven_dynamic_route(device)
+        model, candidate, candidate_guide = build_force_driven_dynamic_route(device)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
         state_0, state_1 = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        test.assertFalse(solver.tendon_link_active.numpy()[candidate_link])
+        test.assertFalse(solver.tendon_guide_active.numpy()[candidate_guide])
         body_qd = state_0.body_qd.numpy()
         body_qd[candidate, 0] = -24.0
         state_0.body_qd.assign(body_qd)
@@ -453,7 +473,7 @@ def test_vbd_dynamic_route_activation_uses_accepted_pose(test, device):
 
         test.assertLess(abs(float(state_1.body_q.numpy()[candidate, 0])), 0.1)
         test.assertFalse(
-            solver.tendon_link_active.numpy()[candidate_link],
+            solver.tendon_guide_active.numpy()[candidate_guide],
             "The predictor crossed the cable, but activation belongs to the accepted step-start pose",
         )
 
@@ -466,13 +486,16 @@ def test_vbd_tendon_coloring_separates_segment_endpoints(test, device):
         body_1 = builder.add_body(mass=1.0)
         builder.add_shape_sphere(body_0, radius=0.01)
         builder.add_shape_sphere(body_1, radius=0.01)
-        builder.add_tendon()
-        builder.add_tendon_link(body=body_0, link_type=int(TendonLinkType.ATTACHMENT))
-        builder.add_tendon_link(
-            body=body_1,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            compliance=1.0e-3,
+        route = []
+        route.append(newton.TendonGuide(body=body_0, guide_type=int(TendonGuideType.ANCHOR)))
+        route.append(
+            newton.TendonGuide(
+                body=body_1,
+                guide_type=int(TendonGuideType.ANCHOR),
+                compliance=1.0e-3,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
 
@@ -550,15 +573,18 @@ def test_vbd_slack_damped_tendon_opposes_extension(test, device):
             mass=1.0,
             inertia=wp.mat33(np.eye(3)),
         )
-        builder.add_tendon()
-        builder.add_tendon_link(body=anchor, link_type=int(TendonLinkType.ATTACHMENT))
-        builder.add_tendon_link(
-            body=body,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            compliance=1.0e-3,
-            damping=100.0,
-            rest_length=1.0,
+        route = []
+        route.append(newton.TendonGuide(body=anchor, guide_type=int(TendonGuideType.ANCHOR)))
+        route.append(
+            newton.TendonGuide(
+                body=body,
+                guide_type=int(TendonGuideType.ANCHOR),
+                compliance=1.0e-3,
+                damping=100.0,
+                rest_length=1.0,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
         solver = _make_tendon_vbd_solver(model)
@@ -590,12 +616,12 @@ def test_vbd_reset_restores_tendon_state(test, device):
         solver = _make_tendon_vbd_solver(model)
         initial_rest = solver.tendon_seg_rest_length.numpy().copy()
         initial_local_l = solver.tendon_seg_attachment_l_local.numpy().copy()
-        initial_active = solver.tendon_link_active.numpy().copy()
+        initial_active = solver.tendon_guide_active.numpy().copy()
         initial_total = solver.tendon_total_cable.numpy().copy()
 
         solver.tendon_seg_rest_length.fill_(0.123)
         solver.tendon_seg_attachment_l_local.zero_()
-        solver.tendon_link_active.zero_()
+        solver.tendon_guide_active.zero_()
         solver.tendon_total_cable.zero_()
 
         world_mask = wp.array([False] * model.world_count + [True], dtype=wp.bool, device=device)
@@ -603,12 +629,12 @@ def test_vbd_reset_restores_tendon_state(test, device):
 
         np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
         np.testing.assert_allclose(solver.tendon_seg_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
-        np.testing.assert_array_equal(solver.tendon_link_active.numpy(), initial_active)
+        np.testing.assert_array_equal(solver.tendon_guide_active.numpy(), initial_active)
         np.testing.assert_allclose(solver.tendon_total_cable.numpy(), initial_total, atol=1.0e-7)
 
 
 def test_vbd_reset_rebaselines_tendon_at_custom_pose(test, device):
-    """A custom reset pose should not be interpreted as new roller travel."""
+    """Verify that a custom reset pose is not interpreted as new roller travel."""
     with wp.ScopedDevice(device):
         model, pulley = build_kinematic_rolling_transport(mu=10.0)
         _set_serial_body_coloring(model)
@@ -645,15 +671,18 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
         damping = 1.0
         initial_length = 1.0
         rest_length = 0.5
-        builder.add_tendon()
-        builder.add_tendon_link(body=body_l, link_type=int(TendonLinkType.ATTACHMENT))
-        builder.add_tendon_link(
-            body=body_r,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            compliance=compliance,
-            damping=damping,
-            rest_length=rest_length,
+        route = []
+        route.append(newton.TendonGuide(body=body_l, guide_type=int(TendonGuideType.ANCHOR)))
+        route.append(
+            newton.TendonGuide(
+                body=body_r,
+                guide_type=int(TendonGuideType.ANCHOR),
+                compliance=compliance,
+                damping=damping,
+                rest_length=rest_length,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
         solver = newton.solvers.SolverVBD(
@@ -703,19 +732,24 @@ def test_vbd_nonrolling_rotation_uses_discrete_length_rate(test, device):
             is_kinematic=True,
         )
         damping = 10.0
-        builder.add_tendon()
-        builder.add_tendon_link(
-            body=rotating,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            offset=(1.0, 0.0, 0.0),
+        route = []
+        route.append(
+            newton.TendonGuide(
+                body=rotating,
+                guide_type=int(TendonGuideType.ANCHOR),
+                offset=(1.0, 0.0, 0.0),
+            )
         )
-        builder.add_tendon_link(
-            body=fixed,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            compliance=1.0e-3,
-            damping=damping,
-            rest_length=-1.0,
+        route.append(
+            newton.TendonGuide(
+                body=fixed,
+                guide_type=int(TendonGuideType.ANCHOR),
+                compliance=1.0e-3,
+                damping=damping,
+                rest_length=-1.0,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
         solver = _make_tendon_vbd_solver(model)
@@ -796,25 +830,30 @@ def test_vbd_frictionless_off_center_roller_retains_body_torque(test, device):
             is_kinematic=True,
         )
 
-        builder.add_tendon()
-        builder.add_tendon_link(body=anchor_l, link_type=int(TendonLinkType.ATTACHMENT))
-        builder.add_tendon_link(
-            body=roller,
-            link_type=int(TendonLinkType.ROLLING),
-            radius=0.2,
-            orientation=1,
-            axis=(0.0, 0.0, 1.0),
-            offset=(0.5, 0.0, 0.0),
-            mu=0.0,
-            compliance=1.0e-2,
-            rest_length=1.3,
+        route = []
+        route.append(newton.TendonGuide(body=anchor_l, guide_type=int(TendonGuideType.ANCHOR)))
+        route.append(
+            newton.TendonGuide(
+                body=roller,
+                guide_type=int(TendonGuideType.ROLLER),
+                radius=0.2,
+                orientation=1,
+                axis=(0.0, 0.0, 1.0),
+                offset=(0.5, 0.0, 0.0),
+                mu=0.0,
+                compliance=1.0e-2,
+                rest_length=1.3,
+            )
         )
-        builder.add_tendon_link(
-            body=anchor_r,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            compliance=1.0e-2,
-            rest_length=1.3,
+        route.append(
+            newton.TendonGuide(
+                body=anchor_r,
+                guide_type=int(TendonGuideType.ANCHOR),
+                compliance=1.0e-2,
+                rest_length=1.3,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
         _set_serial_body_coloring(model)
@@ -853,25 +892,30 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
             lock_inertia=True,
         )
 
-        builder.add_tendon()
-        builder.add_tendon_link(body=anchor, link_type=int(TendonLinkType.ATTACHMENT))
-        builder.add_tendon_link(
-            body=body,
-            link_type=int(TendonLinkType.ROLLING),
-            radius=0.12,
-            orientation=-1,
-            mu=0.0,
-            offset=(0.1, 0.15, 0.0),
-            compliance=1.0e-3,
-            rest_length=-1.0,
+        route = []
+        route.append(newton.TendonGuide(body=anchor, guide_type=int(TendonGuideType.ANCHOR)))
+        route.append(
+            newton.TendonGuide(
+                body=body,
+                guide_type=int(TendonGuideType.ROLLER),
+                radius=0.12,
+                orientation=-1,
+                mu=0.0,
+                offset=(0.1, 0.15, 0.0),
+                compliance=1.0e-3,
+                rest_length=-1.0,
+            )
         )
-        builder.add_tendon_link(
-            body=body,
-            link_type=int(TendonLinkType.ATTACHMENT),
-            offset=(0.5, -0.3, 0.0),
-            compliance=1.0e-3,
-            rest_length=-1.0,
+        route.append(
+            newton.TendonGuide(
+                body=body,
+                guide_type=int(TendonGuideType.ANCHOR),
+                offset=(0.5, -0.3, 0.0),
+                compliance=1.0e-3,
+                rest_length=-1.0,
+            )
         )
+        builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
         _set_serial_body_coloring(model)
@@ -945,7 +989,7 @@ def test_vbd_dynamic_tendon_cuda_graph_capture(test, device):
         warm_1 = warm_model.state()
         warm_solver.step(warm_0, warm_1, warm_model.control(), None, 1.0 / 120.0)
 
-        model, candidate, candidate_link, _, _ = build_dynamic_rolling_route()
+        model, candidate, candidate_guide, _, _ = build_dynamic_rolling_route()
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
         state_1 = model.state()
@@ -960,7 +1004,7 @@ def test_vbd_dynamic_tendon_cuda_graph_capture(test, device):
             solver.step(state_1, state_0, control, None, 1.0 / 120.0)
 
         wp.capture_launch(capture.graph)
-        test.assertTrue(solver.tendon_link_active.numpy()[candidate_link])
+        test.assertTrue(solver.tendon_guide_active.numpy()[candidate_guide])
 
 
 def test_vbd_pinhole_slip_atwood(test, device):
@@ -1216,7 +1260,7 @@ def test_vbd_motorized_pulley_updates_rest_in_first_step(test, device):
 
 
 def test_vbd_moving_rolling_route_conserves_material(test, device):
-    """VBD should conserve material while a rolling link's wrap angle changes."""
+    """VBD should conserve material while a rolling guide's wrap angle changes."""
     with wp.ScopedDevice(device):
 
         def solver_factory(model):

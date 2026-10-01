@@ -8,7 +8,7 @@
 # different capstan friction coefficients on the pulley:
 #
 #   Left:   mu = 0.0   (frictionless)
-#   Center: mu = 0.05  (subcritical — visible partial grip)
+#   Center: mu = 0.40  (subcritical — visible partial grip)
 #   Right:  mu = 10.0  (no-slip)
 #
 # Each pulley is a dynamic body on a hinge joint, free to rotate about Y.
@@ -34,7 +34,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Axis, TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.examples.cable.cable import (
     assert_tendon_total_length,
     get_tendon_attachment_worlds,
@@ -171,33 +171,36 @@ class Example:
             self.right_indices.append(right)
 
             axis = (0.0, 1.0, 0.0)
-            builder.add_tendon()
-            builder.add_tendon_link(
-                body=left,
-                link_type=TendonLinkType.ATTACHMENT,
-                offset=(0.0, 0.0, 0.06),
-                axis=axis,
-            )
-            builder.add_tendon_link(
-                body=pulley,
-                link_type=TendonLinkType.ROLLING,
-                radius=self.pulley_radius,
-                orientation=1,
-                mu=mu,
-                offset=(0.0, 0.0, 0.0),
-                axis=axis,
-                compliance=1.0e-5,
-                damping=5.0,
-                rest_length=-1.0,
-            )
-            builder.add_tendon_link(
-                body=right,
-                link_type=TendonLinkType.ATTACHMENT,
-                offset=(0.0, 0.0, 0.06),
-                axis=axis,
-                compliance=1.0e-5,
-                damping=5.0,
-                rest_length=-1.0,
+            builder.add_tendon(
+                [
+                    newton.TendonGuide(
+                        body=left,
+                        guide_type=TendonGuideType.ANCHOR,
+                        offset=(0.0, 0.0, 0.06),
+                        axis=axis,
+                    ),
+                    newton.TendonGuide(
+                        body=pulley,
+                        guide_type=TendonGuideType.ROLLER,
+                        radius=self.pulley_radius,
+                        orientation=1,
+                        mu=mu,
+                        offset=(0.0, 0.0, 0.0),
+                        axis=axis,
+                        compliance=1.0e-5,
+                        damping=5.0,
+                        rest_length=-1.0,
+                    ),
+                    newton.TendonGuide(
+                        body=right,
+                        guide_type=TendonGuideType.ANCHOR,
+                        offset=(0.0, 0.0, 0.06),
+                        axis=axis,
+                        compliance=1.0e-5,
+                        damping=5.0,
+                        rest_length=-1.0,
+                    ),
+                ]
             )
 
         builder.add_ground_plane()

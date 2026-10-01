@@ -7,8 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonGuideType
 from newton.tests.unittest_utils import sanitize_identifier
 
 
@@ -65,34 +64,41 @@ def build_atwood_equal_weights(mass=2.0, pulley_mass=0.5, pulley_radius=0.15):
     builder.add_articulation([j2])
 
     axis = (0.0, 1.0, 0.0)
-    builder.add_tendon()
-    builder.add_tendon_link(
-        body=left,
-        link_type=int(TendonLinkType.ATTACHMENT),
-        offset=(0.0, 0.0, 0.08),
-        axis=axis,
+    route = []
+    route.append(
+        newton.TendonGuide(
+            body=left,
+            guide_type=int(TendonGuideType.ANCHOR),
+            offset=(0.0, 0.0, 0.08),
+            axis=axis,
+        )
     )
-    builder.add_tendon_link(
-        body=pulley,
-        link_type=int(TendonLinkType.ROLLING),
-        radius=pulley_radius,
-        orientation=1,
-        mu=10.0,
-        offset=(0.0, 0.0, 0.0),
-        axis=axis,
-        compliance=1.0e-6,
-        damping=0.1,
-        rest_length=-1.0,
+    route.append(
+        newton.TendonGuide(
+            body=pulley,
+            guide_type=int(TendonGuideType.ROLLER),
+            radius=pulley_radius,
+            orientation=1,
+            mu=10.0,
+            offset=(0.0, 0.0, 0.0),
+            axis=axis,
+            compliance=1.0e-6,
+            damping=0.1,
+            rest_length=-1.0,
+        )
     )
-    builder.add_tendon_link(
-        body=right,
-        link_type=int(TendonLinkType.ATTACHMENT),
-        offset=(0.0, 0.0, 0.08),
-        axis=axis,
-        compliance=1.0e-6,
-        damping=0.1,
-        rest_length=-1.0,
+    route.append(
+        newton.TendonGuide(
+            body=right,
+            guide_type=int(TendonGuideType.ANCHOR),
+            offset=(0.0, 0.0, 0.08),
+            axis=axis,
+            compliance=1.0e-6,
+            damping=0.1,
+            rest_length=-1.0,
+        )
     )
+    builder.add_tendon(route)
 
     return builder.finalize(), left, right, pulley
 

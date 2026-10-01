@@ -8,7 +8,7 @@
 # anchored to the end of a rotating top capsule.  When the capsule swings left,
 # the straight lower-guide-to-endpoint span reaches the middle capstan from the
 # inactive side selected by its orientation, the solver activates that rolling
-# link.  When the capsule swings right, the solver skips the middle capstan and
+# guide.  When the capsule swings right, the solver skips the middle capstan and
 # the tendon wraps only around the lower guide.
 #
 # Command: python -m newton.examples tendon_mujoco_switch
@@ -56,46 +56,49 @@ class Example:
         self.lower_guide_idx = self._add_lower_guide_body(builder)
         self.top_idx = self._add_top_capsule_body(builder, self._initial_angle)
 
-        builder.add_tendon()
-        builder.add_tendon_link(
-            body=self.anchor_idx,
-            link_type=newton.TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, 0.0),
-            axis=(0.0, 1.0, 0.0),
-        )
-        builder.add_tendon_link(
-            body=self.lower_guide_idx,
-            link_type=newton.TendonLinkType.ROLLING,
-            radius=self.lower_radius,
-            orientation=self.lower_orientation,
-            mu=0.0,
-            offset=(0.0, 0.0, self.lower_z),
-            axis=(0.0, 1.0, 0.0),
-            compliance=1.0e-5,
-            damping=0.2,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=self.lower_guide_idx,
-            link_type=newton.TendonLinkType.ROLLING,
-            radius=self.middle_radius,
-            orientation=self.middle_orientation,
-            mu=0.0,
-            dynamic=True,
-            offset=(0.0, 0.0, self.middle_z),
-            axis=(0.0, 1.0, 0.0),
-            compliance=1.0e-5,
-            damping=0.2,
-            rest_length=-1.0,
-        )
-        builder.add_tendon_link(
-            body=self.top_idx,
-            link_type=newton.TendonLinkType.ATTACHMENT,
-            offset=(0.0, 0.0, self.top_length),
-            axis=(0.0, 1.0, 0.0),
-            compliance=1.0e-5,
-            damping=0.2,
-            rest_length=-1.0,
+        builder.add_tendon(
+            [
+                newton.TendonGuide(
+                    body=self.anchor_idx,
+                    guide_type=newton.TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, 0.0),
+                    axis=(0.0, 1.0, 0.0),
+                ),
+                newton.TendonGuide(
+                    body=self.lower_guide_idx,
+                    guide_type=newton.TendonGuideType.ROLLER,
+                    radius=self.lower_radius,
+                    orientation=self.lower_orientation,
+                    mu=0.0,
+                    offset=(0.0, 0.0, self.lower_z),
+                    axis=(0.0, 1.0, 0.0),
+                    compliance=1.0e-5,
+                    damping=0.2,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=self.lower_guide_idx,
+                    guide_type=newton.TendonGuideType.ROLLER,
+                    radius=self.middle_radius,
+                    orientation=self.middle_orientation,
+                    mu=0.0,
+                    dynamic=True,
+                    offset=(0.0, 0.0, self.middle_z),
+                    axis=(0.0, 1.0, 0.0),
+                    compliance=1.0e-5,
+                    damping=0.2,
+                    rest_length=-1.0,
+                ),
+                newton.TendonGuide(
+                    body=self.top_idx,
+                    guide_type=newton.TendonGuideType.ANCHOR,
+                    offset=(0.0, 0.0, self.top_length),
+                    axis=(0.0, 1.0, 0.0),
+                    compliance=1.0e-5,
+                    damping=0.2,
+                    rest_length=-1.0,
+                ),
+            ]
         )
 
         self.model = builder.finalize()
@@ -111,9 +114,9 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
-        self.lower_link = 1
-        self.middle_link = 2
-        self.endpoint_link = 3
+        self.lower_guide = 1
+        self.middle_guide = 2
+        self.endpoint_guide = 3
         self.lower_seg = 0
         self.middle_left_seg = 1
         self.middle_right_seg = 2
@@ -209,22 +212,22 @@ class Example:
         self.state_0.body_q.assign(body_q)
         self.state_1.body_q.assign(body_q)
 
-    def _world_point_for_link(self, link_idx, body_q):
-        body_idx = int(self.model.tendon_link_body.numpy()[link_idx])
-        offset = self.model.tendon_link_offset.numpy()[link_idx]
+    def _world_point_for_guide(self, guide_idx, body_q):
+        body_idx = int(self.model.tendon_guide_body.numpy()[guide_idx])
+        offset = self.model.tendon_guide_offset.numpy()[guide_idx]
         return _transform_point_np(body_q[body_idx], offset)
 
     def _middle_span_projection(self):
         body_q = self.state_0.body_q.numpy()
-        endpoint = self._world_point_for_link(self.endpoint_link, body_q)
-        lower_departure = _link_route_point_np(
+        endpoint = self._world_point_for_guide(self.endpoint_guide, body_q)
+        lower_departure = _guide_route_point_np(
             self.model,
             body_q,
-            self.lower_link,
+            self.lower_guide,
             endpoint,
             outward_orientation=True,
         )
-        middle = self._world_point_for_link(self.middle_link, body_q)
+        middle = self._world_point_for_guide(self.middle_guide, body_q)
         span = endpoint - lower_departure
         span_length_sq = max(float(np.dot(span, span)), 1.0e-12)
         alpha = float(np.clip(np.dot(middle - lower_departure, span) / span_length_sq, 0.0, 1.0))
@@ -255,9 +258,9 @@ class Example:
         self._record_metrics()
 
     def _record_metrics(self):
-        link_active = self.solver.tendon_link_active.numpy()
+        guide_active = self.solver.tendon_guide_active.numpy()
         seg_active = self.solver.tendon_seg_active.numpy()
-        middle_active = bool(link_active[self.middle_link])
+        middle_active = bool(guide_active[self.middle_guide])
         self._active_history.append(middle_active)
         if middle_active != self._last_middle_active:
             self._transition_count += 1
@@ -268,8 +271,8 @@ class Example:
             self._activation_mismatch_count += 1
 
         body_q = self.state_0.body_q.numpy()
-        endpoint = self._world_point_for_link(self.endpoint_link, body_q)
-        middle = self._world_point_for_link(self.middle_link, body_q)
+        endpoint = self._world_point_for_guide(self.endpoint_guide, body_q)
+        middle = self._world_point_for_guide(self.middle_guide, body_q)
         self._top_x_history.append(float(endpoint[0]))
 
         if middle_active:
@@ -304,10 +307,10 @@ class Example:
         assert np.isfinite(body_q).all(), "Non-finite values in switch-wrap body state"
         active_history = np.array(self._active_history, dtype=np.int32)
         top_x_history = np.array(self._top_x_history)
-        link_type = self.model.tendon_link_type.numpy()
+        guide_type = self.model.tendon_guide_type.numpy()
 
-        assert link_type[self.lower_link] == int(newton.TendonLinkType.ROLLING)
-        assert link_type[self.middle_link] == int(newton.TendonLinkType.ROLLING)
+        assert guide_type[self.lower_guide] == int(newton.TendonGuideType.ROLLER)
+        assert guide_type[self.middle_guide] == int(newton.TendonGuideType.ROLLER)
         assert len(active_history) > 0, "No switch-wrap active-set samples were recorded"
         assert active_history[0] == 0 and active_history[-1] == 0, (
             f"Middle candidate should start/end inactive: {active_history}"
@@ -349,9 +352,9 @@ class Example:
 
     def _diagnostic_lines(self):
         body_q = self.state_0.body_q.numpy()
-        middle = self._world_point_for_link(self.middle_link, body_q)
-        endpoint = self._world_point_for_link(self.endpoint_link, body_q)
-        active = bool(self.solver.tendon_link_active.numpy()[self.middle_link])
+        middle = self._world_point_for_guide(self.middle_guide, body_q)
+        endpoint = self._world_point_for_guide(self.endpoint_guide, body_q)
+        active = bool(self.solver.tendon_guide_active.numpy()[self.middle_guide])
         color = (0.15, 1.0, 0.25) if active else (0.55, 0.55, 0.55)
         starts = [
             (-0.78, -0.008, self.lower_z - 0.035),
@@ -390,20 +393,20 @@ def _transform_point_np(pose, point):
     return p + point + q[3] * t + np.cross(q[:3], t)
 
 
-def _link_route_point_np(model, body_q, link_idx, other_point, outward_orientation):
-    link_type = int(model.tendon_link_type.numpy()[link_idx])
-    body_idx = int(model.tendon_link_body.numpy()[link_idx])
-    offset = model.tendon_link_offset.numpy()[link_idx]
+def _guide_route_point_np(model, body_q, guide_idx, other_point, outward_orientation):
+    guide_type = int(model.tendon_guide_type.numpy()[guide_idx])
+    body_idx = int(model.tendon_guide_body.numpy()[guide_idx])
+    offset = model.tendon_guide_offset.numpy()[guide_idx]
     center = _transform_point_np(body_q[body_idx], offset)
-    if link_type != int(newton.TendonLinkType.ROLLING):
+    if guide_type != int(newton.TendonGuideType.ROLLER):
         return center
 
-    axis = model.tendon_link_axis.numpy()[link_idx]
+    axis = model.tendon_guide_axis.numpy()[guide_idx]
     normal = _transform_vector_np(body_q[body_idx], axis)
-    orientation = int(model.tendon_link_orientation.numpy()[link_idx])
+    orientation = int(model.tendon_guide_orientation.numpy()[guide_idx])
     if outward_orientation:
         orientation = -orientation
-    radius = float(model.tendon_link_radius.numpy()[link_idx])
+    radius = float(model.tendon_guide_radius.numpy()[guide_idx])
     return _tangent_point_circle_np(other_point, center, radius, normal, orientation)
 
 

@@ -18,23 +18,23 @@ def get_tendon_attachment_worlds(solver, model, state):
 
     local_l = solver.tendon_seg_attachment_l_local.numpy()
     local_r = solver.tendon_seg_attachment_r_local.numpy()
-    seg_link_l = getattr(solver, "tendon_seg_active_link_l", solver.tendon_seg_link_l).numpy()
-    seg_link_r = getattr(solver, "tendon_seg_active_link_r", None)
-    seg_link_r = seg_link_r.numpy() if seg_link_r is not None else seg_link_l + 1
+    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
     seg_active = getattr(solver, "tendon_seg_active", None)
-    seg_active = seg_active.numpy() if seg_active is not None else np.ones(len(seg_link_l), dtype=np.int32)
-    link_body = model.tendon_link_body.numpy()
+    seg_active = seg_active.numpy() if seg_active is not None else np.ones(len(seg_guide_l), dtype=np.int32)
+    guide_body = model.tendon_guide_body.numpy()
     body_q = state.body_q.numpy()
 
     att_l_world = np.empty_like(att_l)
     att_r_world = np.empty_like(att_r)
-    for seg, (link_l, link_r) in enumerate(zip(seg_link_l, seg_link_r, strict=True)):
+    for seg, (guide_l, guide_r) in enumerate(zip(seg_guide_l, seg_guide_r, strict=True)):
         if seg_active[seg] == 0:
             att_l_world[seg] = att_l[seg]
             att_r_world[seg] = att_r[seg]
             continue
-        att_l_world[seg] = _transform_point_np(body_q[link_body[link_l]], local_l[seg])
-        att_r_world[seg] = _transform_point_np(body_q[link_body[link_r]], local_r[seg])
+        att_l_world[seg] = _transform_point_np(body_q[guide_body[guide_l]], local_l[seg])
+        att_r_world[seg] = _transform_point_np(body_q[guide_body[guide_r]], local_r[seg])
 
     return att_l_world, att_r_world
 
@@ -54,32 +54,34 @@ def get_tendon_cable_lines(solver, model, state):
         ends_list.append(att_r[i])
 
     tendon_start = model.tendon_start.numpy()
-    link_type = model.tendon_link_type.numpy()
-    link_body = model.tendon_link_body.numpy()
-    link_offset = model.tendon_link_offset.numpy()
-    link_axis = model.tendon_link_axis.numpy()
-    link_active = getattr(solver, "tendon_link_active", None)
-    link_active = link_active.numpy() if link_active is not None else np.ones(model.tendon_link_count, dtype=np.int32)
-    seg_link_l = getattr(solver, "tendon_seg_active_link_l", solver.tendon_seg_link_l).numpy()
-    seg_link_r = getattr(solver, "tendon_seg_active_link_r", None)
-    seg_link_r = seg_link_r.numpy() if seg_link_r is not None else seg_link_l + 1
+    guide_type = model.tendon_guide_type.numpy()
+    guide_body = model.tendon_guide_body.numpy()
+    guide_offset = model.tendon_guide_offset.numpy()
+    guide_axis = model.tendon_guide_axis.numpy()
+    guide_active = getattr(solver, "tendon_guide_active", None)
+    guide_active = (
+        guide_active.numpy() if guide_active is not None else np.ones(model.tendon_guide_count, dtype=np.int32)
+    )
+    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
     body_q = state.body_q.numpy()
 
     seg = 0
     for t in range(model.tendon_count):
         start = tendon_start[t]
         end = tendon_start[t + 1]
-        num_links = end - start
+        num_guides = end - start
         for i in range(start + 1, end - 1):
-            if link_type[i] == int(newton.TendonLinkType.ROLLING):
-                if link_active[i] == 0:
+            if guide_type[i] == int(newton.TendonGuideType.ROLLER):
+                if guide_active[i] == 0:
                     continue
-                b = link_body[i]
+                b = guide_body[i]
                 pose = body_q[b]
                 p = pose[:3]
                 q = pose[3:]
-                off = link_offset[i]
-                ax = link_axis[i]
+                off = guide_offset[i]
+                ax = guide_axis[i]
                 t2 = 2.0 * np.cross(q[:3], off)
                 center = off + q[3] * t2 + np.cross(q[:3], t2) + p
                 t2n = 2.0 * np.cross(q[:3], ax)
@@ -87,13 +89,13 @@ def get_tendon_cable_lines(solver, model, state):
 
                 pt_dep = None
                 pt_arr = None
-                for s in range(num_links - 1):
+                for s in range(num_guides - 1):
                     seg_idx = seg + s
                     if seg_active[seg_idx] == 0:
                         continue
-                    if seg_link_r[seg_idx] == i:
+                    if seg_guide_r[seg_idx] == i:
                         pt_dep = att_r[seg_idx]
-                    if seg_link_l[seg_idx] == i:
+                    if seg_guide_l[seg_idx] == i:
                         pt_arr = att_l[seg_idx]
                 if pt_dep is None or pt_arr is None:
                     continue
@@ -119,7 +121,7 @@ def get_tendon_cable_lines(solver, model, state):
                     starts_list.append(p0)
                     ends_list.append(p1)
 
-        seg += num_links - 1
+        seg += num_guides - 1
 
     starts = wp.array(np.array(starts_list, dtype=np.float32), dtype=wp.vec3, device=model.device)
     ends = wp.array(np.array(ends_list, dtype=np.float32), dtype=wp.vec3, device=model.device)
@@ -143,7 +145,7 @@ def get_tendon_total_lengths(solver, model, state):
     """Return geometric total cable length for each tendon.
 
     The total includes straight segment distances plus wrap arc lengths at
-    rolling links.  This is the measured counterpart of
+    rolling guides.  This is the measured counterpart of
     ``solver.tendon_total_cable``.
     """
     if model.tendon_count == 0:
@@ -151,18 +153,20 @@ def get_tendon_total_lengths(solver, model, state):
 
     att_l, att_r = get_tendon_attachment_worlds(solver, model, state)
     tendon_start = model.tendon_start.numpy()
-    link_type = model.tendon_link_type.numpy()
-    link_body = model.tendon_link_body.numpy()
-    link_offset = model.tendon_link_offset.numpy()
-    link_axis = model.tendon_link_axis.numpy()
-    link_radius = model.tendon_link_radius.numpy()
-    link_active = getattr(solver, "tendon_link_active", None)
-    link_active = link_active.numpy() if link_active is not None else np.ones(model.tendon_link_count, dtype=np.int32)
+    guide_type = model.tendon_guide_type.numpy()
+    guide_body = model.tendon_guide_body.numpy()
+    guide_offset = model.tendon_guide_offset.numpy()
+    guide_axis = model.tendon_guide_axis.numpy()
+    guide_radius = model.tendon_guide_radius.numpy()
+    guide_active = getattr(solver, "tendon_guide_active", None)
+    guide_active = (
+        guide_active.numpy() if guide_active is not None else np.ones(model.tendon_guide_count, dtype=np.int32)
+    )
     seg_active = getattr(solver, "tendon_seg_active", None)
     seg_active = seg_active.numpy() if seg_active is not None else np.ones(model.tendon_segment_count, dtype=np.int32)
-    seg_link_l = getattr(solver, "tendon_seg_active_link_l", solver.tendon_seg_link_l).numpy()
-    seg_link_r = getattr(solver, "tendon_seg_active_link_r", None)
-    seg_link_r = seg_link_r.numpy() if seg_link_r is not None else seg_link_l + 1
+    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
     body_q = state.body_q.numpy()
 
     lengths = np.zeros(model.tendon_count, dtype=np.float32)
@@ -170,32 +174,32 @@ def get_tendon_total_lengths(solver, model, state):
     for t in range(model.tendon_count):
         start = tendon_start[t]
         end = tendon_start[t + 1]
-        num_links = end - start
+        num_guides = end - start
         seg_base = seg
         total = 0.0
 
-        for s in range(num_links - 1):
+        for s in range(num_guides - 1):
             if seg_active[seg_base + s] != 0:
                 total += np.linalg.norm(att_r[seg_base + s] - att_l[seg_base + s])
 
         for i in range(start + 1, end - 1):
-            if link_type[i] != int(newton.TendonLinkType.ROLLING):
+            if guide_type[i] != int(newton.TendonGuideType.ROLLER):
                 continue
-            if link_active[i] == 0:
+            if guide_active[i] == 0:
                 continue
 
-            pose = body_q[link_body[i]]
-            center = _transform_point_np(pose, link_offset[i])
-            normal = _transform_vector_np(pose, link_axis[i])
+            pose = body_q[guide_body[i]]
+            center = _transform_point_np(pose, guide_offset[i])
+            normal = _transform_vector_np(pose, guide_axis[i])
             pt_left = None
             pt_right = None
-            for s in range(num_links - 1):
+            for s in range(num_guides - 1):
                 seg_idx = seg_base + s
                 if seg_active[seg_idx] == 0:
                     continue
-                if seg_link_r[seg_idx] == i:
+                if seg_guide_r[seg_idx] == i:
                     pt_left = att_r[seg_idx]
-                if seg_link_l[seg_idx] == i:
+                if seg_guide_l[seg_idx] == i:
                     pt_right = att_l[seg_idx]
             if pt_left is None or pt_right is None:
                 continue
@@ -205,10 +209,10 @@ def get_tendon_total_lengths(solver, model, state):
             cross_val = np.dot(np.cross(r_left, r_right), normal)
             dot_val = np.dot(r_left, r_right)
             theta = abs(np.arctan2(cross_val, dot_val))
-            total += theta * link_radius[i]
+            total += theta * guide_radius[i]
 
         lengths[t] = total
-        seg += num_links - 1
+        seg += num_guides - 1
 
     return lengths
 

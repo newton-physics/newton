@@ -27,7 +27,7 @@ from ...sim import (
     ModelFlags,
     State,
     StateFlags,
-    TendonLinkFlags,
+    TendonGuideFlags,
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
@@ -216,7 +216,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         See :ref:`Joint feature support` for the full comparison across solvers.
 
     Tendon limitations:
-        - Static routes and isolated dynamic ROLLING links are supported. Zero
+        - Static routes and isolated dynamic ROLLER guides are supported. Zero
           segment compliance is approximated as ``1.0e-8`` m/N.
         - Call :meth:`newton.ModelBuilder.color` after adding tendons so that
           segment endpoints receive different rigid-body colors.
@@ -2276,13 +2276,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             body_colors[group.numpy()] = color
 
         if model.tendon_segment_count > 0:
-            link_bodies = model.tendon_link_body.numpy()
-            link_flags = model.tendon_link_flags.numpy()
-            segment_left_links = self.tendon_seg_link_l.numpy()
-            link_left_segments = self.tendon_link_seg_left.numpy()
-            for segment, left_link in enumerate(segment_left_links):
-                body_l = int(link_bodies[left_link])
-                body_r = int(link_bodies[left_link + 1])
+            guide_bodies = model.tendon_guide_body.numpy()
+            guide_flags = model.tendon_guide_flags.numpy()
+            segment_left_guides = self.tendon_seg_guide_l.numpy()
+            guide_left_segments = self.tendon_guide_seg_left.numpy()
+            for segment, left_guide in enumerate(segment_left_guides):
+                body_l = int(guide_bodies[left_guide])
+                body_r = int(guide_bodies[left_guide + 1])
                 if body_l != body_r and len(model.body_color_groups) > 0 and body_colors[body_l] == body_colors[body_r]:
                     raise ValueError(
                         "model.body_color_groups does not separate tendon segment endpoints; "
@@ -2291,12 +2291,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 body_segments[body_l].add(segment)
                 body_segments[body_r].add(segment)
 
-                right_link = left_link + 1
-                # Deactivation reuses the left authored segment for the bypass to the following link.
-                if (link_flags[right_link] & int(TendonLinkFlags.DYNAMIC)) != 0 and link_left_segments[
-                    right_link
+                right_guide = left_guide + 1
+                # Deactivation reuses the left authored segment for the bypass to the following guide.
+                if (guide_flags[right_guide] & int(TendonGuideFlags.DYNAMIC)) != 0 and guide_left_segments[
+                    right_guide
                 ] == segment:
-                    bypass_body = int(link_bodies[right_link + 1])
+                    bypass_body = int(guide_bodies[right_guide + 1])
                     if (
                         bypass_body != body_l
                         and len(model.body_color_groups) > 0
@@ -2508,7 +2508,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
         if self.tendon_seg_lambda is not None and state_in.body_q is not None:
             self._snapshot_tendon_step_state()
-            self._update_tendon_link_active(self.model, state_in.body_q)
+            self._update_tendon_guide_active(self.model, state_in.body_q)
             self._prepare_tendon_route(self.model, state_in.body_q, 1.0e-8)
             self._rebaseline_tendon_geometry(state_in.body_q)
             self.tendon_seg_material_tension.zero_()
@@ -3872,18 +3872,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             dim=model.tendon_segment_count,
             inputs=[
                 state_in.body_q,
-                model.tendon_link_body,
-                model.tendon_link_type,
-                model.tendon_link_flags,
-                model.tendon_link_radius,
-                model.tendon_link_orientation,
-                model.tendon_link_offset,
-                model.tendon_link_axis,
+                model.tendon_start,
+                self.tendon_guide_tendon,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_flags,
+                model.tendon_guide_radius,
+                model.tendon_guide_orientation,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
                 self.tendon_seg_active,
-                self.tendon_seg_active_link_l,
-                self.tendon_seg_active_link_r,
-                self.tendon_link_active,
-                self.tendon_link_active_step,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
+                self.tendon_guide_active,
+                self.tendon_guide_active_step,
                 self.tendon_seg_attachment_l_local_step,
                 self.tendon_seg_attachment_r_local_step,
                 1,
@@ -3911,24 +3913,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_q_prev,
                 model.body_com,
                 model.tendon_start,
-                model.tendon_link_body,
-                model.tendon_link_type,
-                model.tendon_link_radius,
-                model.tendon_link_offset,
-                model.tendon_link_axis,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_radius,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
                 self.tendon_seg_rest_length,
                 self.tendon_seg_rest_length_step,
                 self.tendon_seg_route_rest_length,
                 self.tendon_seg_stretch,
                 self.tendon_seg_damping_tension,
                 self.tendon_seg_active,
-                self.tendon_seg_active_link_l,
-                self.tendon_seg_active_link_r,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
                 self.tendon_seg_active_compliance,
                 self.tendon_seg_active_damping,
-                self.tendon_link_active,
-                self.tendon_link_active_step,
-                self.tendon_link_route_rest_length,
+                self.tendon_guide_active,
+                self.tendon_guide_active_step,
+                self.tendon_guide_route_rest_length,
                 self.tendon_seg_attachment_l,
                 self.tendon_seg_attachment_r,
                 self.tendon_seg_length,
@@ -3936,9 +3938,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.tendon_seg_attachment_r_local,
                 self.tendon_seg_rolling_delta_l,
                 self.tendon_seg_rolling_delta_r,
-                self.tendon_link_cone_seg_l,
-                self.tendon_link_cone_seg_r,
-                self.tendon_link_cap_ratio,
+                self.tendon_guide_cone_seg_l,
+                self.tendon_guide_cone_seg_r,
+                self.tendon_guide_cap_ratio,
                 self.tendon_cone_sweep_count,
                 1,
                 dt,
@@ -3964,15 +3966,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 body_q,
                 self.body_q_prev,
                 model.body_com,
-                model.tendon_link_body,
-                model.tendon_link_type,
-                model.tendon_link_offset,
-                model.tendon_link_axis,
+                model.tendon_guide_body,
+                model.tendon_guide_type,
+                model.tendon_guide_offset,
+                model.tendon_guide_axis,
                 self.tendon_seg_attachment_l_local,
                 self.tendon_seg_attachment_r_local,
                 self.tendon_seg_active,
-                self.tendon_seg_active_link_l,
-                self.tendon_seg_active_link_r,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
             ],
             outputs=[self.tendon_seg_delta_lambda],
             device=self.device,
@@ -3987,15 +3989,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 state_out.body_q,
-                model.tendon_link_body,
+                model.tendon_guide_body,
                 self.tendon_seg_attachment_l_local,
                 self.tendon_seg_attachment_r_local,
                 self.tendon_seg_rest_length,
                 self.tendon_seg_active_compliance,
                 self.tendon_seg_active_damping,
                 self.tendon_seg_active,
-                self.tendon_seg_active_link_l,
-                self.tendon_seg_active_link_r,
+                self.tendon_seg_active_guide_l,
+                self.tendon_seg_active_guide_r,
                 self.tendon_seg_delta_lambda,
             ],
             outputs=[
@@ -4222,22 +4224,22 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_hessian_al,
                     self.body_hessian_aa,
                     self.tendon_adjacency,
-                    model.tendon_link_body,
-                    model.tendon_link_type,
-                    model.tendon_link_radius,
-                    model.tendon_link_mu,
-                    model.tendon_link_offset,
-                    model.tendon_link_axis,
-                    self.tendon_link_cone_seg_l,
-                    self.tendon_link_cone_seg_r,
+                    model.tendon_guide_body,
+                    model.tendon_guide_type,
+                    model.tendon_guide_radius,
+                    model.tendon_guide_mu,
+                    model.tendon_guide_offset,
+                    model.tendon_guide_axis,
+                    self.tendon_guide_cone_seg_l,
+                    self.tendon_guide_cone_seg_r,
                     self.tendon_seg_rest_length,
                     self.tendon_seg_attachment_l_local,
                     self.tendon_seg_attachment_r_local,
                     self.tendon_seg_active_compliance,
                     self.tendon_seg_active_damping,
                     self.tendon_seg_active,
-                    self.tendon_seg_active_link_l,
-                    self.tendon_seg_active_link_r,
+                    self.tendon_seg_active_guide_l,
+                    self.tendon_seg_active_guide_r,
                 ],
                 outputs=[
                     state_in.body_q,
