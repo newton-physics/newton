@@ -54,8 +54,9 @@ The other solver backends are documented through their linked API references
 and the comparison tables below.
 
 For a rigid articulated robot, first decide which coordinate representation
-fits the application. :class:`~newton.solvers.SolverMuJoCo` and
-:class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while
+fits the application. :class:`~newton.solvers.SolverMuJoCo`,
+:class:`~newton.solvers.SolverFeatherstone`, and
+:class:`~newton.solvers.SolverFeatherPGS` use generalized coordinates, while
 :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and
 :class:`~newton.solvers.SolverKamino` use maximal coordinates. For deformable
@@ -80,6 +81,14 @@ Supported Features
      - Cloth
      - Soft bodies
      - Differentiable
+   * - :class:`~newton.solvers.SolverFeatherPGS`
+     - Semi-implicit, implicit drives
+     - ✅
+     - ✅ generalized coordinates
+     - ❌
+     - ❌
+     - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverFeatherstone`
      - Semi-implicit
      - ✅
@@ -151,6 +160,10 @@ Supported Features
   see :ref:`Differentiability` for further details.
 
 .. experimental::
+    :class:`~newton.solvers.SolverFeatherPGS`'s public API and behavior may change without prior notice.
+    It requires a CUDA device.
+
+.. experimental::
     :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
 
 .. experimental::
@@ -167,7 +180,8 @@ which fields are currently used by Newton's built-in solvers. External solvers
 may use different subsets or interpret these fields according to their own
 formulation.
 
-- ``mu``: :class:`~newton.solvers.SolverFeatherstone`,
+- ``mu``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of the two
+  shapes), :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
@@ -199,8 +213,8 @@ Joint Feature Support
 Not every solver supports every joint type or joint property.
 The tables below document which joint features each solver handles.
 
-Only :class:`~newton.solvers.SolverFeatherstone` and :class:`~newton.solvers.SolverMuJoCo`
-operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates).
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverFeatherPGS`, and
+:class:`~newton.solvers.SolverMuJoCo` operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates).
 The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
@@ -217,12 +231,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Joint type
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverFeatherPGS`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
      - :class:`~newton.solvers.SolverVBD`
      - :class:`~newton.solvers.SolverKamino`
    * - PRISMATIC
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -236,7 +252,9 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - BALL
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -250,6 +268,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - FREE
      - |yes|
      - |yes|
@@ -257,7 +276,9 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - DISTANCE
+     - 🟨 :sup:`1`
      - 🟨 :sup:`1`
      - 🟨 :sup:`1`
      - |yes|
@@ -270,8 +291,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
      - |no|
    * - ROD
+     - |no|
      - |no|
      - |no|
      - |no|
@@ -290,6 +313,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Property
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverFeatherPGS`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -297,12 +321,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - :class:`~newton.solvers.SolverKamino`
    * - :attr:`~newton.Model.joint_enabled`
      - |no|
+     - |no| :sup:`8`
      - |yes|
      - |yes|
      - |no|
      - |yes|
      - |no|
    * - :attr:`~newton.Model.joint_armature`
+     - |yes|
      - |yes|
      - |no|
      - |no|
@@ -313,10 +339,12 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |no|
+     - |no|
      - |yes|
      - |no|
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
+     - |yes|
      - |yes|
      - |yes| :sup:`2`
      - |yes|
@@ -325,6 +353,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_limit_ke` / :attr:`~newton.Model.joint_limit_kd`
      - |yes|
+     - |no| :sup:`9`
      - |yes| :sup:`2`
      - |no|
      - |yes|
@@ -332,6 +361,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
+     - |yes| :sup:`10`
      - |no|
      - |no|
      - |yes|
@@ -339,6 +369,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_velocity_limit`
      - |no|
+     - |yes| :sup:`11`
      - |no|
      - |no|
      - |no|
@@ -356,12 +387,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverFeatherPGS`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
      - :class:`~newton.solvers.SolverVBD`
      - :class:`~newton.solvers.SolverKamino`
    * - :attr:`~newton.Model.joint_target_ke` / :attr:`~newton.Model.joint_target_kd`
+     - |yes|
      - |yes|
      - |yes| :sup:`2`
      - |yes|
@@ -372,10 +405,12 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |no|
+     - |no|
      - |yes|
      - |no|
      - |yes|
    * - :attr:`~newton.Control.joint_f` (feedforward forces)
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -392,6 +427,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverFeatherPGS`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -401,11 +437,13 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |no|
+     - |no|
      - |yes|
      - |no|
      - |no|
    * - Mimic joints
      - |yes| :sup:`3`
+     - |no| :sup:`8`
      - |yes| :sup:`4`
      - |yes| :sup:`5`
      - |yes| :sup:`6`
@@ -417,6 +455,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`8` FeatherPGS rejects models with disabled joints or mimic relationships instead of ignoring them.
+| :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows.
+| :sup:`10` FeatherPGS clamps the joint drive force to the effort limit.
+| :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True``.
 
 
 

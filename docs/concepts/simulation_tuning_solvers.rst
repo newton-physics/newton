@@ -221,6 +221,24 @@ repository examples spend tuning effort, not a shared solver API.
        generally requires smaller ``dt``. Examples use
        ``update_mass_matrix_interval`` when articulation dynamics are coupled
        with cloth or soft-body work.
+   * - :class:`~newton.solvers.SolverFeatherPGS`
+     - ``pgs_iterations``, ``pgs_beta``, ``pgs_cfm``, ``pgs_omega``,
+       ``update_mass_matrix_interval``, ``joint_limit_activation_gap``,
+       ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
+       ``dense_max_constraints``, ``mf_max_constraints``,
+       ``warn_constraint_overflow``.
+     - Experimental and CUDA-only. Contacts and joint limits are hard
+       constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
+       are not used; more ``pgs_iterations`` reduce residual penetration and
+       slip, and ``pgs_beta`` sets how much position error is corrected per
+       step. Joint drives are integrated implicitly, which keeps large drive
+       gains stable at ordinary ``dt``. Rows beyond ``dense_max_constraints``
+       (articulated bodies) or ``mf_max_constraints`` (free bodies) per world
+       are dropped and flagged in ``constraint_overflow``; call
+       ``check_constraint_capacity()`` at an observation boundary, and raise the
+       capacity and reset the world when it reports a world. Per-body angular
+       damping and free-body velocity bounds are model attributes registered by
+       ``register_custom_attributes()``.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
