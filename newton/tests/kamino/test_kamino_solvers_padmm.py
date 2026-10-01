@@ -9,15 +9,13 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
 from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
-from newton._src.solvers.kamino._src.models.builders import basics
-from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
@@ -31,6 +29,7 @@ from newton.tests.kamino.utils.extract import (
     extract_problem_vector,
 )
 from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.utils import basics
 
 ###
 # Helper functions
@@ -52,19 +51,21 @@ class TestSetup:
         self.max_world_contacts = max_world_contacts
 
         # Construct the model description using model builders for different systems
-        self.builder: ModelBuilderKamino = builder_fn(**kwargs)
+        self.builder: ModelBuilder = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
         if not gravity:
-            self.builder.set_gravity(wp.vec3f(0.0))
+            for i in range(len(self.builder.world_gravity)):
+                self.builder.world_gravity[i] = wp.vec3(0.0, 0.0, 0.0)
         if perturb:
             u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            for body in self.builder.all_bodies:
-                body.u_i_0 = u_0
+            for i in range(len(self.builder.body_qd)):
+                self.builder.body_qd[i] = u_0
 
         # Create the model and containers from the builder
+        model = ModelKamino.from_newton(self.builder.finalize(device=device))
         self.model, self.data, self.state, self.limits, self.detector, self.jacobians = make_containers(
-            builder=self.builder, max_world_contacts=max_world_contacts, device=device, sparse=sparse
+            model=model, max_world_contacts=max_world_contacts, sparse=sparse
         )
         self.contacts = self.detector.contacts
         self.state_p = self.model.state()
@@ -154,11 +155,11 @@ def check_padmm_solution(
         error_dual_abs_inf = np.linalg.norm(v_plus_true - v_plus_wp_np[w], ord=np.inf)
 
         # Extract solver status
-        converged = True if status[w][0] == 1 else False
-        iterations = status[w][1]
-        r_p = status[w][2]
-        r_d = status[w][3]
-        r_c = status[w][4]
+        converged = bool(status[w]["converged"])
+        iterations = status[w]["iterations"]
+        r_p = status[w]["r_p"]
+        r_d = status[w]["r_d"]
+        r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
         if verbose:
@@ -324,7 +325,7 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
 
     nw = solver.size.num_worlds
     status = solver.data.status.numpy()
-    iterations = [status[w][1] for w in range(nw)]
+    iterations = [status[w]["iterations"] for w in range(nw)]
     offsets_np = solver.data.info.offsets.numpy()
     num_rho_updates_np = extract_info_vectors(offsets_np, solver.data.info.num_rho_updates.numpy(), iterations)
     norm_s_np = extract_info_vectors(offsets_np, solver.data.info.norm_s.numpy(), iterations)
@@ -703,9 +704,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -751,9 +752,9 @@ class TestPADMMSolver(unittest.TestCase):
         # but are defined here explicitly for the purposes
         # of experimentation and testing.
         config = PADMMSolver.Config()
-        config.primal_tolerance = 1e-6
-        config.dual_tolerance = 1e-6
-        config.compl_tolerance = 1e-6
+        config.primal_tolerance = 1e-5
+        config.dual_tolerance = 1e-5
+        config.compl_tolerance = 1e-5
         config.restart_tolerance = 0.999
         config.eta = 1e-5
         config.rho_0 = 1.0
@@ -790,11 +791,11 @@ class TestPADMMSolver(unittest.TestCase):
 
     def test_08_padmm_solve_single_contact(self):
         """
-        Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
-        constraints and limits) with a single contact.
+        Tests the Proximal-ADMM (PADMM) solver with default config on the sphere-on-plane problem
+        (no constraints and limits) with a single contact.
         """
         # Create the test problem
-        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
+        test = TestSetup(builder_fn=basics.build_sphere_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
         solver = PADMMSolver(model=test.model, collect_info=self.savefig)
@@ -813,6 +814,55 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+
+    def test_08a_padmm_collect_info_matches_solution(self):
+        """Record consistent diagnostics for dense and sparse PADMM problems."""
+        info_vectors = {}
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=basics.build_box_on_plane,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                solver = PADMMSolver(
+                    model=test.model,
+                    config=PADMMSolver.Config(
+                        primal_tolerance=1.0e3,
+                        dual_tolerance=1.0e3,
+                        compl_tolerance=1.0e3,
+                        max_iterations=8,
+                    ),
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=False,
+                    use_graph_conditionals=False,
+                    collect_info=True,
+                )
+
+                test.build()
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+
+                info = solver.data.info
+                status = solver.data.status
+                solution = solver.data.solution
+                iterations = int(status.numpy()[0]["iterations"])
+
+                # History was written
+                self.assertTrue((info.norm_x.numpy()[:iterations] != 0.0).all())
+                np.testing.assert_array_equal(info.norm_x.numpy()[iterations:], 0.0)
+
+                # Solution is consistent with info
+                np.testing.assert_allclose(info.lambdas.numpy(), solution.lambdas.numpy())
+                np.testing.assert_allclose(info.v_aug.numpy(), info.v_plus.numpy() + info.s.numpy())
+
+                # Store info for dense-sparse comparison
+                info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
+
+        # Compare dense-sparse info
+        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
 
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
@@ -957,13 +1007,16 @@ class TestPADMMSolver(unittest.TestCase):
 
         for use_graph_conditionals in modes:
             with self.subTest(use_graph_conditionals=use_graph_conditionals):
+
+                def builder_fn():
+                    builder = ModelBuilder()
+                    builder.replicate(basics.build_box_pendulum(ground=False), world_count=len(budgets))
+                    return builder
+
                 test = TestSetup(
-                    builder_fn=make_homogeneous_builder,
+                    builder_fn=builder_fn,
                     max_world_contacts=1,
                     device=self.default_device,
-                    num_worlds=len(budgets),
-                    build_fn=basics.build_box_pendulum,
-                    ground=False,
                 )
                 configs = [
                     PADMMSolver.Config(

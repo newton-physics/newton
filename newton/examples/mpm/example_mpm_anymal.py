@@ -31,7 +31,6 @@ from newton.solvers import SolverImplicitMPM
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance
@@ -254,16 +253,15 @@ class Example:
 
     def step(self):
         # Build command from viewer keyboard
-        if hasattr(self.viewer, "is_key_down"):
-            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+        fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+        lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+        rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
 
-            if fwd or lat or rot:
-                # disable forward motion
-                self._auto_forward = False
+        if fwd or lat or rot:
+            # disable forward motion
+            self._auto_forward = False
 
-            self._command = wp.vec3(float(fwd), float(lat), float(rot))
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
 
         if self._auto_forward:
             self._command = wp.vec3(1.0, 0.0, 0.0)

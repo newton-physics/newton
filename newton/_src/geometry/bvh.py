@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from ..sim import Model, State
 
 
+SHAPE_BOUNDS_BLOCK_DIM = 256
+
+
 @wp.func
 def compute_shape_bounds(
     transform: wp.transformf, scale: wp.vec3f, shape_min_bounds: wp.vec3f, shape_max_bounds: wp.vec3f
@@ -210,31 +213,35 @@ def compute_shape_local_bounds(
     in_gaussians: wp.array[Gaussian.Data],
     out_bounds: wp.array2d[wp.vec3f],
 ):
-    tid = wp.tid()
+    shape_index, lane = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
     if (
-        in_shape_type[tid] == GeoType.MESH
-        or in_shape_type[tid] == GeoType.CONVEX_MESH
-        or in_shape_type[tid] == GeoType.HFIELD
+        in_shape_type[shape_index] == GeoType.MESH
+        or in_shape_type[shape_index] == GeoType.CONVEX_MESH
+        or in_shape_type[shape_index] == GeoType.HFIELD
     ):
         # Heightfields and convex meshes store mesh-backed geometry in shape_source_ptr.
-        mesh = wp.mesh_get(in_shape_ptr[tid])
-        for i in range(mesh.points.shape[0]):
+        mesh = wp.mesh_get(in_shape_ptr[shape_index])
+        for i in range(lane, mesh.points.shape[0], wp.block_dim()):
             min_point = wp.min(min_point, mesh.points[i])
             max_point = wp.max(max_point, mesh.points[i])
 
-    elif in_shape_type[tid] == GeoType.GAUSSIAN:
-        gaussian_id = in_shape_ptr[tid]
-        for i in range(in_gaussians[gaussian_id].num_points):
+    elif in_shape_type[shape_index] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[shape_index]
+        for i in range(lane, in_gaussians[gaussian_id].num_points, wp.block_dim()):
             lower, upper = compute_gaussian_bounds(in_gaussians[gaussian_id], i)
             min_point = wp.min(min_point, lower)
             max_point = wp.max(max_point, upper)
 
-    out_bounds[tid, 0] = min_point
-    out_bounds[tid, 1] = max_point
+    min_point = wp.tile_reduce(wp.min, wp.tile(min_point, preserve_type=True))[0]
+    max_point = wp.tile_reduce(wp.max, wp.tile(max_point, preserve_type=True))[0]
+
+    if lane == 0:
+        out_bounds[shape_index, 0] = min_point
+        out_bounds[shape_index, 1] = max_point
 
 
 @wp.kernel(enable_backward=False)
