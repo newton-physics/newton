@@ -185,7 +185,6 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         if args.robot not in ROBOT_CONFIGS:
             raise ValueError(f"Unknown robot: {args.robot}. Available: {list(ROBOT_CONFIGS.keys())}")
         robot_config = ROBOT_CONFIGS[args.robot]
@@ -364,15 +363,14 @@ class Example:
             self._prev_act_wp.zero_()
 
     def step(self):
-        if hasattr(self.viewer, "is_key_down"):
-            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-            self._command = wp.vec3(float(fwd), float(lat), float(rot))
-            reset_down = bool(self.viewer.is_key_down("p"))
-            if reset_down and not self._reset_key_prev:
-                self.reset()
-            self._reset_key_prev = reset_down
+        fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+        lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+        rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
+        reset_down = bool(self.viewer.is_key_down("p"))
+        if reset_down and not self._reset_key_prev:
+            self.reset()
+        self._reset_key_prev = reset_down
 
         wp.launch(
             _compute_obs_kernel,

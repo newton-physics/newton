@@ -7,6 +7,7 @@ import ctypes.util
 import dataclasses
 import importlib.util
 import io
+import linecache
 import os
 import re
 import shlex
@@ -35,11 +36,49 @@ coverage_temp_dir = None
 coverage_branch = None
 
 # Set by the test runner from the --strict-warnings flag. When True, the example
-# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
-# (the in-process tests additionally escalate any warning attributed to a newton.*
-# module). Off by default so verifying an installation does not fail on warnings
-# the user cannot act on.
+# subprocesses spawned by test_examples.py escalate non-allowlisted
+# DeprecationWarnings to errors (the in-process tests additionally escalate any
+# warning attributed to a newton.* module). Off by default so verifying an
+# installation does not fail on warnings the user cannot act on.
 strict_warnings = False
+# Literal message prefixes loaded from --deprecation-allowlist and applied to
+# in-process output validation and Python subprocess warning filters.
+allowed_deprecation_warnings: tuple[str, ...] = ()
+
+
+def get_strict_warning_args() -> list[str]:
+    """Return Python interpreter arguments for the active warning policy."""
+    if not strict_warnings:
+        return []
+
+    arguments = ["-W", "error::DeprecationWarning"]
+    for message in allowed_deprecation_warnings:
+        arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
+    return arguments
+
+
+def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
+    """Match allowed warning records with source context verified at their locations."""
+
+    def source_end(filename, lineno, offset, indent):
+        source = linecache.getline(filename, int(lineno))
+        context = f"{indent}{source.strip()}\n"
+        return offset + len(context) if source and stderr.startswith(context, offset) else offset
+
+    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+    for match in re.finditer(warp_header, stderr):
+        end = match.end()
+        if location := re.search(r" \((.+):(\d+)\)\n$", match.group()):
+            end = source_end(*location.groups(), end, "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
+    # Formatted stderr cannot establish a custom category's inheritance.
+    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+
+    for match in re.finditer(header, stderr):
+        end = source_end(*match.groups(), match.end(), "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
@@ -283,11 +322,13 @@ class _OutputRegex:
             ``"stderr"``, or ``"any"``.
         required: Whether the pattern must match (expected output) or is
             merely permitted (allowed output).
+        report: Whether to replay matching output after successful validation.
     """
 
     pattern: str
     stream: str
     required: bool
+    report: bool = False
 
 
 class _OutputCapture:
@@ -316,11 +357,11 @@ class _OutputCapture:
             raise
         self.active = True
 
-    def add_pattern(self, pattern: str, *, stream: str, required: bool):
+    def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
             raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
 
-        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required))
+        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required, report=report))
 
     def record(self, stream: str, text: str | bytes | None):
         if text is None:
@@ -360,8 +401,22 @@ class _OutputCapture:
         output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
+        reported = []
 
-        for pattern in self.patterns:
+        patterns = list(self.patterns)
+        if strict_warnings:
+            regexes = {
+                regex
+                for message_prefix in allowed_deprecation_warnings
+                for regex in _deprecation_warning_output_regexes(output_by_stream["stderr"], message_prefix)
+            }
+            automatic_patterns = [
+                _OutputRegex(pattern=regex, stream="stderr", required=False, report=True)
+                for regex in sorted(regexes, key=len, reverse=True)
+            ]
+            patterns = automatic_patterns + patterns
+
+        for pattern in patterns:
             streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
             matched = any(
                 re.search(pattern.pattern, output_by_stream[stream], flags=re.MULTILINE) for stream in streams
@@ -371,6 +426,11 @@ class _OutputCapture:
                 missing.append(pattern)
 
             for stream in streams:
+                if pattern.report:
+                    reported.extend(
+                        (stream, match.group())
+                        for match in re.finditer(pattern.pattern, unmatched_by_stream[stream], flags=re.MULTILINE)
+                    )
                 unmatched_by_stream[stream] = re.sub(
                     pattern.pattern,
                     "",
@@ -391,6 +451,9 @@ class _OutputCapture:
 
         if failures:
             return "\n\n".join(failures)
+
+        for stream, text in reported:
+            getattr(sys, stream).write(text)
 
         return None
 
@@ -680,7 +743,49 @@ def write_junit_results(
     tree.write(outfile, encoding="utf-8", xml_declaration=True)
 
 
-class ParallelJunitTestResult(unittest.TextTestResult):
+def is_statically_skipped_test(test):
+    """Return whether unittest skips a test before setUp and its body."""
+    method_name = getattr(test, "_testMethodName", "")
+    test_method = getattr(test, method_name, None)
+    return getattr(test.__class__, "__unittest_skip__", False) or getattr(test_method, "__unittest_skip__", False)
+
+
+def cleanup_test_allocations():
+    """Release CPU allocations and unused CUDA mempool memory."""
+    import gc  # noqa: PLC0415
+
+    gc.collect()
+    for device_name in wp.get_cuda_devices():
+        if wp.is_mempool_enabled(device_name):
+            wp.set_mempool_release_threshold(device_name, 0)
+
+
+class AllocationCleanupTestResultMixin:
+    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+
+    _CPU_CLEANUP_INTERVAL = 8
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tests_since_cleanup = 0
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        if is_statically_skipped_test(test):
+            return
+        self._tests_since_cleanup += 1
+        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
+            cleanup_test_allocations()
+            self._tests_since_cleanup = 0
+
+    def stopTestRun(self):
+        if self._tests_since_cleanup:
+            cleanup_test_allocations()
+            self._tests_since_cleanup = 0
+        super().stopTestRun()
+
+
+class ParallelJunitTestResult(AllocationCleanupTestResultMixin, unittest.TextTestResult):
     def __init__(self, stream, descriptions, verbosity):
         stream = type(stream)(sys.stderr)
         self.test_record = []
@@ -749,20 +854,6 @@ class ParallelJunitTestResult(unittest.TextTestResult):
             self._add_helper(test, "ERROR")
             # err is (class, error, traceback)
             self._record_test(test, "FAIL", str(err[1]), self._exc_info_to_string(err, test))
-
-    def stopTest(self, test):
-        super().stopTest(test)
-        # Force garbage collection of CPU-side allocations and release unused
-        # CUDA mempool memory to reduce peak host RSS in parallel test runs
-        # (see issue #1881).
-        import gc  # noqa: PLC0415
-
-        gc.collect()
-        import warp as wp  # noqa: PLC0415
-
-        for device_name in wp.get_cuda_devices():
-            if wp.is_mempool_enabled(device_name):
-                wp.set_mempool_release_threshold(device_name, 0)
 
     def printErrors(self):
         pass

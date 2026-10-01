@@ -1,0 +1,1 @@
+Remove the deprecated `newton.geometry.MATCH_BROKEN` and `newton.geometry.MATCH_NOT_FOUND` constants. There is no replacement; do not rely on specific values of `Contacts.rigid_contact_match_index` for unmatched contacts beyond checking for negative values.

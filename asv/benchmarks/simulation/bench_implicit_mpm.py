@@ -23,7 +23,7 @@ class ImplicitMPMSingleWorld:
         if not device.is_cuda:
             raise SkipNotImplemented
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverImplicitMPM.register_custom_attributes(builder)
         builder.add_particle_grid(
             pos=wp.vec3(0.0),
