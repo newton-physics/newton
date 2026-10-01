@@ -110,7 +110,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
-- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
   backends)
 
@@ -127,6 +127,43 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
+
+.. _viewer-live-plots:
+
+Live Plots
+~~~~~~~~~~
+
+:meth:`~newton.viewer.ViewerBase.log_scalar` and
+:meth:`~newton.viewer.ViewerBase.log_array` provide numeric diagnostics with
+backend-specific displays:
+
+- :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`
+  display rolling scalar line plots and heatmaps for scalar, 1-D, and 2-D
+  NumPy or Warp arrays in a Plots window.
+- :class:`~newton.viewer.ViewerViser` displays rolling scalar line plots in
+  the sidebar. Generic array visualization is not supported.
+- :class:`~newton.viewer.ViewerRerun` forwards scalar and array data to
+  Rerun's native scalar visualization.
+
+For ``ViewerGL``, ``ViewerRTX``, and ``ViewerViser``, set
+``plot_history_size`` when constructing the viewer to configure the number
+of plotted scalar samples (default: 250). Use ``smoothing`` to average a
+group of raw samples into each plotted point, and ``clear=True`` with
+``log_scalar`` to reset a signal's history and pending smoothing samples.
+For example, with ``ViewerGL`` or ``ViewerRTX``:
+
+.. code-block:: python
+
+    viewer.log_scalar("Training/reward", reward, smoothing=10)
+    viewer.log_array("Training/observations", observations)
+
+In ``ViewerGL`` and ``ViewerRTX``, pass ``None`` to ``log_array`` to remove
+a heatmap. Logging works before the first rendered frame and in headless
+mode; plots are displayed when the viewer window and its UI are active.
+
+``ViewerRerun`` controls history through ``keep_scalar_history`` for
+scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
+``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
 
 Real-time Viewers
 -----------------
@@ -286,6 +323,14 @@ RTX Viewer
 It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
 presenting the result in a pyglet/OpenGL window.
 
+Debug geometry can be added before or after the first rendered frame using
+:meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
+:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
+and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
+changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
+and cone heads; their ``width`` specifies the shaft radius in meters.
+
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
 
@@ -307,6 +352,10 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in additio
     viewer.begin_frame(sim_time)
     viewer.log_state(state)
     viewer.end_frame()
+
+The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
+the ``examples`` dependencies. Install both RTX viewer and UI dependencies
+with ``uv sync --extra rtx --extra examples``.
 
 Recording and Offline Viewers
 -----------------------------
@@ -697,6 +746,12 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 .. code-block:: python
 
     viewer.log_contacts(contacts, state)
+
+Contact normals, mode disks, and force arrows are sized relative to the smaller
+shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
+all contact glyphs while preserving their proportions across differently sized
+contacts. Contact mode coloring and force arrows require the ``"force"``
+extended contact attribute.
 
 **Transform gizmos:**
 

@@ -5,7 +5,6 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast, overload
 from urllib.parse import urlparse
 
@@ -376,23 +375,7 @@ class MeshAdjacency:
             :meth:`init_vertex_adjacency` returns early when this is already ``True``.
         indices, spring_indices, tet_indices: The triangle / spring / tetrahedron topology this
             adjacency is built over, kept from the constructor for :meth:`init_vertex_adjacency`.
-
-    .. note::
-        The :attr:`edges` dict is a deprecated compatibility shim (it emits a
-        ``DeprecationWarning``); use the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
     """
-
-    @dataclass(slots=True)
-    class Edge:
-        """Legacy per-edge record: edge ``(v0, v1)`` with opposite vertices
-        ``o0``/``o1`` and adjacent triangles ``f0``/``f1`` (``-1`` if boundary)."""
-
-        v0: int
-        v1: int
-        o0: int
-        o1: int
-        f0: int
-        f1: int
 
     def __init__(
         self,
@@ -400,7 +383,6 @@ class MeshAdjacency:
         edge_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
         spring_indices: Sequence[int] | np.ndarray | None = None,
         tet_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
-        indices: Sequence[Sequence[int]] | np.ndarray | None = None,
     ):
         """Build edge adjacency from triangles and store the element topology as members.
 
@@ -416,19 +398,7 @@ class MeshAdjacency:
                 stored for :meth:`init_vertex_adjacency`.
             tet_indices: Tetrahedron vertex ids, shape ``[tet_count, 4]``; stored for
                 :meth:`init_vertex_adjacency`.
-            indices: Deprecated alias for ``tri_indices``.
         """
-        # `indices` is a deprecated alias for `tri_indices`, kept for backward compatibility.
-        if indices is not None:
-            if tri_indices is not None and not np.array_equal(_numpy_int_array(indices), _numpy_int_array(tri_indices)):
-                raise ValueError("Pass `tri_indices` or the deprecated `indices`, not both with different values.")
-            warnings.warn(
-                "MeshAdjacency `indices` argument is deprecated; use `tri_indices`.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            tri_indices = indices
-
         # Element topology kept as members (owned int32 copies, detached from any mutable input
         # list so a finalized model's adjacency can't drift if the builder is modified after
         # finalize()); init_vertex_adjacency builds the CSR from these.
@@ -458,74 +428,6 @@ class MeshAdjacency:
         self.v_adj_tets = None
         self.v_adj_tets_offsets = None
         # Set once init_vertex_adjacency has built the CSR tables; guards recomputation.
-        self.vertex_adjacency_initialized = False
-
-    @property
-    def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
-        """Deprecated legacy edge dict, rebuilt on access from ``edge_indices``.
-
-        Maps ``(min(v0, v1), max(v0, v1))`` to an :class:`Edge`. Recomputed on
-        every access and never cached; prefer the ``edge_indices`` /
-        ``edge_tri_indices`` arrays directly.
-        """
-        warnings.warn(
-            "MeshAdjacency.edges is deprecated; use the edge_indices/edge_tri_indices arrays.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_indices = _numpy_int_rows(self.edge_indices, 4)
-        edge_tri_indices = _numpy_int_rows(self.edge_tri_indices, 2)
-        return {
-            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
-                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
-            )
-            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
-        }
-
-    def add_edge(self, i0: int, i1: int, o: int, f: int) -> None:
-        """Add or update one edge (deprecated; build via ``edge_indices`` instead).
-
-        Legacy incremental API: edge ``(i0, i1)`` with opposite vertex ``o`` in triangle ``f``.
-        The first call for an edge fills ``o0``/``f0``, the second fills ``o1``/``f1``; a third
-        warns (non-manifold). Updates :attr:`edge_indices` / :attr:`edge_tri_indices` (so
-        :attr:`edges` reflects it) and invalidates the vertex-adjacency CSR. It does **not**
-        update :attr:`tri_edge_indices`, so an edge added this way will not appear in the
-        per-triangle edge map; users can reconstruct via the constructor if they need that. O(edge_count)
-        per call -- a compatibility shim, not a hot path.
-
-        Args:
-            i0: First edge endpoint.
-            i1: Second edge endpoint.
-            o: Opposite vertex in triangle ``f``.
-            f: Triangle containing this edge.
-        """
-        warnings.warn(
-            "MeshAdjacency.add_edge is deprecated; construct with edge_indices ([o0, o1, v0, v1] rows) instead. "
-            "The added edge is not reflected in tri_edge_indices.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_rows = _numpy_int_rows(self.edge_indices, 4)
-        tri_rows = _numpy_int_rows(self.edge_tri_indices, 2)
-        lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
-        match = -1
-        for e in range(edge_rows.shape[0]):
-            if (
-                min(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == lo
-                and max(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == hi
-            ):
-                match = e
-                break
-        if match == -1:
-            self.edge_indices = np.concatenate((edge_rows, np.array([[o, -1, i0, i1]], dtype=np.int32)))
-            self.edge_tri_indices = np.concatenate((tri_rows, np.array([[f, -1]], dtype=np.int32)))
-        elif int(tri_rows[match, 1]) == -1:
-            edge_rows[match, 1] = o
-            tri_rows[match, 1] = f
-            self.edge_indices, self.edge_tri_indices = edge_rows, tri_rows
-        else:
-            warnings.warn("Detected non-manifold edge", stacklevel=2)
-            return
         self.vertex_adjacency_initialized = False
 
     def to(self, device) -> MeshAdjacencyData:
@@ -2309,7 +2211,7 @@ def validate_triangle_mesh(
     construction and is built by every builder path that accepts a
     triangle mesh, so going through ``add_cloth_mesh`` /
     ``add_soft_mesh`` already covers it. Standalone callers who need a
-    non-manifold check should construct ``MeshAdjacency(indices)``
+    non-manifold check should construct ``MeshAdjacency(tri_indices)``
     themselves. Each detected problem is reported via
     :func:`warnings.warn`.
 
