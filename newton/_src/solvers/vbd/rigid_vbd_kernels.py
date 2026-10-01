@@ -5533,6 +5533,7 @@ accumulate_body_body_contacts_per_body = create_accumulate_body_body_contacts_pe
 def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array[wp.int32],
+    threads_per_body: int,
     # Particle state
     particle_q: wp.array[wp.vec3],
     particle_q_prev: wp.array[wp.vec3],
@@ -5588,8 +5589,8 @@ def accumulate_body_particle_contacts_per_body(
       - Uses per-contact effective penalty/material parameters initialized once per step.
     """
     tid = wp.tid()
-    body_idx_in_group = tid // _NUM_CONTACT_THREADS_PER_BODY
-    thread_id_within_body = tid % _NUM_CONTACT_THREADS_PER_BODY
+    body_idx_in_group = tid // threads_per_body
+    thread_id_within_body = tid % threads_per_body
 
     if body_idx_in_group >= color_group.shape[0]:
         return
@@ -5617,7 +5618,7 @@ def accumulate_body_particle_contacts_per_body(
     i = thread_id_within_body
     while i < num_contacts:
         contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
-        i += _NUM_CONTACT_THREADS_PER_BODY
+        i += threads_per_body
         if contact_idx >= max_contacts:
             continue
 

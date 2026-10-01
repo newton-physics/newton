@@ -16,6 +16,7 @@ from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+    accumulate_particle_body_contact_force_and_hessian_atomic,
     apply_planar_truncation_parallel_by_collision,
     build_particle_body_contact_adjacency_active,
     create_edge_edge_division_plane_closest_pt,
@@ -2343,7 +2344,7 @@ def _particle_contact_adjacency_follows_swapped_contacts(test, device):
         pipeline.collide(state_in, contacts_a)
         test.assertGreater(int(contacts_a.soft_contact_count.numpy()[0]), 0)
 
-        solver = newton.solvers.SolverVBD(model, iterations=1)
+        solver = newton.solvers.SolverVBD(model, iterations=1, deterministic=wp.DeterministicMode.RUN_TO_RUN)
         solver.step(state_in, state_out, None, contacts_a, 1.0 / 120.0)
         members_a = solver._particle_contact_head.numpy() >= 0
         test.assertTrue(np.any(members_a))
@@ -2378,6 +2379,8 @@ def _particle_contact_gather_matches_legacy(test, device):
             legacy_hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
             gather_forces = wp.zeros_like(legacy_forces)
             gather_hessians = wp.zeros_like(legacy_hessians)
+            atomic_forces = wp.zeros_like(legacy_forces)
+            atomic_hessians = wp.zeros_like(legacy_hessians)
             for current_color, _color_group in enumerate(data["color_groups"]):
                 wp.launch(
                     accumulate_particle_body_contact_force_and_hessian,
@@ -2401,6 +2404,26 @@ def _particle_contact_gather_matches_legacy(test, device):
                     outputs=[legacy_forces, legacy_hessians],
                     device=device,
                 )
+                wp.launch(
+                    accumulate_particle_body_contact_force_and_hessian_atomic,
+                    dim=capacity,
+                    inputs=[
+                        0.01,
+                        current_color,
+                        particle_q_prev,
+                        particle_q,
+                        particle_colors,
+                        1.0,
+                        False,
+                        particle_radius,
+                        contact_indices,
+                        contact_count,
+                        capacity,
+                        *common_material_inputs,
+                    ],
+                    outputs=[atomic_forces, atomic_hessians],
+                    device=device,
+                )
             _launch_particle_contact_gather(
                 data, contact_count, contact_head, contact_next, gather_forces, gather_hessians, device
             )
@@ -2408,6 +2431,8 @@ def _particle_contact_gather_matches_legacy(test, device):
             with test.subTest(raw_count=raw_count):
                 np.testing.assert_allclose(gather_forces.numpy(), legacy_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
                 np.testing.assert_allclose(gather_hessians.numpy(), legacy_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
+                np.testing.assert_allclose(atomic_forces.numpy(), gather_forces.numpy(), rtol=1.0e-5, atol=1.0e-6)
+                np.testing.assert_allclose(atomic_hessians.numpy(), gather_hessians.numpy(), rtol=1.0e-5, atol=1.0e-6)
 
 
 def _particle_contact_gather_capture_replays_device_count(test, device):
@@ -2486,7 +2511,8 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
 
         solver = newton.solvers.SolverVBD(model, iterations=1)
         solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
-        test.assertTrue(solver._particle_contact_adjacency_initialized)
+        test.assertEqual(solver._use_atomic_soft_contacts, device.is_cuda)
+        test.assertEqual(solver._particle_contact_adjacency_initialized, not solver._use_atomic_soft_contacts)
 
         raw_count = wp.array([active_count], dtype=int, device=device)
         with wp.ScopedCapture(device=device) as capture:
@@ -2512,10 +2538,11 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
             head = solver._particle_contact_head.numpy()
             with test.subTest(replay_count=replay_count):
                 test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), replay_count)
-                if replay_count == 0:
-                    test.assertTrue(np.all(head == -1))
-                else:
-                    test.assertTrue(np.any(head >= 0))
+                if not solver._use_atomic_soft_contacts:
+                    if replay_count == 0:
+                        test.assertTrue(np.all(head == -1))
+                    else:
+                        test.assertTrue(np.any(head >= 0))
                 test.assertTrue(np.all(np.isfinite(state_out.particle_q.numpy())))
 
         # Repeated identical steps on the same contact buffer must produce identical results.
@@ -2524,6 +2551,7 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
             iterations=1,
             deterministic=wp.DeterministicMode.RUN_TO_RUN,
         )
+        test.assertFalse(deterministic_solver._use_atomic_soft_contacts)
         test.assertEqual(deterministic_solver._particle_contact_head.shape[0], model.particle_count)
         contacts.soft_contact_count.assign([active_count])
         results = []

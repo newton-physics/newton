@@ -2199,6 +2199,108 @@ def build_particle_body_contact_adjacency_active(
 
 
 @wp.kernel
+def accumulate_particle_body_contact_force_and_hessian_atomic(
+    dt: float,
+    current_color: int,
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    friction_epsilon: float,
+    rigid_body_particle_contact_use_log_barrier: bool,
+    particle_radius: wp.array[float],
+    body_particle_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_max: int,
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    contact_barycentric: wp.array[wp.vec3],
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Scatter contact contributions when contact count is too small to amortize gathering."""
+    contact_index = wp.tid()
+    if contact_index >= min(body_particle_contact_max, body_particle_contact_count[0]):
+        return
+
+    corners = body_particle_contact_indices[contact_index]
+    contact_ke = body_particle_contact_penalty_k[contact_index]
+    contact_kd = body_particle_contact_material_kd[contact_index]
+    contact_mu = body_particle_contact_material_mu[contact_index]
+
+    if corners[1] < 0:
+        particle_index = corners[0]
+        if particle_colors[particle_index] == current_color:
+            force, hessian = _eval_body_particle_contact(
+                particle_index,
+                pos[particle_index],
+                pos_anchor[particle_index],
+                contact_index,
+                contact_ke,
+                contact_kd,
+                contact_mu,
+                friction_epsilon,
+                particle_radius,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+                shape_margin,
+                dt,
+                rigid_body_particle_contact_use_log_barrier,
+            )
+            wp.atomic_add(particle_forces, particle_index, force)
+            wp.atomic_add(particle_hessians, particle_index, hessian)
+    else:
+        bary = contact_barycentric[contact_index]
+        force, hessian, _point = _eval_soft_ef_contact(
+            contact_index,
+            corners,
+            bary,
+            pos,
+            pos_anchor,
+            particle_radius,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            shape_margin,
+            dt,
+            rigid_body_particle_contact_use_log_barrier,
+        )
+        for corner in range(3):
+            particle_index = corners[corner]
+            if particle_index >= 0 and particle_colors[particle_index] == current_color:
+                weight = bary[corner]
+                wp.atomic_add(particle_forces, particle_index, weight * force)
+                wp.atomic_add(particle_hessians, particle_index, weight * weight * hessian)
+
+
+@wp.kernel
 def gather_particle_body_contact_force_and_hessian(
     # inputs
     dt: float,

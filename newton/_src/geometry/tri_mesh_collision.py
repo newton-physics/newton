@@ -509,14 +509,20 @@ class TriMeshCollisionDetector:
             device=model.device,
         )
 
-        self.bvh_edges = wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges, groups=self.edge_groups)
-        self.bvh_edges_group_roots = wp.zeros(model.world_count + 1, dtype=wp.int32, device=model.device)
-        wp.launch(
-            kernel=compute_bvh_group_roots,
-            dim=model.world_count + 1,
-            inputs=[self.bvh_edges.id, self.bvh_edges_group_roots],
-            device=model.device,
+        # Warp cannot construct or refit an empty grouped BVH on every device.
+        self.bvh_edges = (
+            wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges, groups=self.edge_groups)
+            if model.edge_count
+            else None
         )
+        self.bvh_edges_group_roots = wp.full(model.world_count + 1, -1, dtype=wp.int32, device=model.device)
+        if self.bvh_edges is not None:
+            wp.launch(
+                kernel=compute_bvh_group_roots,
+                dim=model.world_count + 1,
+                inputs=[self.bvh_edges.id, self.bvh_edges_group_roots],
+                device=model.device,
+            )
 
         self.resize_flags = wp.zeros(shape=(4,), dtype=wp.int32, device=self.device)
 
@@ -877,6 +883,8 @@ class TriMeshCollisionDetector:
             dim=self.model.edge_count,
             device=self.model.device,
         )
+        if self.bvh_edges is None:
+            return
         self.bvh_edges.rebuild()
         wp.launch(
             kernel=compute_bvh_group_roots,
@@ -902,6 +910,8 @@ class TriMeshCollisionDetector:
         self.bvh_tris.refit()
 
     def refit_edges(self):
+        if self.bvh_edges is None:
+            return
         wp.launch(
             kernel=compute_edge_aabbs,
             inputs=[self.vertex_positions, self.model.edge_indices, self.lower_bounds_edges, self.upper_bounds_edges],
@@ -976,6 +986,8 @@ class TriMeshCollisionDetector:
     ):
         self._require_collision_info()
         self.edge_colliding_edges.fill_(-1)
+        if self.bvh_edges is None:
+            return
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,
             inputs=[
