@@ -4635,6 +4635,61 @@ def test_force_sdf_provisions_collision_meshes(test, device):
         newton.ModelBuilder.ShapeConfig().configure_sdf(max_resolution=64, target_voxel_size=0.01)
 
 
+def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
+    """Preserve prebuilt SDFs and emit accurate edge/face contacts for particle-only meshes."""
+    for provisioning in ("prebuilt", "deferred", "force_sdf"):
+        with test.subTest(provisioning=provisioning):
+            mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+            if provisioning == "prebuilt":
+                mesh.build_sdf(max_resolution=32, device=device)
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+            cfg.configure_sdf(force_sdf=provisioning != "deferred")
+            shape = builder.add_shape_mesh(body=-1, mesh=mesh, scale=(1.0, 1.0, 2.0), cfg=cfg)
+            if provisioning == "deferred":
+                builder.shape_sdf_max_resolution[shape] = 32
+            builder.add_cloth_grid(
+                pos=wp.vec3(-0.2, -0.2, 1.03),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=2,
+                cell_x=0.2,
+                cell_y=0.2,
+                mass=0.1,
+            )
+            model = builder.finalize(device=device)
+            sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+            test.assertGreaterEqual(sdf_idx, 0)
+            test.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_idx])
+            if provisioning == "prebuilt":
+                test.assertIs(model._texture_sdf_coarse_textures[sdf_idx], mesh.sdf._coarse_texture)
+            else:
+                test.assertIsNone(mesh.sdf)
+
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            edge_contacts = (indices[:, 1] >= 0) & (indices[:, 2] < 0)
+            face_contacts = indices[:, 2] >= 0
+            test.assertTrue(np.any(edge_contacts))
+            test.assertTrue(np.any(face_contacts))
+            surface_z = contacts.soft_contact_body_pos.numpy()[:total, 2][edge_contacts | face_contacts]
+            np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_mesh_sdf_emits_full_surface_contacts",
+    test_particle_only_mesh_sdf_emits_full_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
 add_function_test(
     TestFullSurfaceSoftContact,
     "test_force_sdf_provisions_collision_meshes",
