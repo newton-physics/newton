@@ -211,6 +211,52 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertEqual(view.shape_count, 1)
         self.assertEqual(view.get_attribute("shape_margin", model).shape, (2, 1, 1))
 
+    def test_selected_dof_origins_ignore_excluded_root_width(self):
+        """Measure selected coordinate and DOF offsets from their first selected rows."""
+        builder = newton.ModelBuilder()
+        for floating in (True, False):
+            builder.begin_world()
+            root = builder.add_link(label="robot/root")
+            tip = builder.add_link(label="robot/tip")
+            if floating:
+                root_joint = builder.add_joint_free(child=root, label="robot/root")
+            else:
+                root_joint = builder.add_joint_revolute(-1, root, label="robot/root")
+            hinge = builder.add_joint_revolute(root, tip, label="robot/hinge")
+            builder.add_articulation([root_joint, hinge], label="robot")
+            builder.end_world()
+        model = builder.finalize(device="cpu")
+
+        view = ArticulationView(model, "robot", include_joints=["hinge"], allow_partial_layouts=True)
+        self.assertEqual(view.get_dof_positions(model).shape, (2, 1, 1))
+        self.assertEqual(view.get_dof_velocities(model).shape, (2, 1, 1))
+
+    def test_selected_shape_origins_ignore_excluded_prefix_shapes(self):
+        """Measure selected shape offsets from the first shape on a selected link."""
+        builder = newton.ModelBuilder()
+        for world, root_shape_count in enumerate((1, 2)):
+            builder.begin_world()
+            root = builder.add_link(label="robot/root")
+            tip = builder.add_link(label="robot/tip")
+            for _ in range(root_shape_count):
+                builder.add_shape_sphere(root, radius=0.1)
+            builder.add_shape_sphere(
+                tip,
+                radius=0.1,
+                cfg=newton.ModelBuilder.ShapeConfig(margin=0.2 + 0.1 * world),
+            )
+            root_joint = builder.add_joint_fixed(-1, root)
+            tip_joint = builder.add_joint_revolute(root, tip)
+            builder.add_articulation([root_joint, tip_joint], label="robot")
+            builder.end_world()
+        model = builder.finalize(device="cpu")
+
+        view = ArticulationView(model, "robot", include_links=["tip"])
+        assert_np_equal(
+            view.get_attribute("shape_margin", model).numpy(),
+            np.array([[[0.2]], [[0.3]]], dtype=np.float32),
+        )
+
     def test_frequency_sequences_include_joint_relationships(self):
         """Validate joint DOF and coordinate ownership separately."""
         builder = newton.ModelBuilder()

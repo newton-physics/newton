@@ -575,6 +575,17 @@ def _validate_layouts(
     def check(slots, offsets, owners, origins):
         return _check_layout(slots, offsets, owners, origins, world_count, count_per_world, model.device)
 
+    def selected_origins(slots, rows, fallback):
+        """Return each slot's first selected row, retaining its fallback when no rows are selected."""
+        origins = np.asarray(fallback).copy()
+        if len(rows):
+            sentinel = np.iinfo(origins.dtype).max
+            candidates = np.full(slot_count, sentinel, dtype=origins.dtype)
+            np.minimum.at(candidates, slots, rows)
+            present = candidates != sentinel
+            origins[present] = candidates[present]
+        return origins
+
     slots, positions = _ragged_arange(zeros, ends - begins)
     owners = _select_positions(positions, selected_joints)
     selected = owners >= 0
@@ -585,9 +596,10 @@ def _validate_layouts(
         (AttributeFrequency.JOINT_DOF, joint_qd_start),
         (AttributeFrequency.JOINT_COORD, joint_q_start),
     ):
-        origins = starts[begins]
-        entries, offsets = _ragged_arange(starts[joints] - origins[slots], starts[joints + 1] - starts[joints])
-        results[frequency] = check(slots[entries], offsets, owners[entries], origins)
+        entries, rows = _ragged_arange(starts[joints], starts[joints + 1] - starts[joints])
+        value_slots = slots[entries]
+        origins = selected_origins(value_slots, rows, starts[begins])
+        results[frequency] = check(value_slots, rows - origins[value_slots], owners[entries], origins)
 
     results["root_joint"] = check(np.arange(slot_count), zeros, zeros, begins)
     for key, starts in (("root_coord", joint_q_start), ("root_dof", joint_qd_start)):
@@ -606,8 +618,14 @@ def _validate_layouts(
     np.minimum.at(link_origins, link_slots, links)
     owners = _select_positions(np.arange(len(links)) - (np.cumsum(counts) - counts)[link_slots], selected_links)
     selected = owners >= 0
+    selected_link_slots = link_slots[selected]
+    selected_link_rows = links[selected]
+    selected_link_origins = selected_origins(selected_link_slots, selected_link_rows, link_origins)
     results[AttributeFrequency.BODY] = check(
-        link_slots[selected], links[selected] - link_origins[link_slots[selected]], owners[selected], link_origins
+        selected_link_slots,
+        selected_link_rows - selected_link_origins[selected_link_slots],
+        owners[selected],
+        selected_link_origins,
     )
 
     # shapes belong to the articulation that owns their link and are ordered by ID within it
@@ -623,8 +641,14 @@ def _validate_layouts(
     np.minimum.at(shape_origins, shape_slots, shapes)
     owners = link_owner[shape_body[shapes]]
     selected = owners >= 0
+    selected_shape_slots = shape_slots[selected]
+    selected_shapes = shapes[selected]
+    selected_shape_origins = selected_origins(selected_shape_slots, selected_shapes, shape_origins)
     results[AttributeFrequency.SHAPE] = check(
-        shape_slots[selected], shapes[selected] - shape_origins[shape_slots[selected]], owners[selected], shape_origins
+        selected_shape_slots,
+        selected_shapes - selected_shape_origins[selected_shape_slots],
+        owners[selected],
+        selected_shape_origins,
     )
     return results
 
