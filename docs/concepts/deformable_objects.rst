@@ -35,7 +35,9 @@ Each native call records one deformable object. For example,
 :meth:`~newton.ModelBuilder.add_cloth_grid` delegates to
 :meth:`~newton.ModelBuilder.add_cloth_mesh` but records the cloth only once.
 USD imports record each simulation prim once, including cable prims with several
-curves. Internal rod calls made by the importer do not create extra entries.
+disconnected curves. Curves welded into a graph instead share one record for the
+complete graph; see :ref:`deformable-objects-welded-usd-graphs`. Internal rod calls
+for parts of a multi-curve prim do not create extra entries.
 
 Builder identities
 ------------------
@@ -48,7 +50,8 @@ Builder identities
 
 Each pair contains one label and world index per deformable object. Native
 construction records explicit labels or generates names such as ``curve_0``,
-``surface_0``, and ``volume_0``. USD imports use the simulation prim's path.
+``surface_0``, and ``volume_0``. USD imports use the simulation prim's path, or
+the graph identifier for welded curves.
 Labels may repeat. An index in these lists is not a body or particle index.
 
 Use the lists to identify assets while composing or cloning a builder:
@@ -184,3 +187,33 @@ Compact coupled-solver models retain only deformable objects whose recorded
 elements are all present. Their ranges refer to the compact model's arrays,
 not the parent model's arrays. A partial curve is omitted. Particle-based
 deformables follow the coupled solver's existing particle layout.
+
+.. _deformable-objects-welded-usd-graphs:
+
+Welded USD graphs
+-----------------
+
+A welded USD graph is recorded by one :meth:`~newton.ModelBuilder.add_rod` call,
+just like a native graph. Its record includes all created segment bodies and
+joints, including the generated root. The source curves are not recorded as
+separate deformable objects.
+
+The graph's label is the existing ``graph_component`` identifier in
+``path_cable_attrs``. This identifier reuses one source prim's path but labels
+the whole graph, not just that curve. Read it from the import result rather
+than assuming which source path is chosen.
+
+The return maps still describe each source curve. ``path_cable_map`` keeps its
+segment body indices and an empty joint list; ``path_cable_attrs`` keeps its
+material and graph identifier. Per-curve joint membership, including shared
+joints, remains follow-up work. This does not limit the whole graph's record.
+
+.. code-block:: python
+
+   result = builder.add_usd("harness.usda", return_deformable_results=True)
+   branch_path = "/World/Branch"
+   graph_label = result["path_cable_attrs"][branch_path]["graph_component"]
+   graph_index = builder.curve_label.index(graph_label)
+   graph_world = builder.curve_world[graph_index]  # The complete welded graph.
+   branch_bodies, branch_joints = result["path_cable_map"][branch_path]
+   # branch_bodies contains only the branch's segments; branch_joints is [].

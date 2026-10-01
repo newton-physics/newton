@@ -222,7 +222,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                 result["path_cable_attrs"]["/World/CableB"]["graph_component"],
             )
             self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
-            self.assertEqual(len(group_labels(builder, "cable")), 2)
+            graph_label = result["path_cable_attrs"]["/World/CableA"]["graph_component"]
+            self.assertEqual(group_labels(builder, "cable"), [graph_label])
+            self.assertEqual(len(result["path_cable_map"]), 2)
 
         with self.subTest(weld="branch_onto_interior_point"):
             stage = _deformable_stage()
@@ -247,18 +249,18 @@ class TestUSDDeformableCable(unittest.TestCase):
             result = builder.add_usd(stage, return_deformable_results=True)
 
             # Both curves import as one welded component; the junction is consumed as topology.
-            self.assertIn("/World/Trunk", group_labels(builder, "cable"))
-            self.assertIn("/World/Branch", group_labels(builder, "cable"))
+            graph_label = result["path_cable_attrs"]["/World/Trunk"]["graph_component"]
+            self.assertEqual(group_labels(builder, "cable"), [graph_label])
             self.assertNotIn("/World/Junction", result["path_attachment_map"])
             self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
 
-            tb0, tb1 = group_range(builder, "cable", "/World/Trunk", "body")
-            tj0, tj1 = group_range(builder, "cable", "/World/Trunk", "joint")
-            bb0, bb1 = group_range(builder, "cable", "/World/Branch", "body")
-            self.assertEqual(tb1 - tb0, 3, "trunk has 3 segments")
-            self.assertEqual(bb1 - bb0, 2, "branch has 2 segments")
-            # Graph cables are returned pre-wrapped, so the caller does no articulation work.
-            self.assertEqual(tj1 - tj0, 0, "graph rod joints are pre-wrapped (empty)")
+            trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            branch_bodies, branch_joints = result["path_cable_map"]["/World/Branch"]
+            self.assertEqual(len(trunk_bodies), 3, "trunk has 3 segments")
+            self.assertEqual(len(branch_bodies), 2, "branch has 2 segments")
+            self.assertEqual((trunk_joints, branch_joints), ([], []))
+            for kind in ("body", "joint"):
+                self.assertEqual(group_range(builder, "cable", graph_label, kind), (0, 5))
             self.assertEqual(builder.articulation_count, 1, "the welded component is one articulation")
 
             model = builder.finalize()
@@ -1879,7 +1881,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(result["path_cable_attrs"]["/World/Trunk"]["material"]["density"], 1000.0)
         self.assertEqual(result["path_cable_attrs"]["/World/Branch"]["material"]["density"], 2000.0)
         # The branch keeps both its local geometry radius and its local density.
-        bb0, _bb1 = group_range(builder, "cable", "/World/Branch", "body")
+        bb0 = result["path_cable_map"]["/World/Branch"][0][0]
         self.assertAlmostEqual(float(builder.body_mass[bb0]), 2000.0 * math.pi * 0.03**2 * 0.1, delta=1e-3)
 
 
