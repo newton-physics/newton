@@ -17,7 +17,7 @@ from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_
 class TestSelectionCacheLifetime(unittest.TestCase):
     def attribute_sources_release_with_view(self, device):
         """Release abandoned attribute sources while another view remains usable."""
-        for layout in ("dense", "indexed"):
+        for layout in ("dense", "indexed", "sparse"):
             with self.subTest(layout=layout):
                 live_model, live_view = self.make_view(layout, device=device)
                 live_model.joint_q.fill_(17.0)
@@ -45,7 +45,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
 
     def actuator_sources_release_with_view(self, device):
         """Release abandoned actuator mappings independently of a second live view."""
-        for layout in ("dense", "indexed"):
+        for layout in ("dense", "indexed", "sparse"):
             with self.subTest(layout=layout):
                 live_model, live_view = self.make_view(layout, device=device)
                 live_actuator = self.make_actuator(live_model, 17.0)
@@ -98,9 +98,9 @@ class TestSelectionCacheLifetime(unittest.TestCase):
 
     def returned_array_owns_backing_allocation(self, device):
         """Keep zero-copy data and gradient allocations alive beyond their view."""
-        for requires_grad in (False, True):
-            with self.subTest(requires_grad=requires_grad):
-                model, view = self.make_view("dense", requires_grad=requires_grad, device=device)
+        for layout, requires_grad in (("dense", False), ("dense", True), ("sparse", False)):
+            with self.subTest(layout=layout, requires_grad=requires_grad):
+                model, view = self.make_view(layout, requires_grad=requires_grad, device=device)
                 model.joint_q.fill_(5.0)
                 source_ref = weakref.ref(model.joint_q)
                 model_ref, view_ref = weakref.ref(model), weakref.ref(view)
@@ -149,7 +149,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
 
     def getters_follow_replaced_source_arrays(self, device):
         """Read and write the current source arrays after they are replaced."""
-        for layout in ("dense", "indexed"):
+        for layout in ("dense", "indexed", "sparse"):
             with self.subTest(layout=layout):
                 model, view = self.make_view(layout, device=device)
                 state, control = model.state(), model.control()
@@ -172,7 +172,7 @@ class TestSelectionCacheLifetime(unittest.TestCase):
                 view.set_dof_forces(control, np.full(forces.shape, 8.0, dtype=np.float32))
                 assert_np_equal(view.get_dof_positions(state).numpy(), np.full(q.shape, 9.0))
                 assert_np_equal(view.get_dof_forces(control).numpy(), np.full(forces.shape, 8.0))
-                # unselected coordinates of the indexed layout keep the replacement's value
+                # unselected coordinates of the indexed and sparse layouts keep the replacement's value
                 self.assertEqual(set(np.unique(state.joint_q.numpy())), {9.0} if layout == "dense" else {4.0, 9.0})
                 assert_np_equal(old_q.numpy(), old_q_values)
                 assert_np_equal(old_f.numpy(), old_f_values)
@@ -210,7 +210,11 @@ class TestSelectionCacheLifetime(unittest.TestCase):
 
     @staticmethod
     def make_view(layout, requires_grad=False, device="cpu"):
-        """Build regular or indexed selections on the requested device."""
+        """Build regular, indexed, or sparse selections on the requested device.
+
+        The sparse layout interleaves worlds of another articulation irregularly, so the view gathers and
+        scatters through explicit model indices.
+        """
         robot = newton.ModelBuilder()
         parent = robot.add_link(label="robot/root")
         joints = [robot.add_joint_free(child=parent, label="robot/root_joint")]
@@ -219,9 +223,12 @@ class TestSelectionCacheLifetime(unittest.TestCase):
             joints.append(robot.add_joint_revolute(parent=parent, child=child, label=f"robot/joint_{index}"))
             parent = child
         robot.add_articulation(joints, label="robot")
+        other = newton.ModelBuilder()
+        link = other.add_link(label="other/link")
+        other.add_articulation([other.add_joint_free(child=link, label="other/joint")], label="other")
         scene = newton.ModelBuilder()
-        for _ in range(2):
-            scene.add_world(robot)
+        for world in (robot, other, robot, other, other, robot) if layout == "sparse" else (robot, robot):
+            scene.add_world(world)
         model = scene.finalize(device=device, requires_grad=requires_grad)
         selected = ["root_joint", "joint_0", "joint_2"] if layout == "indexed" else None
         return model, ArticulationView(model, "robot", include_joints=selected, verbose=False)
