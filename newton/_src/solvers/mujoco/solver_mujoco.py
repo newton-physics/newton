@@ -373,6 +373,96 @@ def _make_nonplanar_mujoco_mesh(
     return inflated_vertices, inflated_indices, max(maxhullvert, 4)
 
 
+# MuJoCo Warp model fields allocated with one entry per world (instead of a
+# single shared entry) when ``separate_worlds`` is enabled. Passed to
+# ``mujoco_warp.put_model`` via ``batch_sizes`` so per-world values can be
+# written by ``notify_model_changed``.
+_MJW_BATCHED_MODEL_FIELDS = (
+    "qpos0",
+    "qpos_spring",
+    "body_pos",
+    "body_quat",
+    "body_ipos",
+    "body_iquat",
+    "body_mass",
+    "body_subtreemass",  # Derived from body_mass, computed by set_const_fixed
+    "body_inertia",
+    "body_invweight0",  # Derived from inertia, computed by set_const_0
+    "body_gravcomp",
+    "jnt_solref",
+    "jnt_solimp",
+    "jnt_pos",
+    "jnt_axis",
+    "jnt_stiffness",
+    "jnt_range",
+    "jnt_actfrcrange",  # joint-level actuator force range (effort limit)
+    "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
+    "dof_armature",
+    "dof_damping",
+    "dof_invweight0",  # Derived from inertia, computed by set_const_0
+    "dof_frictionloss",
+    "dof_solimp",
+    "dof_solref",
+    # "geom_matid",
+    "geom_solmix",
+    "geom_solref",
+    "geom_solimp",
+    "geom_size",
+    "geom_rbound",
+    "geom_pos",
+    "geom_quat",
+    "geom_friction",
+    "geom_margin",
+    "geom_gap",
+    # "geom_rgba",
+    "site_pos",
+    "site_quat",
+    # "cam_pos",
+    # "cam_quat",
+    # "cam_poscom0",
+    # "cam_pos0",
+    # "cam_mat0",
+    # "light_pos",
+    # "light_dir",
+    # "light_poscom0",
+    # "light_pos0",
+    "eq_solref",
+    "eq_solimp",
+    "eq_data",
+    "actuator_gainprm",
+    "actuator_biasprm",
+    "actuator_dynprm",
+    "actuator_ctrlrange",
+    "actuator_forcerange",
+    "actuator_actrange",
+    "actuator_gear",
+    "actuator_cranklength",
+    "actuator_acc0",
+    "actuator_lengthrange",
+    "pair_solref",
+    "pair_solreffriction",
+    "pair_solimp",
+    "pair_margin",
+    "pair_gap",
+    "pair_friction",
+    "tendon_solref_lim",
+    "tendon_solimp_lim",
+    "tendon_solref_fri",
+    "tendon_solimp_fri",
+    "tendon_range",
+    "tendon_actfrcrange",
+    "tendon_margin",
+    "tendon_stiffness",
+    "tendon_damping",
+    "tendon_armature",
+    "tendon_frictionloss",
+    "tendon_lengthspring",
+    "tendon_length0",  # Derived from tendon config, computed by set_const_0
+    "tendon_invweight0",  # Derived from inertia, computed by set_const_0
+    # "mat_rgba",
+)
+
+
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -7701,8 +7791,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             policy_init = self.mj_model.tree_sleep_policy == mujoco.mjtSleepPolicy.mjSLEEP_INIT
             self.mj_model.tree_sleep_policy[policy_never] = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER
             self.mj_model.tree_sleep_policy[policy_allowed | policy_init] = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_ALLOWED
+            # Determine nworld for mapping dimensions
+            nworld = model.world_count if separate_worlds else 1
+            batch_sizes = dict.fromkeys(_MJW_BATCHED_MODEL_FIELDS, nworld) if nworld > 1 else None
             try:
-                self.mjw_model = mujoco_warp.put_model(self.mj_model)
+                self.mjw_model = mujoco_warp.put_model(self.mj_model, batch_sizes=batch_sizes)
             finally:
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
@@ -7711,9 +7804,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
                 self.mjw_model.mesh_pos = wp.array(self.mj_model.mesh_pos, dtype=wp.vec3)
-
-            # Determine nworld for mapping dimensions
-            nworld = model.world_count if separate_worlds else 1
 
             # --- Create unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
 
@@ -8098,8 +8188,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._set_mujoco_warp_module_options()
                 self._prepare_generated_kernels()
 
-            # expand model fields that can be expanded:
-            self._expand_model_fields(self.mjw_model, nworld)
+            # expand per-world solver option fields (model fields are batched by put_model)
+            self._expand_option_fields(self.mjw_model, nworld)
 
             # update solver options from Newton model (only if not overridden by constructor)
             self._update_solver_options(overridden_options=overridden_options)
@@ -8162,96 +8252,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         initial_jacobian = self.mj_data.efc_J.reshape((-1, self.mj_model.nv))[: self.mj_data.nefc]
         return int(np.count_nonzero(initial_jacobian))
 
-    def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
+    def _expand_option_fields(self, mj_model: MjWarpModel, nworld: int):
+        """Tile per-world solver option and statistic arrays to ``nworld`` entries.
+
+        Top-level model fields are batched by ``mujoco_warp.put_model`` via
+        ``batch_sizes``; nested ``opt`` and ``stat`` arrays are not covered by
+        that API and are expanded here.
+        """
         if nworld == 1:
             return
-
-        model_fields_to_expand = {
-            "qpos0",
-            "qpos_spring",
-            "body_pos",
-            "body_quat",
-            "body_ipos",
-            "body_iquat",
-            "body_mass",
-            "body_subtreemass",  # Derived from body_mass, computed by set_const_fixed
-            "body_inertia",
-            "body_invweight0",  # Derived from inertia, computed by set_const_0
-            "body_gravcomp",
-            "jnt_solref",
-            "jnt_solimp",
-            "jnt_pos",
-            "jnt_axis",
-            "jnt_stiffness",
-            "jnt_range",
-            "jnt_actfrcrange",  # joint-level actuator force range (effort limit)
-            "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
-            "dof_armature",
-            "dof_damping",
-            "dof_invweight0",  # Derived from inertia, computed by set_const_0
-            "dof_frictionloss",
-            "dof_solimp",
-            "dof_solref",
-            # "geom_matid",
-            "geom_solmix",
-            "geom_solref",
-            "geom_solimp",
-            "geom_size",
-            "geom_rbound",
-            "geom_pos",
-            "geom_quat",
-            "geom_friction",
-            "geom_margin",
-            "geom_gap",
-            # "geom_rgba",
-            "site_pos",
-            "site_quat",
-            # "cam_pos",
-            # "cam_quat",
-            # "cam_poscom0",
-            # "cam_pos0",
-            # "cam_mat0",
-            # "light_pos",
-            # "light_dir",
-            # "light_poscom0",
-            # "light_pos0",
-            "eq_solref",
-            "eq_solimp",
-            "eq_data",
-            # "actuator_dynprm",
-            "actuator_gainprm",
-            "actuator_biasprm",
-            "actuator_dynprm",
-            "actuator_ctrlrange",
-            "actuator_forcerange",
-            "actuator_actrange",
-            "actuator_gear",
-            "actuator_cranklength",
-            "actuator_acc0",
-            "actuator_lengthrange",
-            "pair_solref",
-            "pair_solreffriction",
-            "pair_solimp",
-            "pair_margin",
-            "pair_gap",
-            "pair_friction",
-            "tendon_world",
-            "tendon_solref_lim",
-            "tendon_solimp_lim",
-            "tendon_solref_fri",
-            "tendon_solimp_fri",
-            "tendon_range",
-            "tendon_actfrcrange",
-            "tendon_margin",
-            "tendon_stiffness",
-            "tendon_damping",
-            "tendon_armature",
-            "tendon_frictionloss",
-            "tendon_lengthspring",
-            "tendon_length0",  # Derived from tendon config, computed by set_const_0
-            "tendon_invweight0",  # Derived from inertia, computed by set_const_0
-            # "mat_rgba",
-        }
 
         # Solver option fields to expand (nested in mj_model.opt)
         opt_fields_to_expand = {
@@ -8289,11 +8298,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 device=x.device,
             )
             return dst
-
-        for field in mj_model.__dataclass_fields__:
-            if field in model_fields_to_expand:
-                array = getattr(mj_model, field)
-                setattr(mj_model, field, tile(array))
 
         mj_model.stat.meaninertia = tile(mj_model.stat.meaninertia)
 
