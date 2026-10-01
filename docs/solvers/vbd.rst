@@ -10,7 +10,9 @@ VBD
 Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
 contacts, rods), and their interactions are all solved in one VBD loop, with
 joint and contact constraints enforced through an augmented-Lagrangian (ALM)
-extension of the method.
+extension of the method. Enable the ALM constraint path with
+``rigid_compliant_alm=True`` (recommended); omitting the option currently
+retains the deprecated legacy path during the migration period.
 
 .. experimental::
 
@@ -69,8 +71,10 @@ Model Inputs
 :class:`~newton.ModelBuilder` for each system: triangle meshes for cloth,
 tetrahedral meshes for soft bodies, rigid bodies with the supported joint
 types (including rods), the ALM constraint mode (``rigid_compliant_alm=True``,
-recommended) versus the deprecated legacy path, and the hard/soft joint
-constraint modes and how to switch them.
+recommended) versus the deprecated legacy path, and the deprecated legacy-path
+controls — ``model.vbd.joint_is_hard`` and
+:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
+1.6; no solver-mode effect under compliant ALM).
 
 Coupling Modes
 ~~~~~~~~~~~~~~

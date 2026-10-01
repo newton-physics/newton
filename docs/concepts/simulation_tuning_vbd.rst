@@ -8,9 +8,10 @@
 VBD Tuning
 ==========
 
-This page explains how :class:`~newton.solvers.SolverVBD` reacts to its solver
-and model parameters, what typically goes wrong and how to fix it, and which
-parameter combinations are known to work. See
+This page will explain how :class:`~newton.solvers.SolverVBD` reacts to its
+solver and model parameters, what typically goes wrong and how to fix it, and
+which parameter combinations are known to work; it is currently an
+in-development outline rather than complete tuning guidance. See
 :ref:`Simulation Tuning` for the diagnostic workflow, :ref:`Tuning Solver
 Reference` for the full knob list, and :doc:`VBD </solvers/vbd>` for setup and
 API explanations.
@@ -59,15 +60,20 @@ VBD-Specific Parameters
 
 *In development.* Effects and interactions of the constructor parameters, by
 group: common (``iterations``, ``friction_epsilon``), particle (the
-self-contact family, ``particle_collision_detection_interval``,
+self-contact family, the self-contact slot of ``collision_frequency`` /
+``collision_frequency_type``, ``dat_conservative_bound_relaxation``,
 ``particle_enable_tile_solve``, contact buffer sizes), and rigid constraints
-(``rigid_compliant_alm`` mode selection,
-``rigid_avbd_alpha``/``beta``/``gamma``, penalty seeds and ceilings,
+(``rigid_compliant_alm`` mode selection, ``rigid_avbd_alpha``/``gamma``,
+the legacy-path-only ``rigid_avbd_beta`` ramping, penalty seeds and ceilings,
 ``rigid_contact_hard``, ``rigid_contact_history``).
 
 Until then, the authoritative parameter list with defaults is
 :class:`~newton.solvers.SolverVBD`; the supported-knob summary lives in
-:ref:`Tuning Solver Reference`.
+:ref:`Tuning Solver Reference`. The legacy aliases
+``particle_collision_detection_interval`` and
+``particle_conservative_bound_relaxation`` remain supported but are
+deprecated; new configurations should use ``collision_frequency`` /
+``collision_frequency_type`` and ``dat_conservative_bound_relaxation``.
 
 Model Parameters
 ~~~~~~~~~~~~~~~~
