@@ -1010,6 +1010,21 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
 class TestMuJoCoMuscleActuators(unittest.TestCase):
     """Tests for muscle actuator shortcuts."""
 
+    def test_authored_lengthrange_survives_warp_model_update(self):
+        """Keep an imported muscle range when Warp refreshes actuator ranges."""
+        mjcf = MJCF_MUSCLE_ACTUATOR.replace('axis="1 0 0"/>', 'axis="1 0 0" range="-1 1"/>').replace(
+            "</actuator>", '<motor name="motor" joint="slide"/></actuator>'
+        )
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), iterations=1, disable_contacts=True)
+        # MuJoCo Warp 3.11 does not copy this compiled field at construction.
+        solver.mjw_model.actuator_lengthrange.assign([[[0.5, 1.5], [0.0, 0.0]]])
+
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.actuator_lengthrange.numpy()[0], [[0.5, 1.5], [-1.0, 1.0]])
+
     def test_muscle_actuator_parsed_from_mjcf(self):
         """Expand inherited muscle parameters into actuator metadata."""
         builder = ModelBuilder()

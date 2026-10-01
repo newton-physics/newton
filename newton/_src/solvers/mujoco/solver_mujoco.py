@@ -84,6 +84,7 @@ from .kernels import (
     reset_joint_state_kernel,
     reset_sleeping_state_kernel,
     reset_world_buffers_kernel,
+    restore_authored_actuator_lengthrange_kernel,
     restore_sleeping_state_kernel,
     sync_qpos0_kernel,
     sync_site_xposes_kernel,
@@ -4993,6 +4994,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 with wp.ScopedDevice(self.model.device):
                     if need_length_range:
                         self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
+                        mujoco_attrs = getattr(self.model, "mujoco", None)
+                        has_lengthrange = getattr(mujoco_attrs, "actuator_has_lengthrange", None)
+                        lengthrange = getattr(mujoco_attrs, "actuator_lengthrange", None)
+                        if (
+                            self.mjc_actuator_to_newton_actuator_idx is not None
+                            and has_lengthrange is not None
+                            and lengthrange is not None
+                        ):
+                            nworld, nu = self.mjw_model.actuator_lengthrange.shape
+                            wp.launch(
+                                restore_authored_actuator_lengthrange_kernel,
+                                dim=(nworld, nu),
+                                inputs=[
+                                    self.mjc_actuator_to_newton_actuator_idx,
+                                    has_lengthrange,
+                                    lengthrange,
+                                    has_lengthrange.shape[0] // nworld,
+                                ],
+                                outputs=[self.mjw_model.actuator_lengthrange],
+                                device=self.model.device,
+                            )
                     if need_const_fixed:
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
