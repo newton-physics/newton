@@ -4103,10 +4103,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
 
-        # Cones and heightfields become MuJoCo meshes and heightfield assets
-        # sized from shape_scale at construction, so their scale is fixed.
-        self._compiled_shape_indices = np.empty(0, dtype=np.int32)
-        self._compiled_shape_scale_snapshot = np.empty((0, 3), dtype=np.float32)
+        self._cone_shape_indices = np.empty(0, dtype=np.int32)
+        self._cone_shape_scale_snapshot = np.empty((0, 3), dtype=np.float32)
 
         # Track changes to generic gains separately from their numerical
         # values. Imported MJCF defaults may use any builder configuration, so
@@ -4831,7 +4829,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         need_length_range = False
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            self._validate_compiled_shape_scales()
+            self._validate_cone_shape_scales()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
@@ -4965,21 +4963,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # invalidate sleeping islands, so explicitly wake them.
                 self._wake_sleeping_worlds()
 
-    def _validate_compiled_shape_scales(self) -> None:
-        """Reject resizing cones and heightfields whose MuJoCo assets were compiled at construction."""
-        if self._compiled_shape_indices.size == 0:
+    def _validate_cone_shape_scales(self) -> None:
+        """Reject resizing cones whose MuJoCo meshes were compiled at construction."""
+        if self._cone_shape_indices.size == 0:
             return
 
-        current_scales = self.model.shape_scale.numpy()[self._compiled_shape_indices]
-        changed = np.any(current_scales != self._compiled_shape_scale_snapshot, axis=1)
+        current_scales = self.model.shape_scale.numpy()[self._cone_shape_indices]
+        changed = np.any(current_scales != self._cone_shape_scale_snapshot, axis=1)
         if np.any(changed):
-            changed_labels = [self.model.shape_label[i] for i in self._compiled_shape_indices[changed][:5]]
+            changed_labels = [self.model.shape_label[i] for i in self._cone_shape_indices[changed][:5]]
             if np.count_nonzero(changed) > len(changed_labels):
                 changed_labels.append("...")
             raise ValueError(
-                "SolverMuJoCo does not support changing shape_scale for cone or heightfield shapes after "
-                "construction because their meshes and heightfields are already compiled. Recreate the solver "
-                f"after resizing. Shapes: {changed_labels}."
+                "SolverMuJoCo does not support changing shape_scale for cone shapes after construction because "
+                f"their meshes are already compiled. Recreate the solver after resizing. Shapes: {changed_labels}."
             )
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
@@ -7751,15 +7748,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Create mjc_geom_to_newton_shape: MuJoCo[world, geom] -> Newton shape
             self.mjc_geom_to_newton_shape = wp.full((nworld, self.mj_model.ngeom), -1, dtype=wp.int32)
 
-            # Unscaled min_z per Newton shape (zero for non-heightfields): MuJoCo
+            # Scaled min_z per Newton shape (zero for non-heightfields): MuJoCo
             # heightfield elevations start at the geom origin, so syncing geom
             # poses from shape transforms must shift each heightfield by it.
-            shape_hfield_min_z_np = np.zeros(model.shape_count, dtype=np.float32)
+            # Baked with the construction-time scale, like hfield_size, so the
+            # two always agree and syncing needs no host read of shape_scale.
+            shape_scale_np = model.shape_scale.numpy()
+            shape_hfield_offset_np = np.zeros(model.shape_count, dtype=np.float32)
             for shape_idx in np.flatnonzero(shape_type == GeoType.HFIELD):
                 hfield_src = model.shape_source[shape_idx]
                 if hfield_src is not None:
-                    shape_hfield_min_z_np[shape_idx] = hfield_src.min_z
-            self._shape_hfield_min_z = wp.array(shape_hfield_min_z_np, dtype=wp.float32, device=model.device)
+                    shape_hfield_offset_np[shape_idx] = hfield_src.min_z * shape_scale_np[shape_idx][2]
+            self._shape_hfield_offset = wp.array(shape_hfield_offset_np, dtype=wp.float32, device=model.device)
 
             if self.mjw_model.geom_pos.size:
                 wp.launch(
@@ -7779,12 +7779,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             converted_shapes = np.unique(self.mjc_geom_to_newton_shape.numpy())
             converted_shapes = converted_shapes[converted_shapes >= 0]
-            self._compiled_shape_indices = converted_shapes[
-                np.isin(shape_type[converted_shapes], (GeoType.CONE, GeoType.HFIELD))
-            ]
-            self._compiled_shape_scale_snapshot = np.array(
-                model.shape_scale.numpy()[self._compiled_shape_indices], copy=True
-            )
+            self._cone_shape_indices = converted_shapes[shape_type[converted_shapes] == GeoType.CONE]
+            self._cone_shape_scale_snapshot = np.array(model.shape_scale.numpy()[self._cone_shape_indices], copy=True)
 
             site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
             site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
@@ -9082,7 +9078,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
-                self._shape_hfield_min_z,
+                self._shape_hfield_offset,
                 self.model.shape_material_mu_torsional,
                 self.model.shape_material_mu_rolling,
                 shape_geom_solimp,

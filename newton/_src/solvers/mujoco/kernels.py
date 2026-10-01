@@ -2434,7 +2434,7 @@ def update_geom_properties_kernel(
     geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
-    shape_hfield_min_z: wp.array[float],
+    shape_hfield_offset: wp.array[float],
     shape_mu_torsional: wp.array[float],
     shape_mu_rolling: wp.array[float],
     shape_geom_solimp: wp.array[vec5],
@@ -2528,10 +2528,9 @@ def update_geom_properties_kernel(
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))
         tf = tf * mesh_tf
     elif geom_type[geom_idx] == GEOM_TYPE_HFIELD:
-        # MuJoCo elevations start at the geom origin, Newton's at the
-        # (scaled) min_z along the heightfield's own z axis.
-        hfield_offset = shape_hfield_min_z[shape_idx] * shape_size[shape_idx][2]
-        tf = tf * wp.transform(wp.vec3(0.0, 0.0, hfield_offset), wp.quat_identity())
+        # MuJoCo elevations start at the geom origin, Newton's at min_z along
+        # the heightfield's own z axis, scaled as at construction.
+        tf = tf * wp.transform(wp.vec3(0.0, 0.0, shape_hfield_offset[shape_idx]), wp.quat_identity())
 
     # store position and orientation
     geom_pos[world, geom_idx] = tf.p

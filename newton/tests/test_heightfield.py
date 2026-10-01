@@ -346,31 +346,59 @@ class TestHeightfield(unittest.TestCase):
         runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
         np.testing.assert_allclose(runtime_pos, expected_pos, atol=1e-6)
 
-    def test_solver_mujoco_hfield_runtime_resize_is_rejected(self):
-        """Reject heightfield resizing because its MuJoCo heightfield is compiled during construction."""
+    @unittest.skipUnless(_cuda_available, "graph capture requires CUDA")
+    def test_solver_mujoco_hfield_shape_update_is_graph_capturable(self):
+        """Capture a SHAPE_PROPERTIES notification for a scene with an offset heightfield."""
         try:
             SolverMuJoCo.import_mujoco()
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                builder = newton.ModelBuilder()
-                elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
-                hfield_shape = builder.add_shape_heightfield(
-                    heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5)
-                )
-                sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-                builder.add_shape_sphere(body=sphere_body, radius=0.1)
-                model = builder.finalize(device="cpu")
-                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+        builder = newton.ModelBuilder()
+        elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        builder.add_shape_heightfield(
+            heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5)
+        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize(device="cuda:0")
+        solver = SolverMuJoCo(model)
 
-                scales = model.shape_scale.numpy()
-                scales[hfield_shape] = (1.0, 1.0, 2.0)
-                model.shape_scale.assign(scales)
+        with wp.ScopedCapture(device="cuda:0") as capture:
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        wp.capture_launch(capture.graph)
 
-                with self.assertRaisesRegex(ValueError, "Recreate the solver after resizing"):
-                    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    def test_solver_mujoco_hfield_rescale_after_construction_keeps_compiled_geometry(self):
+        """Keep the heightfield offset at its construction-time scale, matching MuJoCo's compiled hfield_size."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+        import mujoco
+
+        builder = newton.ModelBuilder()
+        elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        hfield_shape = builder.add_shape_heightfield(
+            xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+            heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5),
+        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        mj_model = solver.mj_model
+        geom = next(i for i in range(mj_model.ngeom) if mj_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_HFIELD)
+        compiled_pos = np.array(mj_model.geom_pos[geom])
+
+        scales = model.shape_scale.numpy()
+        scales[hfield_shape] = (1.0, 1.0, 2.0)
+        model.shape_scale.assign(scales)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
+        np.testing.assert_allclose(runtime_pos, compiled_pos, atol=1e-6)
+        np.testing.assert_allclose(compiled_pos, [0.0, 0.0, 0.5], atol=1e-6)
 
     def test_solver_mujoco_sphere_settles_at_negative_min_z(self):
         """Settle a sphere at the bottom of a bowl whose lowest point is below the heightfield origin."""
