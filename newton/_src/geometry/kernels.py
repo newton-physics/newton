@@ -198,7 +198,7 @@ def _sdf_capped_cone_grad_z(
     segments: the two cap radii and the lateral side. The gradient is the unit offset from
     the nearest of them, flipped for interior queries.
     """
-    if half_height <= 0.0:
+    if half_height < 0.0:
         return wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
 
     extent = wp.abs(bottom_radius) + wp.abs(top_radius) + half_height
@@ -230,8 +230,10 @@ def _sdf_capped_cone_grad_z(
         best = d_top
         feature = int(2)
 
-    radius_at_z = bottom_radius + (top_radius - bottom_radius) * (point_z_up[2] + half_height) / (2.0 * half_height)
-    inside = wp.abs(point_z_up[2]) <= half_height and rho <= radius_at_z
+    inside = False
+    if half_height > 0.0:
+        radius_at_z = bottom_radius + (top_radius - bottom_radius) * (point_z_up[2] + half_height) / (2.0 * half_height)
+        inside = wp.abs(point_z_up[2]) <= half_height and rho <= radius_at_z
 
     offset = q - closest
     offset_len = wp.length(offset)
@@ -240,6 +242,9 @@ def _sdf_capped_cone_grad_z(
         direction = offset / offset_len
         if inside:
             direction = -direction
+    elif half_height == 0.0:
+        # A collapsed cone is a disk; its surface normal is axial.
+        direction = wp.vec2(0.0, wp.sign(point_z_up[2]))
     elif feature == 1:
         direction = wp.vec2(0.0, -1.0)
     elif feature == 2:

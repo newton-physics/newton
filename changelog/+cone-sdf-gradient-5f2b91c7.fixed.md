@@ -1,1 +1,1 @@
-Fix `sdf_cone_grad`, which disagreed with `sdf_cone` by up to 127 degrees beside the cone; it now uses the exact closest point on the capped cone's boundary. `sdf_cylinder_grad`'s tapered branch shares the fix.
+Fix cone and tapered-cylinder SDF gradients near cap rims by using analytic closest-boundary normals with tolerances relative to shape size.

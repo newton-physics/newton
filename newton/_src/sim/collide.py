@@ -1626,6 +1626,8 @@ class CollisionPipeline:
                 ``pipeline.reduce_contacts`` and
                 ``pipeline.contact_reduction_config.mesh`` retain the requested
                 policy for backwards-compatible inspection.
+                If its voxel-resolution table is omitted, use the model's table.
+                A supplied table must match the model's shape count and device.
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
@@ -1666,9 +1668,11 @@ class CollisionPipeline:
                     The ``"sticky"`` mode may change without prior notice.
             contact_matching_pos_threshold: World-space distance threshold [m]
                 between the previous and current contact midpoints
-                ``0.5 * (world(point0) + world(point1))``. Contacts whose
-                midpoint moves more than this are considered broken. Defaults
-                to ``0.0005``.
+                ``0.5 * (world(point0) + world(point1))``.  Contacts whose
+                midpoint moves more than this are considered broken. In sticky mode,
+                keep fresh geometry when either saved witness moves farther than this
+                from its fresh contact point under the current body transforms.
+                Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
             contact_report: Allocate ``rigid_contact_new_indices`` /
@@ -2191,10 +2195,7 @@ class CollisionPipeline:
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
             )
 
-        # The mesh contact kernels index the voxel-resolution table per shape. Expert
-        # construction rarely supplies it, and the pipeline holds the authoritative model
-        # data, so bind it here; leaving the narrow phase without one faults inside those
-        # kernels. A supplied table must match the model it is used with.
+        # Mesh/SDF contact reduction indexes this table even for custom components.
         voxel_resolution = getattr(self.narrow_phase, "shape_voxel_resolution", None)
         if voxel_resolution is None:
             self.narrow_phase.shape_voxel_resolution = model._shape_voxel_resolution

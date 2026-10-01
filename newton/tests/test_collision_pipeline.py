@@ -259,6 +259,114 @@ class CollisionSetup:
 devices = get_cuda_test_devices(mode="basic")
 
 
+def _expert_mesh_box_model(device):
+    """Build an overlapping static mesh and dynamic box for expert collision tests."""
+    builder = newton.ModelBuilder()
+    mesh = newton.Mesh.create_box(
+        0.25, 0.25, 0.25, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+    )
+    builder.add_shape_mesh(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.24), wp.quat_identity()), mesh=mesh)
+    body = builder.add_body()
+    builder.add_shape_box(body, xform=wp.transform(wp.vec3(0.0, 0.0, -0.25)), hx=2.0, hy=2.0, hz=0.25)
+    return builder.finalize(device=device)
+
+
+def _expert_collision_components(model, **kwargs):
+    """Build custom collision components with externally allocated AABB buffers."""
+    broad_phase = BroadPhaseAllPairs(model.shape_world, model.shape_flags, device=model.device)
+    narrow_phase = NarrowPhase(
+        max_candidate_pairs=64,
+        max_triangle_pairs=100000,
+        device=model.device,
+        shape_aabb_lower=wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device),
+        shape_aabb_upper=wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device),
+        contact_writer_warp_func=write_contact,
+        **kwargs,
+    )
+    return broad_phase, narrow_phase
+
+
+def test_expert_narrow_phase_default_voxel_resolution(test, device):
+    """Bind omitted voxel tables and generate mesh contacts eagerly and under CUDA graph capture."""
+    model = _expert_mesh_box_model(device)
+    state = model.state()
+    broad_phase, narrow_phase = _expert_collision_components(model)
+    test.assertIsNone(narrow_phase.shape_voxel_resolution)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1024
+    )
+    # Fail before launching a kernel that would dereference the missing table.
+    test.assertIs(narrow_phase.shape_voxel_resolution, model._shape_voxel_resolution)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+
+    reference = newton.CollisionPipeline(model, broad_phase="nxn", rigid_contact_max=1024)
+    reference_contacts = reference.contacts()
+    reference.collide(state, reference_contacts)
+    test.assertEqual(count, int(reference_contacts.rigid_contact_count.numpy()[0]))
+
+    if device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            pipeline.collide(state, contacts)
+        wp.capture_launch(capture.graph)
+        test.assertEqual(count, int(contacts.rigid_contact_count.numpy()[0]))
+
+
+def test_expert_narrow_phase_preserves_voxel_resolution(test, device):
+    """Preserve a valid caller-supplied voxel table while generating mesh contacts."""
+    model = _expert_mesh_box_model(device)
+    supplied = wp.clone(model._shape_voxel_resolution)
+    broad_phase, narrow_phase = _expert_collision_components(model, shape_voxel_resolution=supplied)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1024
+    )
+    test.assertIs(narrow_phase.shape_voxel_resolution, supplied)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_expert_narrow_phase_rejects_voxel_resolution_length(test, device):
+    """Reject missing or excess entries in a caller-supplied voxel table."""
+    model = _expert_mesh_box_model(device)
+    for length in (0, model.shape_count - 1, model.shape_count + 1):
+        with test.subTest(length=length):
+            broad_phase, narrow_phase = _expert_collision_components(
+                model, shape_voxel_resolution=wp.zeros(length, dtype=wp.vec3i, device=device)
+            )
+            with test.assertRaisesRegex(ValueError, "shape_voxel_resolution.*one entry per model shape"):
+                newton.CollisionPipeline(
+                    model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1024
+                )
+
+
+def test_expert_narrow_phase_rejects_voxel_resolution_device(test, device):
+    """Reject a voxel table allocated on a different device from the model."""
+    if not wp.is_cuda_available():
+        test.skipTest("Requires CPU and CUDA devices to test a device mismatch")
+    other_device = "cpu" if device.is_cuda else "cuda:0"
+    model = _expert_mesh_box_model(device)
+    broad_phase, narrow_phase = _expert_collision_components(
+        model, shape_voxel_resolution=wp.zeros(model.shape_count, dtype=wp.vec3i, device=other_device)
+    )
+    with test.assertRaisesRegex(ValueError, "shape_voxel_resolution.*model device"):
+        newton.CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1024)
+
+
+def test_expert_narrow_phase_empty_voxel_resolution(test, device):
+    """Accept an empty voxel table for an empty model."""
+    model = newton.ModelBuilder().finalize(device=device)
+    broad_phase, narrow_phase = _expert_collision_components(model)
+    pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1)
+    test.assertIs(narrow_phase.shape_voxel_resolution, model._shape_voxel_resolution)
+    test.assertEqual(narrow_phase.shape_voxel_resolution.shape[0], 0)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
 class TestCollisionPipeline(unittest.TestCase):
     def test_legacy_expert_components_ignore_unconfigured_extension_inputs(self):
         """Preserve the Newton 1.5 expert-component call contract by default."""
@@ -5778,62 +5886,14 @@ add_function_test(
 )
 
 
-def _expert_mesh_box_model(device):
-    """Static mesh cube overlapping a box on a body, for expert-component construction."""
-    builder = newton.ModelBuilder()
-    mesh = newton.Mesh.create_box(
-        0.25, 0.25, 0.25, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
-    )
-    builder.add_shape_mesh(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.24), wp.quat_identity()), mesh=mesh)
-    body = builder.add_body(xform=wp.transform_identity())
-    builder.add_shape_box(
-        body, xform=wp.transform(wp.vec3(0.0, 0.0, -0.25), wp.quat_identity()), hx=2.0, hy=2.0, hz=0.25
-    )
-    return builder.finalize(device=device)
-
-
-def test_expert_narrow_phase_voxel_resolution(test, device):
-    """The pipeline binds the model's voxel-resolution table to a hand-built narrow phase.
-
-    The mesh contact kernels index that table per shape, so an expert narrow phase built
-    without one previously faulted inside them. A supplied table must match the model.
-    """
-    model = _expert_mesh_box_model(device)
-    state = model.state()
-    broad_phase = BroadPhaseAllPairs(model.shape_world, model.shape_flags, device=device)
-
-    def make_narrow_phase(**kwargs):
-        return NarrowPhase(
-            max_candidate_pairs=64,
-            max_triangle_pairs=100000,
-            device=device,
-            shape_aabb_lower=wp.zeros(model.shape_count, dtype=wp.vec3, device=device),
-            shape_aabb_upper=wp.zeros(model.shape_count, dtype=wp.vec3, device=device),
-            contact_writer_warp_func=write_contact,
-            **kwargs,
-        )
-
-    narrow_phase = make_narrow_phase()
-    test.assertIsNone(narrow_phase.shape_voxel_resolution)
-    pipeline = CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=narrow_phase, rigid_contact_max=1024)
-    test.assertIs(pipeline.narrow_phase.shape_voxel_resolution, model._shape_voxel_resolution)
-    contacts = pipeline.contacts()
-    pipeline.collide(state, contacts)
-    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
-
-    wrong_length = make_narrow_phase(
-        shape_voxel_resolution=wp.zeros(model.shape_count + 1, dtype=wp.vec3i, device=device)
-    )
-    with test.assertRaisesRegex(ValueError, "shape_voxel_resolution"):
-        CollisionPipeline(model, broad_phase=broad_phase, narrow_phase=wrong_length, rigid_contact_max=1024)
-
-
-add_function_test(
-    TestCollisionPipeline,
-    "test_expert_narrow_phase_voxel_resolution",
-    test_expert_narrow_phase_voxel_resolution,
-    devices=get_test_devices(),
-)
+for _expert_test in (
+    test_expert_narrow_phase_default_voxel_resolution,
+    test_expert_narrow_phase_preserves_voxel_resolution,
+    test_expert_narrow_phase_rejects_voxel_resolution_length,
+    test_expert_narrow_phase_rejects_voxel_resolution_device,
+    test_expert_narrow_phase_empty_voxel_resolution,
+):
+    add_function_test(TestCollisionPipeline, _expert_test.__name__, _expert_test, devices=get_test_devices())
 
 
 if __name__ == "__main__":

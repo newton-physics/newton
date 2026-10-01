@@ -1,0 +1,1 @@
+Fix muscle actuators on the MuJoCo Warp backend of `SolverMuJoCo`. Solver construction and runtime model updates overwrote MuJoCo's compiled `actuator_lengthrange` with joint or tendon limits scaled by gear, or with zeros for unlimited tendons, which produced incorrect or non-finite muscle forces. Compiled length ranges are now preserved.

@@ -2289,7 +2289,9 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
 - ``"sticky"`` — match like ``"latest"``, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
-  saved previous-frame values.  The remaining contact fields
+  saved previous-frame values when the contact is penetrating and the saved
+  witnesses remain within the position threshold of the fresh witnesses.
+  The remaining contact fields
   (``shape0``/``shape1``, ``margin0``/``margin1``) are either key-derived
   or per-shape constants and so are already identical for a matched
   contact — no extra state is kept for them.  Unmatched contacts pass
@@ -2341,9 +2343,11 @@ impulse between different shape pairs, even when reduction groups them together.
 
 **Thresholds**
 
-- ``contact_matching_pos_threshold`` — maximum world-space distance [m] between
-  the previous and current midpoints. Contacts exceeding it are broken. Defaults
-  to ``0.0005`` m.
+- ``contact_matching_pos_threshold`` — maximum world-space distance [m]
+  between the previous and current contact midpoints for a match.  Contacts
+  that moved more than this between frames are considered broken.  In sticky
+  mode, this also bounds each saved witness's distance from its fresh contact
+  point under the current body transforms.  Defaults to ``0.0005`` m.
 - ``contact_matching_normal_dot_threshold`` — minimum dot product between old
   and new contact normals.  Below this the contact is reported as broken even
   if the key and position match.
@@ -2353,11 +2357,15 @@ impulse between different shape pairs, even when reduction groups them together.
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
 rows are left untouched, so new and threshold-broken contacts keep their fresh
-narrow-phase geometry.  Because
-matching bounds midpoint displacement and normal change, replay uses a nearby
-geometry approximation. Validate its effect on contact forces and stability.
-Both enabled modes own the previous midpoint and normal independently of
-sorter scratch. Sticky mode additionally stores two points and two offsets and runs the replay
+narrow-phase geometry.  Matched contacts also keep fresh geometry if the
+fresh contact is separated, or if either saved witness, transformed by the
+current body pose, lies farther than ``contact_matching_pos_threshold`` from
+its corresponding fresh witness.  This prevents a rotating surface from
+replaying a stale material point even when its geometric contact midpoint
+stays put.  These contacts retain their match indices and reports, and the
+fresh geometry becomes the saved history for the next frame.  Both enabled
+modes own the previous midpoint and normal independently of sorter scratch.
+Sticky mode additionally stores two points and two offsets and runs the replay
 kernel; disabled matching allocates no matching history.
 
 .. _Contact Reports:

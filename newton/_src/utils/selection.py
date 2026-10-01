@@ -8,6 +8,7 @@ from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 from warp.types import is_array
 
@@ -436,16 +437,15 @@ class FrequencyLayout:
         indices: list[int],
         device,
         model_starts: list[list[int]] | None = None,
-        *,
-        model_indices: list[list[list[int]]] | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
         self.stride_within_worlds = stride_within_worlds
         self.value_count = value_count
+        # Absolute first row of every selected articulation, ``[world][articulation]``, when the
+        # rows are not regularly strided (sparse/uneven worlds); ``None`` for regular layouts.
         self._selected_indices = indices
         self._model_starts = model_starts
-        self._model_indices = model_indices
         self._device = device
         self._model_index_cache = {}
         self.slice = None
@@ -459,7 +459,7 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None and self._model_indices is None
+        return self.slice is not None
 
     @property
     def selected_value_count(self):
@@ -468,10 +468,21 @@ class FrequencyLayout:
         else:
             return len(self.indices)
 
+    def is_packed(self, world_count: int, count_per_world: int) -> bool:
+        """Return whether selected rows form one contiguous range across all view axes."""
+        if not self.is_contiguous or self.uses_explicit_model_indices:
+            return False
+        count = self.selected_value_count
+        if count == 0:
+            return True
+        if count_per_world > 1 and self.stride_within_worlds != count:
+            return False
+        return world_count <= 1 or self.stride_between_worlds == count_per_world * count
+
     @property
     def uses_explicit_model_indices(self):
         """Whether attributes require gather/scatter through absolute model indices."""
-        return self._model_starts is not None or self._model_indices is not None
+        return self._model_starts is not None
 
     def get_model_indices(self, value_slice: Slice | int | None = None):
         """Return absolute model indices for a sparse/non-uniform view layout."""
@@ -481,7 +492,10 @@ class FrequencyLayout:
         if isinstance(value_slice, Slice):
             value_slice = value_slice.get()
 
-        cache_key = value_slice
+        # native slices are unhashable before Python 3.12
+        cache_key = (
+            (value_slice.start, value_slice.stop, value_slice.step) if isinstance(value_slice, slice) else value_slice
+        )
         if cache_key in self._model_index_cache:
             return self._model_index_cache[cache_key]
 
@@ -500,17 +514,7 @@ class FrequencyLayout:
         else:
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(value_slice)}")
 
-        if self._model_indices is not None:
-            if squeeze_value_axis:
-                host_indices = [
-                    [indices[local_indices[0]] for indices in world_indices] for world_indices in self._model_indices
-                ]
-            else:
-                host_indices = [
-                    [[indices[local_index] for local_index in local_indices] for indices in world_indices]
-                    for world_indices in self._model_indices
-                ]
-        elif squeeze_value_axis:
+        if squeeze_value_axis:
             host_indices = [[start + local_indices[0] for start in world_starts] for world_starts in self._model_starts]
         else:
             host_indices = [
@@ -621,8 +625,192 @@ def all_equal(values):
     return all(x == values[0] for x in values)
 
 
-def list_of_lists(n):
-    return [[] for _ in range(n)]
+def _uniform_value(values):
+    """Return the common value of a NumPy array as a Python scalar, or ``None`` if values differ."""
+    return values[0].item() if np.all(values == values[0]) else None
+
+
+def _ragged_arange(starts, counts):
+    """Return the group and value of each entry in the concatenated ranges ``[start, start + count)``."""
+    groups = np.repeat(np.arange(len(counts)), counts)
+    return groups, np.repeat(starts - np.cumsum(counts) + counts, counts) + np.arange(len(groups))
+
+
+def _select_positions(positions, selected):
+    """Map template positions to their index in ``selected``, or -1 if not selected."""
+    if selected is None:
+        return positions
+    lookup = np.full(max(int(positions.max(initial=-1)), max(selected, default=-1)) + 1, -1)
+    lookup[selected] = np.arange(len(selected))
+    return lookup[positions]
+
+
+def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device):
+    """Check one frequency of every selected articulation against the first one.
+
+    Each articulation (slot) must select the same number of values, with the same offsets from its
+    origin and the same owning joint or link, and origins must be uniformly strided within and
+    between worlds.
+
+    Returns:
+        The layout, or ``None`` with the reason it is unavailable, and whether selected counts match.
+    """
+    slot_count = len(origins)
+    counts = np.bincount(slots, minlength=slot_count)
+    count = int(counts[0])
+    failed = counts != count
+    uniform_count = not failed.any()
+    reasons = [] if uniform_count else ["selected count differs between articulations"]
+    if uniform_count:
+        failed = np.zeros(slot_count, dtype=bool)
+        for values in (offsets.reshape(slot_count, count), owners.reshape(slot_count, count)):
+            mismatch = values != values[0]
+            if mismatch.any():
+                failed |= mismatch.any(axis=1)
+        if failed.any():
+            reasons.append("selected values or their owners differ between articulations")
+    grid = origins.reshape(world_count, count_per_world)
+    between = int(grid[1, 0] - grid[0, 0]) if world_count > 1 else 0
+    within = int(grid[0, 1] - grid[0, 0]) if count_per_world > 1 else 0
+    model_starts = None
+    if count:
+        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within * np.arange(count_per_world)
+        if misplaced.any():
+            uneven_within = grid != grid[:, :1] + within * np.arange(count_per_world)
+            if uneven_within.any():
+                reasons.append("start indices are not uniformly strided")
+                failed |= misplaced.ravel()
+            else:
+                # Sparse or uneven worlds: rows are regular within every world but the worlds are not
+                # evenly spaced (e.g. other articulation types occupy the worlds in between). Address
+                # them through explicit absolute row maps (gather/scatter) instead of one strided view.
+                model_starts = grid.tolist()
+    if reasons:
+        world, articulation = divmod(int(np.argmax(failed)), count_per_world)
+        return None, f"{'; '.join(reasons)} (first at world {world}, articulation {articulation})", uniform_count
+    offsets = offsets[:count].tolist()
+    extent = offsets[-1] + 1 if offsets else 0
+    # Size-1 axes are never stepped, but Warp only reports packed strides as contiguous.
+    if count_per_world == 1:
+        within = extent
+    if world_count == 1:
+        between = within * count_per_world
+    return FrequencyLayout(int(grid[0, 0]), between, within, extent, offsets, device, model_starts), None, True
+
+
+def _validate_layouts(
+    model,
+    articulation_ids,
+    articulation_start,
+    articulation_end,
+    joint_articulation,
+    joint_child,
+    joint_q_start,
+    joint_qd_start,
+    shape_body,
+    selected_joints,
+    selected_links,
+    include_loop_closing_joints,
+):
+    """Check each frequency layout of the selected articulations independently.
+
+    ``articulation_ids`` has shape ``(world_count, count_per_world)``. ``selected_joints`` and
+    ``selected_links`` are template positions, or ``None`` to select all
+    positions of every articulation. Links are the children of the joints an articulation owns.
+
+    Returns:
+        The :func:`_check_layout` result for each built-in frequency and for the root joint,
+        coordinates, and DOFs (keys ``"root_joint"``, ``"root_coord"``, and ``"root_dof"``).
+    """
+    world_count, count_per_world = articulation_ids.shape
+    ids = articulation_ids.ravel()
+    slot_count = len(ids)
+    begins = articulation_start[ids]
+    ends = articulation_start[ids + 1] if include_loop_closing_joints else articulation_end[ids]
+    zeros = np.zeros(slot_count, dtype=int)
+
+    def check(slots, offsets, owners, origins):
+        return _check_layout(slots, offsets, owners, origins, world_count, count_per_world, model.device)
+
+    def selected_origins(slots, rows, fallback):
+        """Return each slot's first selected row, retaining its fallback when no rows are selected."""
+        origins = np.asarray(fallback).copy()
+        if len(rows):
+            sentinel = np.iinfo(origins.dtype).max
+            candidates = np.full(slot_count, sentinel, dtype=origins.dtype)
+            np.minimum.at(candidates, slots, rows)
+            present = candidates != sentinel
+            origins[present] = candidates[present]
+        return origins
+
+    slots, positions = _ragged_arange(zeros, ends - begins)
+    owners = _select_positions(positions, selected_joints)
+    selected = owners >= 0
+    slots, positions, owners = slots[selected], positions[selected], owners[selected]
+    results = {AttributeFrequency.JOINT: check(slots, positions, owners, begins)}
+    joints = begins[slots] + positions
+    for frequency, starts in (
+        (AttributeFrequency.JOINT_DOF, joint_qd_start),
+        (AttributeFrequency.JOINT_COORD, joint_q_start),
+    ):
+        entries, rows = _ragged_arange(starts[joints], starts[joints + 1] - starts[joints])
+        value_slots = slots[entries]
+        origins = selected_origins(value_slots, rows, starts[begins])
+        results[frequency] = check(value_slots, rows - origins[value_slots], owners[entries], origins)
+
+    root_slots = np.arange(slot_count)
+    root_origins = selected_origins(root_slots, begins, begins)
+    results["root_joint"] = check(root_slots, begins - root_origins, zeros, root_origins)
+    for key, starts in (("root_coord", joint_q_start), ("root_dof", joint_qd_start)):
+        fallback = starts[begins]
+        entries, rows = _ragged_arange(fallback, starts[begins + 1] - fallback)
+        origins = selected_origins(entries, rows, fallback)
+        results[key] = check(entries, rows - origins[entries], np.zeros_like(entries), origins)
+
+    slot_of = np.full(len(articulation_start), -1)
+    slot_of[ids] = np.arange(slot_count)
+    owned = np.flatnonzero((joint_articulation >= 0) & (joint_child >= 0))
+    owned = owned[slot_of[joint_articulation[owned]] >= 0]
+    keys = np.sort(slot_of[joint_articulation[owned]] * model.body_count + joint_child[owned])
+    link_slots, links = np.divmod(keys[np.diff(keys, prepend=-1) != 0], model.body_count)
+    counts = np.bincount(link_slots, minlength=slot_count)
+    link_origins = np.full(slot_count, model.body_count)
+    np.minimum.at(link_origins, link_slots, links)
+    owners = _select_positions(np.arange(len(links)) - (np.cumsum(counts) - counts)[link_slots], selected_links)
+    selected = owners >= 0
+    selected_link_slots = link_slots[selected]
+    selected_link_rows = links[selected]
+    selected_link_origins = selected_origins(selected_link_slots, selected_link_rows, link_origins)
+    results[AttributeFrequency.BODY] = check(
+        selected_link_slots,
+        selected_link_rows - selected_link_origins[selected_link_slots],
+        owners[selected],
+        selected_link_origins,
+    )
+
+    # shapes belong to the articulation that owns their link and are ordered by ID within it
+    link_slot = np.full(model.body_count, -1)
+    link_slot[links] = link_slots
+    link_owner = np.full(model.body_count, -1)
+    link_owner[links[selected]] = owners[selected]
+    shapes = np.flatnonzero(shape_body >= 0)
+    shapes = shapes[link_slot[shape_body[shapes]] >= 0]
+    shapes = shapes[np.argsort(link_slot[shape_body[shapes]], kind="stable")]
+    shape_slots = link_slot[shape_body[shapes]]
+    shape_origins = np.full(slot_count, model.shape_count)
+    np.minimum.at(shape_origins, shape_slots, shapes)
+    owners = link_owner[shape_body[shapes]]
+    selected = owners >= 0
+    selected_shape_slots = shape_slots[selected]
+    selected_shapes = shapes[selected]
+    selected_shape_origins = selected_origins(selected_shape_slots, selected_shapes, shape_origins)
+    results[AttributeFrequency.SHAPE] = check(
+        selected_shape_slots,
+        selected_shapes - selected_shape_origins[selected_shape_slots],
+        owners[selected],
+        selected_shape_origins,
+    )
+    return results
 
 
 def get_world_offset(world_ids):
@@ -646,7 +834,26 @@ class ArticulationView:
     ArticulationView provides a flexible interface for selecting and manipulating
     subsets of articulations and their joints, links, and shapes within a Model.
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
-    attribute access and modification for simulation and control.
+    attribute access and modification for simulation and control. By default,
+    construction fails when any selected data cannot share one batched layout. Set
+    ``allow_partial_layouts=True`` to keep using the data that does share a layout.
+
+    With ``allow_partial_layouts=True``, public metadata is ``None`` when it cannot
+    describe every selected articulation consistently:
+
+    - A frequency count and its corresponding names and labels are ``None`` when
+      selected counts differ.
+    - ``joint_dof_counts``, ``joint_coord_counts``, and ``link_shapes`` are ``None``
+      when one of the layouts needed for that relationship is unavailable.
+    - A ``*_contiguous`` flag is ``None`` when its frequency layout is unavailable;
+      otherwise it reports whether the selected rows form one contiguous range across
+      all selected articulations and worlds.
+    - ``root_joint_type``, ``is_fixed_base``, and ``is_floating_base`` are ``None``
+      when that root metadata differs. Non-``None`` root metadata does not guarantee
+      root access when the root coordinate or DOF layout differs.
+    - A value in ``custom_frequency_counts`` and ``custom_frequency_labels`` is
+      ``None`` when custom row counts differ. The corresponding tendon compatibility
+      aliases follow those values.
 
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
@@ -685,6 +892,8 @@ class ArticulationView:
     and ``exclude_links`` parameters accept label patterns or integer indices — see
     :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
     Joint and link filters are matched against the final path component of each label.
+    Their matches select template positions in every articulation, so a different
+    joint or link order can select different labels in later articulations.
 
     Args:
         model: The model containing the articulations.
@@ -704,6 +913,9 @@ class ArticulationView:
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
+        allow_partial_layouts: If True, construct the view when only some selected
+            data has a common layout. Access to data without a common layout raises
+            :class:`AttributeError`.
         verbose: If True, prints selection summary.
     """
 
@@ -719,6 +931,7 @@ class ArticulationView:
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
+        allow_partial_layouts: bool = False,
         verbose: bool | None = None,
     ):
         self.model = model
@@ -745,6 +958,8 @@ class ArticulationView:
         model_joint_child = model.joint_child.numpy()
         model_joint_q_start = model.joint_q_start.numpy()
         model_joint_qd_start = model.joint_qd_start.numpy()
+        model_joint_articulation = model.joint_articulation.numpy()
+        model_shape_body = model.shape_body.numpy()
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
@@ -782,10 +997,6 @@ class ArticulationView:
 
         world_count = len(selected_world_ids)
         count_per_world = counts_per_world[0]
-        # Preserve the zero-copy strided path whenever matching entities remain regularly
-        # spaced, even if their model-world IDs are sparse. Fall back to explicit absolute
-        # maps only when the actual entity strides are non-uniform.
-        use_explicit_model_indices = False
 
         # use the first articulation as a "template"
         arti_0 = articulation_ids[0][0]
@@ -809,19 +1020,15 @@ class ArticulationView:
             arti_joint_end = int(model_articulation_end[arti_0])
         arti_joint_count = arti_joint_end - arti_joint_begin
         arti_joint_dof_begin = int(model_joint_qd_start[arti_joint_begin])
-        arti_joint_dof_end = int(model_joint_qd_start[arti_joint_end])
-        arti_joint_dof_count = arti_joint_dof_end - arti_joint_dof_begin
         arti_joint_coord_begin = int(model_joint_q_start[arti_joint_begin])
-        arti_joint_coord_end = int(model_joint_q_start[arti_joint_end])
-        arti_joint_coord_count = arti_joint_coord_end - arti_joint_coord_begin
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
             arti_joint_labels.append(model.joint_label[joint_id])
             arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
-            link_id = int(model_joint_child[joint_id])
-            arti_link_ids.append(link_id)
+            if model_joint_articulation[joint_id] == arti_0:
+                arti_link_ids.append(int(model_joint_child[joint_id]))
 
         # use link order as they appear in the model
         arti_link_ids = sorted(set(arti_link_ids))
@@ -833,173 +1040,12 @@ class ArticulationView:
 
         # use shape order as they appear in the model
         arti_shape_ids = sorted(arti_shape_ids)
-        arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
             arti_shape_labels.append(model.shape_label[shape_id])
             arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
-        # compute counts and offsets of joints, links, etc.
-        joint_starts = list_of_lists(world_count)
-        joint_counts = list_of_lists(world_count)
-        joint_dof_starts = list_of_lists(world_count)
-        joint_dof_counts = list_of_lists(world_count)
-        joint_coord_starts = list_of_lists(world_count)
-        joint_coord_counts = list_of_lists(world_count)
-        root_joint_types = list_of_lists(world_count)
-        link_starts = list_of_lists(world_count)
-        link_counts = list_of_lists(world_count)
-        shape_starts = list_of_lists(world_count)
-        shape_counts = list_of_lists(world_count)
-        shape_model_indices = list_of_lists(world_count)
-        shapes_have_gaps = False
-        for world_id in range(world_count):
-            for arti_id in articulation_ids[world_id]:
-                # joints
-                joint_start = int(model_articulation_start[arti_id])
-                if include_loop_closing_joints:
-                    joint_end = int(model_articulation_start[arti_id + 1])
-                else:
-                    joint_end = int(model_articulation_end[arti_id])
-                joint_starts[world_id].append(joint_start)
-                joint_counts[world_id].append(joint_end - joint_start)
-                # joint dofs
-                joint_dof_start = int(model_joint_qd_start[joint_start])
-                joint_dof_end = int(model_joint_qd_start[joint_end])
-                joint_dof_starts[world_id].append(joint_dof_start)
-                joint_dof_counts[world_id].append(joint_dof_end - joint_dof_start)
-                # joint coords
-                joint_coord_start = int(model_joint_q_start[joint_start])
-                joint_coord_end = int(model_joint_q_start[joint_end])
-                joint_coord_starts[world_id].append(joint_coord_start)
-                joint_coord_counts[world_id].append(joint_coord_end - joint_coord_start)
-                # root joint types
-                root_joint_types[world_id].append(int(model_joint_type[joint_start]))
-                # links and shapes
-                link_ids = []
-                for j in range(joint_start, joint_end):
-                    link_id = int(model_joint_child[j])
-                    link_ids.append(link_id)
-                link_ids = sorted(set(link_ids))
-                shape_ids = []
-                for link_id in link_ids:
-                    link_shapes = model.body_shapes.get(link_id, [])
-                    shape_ids.extend(link_shapes)
-                link_starts[world_id].append(min(link_ids))
-                link_counts[world_id].append(len(link_ids))
-                num_shapes = len(shape_ids)
-                shape_ids.sort()
-                shape_model_indices[world_id].append(shape_ids)
-                shapes_have_gaps |= not is_contiguous_slice(shape_ids)
-                if num_shapes > 0:
-                    shape_starts[world_id].append(min(shape_ids))
-                else:
-                    shape_starts[world_id].append(-1)
-                shape_counts[world_id].append(num_shapes)
-
-        # make sure counts are the same for all articulations
-        if not (
-            all_equal(joint_counts)
-            and all_equal(joint_dof_counts)
-            and all_equal(joint_coord_counts)
-            and all_equal(root_joint_types)
-            and all_equal(link_counts)
-            and all_equal(shape_counts)
-        ):
-            raise ValueError("Articulations are not identical")
-
-        self.root_joint_type = root_joint_types[0][0]
-        root_joint_dof_count = int(model_joint_qd_start[arti_joint_begin + 1] - model_joint_qd_start[arti_joint_begin])
-        # fixed base means that all linear and angular degrees of freedom are locked at the root
-        self.is_fixed_base = root_joint_dof_count == 0
-        # floating base means that all linear and angular degrees of freedom are unlocked at the root
-        # (though there might be constraints like distance)
-        self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE)
-
-        joint_offset = joint_starts[0][0]
-        joint_dof_offset = joint_dof_starts[0][0]
-        joint_coord_offset = joint_coord_starts[0][0]
-        link_offset = link_starts[0][0]
-        if arti_shape_count > 0:
-            shape_offset = shape_starts[0][0]
-        else:
-            shape_offset = 0
-
-        # compute "outer" strides (strides between worlds)
-        if world_count > 1:
-            outer_joint_strides = []
-            outer_joint_dof_strides = []
-            outer_joint_coord_strides = []
-            outer_link_strides = []
-            outer_shape_strides = []
-            for world_id in range(1, world_count):
-                outer_joint_strides.append(joint_starts[world_id][0] - joint_starts[world_id - 1][0])
-                outer_joint_dof_strides.append(joint_dof_starts[world_id][0] - joint_dof_starts[world_id - 1][0])
-                outer_joint_coord_strides.append(joint_coord_starts[world_id][0] - joint_coord_starts[world_id - 1][0])
-                outer_link_strides.append(link_starts[world_id][0] - link_starts[world_id - 1][0])
-                outer_shape_strides.append(shape_starts[world_id][0] - shape_starts[world_id - 1][0])
-
-            outer_strides_are_uniform = (
-                all_equal(outer_joint_strides)
-                and all_equal(outer_joint_dof_strides)
-                and all_equal(outer_joint_coord_strides)
-                and all_equal(outer_link_strides)
-                and all_equal(outer_shape_strides)
-            )
-            use_explicit_model_indices |= not outer_strides_are_uniform
-
-            # These values are ignored by explicit layouts. Keeping a concrete value makes
-            # FrequencyLayout backwards compatible for callers that inspect its fields.
-            outer_joint_stride = outer_joint_strides[0]
-            outer_joint_dof_stride = outer_joint_dof_strides[0]
-            outer_joint_coord_stride = outer_joint_coord_strides[0]
-            outer_link_stride = outer_link_strides[0]
-            outer_shape_stride = outer_shape_strides[0]
-        else:
-            outer_joint_stride = arti_joint_count
-            outer_joint_dof_stride = arti_joint_dof_count
-            outer_joint_coord_stride = arti_joint_coord_count
-            outer_link_stride = arti_link_count
-            outer_shape_stride = arti_shape_count
-
-        # compute "inner" strides (strides within worlds)
-        if count_per_world > 1:
-            inner_joint_strides = list_of_lists(world_count)
-            inner_joint_dof_strides = list_of_lists(world_count)
-            inner_joint_coord_strides = list_of_lists(world_count)
-            inner_link_strides = list_of_lists(world_count)
-            inner_shape_strides = list_of_lists(world_count)
-            for world_id in range(world_count):
-                for i in range(1, count_per_world):
-                    inner_joint_strides[world_id].append(joint_starts[world_id][i] - joint_starts[world_id][i - 1])
-                    inner_joint_dof_strides[world_id].append(
-                        joint_dof_starts[world_id][i] - joint_dof_starts[world_id][i - 1]
-                    )
-                    inner_joint_coord_strides[world_id].append(
-                        joint_coord_starts[world_id][i] - joint_coord_starts[world_id][i - 1]
-                    )
-                    inner_link_strides[world_id].append(link_starts[world_id][i] - link_starts[world_id][i - 1])
-                    inner_shape_strides[world_id].append(shape_starts[world_id][i] - shape_starts[world_id][i - 1])
-
-            inner_strides_are_uniform = (
-                all_equal(inner_joint_strides)
-                and all_equal(inner_joint_dof_strides)
-                and all_equal(inner_joint_coord_strides)
-                and all_equal(inner_link_strides)
-                and all_equal(inner_shape_strides)
-            )
-            use_explicit_model_indices |= not inner_strides_are_uniform
-
-            inner_joint_stride = inner_joint_strides[0][0]
-            inner_joint_dof_stride = inner_joint_dof_strides[0][0]
-            inner_joint_coord_stride = inner_joint_coord_strides[0][0]
-            inner_link_stride = inner_link_strides[0][0]
-            inner_shape_stride = inner_shape_strides[0][0]
-        else:
-            inner_joint_stride = arti_joint_count
-            inner_joint_dof_stride = arti_joint_dof_count
-            inner_joint_coord_stride = arti_joint_coord_count
-            inner_link_stride = arti_link_count
-            inner_shape_stride = arti_shape_count
+        joint_dof_offset = arti_joint_dof_begin
+        joint_coord_offset = arti_joint_coord_begin
 
         # create joint inclusion set
         if include_joints is None and include_joint_types is None:
@@ -1050,18 +1096,21 @@ class ArticulationView:
         # compute selected indices
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
+        # without filters, every joint and link of each articulation is selected, not only template positions
+        all_joints = include_joints is None and include_joint_types is None and not joint_exclude_indices
+        all_links = include_links is None and not link_exclude_indices
 
-        self.joint_names = []
-        self.joint_labels = []
-        self.joint_dof_names = []
-        self.joint_dof_counts = []
-        self.joint_coord_names = []
-        self.joint_coord_counts = []
-        self.link_names = []
-        self.link_labels = []
-        self.link_shapes = []
-        self.shape_names = []
-        self.shape_labels = []
+        self.joint_names: list[str] | None = []
+        self.joint_labels: list[str] | None = []
+        self.joint_dof_names: list[str] | None = []
+        self.joint_dof_counts: list[int] | None = []
+        self.joint_coord_names: list[str] | None = []
+        self.joint_coord_counts: list[int] | None = []
+        self.link_names: list[str] | None = []
+        self.link_labels: list[str] | None = []
+        self.link_shapes: list[list[int]] | None = []
+        self.shape_names: list[str] | None = []
+        self.shape_labels: list[str] | None = []
 
         # populate info for selected joints and dofs
         selected_joint_dof_indices = []
@@ -1121,70 +1170,90 @@ class ArticulationView:
         self.count = articulation_count
         self.world_count = world_count
         self.count_per_world = count_per_world
-        self.joint_count = len(selected_joint_indices)
-        self.joint_dof_count = len(selected_joint_dof_indices)
-        self.joint_coord_count = len(selected_joint_coord_indices)
-        self.link_count = len(selected_link_indices)
-        self.shape_count = len(selected_shape_indices)
+        self.joint_count: int | None = len(selected_joint_indices)
+        self.joint_dof_count: int | None = len(selected_joint_dof_indices)
+        self.joint_coord_count: int | None = len(selected_joint_coord_indices)
+        self.link_count: int | None = len(selected_link_indices)
+        self.shape_count: int | None = len(selected_shape_indices)
 
         # TODO: document the layout conventions and requirements
         #
         # |ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|
         # |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |
         #
-        self.frequency_layouts = {
-            AttributeFrequency.JOINT: FrequencyLayout(
-                joint_offset,
-                outer_joint_stride,
-                inner_joint_stride,
-                arti_joint_count,
-                selected_joint_indices,
-                self.device,
-                joint_starts if use_explicit_model_indices else None,
-            ),
-            AttributeFrequency.JOINT_DOF: FrequencyLayout(
-                joint_dof_offset,
-                outer_joint_dof_stride,
-                inner_joint_dof_stride,
-                arti_joint_dof_count,
-                selected_joint_dof_indices,
-                self.device,
-                joint_dof_starts if use_explicit_model_indices else None,
-            ),
-            AttributeFrequency.JOINT_COORD: FrequencyLayout(
-                joint_coord_offset,
-                outer_joint_coord_stride,
-                inner_joint_coord_stride,
-                arti_joint_coord_count,
-                selected_joint_coord_indices,
-                self.device,
-                joint_coord_starts if use_explicit_model_indices else None,
-            ),
-            AttributeFrequency.BODY: FrequencyLayout(
-                link_offset,
-                outer_link_stride,
-                inner_link_stride,
-                arti_link_count,
-                selected_link_indices,
-                self.device,
-                link_starts if use_explicit_model_indices else None,
-            ),
-            AttributeFrequency.SHAPE: FrequencyLayout(
-                shape_offset,
-                outer_shape_stride,
-                inner_shape_stride,
-                arti_shape_count,
-                selected_shape_indices,
-                self.device,
-                shape_starts if use_explicit_model_indices else None,
-                model_indices=shape_model_indices if shapes_have_gaps else None,
-            ),
-        }
+        articulation_id_grid = np.asarray(articulation_ids)
+        validations = _validate_layouts(
+            model,
+            articulation_id_grid,
+            model_articulation_start,
+            model_articulation_end,
+            model_joint_articulation,
+            model_joint_child,
+            model_joint_q_start,
+            model_joint_qd_start,
+            model_shape_body,
+            None if all_joints else selected_joint_indices,
+            None if all_links else selected_link_indices,
+            include_loop_closing_joints,
+        )
+        frequencies = (
+            AttributeFrequency.JOINT,
+            AttributeFrequency.JOINT_DOF,
+            AttributeFrequency.JOINT_COORD,
+            AttributeFrequency.BODY,
+            AttributeFrequency.SHAPE,
+        )
+        self.frequency_layouts = {f: validations[f][0] for f in frequencies if validations[f][0] is not None}
+        self._unavailable_reasons = {f: validations[f][1] for f in frequencies if validations[f][1] is not None}
+
+        root_ids = model_articulation_start[articulation_id_grid.ravel()]
+        root_types = model_joint_type[root_ids]
+        root_is_fixed = model_joint_qd_start[root_ids + 1] == model_joint_qd_start[root_ids]
+        root_is_floating = np.isin(root_types, (JointType.FREE, JointType.DISTANCE))
+        # fixed base means that all linear and angular degrees of freedom are locked at the root
+        self.is_fixed_base: bool | None = _uniform_value(root_is_fixed)
+        # floating base means that all linear and angular degrees of freedom are unlocked at the root
+        # (though there might be constraints like distance)
+        self.is_floating_base: bool | None = _uniform_value(root_is_floating)
+        self.root_joint_type: int | None = _uniform_value(root_types)
+        # root transforms and velocities, addressed through the root joint's own layout
+        root_keys = ("root_coord", "root_dof") if self.is_floating_base else ("root_joint",)
+        self._root_layouts = [validations[key][0] for key in root_keys]
+        if self.is_floating_base is None:
+            self._root_unavailable_reason = "selected articulations use different root behavior"
+        else:
+            self._root_unavailable_reason = "; ".join(validations[k][1] for k in root_keys if validations[k][1]) or None
+
+        if not allow_partial_layouts:
+            for frequency, reason in self._unavailable_reasons.items():
+                raise ValueError(f"Articulation {frequency.name} layout is unavailable: {reason}")
+            if self._root_unavailable_reason or self.root_joint_type is None or self.is_fixed_base is None:
+                reason = self._root_unavailable_reason or "root metadata differs"
+                raise ValueError(f"Articulation root layout is unavailable: {reason}")
+
+        # counts and names are unknown where selected counts differ, relationships where either layout is unavailable
+        for frequency, names in (
+            (AttributeFrequency.JOINT, ("joint_count", "joint_names", "joint_labels")),
+            (AttributeFrequency.JOINT_DOF, ("joint_dof_count", "joint_dof_names")),
+            (AttributeFrequency.JOINT_COORD, ("joint_coord_count", "joint_coord_names")),
+            (AttributeFrequency.BODY, ("link_count", "link_names", "link_labels")),
+            (AttributeFrequency.SHAPE, ("shape_count", "shape_names", "shape_labels")),
+        ):
+            if not validations[frequency][2]:
+                for name in names:
+                    setattr(self, name, None)
+        for name, related in (
+            ("joint_dof_counts", (AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF)),
+            ("joint_coord_counts", (AttributeFrequency.JOINT, AttributeFrequency.JOINT_COORD)),
+            ("link_shapes", (AttributeFrequency.BODY, AttributeFrequency.SHAPE)),
+        ):
+            if not all(frequency in self.frequency_layouts for frequency in related):
+                setattr(self, name, None)
 
         # Build layouts for every custom frequency that declares per-row
         # articulation ownership on the model.
-        self.custom_frequency_counts: dict[str, int] = {}
-        self.custom_frequency_labels: dict[str, list[str]] = {}
+        self.custom_frequency_counts: dict[str, int | None] = {}
+        self.custom_frequency_labels: dict[str, list[str] | None] = {}
         for frequency, owner_array in model.custom_frequency_articulation.items():
             owners = owner_array.numpy()
             rows_by_articulation: dict[int, list[int]] = {}
@@ -1199,9 +1268,13 @@ class ArticulationView:
             row_counts = [[len(rows) for rows in world_rows] for world_rows in articulation_rows]
             flat_row_counts = [count for world_counts in row_counts for count in world_counts]
             if not all_equal(flat_row_counts):
-                raise ValueError(
-                    f"Articulations have different row counts for custom frequency '{frequency}': {row_counts}"
-                )
+                reason = f"Articulations have different row counts for custom frequency '{frequency}': {row_counts}"
+                if not allow_partial_layouts:
+                    raise ValueError(reason)
+                self._unavailable_reasons[frequency] = reason
+                self.custom_frequency_counts[frequency] = None
+                self.custom_frequency_labels[frequency] = None
+                continue
 
             value_count = flat_row_counts[0]
             self.custom_frequency_counts[frequency] = value_count
@@ -1215,23 +1288,25 @@ class ArticulationView:
             # The addressable extent includes gaps between selected rows.
             value_extent = template_rows[-1] - offset + 1
             starts = [[rows[0] for rows in world_rows] for world_rows in articulation_rows]
+            reason = None
+            frequency_explicit = False
 
-            # Non-uniform strides fall back to explicit absolute row maps, as for model entities.
-            frequency_explicit = use_explicit_model_indices
             if count_per_world > 1:
                 inner_strides = [
                     starts[world][articulation] - starts[world][articulation - 1]
                     for world in range(world_count)
                     for articulation in range(1, count_per_world)
                 ]
-                frequency_explicit |= not all_equal(inner_strides)
+                if not all_equal(inner_strides):
+                    reason = f"Non-uniform strides within worlds for custom frequency '{frequency}' are not supported"
                 inner_stride = inner_strides[0]
             else:
                 inner_stride = value_extent
 
             if world_count > 1:
                 outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
-                frequency_explicit |= not all_equal(outer_strides)
+                # Uneven world spacing falls back to explicit absolute row maps, as for model entities.
+                frequency_explicit = not all_equal(outer_strides)
                 outer_stride = outer_strides[0]
             else:
                 outer_stride = inner_stride * count_per_world
@@ -1242,19 +1317,22 @@ class ArticulationView:
                         row - starts[world][articulation] for row in articulation_rows[world][articulation]
                     ]
                     if relative_rows != selected_indices:
-                        raise ValueError(
-                            f"Custom frequency '{frequency}' has inconsistent row ordering between articulations"
-                        )
+                        reason = f"Custom frequency '{frequency}' has inconsistent row ordering between articulations"
 
-            self.frequency_layouts[frequency] = FrequencyLayout(
-                offset,
-                outer_stride,
-                inner_stride,
-                value_extent,
-                selected_indices,
-                self.device,
-                starts if frequency_explicit else None,
-            )
+            if reason is None:
+                self.frequency_layouts[frequency] = FrequencyLayout(
+                    offset,
+                    outer_stride,
+                    inner_stride,
+                    value_extent,
+                    selected_indices,
+                    self.device,
+                    starts if frequency_explicit else None,
+                )
+            elif allow_partial_layouts:
+                self._unavailable_reasons[frequency] = reason
+            else:
+                raise ValueError(reason)
 
             label_key = model.custom_frequency_label_attributes.get(frequency)
             if label_key is not None:
@@ -1264,23 +1342,28 @@ class ArticulationView:
                 self.custom_frequency_labels[frequency] = [get_name_from_label(labels[row]) for row in template_rows]
 
         # Compatibility aliases backed by the generic custom-frequency metadata.
-        self.tendon_count = self.custom_frequency_counts.get("mujoco:tendon", 0)
-        self.tendon_names = self.custom_frequency_labels.get("mujoco:tendon", [])
+        self.tendon_count: int | None = self.custom_frequency_counts.get("mujoco:tendon", 0)
+        self.tendon_names: list[str] | None = self.custom_frequency_labels.get("mujoco:tendon", [])
 
-        self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
-        self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
-        self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
-        self.links_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
-        self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
+        def is_contiguous(frequency):
+            layout = self.frequency_layouts.get(frequency)
+            return layout.is_packed(self.world_count, self.count_per_world) if layout is not None else None
+
+        self.joints_contiguous: bool | None = is_contiguous(AttributeFrequency.JOINT)
+        self.joint_dofs_contiguous: bool | None = is_contiguous(AttributeFrequency.JOINT_DOF)
+        self.joint_coords_contiguous: bool | None = is_contiguous(AttributeFrequency.JOINT_COORD)
+        self.links_contiguous: bool | None = is_contiguous(AttributeFrequency.BODY)
+        self.shapes_contiguous: bool | None = is_contiguous(AttributeFrequency.SHAPE)
 
         # articulation ids grouped by world
-        self.articulation_ids = wp.array(articulation_ids, dtype=int, device=self.device)
+        self.articulation_ids = wp.array(articulation_id_grid, dtype=int, device=self.device)
         # Compact view-world index -> original model-world index. Global articulations
         # retain the sentinel world ``-1``.
         self.world_ids = wp.array(selected_world_ids, dtype=int, device=self.device)
         self.is_sparse = selected_world_ids not in ([-1], list(range(model.world_count)))
         self.uses_explicit_model_indices = any(
-            layout.uses_explicit_model_indices for layout in self.frequency_layouts.values()
+            layout.uses_explicit_model_indices
+            for layout in (*self.frequency_layouts.values(), *(r for r in self._root_layouts if r is not None))
         )
 
         # default mask includes all articulations in all worlds
@@ -1312,7 +1395,7 @@ class ArticulationView:
             print("Joint DOF names:")
             print(f"  {self.joint_dof_names}")
             print("Shapes:")
-            for link_idx in range(self.link_count):
+            for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
                 print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
 
@@ -1334,13 +1417,17 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
-        key = (name, source, _slice)
+    def _get_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
+        key = (name, source, _slice, layout)
         if key not in self._attribute_array_cache:
-            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice)
+            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice, layout)
         return self._attribute_array_cache[key]
 
-    def _create_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None):
+    def _create_attribute_array(
+        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
+    ):
         # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
@@ -1359,7 +1446,9 @@ class ArticulationView:
         # get frequency info
         frequency = self.model.get_attribute_frequency(frequency_name)
 
-        if isinstance(frequency, str):
+        if layout is None and frequency in self._unavailable_reasons:
+            raise AttributeError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
+        if layout is None and isinstance(frequency, str):
             layout = self.frequency_layouts.get(frequency)
             if layout is None:
                 if frequency in self.model.custom_frequency_articulation:
@@ -1371,7 +1460,7 @@ class ArticulationView:
                     f"Attribute '{name}' has custom frequency '{frequency}', which does not declare "
                     "articulation ownership"
                 )
-        else:
+        elif layout is None:
             layout = self.frequency_layouts.get(frequency)
             if layout is None:
                 raise AttributeError(
@@ -1384,7 +1473,7 @@ class ArticulationView:
         # handle custom slice
         if isinstance(_slice, Slice):
             _slice = _slice.get()
-        elif not isinstance(_slice, NoneType | int | slice):
+        elif not isinstance(_slice, (NoneType, int, slice)):
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
 
         # Sparse heterogeneous views cannot be represented by one pointer plus regular
@@ -1432,8 +1521,8 @@ class ArticulationView:
         )
         slices = (slice(self.world_count), slice(self.count_per_world), value_slice, *trailing_slices)
 
-        # early out for empty source arrays (e.g. articulations with only fixed joints)
-        if attrib.ptr is None:
+        # early out for empty selections and empty source arrays (e.g. articulations with only fixed joints)
+        if value_count == 0 or attrib.ptr is None:
             result = wp.empty(shape, dtype=attrib.dtype, device=attrib.device)
             result.ptr = None
             return result
@@ -1487,8 +1576,10 @@ class ArticulationView:
 
         return attrib
 
-    def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
-        attrib = self._get_attribute_array(name, source, _slice=_slice)
+    def _get_attribute_values(
+        self, name: str, source: Model | State | Control, _slice: slice | None = None, layout=None
+    ):
+        attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_sparse_source"):
             src = attrib._sparse_source
             indices = attrib._sparse_model_indices
@@ -1526,9 +1617,9 @@ class ArticulationView:
         return attrib
 
     def _set_attribute_values(
-        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None
+        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None, layout=None
     ):
-        attrib = self._get_attribute_array(name, target, _slice=_slice)
+        attrib = self._get_attribute_array(name, target, _slice=_slice, layout=layout)
 
         if not is_array(values) or values.dtype != attrib.dtype:
             values = wp.array(values, dtype=attrib.dtype, shape=attrib.shape, device=self.device, copy=False)
@@ -1650,6 +1741,11 @@ class ArticulationView:
     # ========================================================================================
     # Convenience wrappers to align with legacy tensor API
 
+    def _root_layout(self, index: int) -> FrequencyLayout:
+        if self._root_unavailable_reason is not None:
+            raise AttributeError(f"Root access is unavailable: {self._root_unavailable_reason}")
+        return self._root_layouts[index]
+
     def get_root_transforms(self, source: Model | State):
         """
         Get the root transforms of the articulations.
@@ -1660,10 +1756,11 @@ class ArticulationView:
         Returns:
             array: The root transforms (dtype=wp.transform).
         """
+        layout = self._root_layout(0)
         if self.is_floating_base:
-            attrib = self._get_attribute_values("joint_q", source, _slice=Slice(0, 7))
+            attrib = self._get_attribute_values("joint_q", source, _slice=Slice(0, 7), layout=layout)
         else:
-            attrib = self._get_attribute_values("joint_X_p", self.model, _slice=0)
+            attrib = self._get_attribute_values("joint_X_p", self.model, _slice=0, layout=layout)
 
         if attrib.dtype is wp.transform:
             return attrib
@@ -1685,10 +1782,14 @@ class ArticulationView:
             values: The root transforms to set (dtype=wp.transform).
             mask: Mask of articulations in this ArticulationView (all by default).
         """
+        layout = self._root_layout(0)
         if self.is_floating_base:
-            self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7))
+            self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7), layout=layout)
         else:
-            self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=0)
+            if is_array(values):
+                # add the value axis; the strided array returned by get_root_transforms() must be copied first
+                values = (values if values.is_contiguous else wp.clone(values)).reshape((*values.shape, 1))
+            self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=Slice(0, 1), layout=layout)
 
     def get_root_velocities(self, source: Model | State):
         """
@@ -1700,8 +1801,9 @@ class ArticulationView:
         Returns:
             array: The root velocities (dtype=wp.spatial_vector).
         """
+        layout = self._root_layout(-1)
         if self.is_floating_base:
-            attrib = self._get_attribute_values("joint_qd", source, _slice=Slice(0, 6))
+            attrib = self._get_attribute_values("joint_qd", source, _slice=Slice(0, 6), layout=layout)
         else:
             # FIXME? Non-floating articulations have no root velocities.
             return None
@@ -1725,8 +1827,9 @@ class ArticulationView:
             values: The root velocities to set (dtype=wp.spatial_vector).
             mask: Mask of articulations in this ArticulationView (all by default).
         """
+        layout = self._root_layout(-1)
         if self.is_floating_base:
-            self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=Slice(0, 6))
+            self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=Slice(0, 6), layout=layout)
         else:
             return  # no-op
 
@@ -2115,7 +2218,10 @@ class ArticulationView:
         num_actuators = actuator.indices.shape[0]
         actuators_per_world = num_actuators // self.world_count
 
-        dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
+        dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
+        if dof_layout is None:
+            reason = self._unavailable_reasons[AttributeFrequency.JOINT_DOF]
+            raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
         dofs_per_arti = dof_layout.selected_value_count
         dofs_per_world = dofs_per_arti * self.count_per_world
 

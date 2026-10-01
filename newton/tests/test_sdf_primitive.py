@@ -262,7 +262,7 @@ def test_sdf_cone_grad_matches_finite_difference(test, device):
 
 
 def _cone_rim_ring(radius, half_height):
-    """Points around the base rim, inside and outside its plane, where the rim is closest."""
+    """Sample rings around a cone cap for gradient comparisons."""
     angles = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
     rings = []
     for radial_offset in (0.15, 0.4, 1.0):
@@ -287,18 +287,20 @@ def test_sdf_cone_grad_near_base_rim_across_scales(test, device):
         for scale in (1.0e-3, 1.0, 1.0e3):
             r = radius * scale
             h = half_height * scale
-            _assert_gradient_matches_fd(
-                test,
-                device,
-                PRIMITIVE_CONE,
-                _cone_rim_ring(r, h),
-                r,
-                h,
-                0.0,
-                int(Axis.Z),
-                dot_tol=0.999,
-                eps=1.0e-3 * max(r, h),
-            )
+            points = _cone_rim_ring(r, h)
+            for axis, order in ((Axis.X, (2, 0, 1)), (Axis.Y, (0, 2, 1)), (Axis.Z, (0, 1, 2))):
+                _assert_gradient_matches_fd(
+                    test,
+                    device,
+                    PRIMITIVE_CONE,
+                    points[:, order],
+                    r,
+                    h,
+                    0.0,
+                    int(axis),
+                    dot_tol=0.999,
+                    eps=1.0e-3 * max(r, h),
+                )
 
 
 def test_sdf_truncated_cone_grad_matches_finite_difference(test, device):
@@ -309,18 +311,19 @@ def test_sdf_truncated_cone_grad_matches_finite_difference(test, device):
             r1 = top * scale
             h = half_height * scale
             points = np.concatenate([_cone_rim_ring(r0, h), _cone_rim_ring(r1, -h)]).astype(np.float32)
-            _assert_gradient_matches_fd(
-                test,
-                device,
-                PRIMITIVE_TRUNCATED_CONE,
-                points,
-                r0,
-                h,
-                r1,
-                int(Axis.Z),
-                dot_tol=0.999,
-                eps=1.0e-3 * max(r0, r1, h),
-            )
+            for axis, order in ((Axis.X, (2, 0, 1)), (Axis.Y, (0, 2, 1)), (Axis.Z, (0, 1, 2))):
+                _assert_gradient_matches_fd(
+                    test,
+                    device,
+                    PRIMITIVE_TRUNCATED_CONE,
+                    points[:, order],
+                    r0,
+                    h,
+                    r1,
+                    int(axis),
+                    dot_tol=0.999,
+                    eps=1.0e-3 * max(r0, r1, h),
+                )
 
 
 def test_sdf_cone_grad_known_normals(test, device):
@@ -334,21 +337,43 @@ def test_sdf_cone_grad_known_normals(test, device):
         ("below base", (0.0, 0.0, -half_height - 0.7), (0.0, 0.0, -1.0)),
         ("beside rim", (radius + 0.3, 0.0, -half_height - 0.4), (0.6, 0.0, -0.8)),
         ("beside lateral face", (radius + 0.25, 0.0, 0.0), tuple(slant)),
+        ("inside near lateral face", (0.45, 0.0, 0.0), tuple(slant)),
+        ("inside near base", (0.1, 0.0, -half_height + 0.1), (0.0, 0.0, -1.0)),
+        ("on lateral face", (radius / 2.0, 0.0, 0.0), tuple(slant)),
+        ("on base", (radius / 2.0, 0.0, -half_height), (0.0, 0.0, -1.0)),
     )
     points = np.array([c[1] for c in cases], dtype=np.float32)
     expected = np.array([c[2] for c in cases], dtype=np.float64)
-    points_wp = wp.array(points, dtype=wp.vec3, device=device)
-    gradient_wp = wp.zeros(len(cases), dtype=wp.vec3, device=device)
-    wp.launch(
-        evaluate_gradient_kernel,
-        dim=len(cases),
-        inputs=[PRIMITIVE_CONE, points_wp, radius, half_height, 0.0, int(Axis.Z), gradient_wp],
-        device=device,
-    )
-    gradient = gradient_wp.numpy()
-    for (name, _point, _want), got, want in zip(cases, gradient, expected, strict=True):
-        test.assertAlmostEqual(float(np.linalg.norm(got)), 1.0, delta=1.0e-5, msg=name)
-        test.assertGreater(float(np.dot(got, want)), 0.9999, msg=f"{name}: got {got}, expected {want}")
+    for axis, order in ((Axis.X, (2, 0, 1)), (Axis.Y, (0, 2, 1)), (Axis.Z, (0, 1, 2))):
+        points_wp = wp.array(points[:, order], dtype=wp.vec3, device=device)
+        gradient_wp = wp.zeros(len(cases), dtype=wp.vec3, device=device)
+        wp.launch(
+            evaluate_gradient_kernel,
+            dim=len(cases),
+            inputs=[PRIMITIVE_CONE, points_wp, radius, half_height, 0.0, int(axis), gradient_wp],
+            device=device,
+        )
+        gradient = gradient_wp.numpy()
+        for (name, _point, _want), got, want in zip(cases, gradient, expected[:, order], strict=True):
+            test.assertAlmostEqual(float(np.linalg.norm(got)), 1.0, delta=1.0e-5, msg=f"{axis}: {name}")
+            test.assertGreater(float(np.dot(got, want)), 0.9999, msg=f"{axis}: {name}: got {got}, expected {want}")
+
+
+def test_sdf_truncated_cone_grad_zero_height(test, device):
+    """Verify collapsed tapered cylinders use the disk's closest-point normals."""
+    points = np.array([[1.3, 0.0, 0.0], [1.3, 0.0, 0.4], [0.0, 0.0, -0.4]], dtype=np.float32)
+    expected = np.array([[1.0, 0.0, 0.0], [0.6, 0.0, 0.8], [0.0, 0.0, -1.0]])
+    for bottom, top in ((1.0, 0.4), (0.4, 1.0)):
+        for axis, order in ((Axis.X, (2, 0, 1)), (Axis.Y, (0, 2, 1)), (Axis.Z, (0, 1, 2))):
+            points_wp = wp.array(points[:, order], dtype=wp.vec3, device=device)
+            gradient_wp = wp.zeros(len(points), dtype=wp.vec3, device=device)
+            wp.launch(
+                evaluate_gradient_kernel,
+                dim=len(points),
+                inputs=[PRIMITIVE_TRUNCATED_CONE, points_wp, bottom, 0.0, top, int(axis), gradient_wp],
+                device=device,
+            )
+            np.testing.assert_allclose(gradient_wp.numpy(), expected[:, order], atol=1.0e-3, rtol=0.0)
 
 
 def test_sdf_plane_grad_matches_finite_difference_for_infinite_plane(test, device):
@@ -426,6 +451,12 @@ add_function_test(
     TestSdfPrimitive,
     "test_sdf_cone_grad_known_normals",
     test_sdf_cone_grad_known_normals,
+    devices=_devices,
+)
+add_function_test(
+    TestSdfPrimitive,
+    "test_sdf_truncated_cone_grad_zero_height",
+    test_sdf_truncated_cone_grad_zero_height,
     devices=_devices,
 )
 add_function_test(

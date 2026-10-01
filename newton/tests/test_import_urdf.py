@@ -2070,6 +2070,42 @@ MIMIC_URDF = """
 """
 
 
+class TestUrdfVelocityLimits(unittest.TestCase):
+    """Tests for imported URDF joint velocity limits."""
+
+    def test_velocity_limits_preserve_units_and_scale(self):
+        """Import angular limits unchanged and scale linear limits."""
+        urdf = """
+        <robot name="velocity">
+            <link name="base"/><link name="hinge_link"/>
+            <link name="slider_link"/><link name="default_link"/>
+            <joint name="hinge" type="revolute">
+                <parent link="base"/><child link="hinge_link"/>
+                <limit lower="-1" upper="1" velocity="2.5"/>
+            </joint>
+            <joint name="slider" type="prismatic">
+                <parent link="hinge_link"/><child link="slider_link"/>
+                <limit lower="-1" upper="1" velocity="0.4"/>
+            </joint>
+            <joint name="default" type="continuous">
+                <parent link="slider_link"/><child link="default_link"/>
+            </joint>
+        </robot>
+        """
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=scale)
+                limits = {
+                    label: builder.joint_velocity_limit[builder.joint_qd_start[i]]
+                    for i, label in enumerate(builder.joint_label)
+                    if builder.joint_qd_start[i] < len(builder.joint_velocity_limit)
+                }
+                self.assertAlmostEqual(limits["velocity/hinge"], 2.5)
+                self.assertAlmostEqual(limits["velocity/slider"], 0.4 * scale)
+                self.assertEqual(limits["velocity/default"], builder.default_joint_cfg.velocity_limit)
+
+
 class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
@@ -2293,6 +2329,65 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
+    def test_joint_damping_parsed_as_passive_damping(self):
+        """Verify URDF joint damping populates passive damping, not drive damping."""
+        builder = newton.ModelBuilder()
+        parse_urdf(FRICTION_URDF, builder)
+        model = builder.finalize()
+
+        damping_values = model.joint_damping.numpy()
+        target_kd_values = model.joint_target_kd.numpy()
+
+        revolute_idx = builder.joint_label.index("friction_test/revolute_joint")
+        prismatic_idx = builder.joint_label.index("friction_test/prismatic_joint")
+        revolute_dof = builder.joint_qd_start[revolute_idx]
+        prismatic_dof = builder.joint_qd_start[prismatic_idx]
+
+        self.assertAlmostEqual(float(damping_values[revolute_dof]), 1.0, places=5)
+        self.assertAlmostEqual(float(damping_values[prismatic_dof]), 2.0, places=5)
+        self.assertAlmostEqual(float(target_kd_values[revolute_dof]), 0.0, places=5)
+        self.assertAlmostEqual(float(target_kd_values[prismatic_dof]), 0.0, places=5)
+
+    def test_joint_damping_uses_builder_default(self):
+        """Use the passive damping default when URDF dynamics are absent."""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 0.5
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(JOINT_URDF, builder)
+        model = builder.finalize()
+
+        joint_idx = builder.joint_label.index("joint_test/test_joint")
+        dof_idx = builder.joint_qd_start[joint_idx]
+
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[dof_idx]), 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[dof_idx]), 3.0, places=5)
+
+    def test_planar_joint_damping_parsed_as_passive_damping(self):
+        """Keep passive and target damping separate for both planar joint axes."""
+        urdf = """
+<robot name="planar_damping_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="4.0"/>
+        <limit lower="-1.0" upper="1.0"/>
+    </joint>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(urdf, builder)
+        model = builder.finalize()
+
+        joint_idx = builder.joint_label.index("planar_damping_test/planar_joint")
+        dof_start = builder.joint_qd_start[joint_idx]
+
+        np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [4.0, 4.0])
+        np.testing.assert_allclose(model.joint_target_kd.numpy()[dof_start : dof_start + 2], [3.0, 3.0])
+
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
         builder = newton.ModelBuilder()
