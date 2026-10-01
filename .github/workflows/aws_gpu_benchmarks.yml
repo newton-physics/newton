@@ -148,9 +148,9 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-bench-${{ hashFiles('uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
+          key: warp-kernels-bench-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
           restore-keys: |
-            warp-kernels-gpu-bench-
+            warp-kernels-bench-gpu-
 
       - name: Run Benchmarks
         env:
