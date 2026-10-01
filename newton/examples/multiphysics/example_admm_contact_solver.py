@@ -39,7 +39,6 @@ def _gather_particles(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -148,8 +147,7 @@ class Example:
         self.max_tray_origin_error = 0.0
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = False
+        self.viewer.show_particles = False
         camera_target = np.array([0.0, 0.0, 0.06], dtype=np.float32)
         camera_offset = np.array([0.72, -0.9, 0.56], dtype=np.float32)
         camera_offset /= np.linalg.norm(camera_offset)
@@ -160,7 +158,7 @@ class Example:
         camera_pos = wp.vec3(float(camera_pos_np[0]), float(camera_pos_np[1]), float(camera_pos_np[2]))
         camera_target_wp = wp.vec3(float(camera_target[0]), float(camera_target[1]), float(camera_target[2]))
         self.viewer.set_camera(pos=camera_pos, pitch=pitch, yaw=yaw)
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.look_at(camera_target_wp)
 
         self.capture()
