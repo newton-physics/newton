@@ -9,7 +9,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverObservables
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,
@@ -146,6 +146,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverObservables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -159,12 +161,16 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             contacts: The contact information.
                 Defaults to `None` which means no contacts are used.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
 
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
             for simulations involving particle collisions.
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
+        self._validate_observables(observables, contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
             particle_f = None

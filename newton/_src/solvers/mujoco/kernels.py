@@ -1453,6 +1453,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
         mj_xpos: wp.array2d[wp.vec3],
         mj_xquat: wp.array2d[wp.quatf],
         njmax: int,
+        newton_to_mjw: wp.array[wp.int32],
         # outputs
         rigid_contact_count: wp.array[wp.int32],
         rigid_contact_shape0: wp.array[wp.int32],
@@ -1468,48 +1469,52 @@ def create_convert_mjw_contacts_to_newton_kernel():
         Contact positions are converted from MuJoCo world frame to Newton body-local frame.
         Contact forces are computed via ``mujoco_warp`` ``contact_force_fn``.
         """
-        contact_idx = wp.tid()
+        output_idx = wp.tid()
+        contact_idx = output_idx
         n_contacts = mj_nacon[0]
 
-        if contact_idx == 0:
+        if newton_to_mjw:
+            # External collision rows must remain untouched: their order and
+            # geometry are cached by the converter across solver substeps.
+            if output_idx >= rigid_contact_count[0] or output_idx >= newton_to_mjw.shape[0]:
+                return
+            contact_idx = newton_to_mjw[output_idx]
+        elif output_idx == 0:
             rigid_contact_count[0] = n_contacts
 
-        if contact_idx >= n_contacts:
+        if contact_idx < 0 or contact_idx >= n_contacts:
             return
 
         world = mj_contact_worldid[contact_idx]
-        geoms_mjw = mj_contact_geom[contact_idx]
+        if not newton_to_mjw:
+            geoms_mjw = mj_contact_geom[contact_idx]
+            normal = mj_contact_frame[contact_idx][0]
+            pos_world = mj_contact_pos[contact_idx]
 
-        normal = mj_contact_frame[contact_idx][0]
-        pos_world = mj_contact_pos[contact_idx]
+            rigid_contact_shape0[output_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
+            rigid_contact_shape1[output_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
+            rigid_contact_normal[output_idx] = normal
 
-        rigid_contact_shape0[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
-        rigid_contact_shape1[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
-        rigid_contact_normal[contact_idx] = normal
+            # MuJoCo stores the contact midpoint in world coordinates. Reconstruct
+            # the two surface points and express them in Newton's body frames.
+            body_a = mj_geom_bodyid[geoms_mjw[0]]
+            body_b = mj_geom_bodyid[geoms_mjw[1]]
+            X_wb_a = wp.transform_identity()
+            X_wb_b = wp.transform_identity()
+            if body_a > 0:
+                X_wb_a = wp.transform(mj_xpos[world, body_a], quat_wxyz_to_xyzw(mj_xquat[world, body_a]))
+            if body_b > 0:
+                X_wb_b = wp.transform(mj_xpos[world, body_b], quat_wxyz_to_xyzw(mj_xquat[world, body_b]))
 
-        # Convert contact position from world frame to body-local frame for each shape.
-        # MuJoCo contact.pos is the midpoint in world frame; we transform it into each
-        # body's local frame to match Newton's convention (see collide.py write_contact).
-        body_a = mj_geom_bodyid[geoms_mjw[0]]
-        body_b = mj_geom_bodyid[geoms_mjw[1]]
-
-        X_wb_a = wp.transform_identity()
-        X_wb_b = wp.transform_identity()
-        if body_a > 0:
-            X_wb_a = wp.transform(mj_xpos[world, body_a], quat_wxyz_to_xyzw(mj_xquat[world, body_a]))
-        if body_b > 0:
-            X_wb_b = wp.transform(mj_xpos[world, body_b], quat_wxyz_to_xyzw(mj_xquat[world, body_b]))
-
-        dist = mj_contact_dist[contact_idx]
-        point0_world = pos_world - 0.5 * dist * normal
-        point1_world = pos_world + 0.5 * dist * normal
-
-        rigid_contact_point0[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_a), point0_world)
-        rigid_contact_point1[contact_idx] = wp.transform_point(wp.transform_inverse(X_wb_b), point1_world)
+            dist = mj_contact_dist[contact_idx]
+            point0_world = pos_world - 0.5 * dist * normal
+            point1_world = pos_world + 0.5 * dist * normal
+            rigid_contact_point0[output_idx] = wp.transform_point(wp.transform_inverse(X_wb_a), point0_world)
+            rigid_contact_point1[output_idx] = wp.transform_point(wp.transform_inverse(X_wb_b), point1_world)
 
         if contact_force:
             # Negate: contact_force_fn returns force on geom2; Newton stores force on shape0 (geom1).
-            contact_force[contact_idx] = -wp.static(_import_contact_force_fn())(
+            contact_force[output_idx] = -wp.static(_import_contact_force_fn())(
                 mj_opt_cone,
                 mj_contact_frame,
                 mj_contact_friction,
