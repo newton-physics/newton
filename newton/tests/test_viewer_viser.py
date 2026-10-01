@@ -15,6 +15,8 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.examples import _ExampleBrowser
+from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
 from newton.viewer import ViewerViser
 
 
@@ -201,6 +203,26 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.update_gui(self.viewer._example_browser_handles["load"], True)
         self.wait_for(lambda: bool(selected))
         self.assertEqual(selected, ["module.b"])
+
+    def test_example_switch_and_reset_restore_picking(self):
+        """Restore picking and real mesh click handlers when entering a new example."""
+        browser = _ExampleBrowser(self.viewer)
+        with wp.ScopedDevice("cpu"):
+            self.viewer.picking_enabled = False
+            browser.switch_target = "newton.examples.basic.example_basic_pendulum"
+            example, example_class = browser.switch(PendulumExample)
+            self.assertIsNotNone(example)
+            self.assertTrue(self.viewer.picking_enabled)
+            example.render()
+            self.assertTrue(self.viewer._picking_click_callbacks)
+            self.viewer.picking_enabled = False
+            self.assertFalse(self.viewer._picking_click_callbacks)
+            del example
+            example = browser.reset(example_class)
+            self.assertIsNotNone(example)
+            self.assertTrue(self.viewer.picking_enabled)
+            example.render()
+            self.assertTrue(self.viewer._picking_click_callbacks)
 
     def test_gizmo_roundtrip_and_disconnect(self):
         """Mutate a caller-owned transform through real drag messages and release on disconnect."""

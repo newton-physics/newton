@@ -415,6 +415,8 @@ class _ExampleBrowser:
             self.viewer.clear_all_layers()
         else:
             self.viewer.clear_model()
+        # Each example starts with picking enabled and may opt out in its constructor.
+        self.viewer.picking_enabled = True
 
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
