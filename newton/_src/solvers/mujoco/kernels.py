@@ -2106,6 +2106,24 @@ def update_axis_properties_kernel(
 
 
 @wp.kernel
+def restore_authored_actuator_lengthrange_kernel(
+    mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
+    newton_actuator_has_lengthrange: wp.array[wp.int32],
+    newton_actuator_lengthrange: wp.array[wp.vec2],
+    actuators_per_world: wp.int32,
+    actuator_lengthrange: wp.array2d[wp.vec2],
+):
+    """Restore explicit actuator length ranges after MJWarp recomputes them."""
+    world, actuator = wp.tid()
+    actuator_idx = mjc_actuator_to_newton_actuator_idx[actuator]
+    if actuator_idx < 0:
+        return
+    world_actuator_idx = world * actuators_per_world + actuator_idx
+    if newton_actuator_has_lengthrange[world_actuator_idx]:
+        actuator_lengthrange[world, actuator] = newton_actuator_lengthrange[world_actuator_idx]
+
+
+@wp.kernel
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
