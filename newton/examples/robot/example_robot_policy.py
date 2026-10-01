@@ -134,8 +134,8 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     """Load ONNX policy and setup device buffers for the policy step."""
     print("[INFO] Loading policy from:", policy_path)
     example.policy = OnnxRuntime(policy_path, device=example.device)
-    example.policy_input_name = example.policy.input_names[0]
-    example.policy_output_name = example.policy.output_names[0]
+    example.policy_input_name = example.policy.inputs[0].name
+    example.policy_output_name = example.policy.outputs[0].name
 
     if example.state_0.joint_q is not None:
         example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])

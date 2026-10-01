@@ -1794,8 +1794,9 @@ class TestDriveNeuralMLP(unittest.TestCase):
         n = 3
         ctrl = DriveNeuralMLP(model_path=path)
         ctrl.finalize(self.device, n)
-        self.assertEqual(ctrl._network._shapes[ctrl._net_input_name], (n, 2))
-        self.assertEqual(ctrl._network._shapes[ctrl._net_output_name], (n, 1))
+        self.assertEqual(ctrl._net_input.shape, (n, 2))
+        outputs = ctrl._network({ctrl._net_input_name: ctrl._net_input})
+        self.assertEqual(outputs[ctrl._net_output_name].shape, (n, 1))
 
         indices = wp.array([0, 1, 2], dtype=wp.uint32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
