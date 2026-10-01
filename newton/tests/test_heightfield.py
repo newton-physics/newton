@@ -346,6 +346,32 @@ class TestHeightfield(unittest.TestCase):
         runtime_pos = solver.mjw_model.geom_pos.numpy().reshape(-1, mj_model.ngeom, 3)[0, geom]
         np.testing.assert_allclose(runtime_pos, expected_pos, atol=1e-6)
 
+    def test_solver_mujoco_hfield_runtime_resize_is_rejected(self):
+        """Reject heightfield resizing because its MuJoCo heightfield is compiled during construction."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                elevation = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+                hfield_shape = builder.add_shape_heightfield(
+                    heightfield=Heightfield(data=elevation, nrow=2, ncol=2, hx=1.0, hy=1.0, min_z=-0.5, max_z=0.5)
+                )
+                sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+                builder.add_shape_sphere(body=sphere_body, radius=0.1)
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+
+                scales = model.shape_scale.numpy()
+                scales[hfield_shape] = (1.0, 1.0, 2.0)
+                model.shape_scale.assign(scales)
+
+                with self.assertRaisesRegex(ValueError, "Recreate the solver after resizing"):
+                    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
     def test_solver_mujoco_sphere_settles_at_negative_min_z(self):
         """Settle a sphere at the bottom of a bowl whose lowest point is below the heightfield origin."""
         try:
