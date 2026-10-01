@@ -837,11 +837,11 @@ class ModelBuilder:
         sdf_target_voxel_size: float | None = None
         """Target voxel size for sparse SDF grid.
         If provided, enables primitive SDF generation and takes precedence over
-        sdf_max_resolution. Requires GPU since wp.Volume only supports CUDA."""
+        sdf_max_resolution. Requires finalizing on CUDA, including for particle-only boxes."""
         sdf_max_resolution: int | None = None
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables primitive SDF
-        generation. Requires GPU since wp.Volume only supports CUDA."""
+        generation. Requires finalizing on CUDA, including for particle-only boxes."""
         force_sdf: bool = False
         """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
         when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
@@ -895,6 +895,12 @@ class ModelBuilder:
 
             Sets SDF and hydroelastic options in one place. Call this when the shape
             should use SDF mesh-mesh collision and optionally hydroelastic contacts.
+
+            Explicit box SDF requests are honored when either shape or particle collisions
+            are enabled. Particle and full-surface contacts with boxes still use analytic
+            distances; requesting a texture does not change that collision path. For CPU
+            particle-only boxes, leave :attr:`sdf_max_resolution` and
+            :attr:`sdf_target_voxel_size` unset instead of requesting an unused texture.
 
             Args:
                 max_resolution: Maximum dimension for sparse SDF grid (must be divisible by 8).
@@ -13459,18 +13465,11 @@ class ModelBuilder:
                                 tex_data.subgrid_start_slots if c_tex is not None else None
                             )
 
-            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
-            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
-            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
-            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
-            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
-            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
-            if any(
-                self.shape_force_sdf[i]
-                or self.shape_sdf_max_resolution[i] is not None
-                or self.shape_sdf_target_voxel_size[i] is not None
-                for i in range(len(self.shape_type))
-            ):
+            # Handle force_sdf mesh/convex requests not provisioned by the explicit-SDF pass above.
+            # Build in unscaled mesh space (scale_baked=False); eval_shape_sdf applies shape scale
+            # at query time. Construction failures leave the SDF unprovisioned, which a full-surface
+            # CollisionPipeline rejects rather than silently degrading.
+            if any(self.shape_force_sdf):
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
                     if (
@@ -13478,11 +13477,7 @@ class ModelBuilder:
                         or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
                         or not (shape_flags_list[i] & ShapeFlags.COLLIDE_PARTICLES)
                         or self.shape_source[i] is None
-                        or not (
-                            self.shape_force_sdf[i]
-                            or self.shape_sdf_max_resolution[i] is not None
-                            or self.shape_sdf_target_voxel_size[i] is not None
-                        )
+                        or not self.shape_force_sdf[i]
                     ):
                         continue
                     src = self.shape_source[i]

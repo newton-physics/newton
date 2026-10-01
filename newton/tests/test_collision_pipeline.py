@@ -4647,6 +4647,7 @@ def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
             cfg.configure_sdf(force_sdf=provisioning != "deferred")
             shape = builder.add_shape_mesh(body=-1, mesh=mesh, scale=(1.0, 1.0, 2.0), cfg=cfg)
             if provisioning == "deferred":
+                # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
                 builder.shape_sdf_max_resolution[shape] = 32
             builder.add_cloth_grid(
                 pos=wp.vec3(-0.2, -0.2, 1.03),
@@ -4682,10 +4683,62 @@ def test_particle_only_mesh_sdf_emits_full_surface_contacts(test, device):
             np.testing.assert_allclose(surface_z, 1.0, atol=5.0e-3)
 
 
+def test_particle_only_convex_sdf_preserves_voxel_size(test, device):
+    """Preserve deferred SDF resolution and distances for a scaled particle-only convex mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
+    scale = np.array([1.0, 1.0, 2.0], dtype=np.float32)
+    target_voxel_size = 0.05
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False, has_particle_collision=True)
+    shape = builder.add_shape_convex_hull(body=-1, mesh=mesh, scale=tuple(scale), cfg=cfg)
+    # Exercise retained internal provisioning; ShapeConfig rejects mesh resolution settings.
+    builder.shape_sdf_target_voxel_size[shape] = target_voxel_size
+    model = builder.finalize(device=device)
+
+    convex_mesh = model._mesh_keep_alive[0]
+    test.assertEqual(convex_mesh.points.shape[0], 8)
+    test.assertLess(int(convex_mesh.indices.numpy().max()), 8)
+    test.assertIsNone(mesh.sdf)
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+    sdf = model._texture_sdf_data.numpy()[sdf_idx]
+    # The requested voxel size is in meters, including the shape's nonuniform scale.
+    physical_voxel_size = sdf["voxel_size"] * (1.0 if sdf["scale_baked"] else scale)
+    test.assertLessEqual(float(np.max(physical_voxel_size)), target_voxel_size + 1.0e-6)
+
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+    for distance in (-0.03, 0.03):
+        with test.subTest(distance=distance):
+            wp.launch(
+                _eval_shape_sdf_kernel,
+                dim=1,
+                inputs=[
+                    int(GeoType.CONVEX_MESH),
+                    wp.vec3(*scale),
+                    wp.vec3(0.0, 0.0, 1.0 + distance),
+                    sdf_idx,
+                    model._texture_sdf_data,
+                ],
+                outputs=[out_phi, out_grad],
+                device=device,
+            )
+            test.assertAlmostEqual(float(out_phi.numpy()[0]), distance, delta=5.0e-3)
+            np.testing.assert_allclose(out_grad.numpy()[0], [0.0, 0.0, 1.0], atol=5.0e-3)
+
+
 add_function_test(
     TestFullSurfaceSoftContact,
     "test_particle_only_mesh_sdf_emits_full_surface_contacts",
     test_particle_only_mesh_sdf_emits_full_surface_contacts,
+    devices=get_cuda_test_devices(),
+)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_particle_only_convex_sdf_preserves_voxel_size",
+    test_particle_only_convex_sdf_preserves_voxel_size,
     devices=get_cuda_test_devices(),
 )
 
