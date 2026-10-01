@@ -17,7 +17,7 @@ from newton._src.geometry.contact_reduction_global import (
 from newton._src.geometry.contact_reduction_hydroelastic import HydroelasticContactReduction
 from newton.solvers import SolverSemiImplicit
 from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 @wp.kernel
@@ -185,6 +185,39 @@ def test_coupled_entry_contacts_keep_reduction_loss(test, device):
     test.assertEqual(int(coupled.entry_contacts("all", other)._reduction_overflow.numpy()[0]), 0)
 
 
+def test_reducer_failures_reach_solver_status(test, device):
+    """Latch FeatherPGS capacity status for every world when the reducer dropped contact candidates."""
+    model = _boxes_on_mesh_model(device)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    reference = newton.CollisionPipeline(model)
+    reference_contacts = reference.contacts()
+    reference.collide(state_0, reference_contacts)
+    candidate_count = int(reference.narrow_phase.global_contact_reducer.contact_count.numpy()[0])
+
+    pipeline = newton.CollisionPipeline(model, max_triangle_pairs=candidate_count - 2, verify_buffers=False)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverFeatherPGS(model, warn_constraint_overflow=False)
+
+    # A lossless pass leaves the status clear.
+    solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)
+    test.assertFalse(solver.constraint_overflow.numpy().any())
+    solver.check_constraint_capacity()
+
+    pipeline.collide(state_0, contacts)
+    test.assertEqual(int(contacts._reduction_overflow.numpy()[0]), 1)
+    solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+    test.assertTrue(solver.constraint_overflow.numpy().all())
+    with test.assertRaisesRegex(RuntimeError, "capacity exceeded"):
+        solver.check_constraint_capacity()
+
+    # The status latches until the world is reset, even after a lossless pass.
+    solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)
+    test.assertTrue(solver.constraint_overflow.numpy().all())
+    solver.reset(state_0)
+    test.assertFalse(solver.constraint_overflow.numpy().any())
+
+
 class TestContactReductionOverflow(unittest.TestCase):
     pass
 
@@ -219,6 +252,12 @@ add_function_test(
     "test_coupled_entry_contacts_keep_reduction_loss",
     test_coupled_entry_contacts_keep_reduction_loss,
     devices=devices,
+)
+add_function_test(
+    TestContactReductionOverflow,
+    "test_reducer_failures_reach_solver_status",
+    test_reducer_failures_reach_solver_status,
+    devices=get_cuda_test_devices(),
 )
 
 if __name__ == "__main__":
