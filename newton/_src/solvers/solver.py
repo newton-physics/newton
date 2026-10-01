@@ -590,9 +590,9 @@ class SolverBase:
         internal buffers without having to recreate the whole solver object.
         Solver implementations must handle each relevant narrow DOF flag:
         checking ``JOINT_DOF_PROPERTIES`` alone does not detect them. The broad
-        flag covers force, inertial, and reference properties, and the force
-        flag also covers friction/damping. Solvers may ignore categories they
-        do not cache or support, but should preserve unrelated pending edits.
+        flag covers force, inertial, and reference properties; friction/damping
+        belongs to the force category. Solvers may ignore categories they do
+        not cache or support, but should preserve unrelated pending edits.
         Valid flags are:
 
         * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms, axes, or coordinates
@@ -603,10 +603,7 @@ class SolverBase:
           target gains/modes, effort limits, passive stiffness, or limit
           coefficients/bounds have changed.
         * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
-        * ``ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES``: Joint friction,
-          passive damping, or their associated solver parameters have changed.
-          This excludes target gains, passive stiffness, and joint limits.
-        * ``ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES``: Joint reference poses
+        * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
           or spring references have changed.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.

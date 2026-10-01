@@ -4140,6 +4140,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_physical_meaninertia: wp.array[float] | None = None
         self._notify_body_flags: wp.array[wp.int32] | None = None
         self._notify_joint_armature: wp.array[float] | None = None
+        self._joint_limit_solref_snapshot: wp.array[wp.vec2] | None = None
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
@@ -4227,9 +4228,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._cone_shape_indices = np.empty(0, dtype=np.int32)
         self._cone_shape_scale_snapshot = np.empty((0, 3), dtype=np.float32)
 
-        # Track changes to generic gains separately from their numerical
-        # values. Imported MJCF defaults may use any builder configuration, so
-        # no particular stiffness/damping pair can serve as a provenance marker.
+        # Retain published gains/modes for constant refreshes and track edits
+        # separately from their numerical values. Imported MJCF defaults may use
+        # any builder configuration, so no particular gain pair marks provenance.
         self._joint_limit_ke_snapshot = (
             np.array(model.joint_limit_ke.numpy(), copy=True) if model.joint_limit_ke is not None else None
         )
@@ -4923,10 +4924,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         need_const_fixed = False
         need_const_0 = False
         update_force = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
-        update_friction_damping = update_force or bool(flags & ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
         update_inertia = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES))
         update_configuration = bool(
-            flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES)
+            flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         )
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
@@ -4955,9 +4955,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_joint_dof_configuration_properties()
             self._invalidate_contact_fast_path()
             need_const_0 = True
-        if update_friction_damping:
-            self._update_joint_dof_friction_damping_properties()
         if update_force:
+            self._update_joint_dof_friction_damping_properties()
+            self._publish_joint_limit_properties()
             self._update_joint_dof_force_properties()
             # Defer host validation during capture until the next eager solref update.
             self._raw_solreflimit_validated = False
@@ -5005,7 +5005,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 joint_target = self.mjc_actuator_ctrl_source.numpy() == 0
                 self.mj_model.actuator_gainprm[joint_target] = self.mjw_model.actuator_gainprm.numpy()[0, joint_target]
                 self.mj_model.actuator_biasprm[joint_target] = self.mjw_model.actuator_biasprm.numpy()[0, joint_target]
-            if update_friction_damping:
+            if update_force:
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
                 self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
                 self.mj_model.dof_solimp[:] = self.mjw_model.dof_solimp.numpy()[0]
@@ -8359,6 +8359,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Constant refreshes must use published properties, not pending model edits.
         self._notify_body_flags = wp.clone(self.model.body_flags)
         self._notify_joint_armature = wp.clone(self.model.joint_armature)
+        solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
+        self._joint_limit_solref_snapshot = wp.clone(solref) if solref is not None else None
         if not self.use_mujoco_cpu:
             self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
             self._notify_physical_meaninertia = wp.empty_like(self.mjw_model.stat.meaninertia)
@@ -9264,45 +9266,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_solref_from_invweight0(self):
-        """Scale joint-limit ``jnt_solref`` using ``dof_invweight0`` and ``jnt_solimp``.
-
-        MuJoCo's limit-constraint solver computes an effective stiffness
-        ``k_eff = k / (invweight * (1 - dmax))`` where ``invweight`` is the
-        owning DOF's ``dof_invweight0`` and ``dmax = solimp[1]``. Newton's
-        user-facing ``joint_limit_ke``/``joint_limit_kd`` are force-space
-        quantities, so ``jnt_solref`` has to be pre-scaled by
-        ``dof_invweight0 * (1 - dmax)`` for the downstream ``k_eff`` to
-        match the user's configured force-space stiffness and damping.
-
-        MJCF import stores authored ``solreflimit`` values separately in
-        ``mujoco.solreflimit``. When present, those raw MuJoCo values are
-        forwarded unchanged so imported MuJoCo assets keep native dynamics.
-        Joints that rely on MuJoCo's implicit default ``(0.02, 1.0)`` keep that
-        native default until ``joint_limit_ke`` / ``joint_limit_kd`` are changed.
-
-        Run after publishing ``jnt_solimp`` and after any requested constant
-        recomputation. Force-only notifications reuse the cached
-        ``dof_invweight0``; inertia and configuration updates refresh it via
-        ``set_const_0`` / ``mj_setConst`` first.
-
-        ``geom_solref`` is **not** scaled the same way: MuJoCo mixes the
-        two contacting geoms' ``solref`` linearly in ``(timeconst,
-        dampratio)`` space, which is non-linear in ``(ke, kd)``. Pre-scaling
-        by ``body_invweight0 * (1 - dmax)`` works for a single dynamic
-        geom but destroys the stiffness of dynamic-vs-static contacts,
-        because the static geom keeps ``factor = 1`` and the mixed
-        stiffness collapses. Shape-material contact stiffness therefore
-        stays on MuJoCo's existing (unscaled) pathway.
-        """
-        njnt = self.mjc_jnt_to_newton_dof.shape[1]
-        if njnt == 0 or self.model.joint_limit_ke is None:
+    def _publish_joint_limit_properties(self):
+        """Retain notified limit parameters and promote edited MJCF-default gains."""
+        if self.model.joint_dof_count == 0:
             return
-
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        joint_limit_solref = getattr(mujoco_attrs, "solreflimit", None) if mujoco_attrs is not None else None
-        joint_limit_solref_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
-
+        attrs = getattr(self.model, "mujoco", None)
+        joint_limit_solref_mode = getattr(attrs, "solreflimit_mode", None)
         if self.use_mujoco_cpu:
             joint_limit_ke_np = self.model.joint_limit_ke.numpy()
             joint_limit_kd_np = self.model.joint_limit_kd.numpy()
@@ -9336,6 +9305,65 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 np.array(solref_mode_np, copy=True) if solref_mode_np is not None else None
             )
 
+        elif joint_limit_solref_mode is not None:
+            wp.launch(
+                update_joint_limit_solref_mode_kernel,
+                dim=self.model.joint_dof_count,
+                inputs=[
+                    self.model.joint_limit_ke,
+                    self.model.joint_limit_kd,
+                    joint_limit_solref_mode,
+                    self._joint_limit_ke_snapshot,
+                    self._joint_limit_kd_snapshot,
+                    self._solreflimit_mode_snapshot,
+                ],
+                device=self.model.device,
+            )
+
+        else:
+            wp.copy(self._joint_limit_ke_snapshot, self.model.joint_limit_ke)
+            wp.copy(self._joint_limit_kd_snapshot, self.model.joint_limit_kd)
+        if self._joint_limit_solref_snapshot is not None:
+            wp.copy(self._joint_limit_solref_snapshot, attrs.solreflimit)
+
+    def _update_solref_from_invweight0(self):
+        """Scale joint-limit ``jnt_solref`` using ``dof_invweight0`` and ``jnt_solimp``.
+
+        MuJoCo's limit-constraint solver computes an effective stiffness
+        ``k_eff = k / (invweight * (1 - dmax))`` where ``invweight`` is the
+        owning DOF's ``dof_invweight0`` and ``dmax = solimp[1]``. Newton's
+        user-facing ``joint_limit_ke``/``joint_limit_kd`` are force-space
+        quantities, so ``jnt_solref`` has to be pre-scaled by
+        ``dof_invweight0 * (1 - dmax)`` for the downstream ``k_eff`` to
+        match the user's configured force-space stiffness and damping.
+
+        MJCF import stores authored ``solreflimit`` values separately in
+        ``mujoco.solreflimit``. When present, those raw MuJoCo values are
+        forwarded unchanged so imported MuJoCo assets keep native dynamics.
+        Joints that rely on MuJoCo's implicit default ``(0.02, 1.0)`` keep that
+        native default until ``joint_limit_ke`` / ``joint_limit_kd`` are changed.
+
+        Run after publishing ``jnt_solimp`` and after any requested constant
+        recomputation, using only the last published limit parameters.
+        Force-only notifications reuse the cached ``dof_invweight0``; inertia
+        and configuration updates refresh it via ``set_const_0`` / ``mj_setConst`` first.
+
+        ``geom_solref`` is **not** scaled the same way: MuJoCo mixes the
+        two contacting geoms' ``solref`` linearly in ``(timeconst,
+        dampratio)`` space, which is non-linear in ``(ke, kd)``. Pre-scaling
+        by ``body_invweight0 * (1 - dmax)`` works for a single dynamic
+        geom but destroys the stiffness of dynamic-vs-static contacts,
+        because the static geom keeps ``factor = 1`` and the mixed
+        stiffness collapses. Shape-material contact stiffness therefore
+        stays on MuJoCo's existing (unscaled) pathway.
+        """
+        njnt = self.mjc_jnt_to_newton_dof.shape[1]
+        if njnt == 0 or self.model.joint_limit_ke is None:
+            return
+
+        joint_limit_solref = self._joint_limit_solref_snapshot
+        joint_limit_solref_mode = self._solreflimit_mode_snapshot
+
         # Validate authored RAW ``mujoco.solreflimit`` values once per notify.
         # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)`` for the
         # standard interpretation or ``(< 0, < 0)`` for the direct
@@ -9353,7 +9381,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             and not self._raw_solreflimit_validated
             and not self.model.device.is_capturing
         ):
-            mode_np = joint_limit_solref_mode.numpy()
+            mode_np = joint_limit_solref_mode if self.use_mujoco_cpu else joint_limit_solref_mode.numpy()
             raw_np = joint_limit_solref.numpy()
             raw_mask = mode_np == SOLREF_MODE_RAW
             if np.any(raw_mask):
@@ -9379,12 +9407,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:
-            joint_limit_ke = joint_limit_ke_np
-            joint_limit_kd = joint_limit_kd_np
+            joint_limit_ke = self._joint_limit_ke_snapshot
+            joint_limit_kd = self._joint_limit_kd_snapshot
             joint_limit_solref_np = joint_limit_solref.numpy() if joint_limit_solref is not None else None
-            joint_limit_solref_mode_np = (
-                joint_limit_solref_mode.numpy() if joint_limit_solref_mode is not None else None
-            )
+            joint_limit_solref_mode_np = joint_limit_solref_mode
             jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
             jnt_solref = np.array(self.mj_model.jnt_solref, dtype=np.float64, copy=True)
 
@@ -9433,29 +9459,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjw_model.jnt_solref.assign(jnt_solref.reshape(1, njnt, 2))
             return
 
-        if joint_limit_solref_mode is not None:
-            wp.launch(
-                update_joint_limit_solref_mode_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
-                    self.model.joint_limit_ke,
-                    self.model.joint_limit_kd,
-                    joint_limit_solref_mode,
-                    self._joint_limit_ke_snapshot,
-                    self._joint_limit_kd_snapshot,
-                    self._solreflimit_mode_snapshot,
-                ],
-                device=self.model.device,
-            )
-
         nworld = self.mjc_jnt_to_newton_dof.shape[0]
         wp.launch(
             update_jnt_solref_from_invweight0_kernel,
             dim=(nworld, njnt),
             inputs=[
                 self.mjc_jnt_to_newton_dof,
-                self.model.joint_limit_ke,
-                self.model.joint_limit_kd,
+                self._joint_limit_ke_snapshot,
+                self._joint_limit_kd_snapshot,
                 joint_limit_solref,
                 joint_limit_solref_mode,
                 self.mjw_model.jnt_dofadr,

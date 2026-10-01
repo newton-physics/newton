@@ -101,7 +101,7 @@ at the solver boundary:
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
-:attr:`~newton.ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES` or the broad
+:attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` or the broad
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
@@ -245,7 +245,7 @@ and eager :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` or
 pending until the next eager solref update. Graph replay does not validate
 values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
 either force-update flag outside capture after reassigning raw values to
-check them. Friction/damping-only notifications do not validate joint-limit
+check them. Joint-transform notifications do not validate joint-limit
 parameters or consume pending validation.
 
 On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
@@ -1025,20 +1025,14 @@ When sleeping is enabled, updated parameters wake all worlds. The MuJoCo Warp
 path supports CUDA graph capture; the MuJoCo CPU backend copies values to its
 host model and cannot be captured.
 
-For per-step friction and damping alone, use
-:attr:`~newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES`. It publishes
-``joint_friction``, ``joint_damping``, ``mujoco.solreffriction``, and
-``mujoco.solimpfriction`` with a single scatter kernel on MuJoCo Warp when
-sleeping is disabled. It skips gain, stiffness, and joint-limit updates as
-well as constant recomputation. Sleeping worlds are
-still awakened when sleeping is enabled. Both broader DOF flags include this
-update; combining flags publishes the shared fields only once.
-
 Use :attr:`~newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES` for
 :attr:`~newton.Model.joint_armature` changes. Reference-pose changes, including
 MuJoCo ``dof_ref`` and ``dof_springref``, use
-:attr:`~newton.ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES`. These paths recompute constants;
-reference updates also shift limit ranges to the new reference.
+:attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. These paths recompute constants;
+reference updates also shift limit ranges to the new reference. Both flags
+are intended for reset-time or domain-randomization changes. Constant
+recomputation is substantially more expensive than force updates, so avoid
+using either flag every simulation step.
 :attr:`~newton.ModelFlags.JOINT_PROPERTIES` only publishes joint transforms and
 axes, without recomputing constants or applying pending reference edits. Combine
 flags with ``|`` when several categories change. The existing
@@ -1054,7 +1048,7 @@ arrays ``friction_budget`` and ``damping_budget`` with one entry per Newton DOF:
     with wp.ScopedCapture(device=model.device) as capture:
         wp.copy(model.joint_friction, friction_budget)
         wp.copy(model.joint_damping, damping_budget)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
         solver.step(state_in, state_out, control, contacts, dt)
 
 The budget computation can precede these copies in the same graph. For an

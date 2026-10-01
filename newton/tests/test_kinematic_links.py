@@ -178,8 +178,6 @@ class TestKinematicLinks(unittest.TestCase):
         model.joint_damping.fill_(0.2)
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
         self.assertFalse(solver._mass_matrix_dirty)
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
-        self.assertFalse(solver._mass_matrix_dirty)
         model.joint_armature.fill_(2.0)
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
         solver.step(state_in, state_out, control, None, 0.01)

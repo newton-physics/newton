@@ -14,9 +14,7 @@ class ModelFlags(IntEnum):
 
     Categories overlap semantically, but each flag has its own bit. The broad
     :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
-    updates. :attr:`JOINT_DOF_FORCE_PROPERTIES` includes
-    :attr:`JOINT_DOF_FRICTION_DAMPING_PROPERTIES`. Testing a broad bit alone
-    does not detect a narrower notification.
+    updates. Testing the broad bit alone does not detect a narrower notification.
     """
 
     JOINT_PROPERTIES = 1 << 0
@@ -50,13 +48,10 @@ class ModelFlags(IntEnum):
     """Indicates joint force updates: friction, damping, target gains/modes, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
 
     JOINT_DOF_INERTIAL_PROPERTIES = 1 << 10
-    """Indicates joint inertial property updates: joint_armature."""
+    """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
-    JOINT_DOF_FRICTION_DAMPING_PROPERTIES = 1 << 11
-    """Indicates joint_friction, joint_damping, and associated solver parameter updates. Excludes target gains, passive stiffness, limits, armature, and reference poses."""
-
-    JOINT_DOF_REFERENCE_PROPERTIES = 1 << 12
-    """Indicates joint reference-pose and spring-reference updates. Excludes joint transforms, force parameters, and armature."""
+    JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
+    """Indicates joint reference-pose and spring-reference updates. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -70,8 +65,7 @@ class ModelFlags(IntEnum):
         | ACTUATOR_PROPERTIES
         | JOINT_DOF_FORCE_PROPERTIES
         | JOINT_DOF_INERTIAL_PROPERTIES
-        | JOINT_DOF_FRICTION_DAMPING_PROPERTIES
-        | JOINT_DOF_REFERENCE_PROPERTIES
+        | JOINT_REFERENCE_POSE_PROPERTIES
     )
     """Indicates all property updates."""
 

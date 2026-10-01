@@ -2993,19 +2993,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 frequency == model_frequency.JOINT_DOF and attribute.name != "joint_armature" and not configuration_dof
             ) or attribute.name == "joint_target_q":
                 return True
-        if flags & int(ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES) and attribute.name in (
+        if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
             "mujoco:dof_ref",
             "mujoco:dof_springref",
         ):
             return True
         if flags & int(ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES) and attribute.name == "joint_armature":
-            return True
-        if flags & int(ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES) and attribute.name in (
-            "joint_friction",
-            "joint_damping",
-            "mujoco:solreffriction",
-            "mujoco:solimpfriction",
-        ):
             return True
         if flags & int(ModelFlags.SHAPE_PROPERTIES):
             if frequency == model_frequency.SHAPE or "pair_" in attribute.name:

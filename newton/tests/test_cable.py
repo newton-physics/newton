@@ -6346,8 +6346,6 @@ def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, devic
     model.joint_target_ke.fill_(1001.0)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
     np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [999.0, 999.0])
-    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
-    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [999.0, 999.0])
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
     np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [1001.0, 1001.0])
 

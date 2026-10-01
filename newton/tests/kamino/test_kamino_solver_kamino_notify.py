@@ -166,6 +166,30 @@ def _assert_model_arrays_unchanged(
 
 
 class TestKaminoNotifyModelChanged(unittest.TestCase):
+    def test_joint_transforms_remain_capture_safe_without_host_validation(self):
+        """Publish joint transforms eagerly and during capture without host structural checks."""
+        if not wp.get_cuda_device_count():
+            self.skipTest("CUDA capture requires a CUDA device")
+        with wp.ScopedDevice("cuda:0"):
+            model = _build_revolute()
+            solver = SolverKamino(model)
+            body_com = model.body_com.numpy()[0]
+            model.joint_X_c.assign([wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity())])
+            with mock.patch.object(
+                solver._kamino, "validate_model_structural_updates", side_effect=AssertionError("host validation")
+            ):
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                np.testing.assert_allclose(
+                    solver._model_kamino.joints.F_r_Fj.numpy()[0], [0.2, 0.0, 0.0] - body_com, atol=1e-6
+                )
+                with wp.ScopedCapture() as capture:
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+                model.joint_X_c.assign([wp.transform(wp.vec3(0.4, 0.0, 0.0), wp.quat_identity())])
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(
+                    solver._model_kamino.joints.F_r_Fj.numpy()[0], [0.4, 0.0, 0.0] - body_com, atol=1e-6
+                )
+
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -184,7 +208,6 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             newton.ModelFlags.JOINT_DOF_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES,
-            newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES,
             newton.ModelFlags.ACTUATOR_PROPERTIES,
             newton.ModelFlags.CONSTRAINT_PROPERTIES,
             newton.ModelFlags.TENDON_PROPERTIES,
@@ -766,18 +789,17 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         for flag in (
             newton.ModelFlags.JOINT_DOF_PROPERTIES,
             newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
-            newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES,
         ):
             with self.subTest(flag=flag), self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
                 solver.notify_model_changed(flag)
 
-    def test_friction_damping_flag_checks_damping_allocation(self):
+    def test_force_flag_checks_damping_allocation(self):
         """Reject damping edits that require new dynamic constraint rows with the narrow flag."""
         model = _build_revolute()
         solver = SolverKamino(model)
         model.joint_damping.fill_(1.0)
         with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
     def test_enabling_friction_on_unallocated_axis_raises(self):
         """Reject friction enabled on an axis without a preallocated row."""

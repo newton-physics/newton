@@ -1174,8 +1174,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_DOF_PROPERTIES
             | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-            | ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES
-            | ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES
+            | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
@@ -1468,14 +1467,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 ModelFlags.JOINT_DOF_PROPERTIES
                 | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
                 | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-                | ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES
             )
         )
         check_actuation = bool(
             flags
             & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
         )
-        check_axes = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES))
+        # Keep transform-only notifications free of host validation, as before.
+        check_axes = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
         if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
