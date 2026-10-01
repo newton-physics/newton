@@ -207,7 +207,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         bc[i2] = lambda2
 
         mask = (wp.uint32(1) << wp.uint32(i0)) | (wp.uint32(1) << wp.uint32(i1)) | (wp.uint32(1) << wp.uint32(i2))
-        return lambda0 * a + lambda1 * b + lambda2 * c, bc, mask
+        # Project onto the face directly. Summing large weighted vertices can
+        # introduce tangential cancellation error that dominates a small gap.
+        return normal * (wp.dot(normal, a) * it), bc, mask
 
     @wp.func
     def determinant(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> float:
