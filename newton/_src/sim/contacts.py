@@ -437,6 +437,7 @@ class Contacts:
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
             First three entries: linear force [N]; last three entries: torque (moment) [N·m].
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+            :class:`~newton.solvers.SolverFeatherPGS` fills only the linear force and leaves the torque zero.
 
             This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
             """

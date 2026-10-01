@@ -1,0 +1,222 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Joint-limit row activation and the per-world row-family layout of SolverFeatherPGS."""
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton
+from newton._src.core.types import MAXVAL
+from newton._src.solvers.feather_pgs.kernels import (
+    PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_FRICTION,
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+)
+from newton._src.solvers.feather_pgs.solver_feather_pgs import _get_joint_limit_warp_kernel
+from newton.solvers import SolverFeatherPGS
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+
+
+def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0):
+    """Build the joint-limit rows of one single-DOF articulation and return ``(J, phi)``."""
+    max_constraints = 8
+    world_slot_counter = wp.zeros((1,), dtype=wp.int32, device=device)
+    J_group = wp.zeros((1, max_constraints, 1), dtype=wp.float32, device=device)
+    world_phi = wp.zeros((1, max_constraints), dtype=wp.float32, device=device)
+    kernel = _get_joint_limit_warp_kernel(1, wp.get_device(device).arch, 1)
+    wp.launch_tiled(
+        kernel,
+        dim=[1],
+        inputs=[
+            1,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([lower], dtype=wp.float32, device=device),
+            wp.array([upper], dtype=wp.float32, device=device),
+            wp.array([q], dtype=wp.float32, device=device),
+            gap,
+            max_constraints,
+        ],
+        outputs=[
+            world_slot_counter,
+            J_group,
+            wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
+            wp.zeros((1, max_constraints), dtype=wp.int32, device=device),
+            wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
+            world_phi,
+            wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
+        ],
+        block_dim=32,
+        device=device,
+    )
+    count = int(world_slot_counter.numpy()[0])
+    return J_group.numpy()[0, :count, 0].tolist(), world_phi.numpy()[0, :count].tolist()
+
+
+def _make_layout_run(device, *, enable_joint_velocity_limits=True):
+    """Build a scene that produces every row family: limits, velocity limits and contacts."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverFeatherPGS.register_custom_attributes(builder)
+    builder.default_shape_cfg.density = 1000.0
+    builder.default_shape_cfg.mu = 0.5
+    builder.default_shape_cfg.margin = 0.0
+    builder.default_shape_cfg.gap = 0.0
+
+    link = builder.add_link()
+    builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=link,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform(wp.vec3(-1.0, 0.0, 0.05), wp.quat_identity()),
+        limit_lower=-0.1,
+        limit_upper=0.1,
+    )
+    builder.add_articulation([joint])
+    builder.joint_q[0] = 0.2
+
+    free_body = builder.add_body(
+        xform=wp.transform(wp.vec3(1.0, 0.0, 0.05), wp.quat_identity()),
+        custom_attributes={
+            "rigid_body_max_linear_velocity": 1.0,
+            "rigid_body_max_angular_velocity": 1.0,
+        },
+    )
+    builder.add_shape_box(free_body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+    velocity_limits = np.full(model.joint_dof_count, np.inf, dtype=np.float32)
+    velocity_limits[0] = 0.25
+    model.joint_velocity_limit.assign(velocity_limits)
+    solver = SolverFeatherPGS(
+        model,
+        enable_joint_velocity_limits=enable_joint_velocity_limits,
+        velocity_limit_activation_fraction=0.5,
+        dense_max_constraints=64,
+        mf_max_constraints=64,
+        pgs_iterations=0,
+    )
+    state_0, state_1 = model.state(), model.state()
+    joint_qd = state_0.joint_qd.numpy()
+    joint_qd[0] = 0.5
+    free_dof = int(model.joint_qd_start.numpy()[1])
+    joint_qd[free_dof] = 1.5
+    joint_qd[free_dof + 3] = 1.5
+    state_0.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, model.control(), contacts, 1.0 / 60.0)
+    return solver
+
+
+def test_combined_row_families_follow_the_documented_layout(test, device):
+    """Lay out dense rows as limits, velocity limits, contacts; free-body rows as contacts, velocity limits."""
+    solver = _make_layout_run(device)
+    dense_count = int(solver.constraint_count.numpy()[0])
+    dense_types = solver.row_type.numpy()[0, :dense_count]
+    limit_rows = np.flatnonzero(dense_types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+    velocity_limit_rows = np.flatnonzero(dense_types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    contact_rows = np.flatnonzero(
+        (dense_types == PGS_CONSTRAINT_TYPE_CONTACT) | (dense_types == PGS_CONSTRAINT_TYPE_FRICTION)
+    )
+    test.assertGreater(limit_rows.size, 0)
+    test.assertGreater(velocity_limit_rows.size, 0)
+    test.assertGreater(contact_rows.size, 0)
+    test.assertLess(limit_rows.max(), velocity_limit_rows.min())
+    test.assertLess(velocity_limit_rows.max(), contact_rows.min())
+
+    mf_count = int(solver.mf_constraint_count.numpy()[0])
+    mf_types = solver.mf_row_type.numpy()[0, :mf_count]
+    mf_contact_end = int(solver.mf_contact_rows_end.numpy()[0])
+    mf_contacts = np.flatnonzero((mf_types == PGS_CONSTRAINT_TYPE_CONTACT) | (mf_types == PGS_CONSTRAINT_TYPE_FRICTION))
+    mf_velocity_limits = np.flatnonzero(mf_types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    test.assertGreater(mf_contacts.size, 0)
+    test.assertGreater(mf_velocity_limits.size, 0)
+    test.assertTrue(np.all(mf_contacts < mf_contact_end))
+    test.assertTrue(np.all(mf_velocity_limits >= mf_contact_end))
+
+
+def test_velocity_limit_rows_require_the_option(test, device):
+    """Build no joint velocity-limit rows unless velocity limits are enabled."""
+    solver = _make_layout_run(device, enable_joint_velocity_limits=False)
+    dense_count = int(solver.constraint_count.numpy()[0])
+    dense_types = solver.row_type.numpy()[0, :dense_count]
+    test.assertEqual(int(np.sum(dense_types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)), 0)
+    test.assertGreater(int(np.sum(dense_types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)), 0)
+
+
+def test_finite_gap_builds_only_near_limit_rows(test, device):
+    """Create a limit row only within the activation gap of that limit."""
+    test.assertEqual(_built_rows(device, 0.0, gap=0.2), ([], []))
+    jacobian, phi = _built_rows(device, -0.85, gap=0.2)
+    test.assertEqual(jacobian, [1.0])
+    test.assertAlmostEqual(phi[0], 0.15, places=6)
+    jacobian, phi = _built_rows(device, 0.85, gap=0.2)
+    test.assertEqual(jacobian, [-1.0])
+    test.assertAlmostEqual(phi[0], 0.15, places=6)
+
+
+def test_finite_gap_does_not_activate_unlimited_sentinel_limits(test, device):
+    """Treat the builder's unlimited sentinel as no limit."""
+    test.assertEqual(_built_rows(device, 0.0, gap=0.2, lower=-MAXVAL, upper=MAXVAL), ([], []))
+
+
+def test_infinite_gap_allocates_every_finite_limit(test, device):
+    """Create both rows of every finite limit with the default infinite gap."""
+    jacobian, phi = _built_rows(device, 0.0, gap=float("inf"))
+    test.assertEqual(jacobian, [1.0, -1.0])
+    test.assertEqual(phi, [1.0, 1.0])
+
+
+def test_limit_holds_a_driven_joint(test, device):
+    """Hold a joint driven past its upper limit at the limit."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    joint = builder.add_joint_revolute(
+        -1, link, axis=newton.Axis.Z, limit_lower=-0.3, limit_upper=0.3, target_ke=500.0, target_kd=10.0
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+    solver = SolverFeatherPGS(model, pgs_iterations=8)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    control.joint_target_q.fill_(1.0)
+    for _ in range(240):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    test.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.3, delta=2.0e-3)
+
+
+class TestFeatherPGSJointLimitActivationGap(unittest.TestCase):
+    pass
+
+
+devices = get_cuda_test_devices()
+for _name, _func in (
+    (
+        "test_combined_row_families_follow_the_documented_layout",
+        test_combined_row_families_follow_the_documented_layout,
+    ),
+    ("test_velocity_limit_rows_require_the_option", test_velocity_limit_rows_require_the_option),
+    ("test_finite_gap_builds_only_near_limit_rows", test_finite_gap_builds_only_near_limit_rows),
+    (
+        "test_finite_gap_does_not_activate_unlimited_sentinel_limits",
+        test_finite_gap_does_not_activate_unlimited_sentinel_limits,
+    ),
+    ("test_infinite_gap_allocates_every_finite_limit", test_infinite_gap_allocates_every_finite_limit),
+    ("test_limit_holds_a_driven_joint", test_limit_holds_a_driven_joint),
+):
+    add_function_test(TestFeatherPGSJointLimitActivationGap, _name, _func, devices=devices)
+
+
+if __name__ == "__main__":
+    unittest.main()
