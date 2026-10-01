@@ -1,0 +1,1 @@
+Fix ``ArticulationView`` actuator parameter access for sparse world selections with a regular DOF stride, which read and wrote other articulations' actuator rows, and fix sparse root transform and velocity access on Python versions before 3.12.

@@ -8,6 +8,7 @@ from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
 from warp.types import is_array
 
@@ -215,81 +216,6 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
-def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    actuators_per_world: int,
-    base_offset: int,
-    slice_start: int,
-    slice_stop: int,
-    stride_within_worlds: int,
-    count_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
-):
-    """Build DOF-to-actuator mapping for slice-based view selection.
-
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF ranges.
-    """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
-
-    # Get global DOF from first world's actuator entry
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_global_start = base_offset + arti_idx * stride_within_worlds + slice_start
-        arti_global_stop = base_offset + arti_idx * stride_within_worlds + slice_stop
-        if global_dof >= arti_global_start and global_dof < arti_global_stop:
-            view_local_pos = arti_idx * dofs_per_arti + (global_dof - arti_global_start)
-
-            # Replicate to all worlds
-            for world_idx in range(num_worlds):
-                view_pos = world_idx * dofs_per_world + view_local_pos
-                actuator_idx = world_idx * actuators_per_world + local_idx
-                mapping[view_pos] = actuator_idx
-            break
-
-
-@wp.kernel
-def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    view_dof_indices: wp.array[int],
-    base_offset: int,
-    stride_within_worlds: int,
-    count_per_world: int,
-    actuators_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
-):
-    """Build DOF-to-actuator mapping for index-array-based view selection.
-
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF indices.
-    """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
-
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_base = base_offset + arti_idx * stride_within_worlds
-        for i in range(dofs_per_arti):
-            # view_dof_indices[i] is local within the articulation, add arti_base to get global
-            if arti_base + view_dof_indices[i] == global_dof:
-                view_local_pos = arti_idx * dofs_per_arti + i
-
-                # Replicate to all worlds
-                for world_idx in range(num_worlds):
-                    view_pos = world_idx * dofs_per_world + view_local_pos
-                    actuator_idx = world_idx * actuators_per_world + local_idx
-                    mapping[view_pos] = actuator_idx
-                break
-
-
-@wp.kernel
 def _gather_1d_kernel(
     src: Any,
     indices: wp.array[int],
@@ -481,7 +407,11 @@ class FrequencyLayout:
         if isinstance(value_slice, Slice):
             value_slice = value_slice.get()
 
-        cache_key = value_slice
+        # Native slice objects are unhashable before Python 3.12, so key slices by their bounds.
+        if isinstance(value_slice, slice):
+            cache_key = ("slice", value_slice.start, value_slice.stop, value_slice.step)
+        else:
+            cache_key = value_slice
         if cache_key in self._model_index_cache:
             return self._model_index_cache[cache_key]
 
@@ -520,6 +450,18 @@ class FrequencyLayout:
         model_indices = wp.array(host_indices, dtype=int, device=self._device)
         self._model_index_cache[cache_key] = model_indices
         return model_indices
+
+    def get_absolute_indices(self, world_count: int, count_per_world: int) -> np.ndarray:
+        """Return host absolute model indices shaped ``[world_count, count_per_world, value_count]``.
+
+        Works for regular strided layouts as well as sparse/non-uniform ones.
+        """
+        if self.uses_explicit_model_indices:
+            return self.get_model_indices().numpy().astype(np.int64)
+        selected = np.asarray(self._selected_indices, dtype=np.int64)
+        world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
+        arti_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
+        return self.offset + world_offsets[:, None, None] + arti_offsets[None, :, None] + selected[None, None, :]
 
     def __str__(self):
         indices = self.indices if self.indices is not None else self.slice
@@ -2105,6 +2047,10 @@ class ArticulationView:
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
+        The mapping is built once per actuator by absolute model DOF identity, so it holds for
+        any layout: sparse world selections, irregular per-world rows, and actuators that do not
+        own an equal block of entries per selected world.
+
         Note:
             Assumes SISO actuators (one DOF per actuator).
 
@@ -2112,69 +2058,18 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.indices.shape[0]
-        actuators_per_world = num_actuators // self.world_count
-
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
-        dofs_per_arti = dof_layout.selected_value_count
-        dofs_per_world = dofs_per_arti * self.count_per_world
+        dofs_per_world = dof_layout.selected_value_count * self.count_per_world
 
         if dofs_per_world == 0:
             return wp.empty(0, dtype=int, device=self.device)
 
-        mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
-
-        if dof_layout.uses_explicit_model_indices:
-            # Sparse views may skip model worlds and their selected DOFs need not have a
-            # regular stride. Build the map by absolute DOF identity instead.
-            actuator_by_dof = {int(dof): index for index, dof in enumerate(actuator.indices.numpy())}
-            selected_model_dofs = dof_layout.get_model_indices().numpy().reshape(-1)
-            mapping = wp.array(
-                [actuator_by_dof.get(int(dof), -1) for dof in selected_model_dofs],
-                dtype=int,
-                device=self.device,
-            )
-            return mapping
-
-        if dof_layout.is_contiguous:
-            wp.launch(
-                build_actuator_dof_mapping_slice_kernel,
-                dim=actuators_per_world,
-                inputs=[
-                    actuator.indices,
-                    actuators_per_world,
-                    dof_layout.offset,
-                    dof_layout.slice.start,
-                    dof_layout.slice.stop,
-                    dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
-                ],
-                outputs=[mapping],
-                device=self.device,
-            )
-        else:
-            wp.launch(
-                build_actuator_dof_mapping_indices_kernel,
-                dim=actuators_per_world,
-                inputs=[
-                    actuator.indices,
-                    dof_layout.indices,
-                    dof_layout.offset,
-                    dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    actuators_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
-                ],
-                outputs=[mapping],
-                device=self.device,
-            )
-
-        return mapping
+        selected_model_dofs = dof_layout.get_absolute_indices(self.world_count, self.count_per_world).reshape(-1)
+        actuator_dofs = actuator.indices.numpy().astype(np.int64)
+        lookup_size = int(max(selected_model_dofs.max(initial=-1), actuator_dofs.max(initial=-1))) + 1
+        actuator_by_dof = np.full(lookup_size, -1, dtype=np.int64)
+        actuator_by_dof[actuator_dofs] = np.arange(len(actuator_dofs), dtype=np.int64)
+        return wp.array(actuator_by_dof[selected_model_dofs], dtype=int, device=self.device)
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.

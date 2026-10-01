@@ -320,6 +320,161 @@ class TestSelection(unittest.TestCase):
         self.assertFalse(regular_view.uses_explicit_model_indices)
         assert_np_equal(regular_view.world_ids.numpy(), [0, 2, 4])
 
+    @staticmethod
+    def _make_sparse_robot_world(label: str, link_count: int):
+        world = newton.ModelBuilder()
+        parent = world.add_link(label=f"{label}/root")
+        joints = [world.add_joint_free(child=parent, label=f"{label}/root_joint")]
+        for index in range(1, link_count):
+            child = world.add_link(label=f"{label}/link_{index}")
+            joints.append(
+                world.add_joint_revolute(
+                    parent=parent,
+                    child=child,
+                    axis=wp.vec3(0.0, 0.0, 1.0),
+                    label=f"{label}/joint_{index}",
+                )
+            )
+            parent = child
+        world.add_articulation(joints, label=label)
+        return world
+
+    def _make_sparse_robot_model(self, layout: str):
+        """Worlds of a 7-DOF robot_a and a 9-DOF robot_b in a regular or irregular order."""
+        robot_a = self._make_sparse_robot_world("robot_a", 2)
+        robot_b = self._make_sparse_robot_world("robot_b", 4)
+        if layout == "regular":
+            worlds = (robot_a, robot_b, robot_a, robot_b, robot_a)
+        else:
+            worlds = (robot_a, robot_b, robot_a, robot_b, robot_b, robot_a)
+        scene = newton.ModelBuilder()
+        for world in worlds:
+            scene.add_world(world)
+        return scene.finalize(device="cpu")
+
+    @staticmethod
+    def _articulation_dofs(model, articulation_ids):
+        """Absolute model DOF indices ``[world, dof]`` of single-articulation-per-world selections."""
+        articulation_start = model.articulation_start.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        rows = []
+        for articulation in articulation_ids:
+            first_joint = articulation_start[articulation]
+            end_joint = articulation_start[articulation + 1]
+            rows.append(list(range(joint_qd_start[first_joint], joint_qd_start[end_joint])))
+        return np.array(rows, dtype=np.int64)
+
+    def test_sparse_world_actuator_parameters_use_selected_rows(self):
+        """Actuator gather/scatter through sparse views addresses the selected articulations' rows."""
+        for layout, expected_explicit in (("regular", False), ("irregular", True)):
+            with self.subTest(layout=layout):
+                model = self._make_sparse_robot_model(layout)
+                view = ArticulationView(model, "robot_a", verbose=False)
+                self.assertTrue(view.is_sparse)
+                self.assertEqual(view.uses_explicit_model_indices, expected_explicit)
+                articulation_ids = view.articulation_ids.numpy().reshape(-1)
+                selected_dofs = self._articulation_dofs(model, articulation_ids)
+                self.assertEqual(selected_dofs.shape, (3, 7))
+
+                # One actuator per model DOF with a distinguishable gain per row; the actuator row
+                # differs from the DOF index so a DOF/row mix-up is visible too.
+                dof_count = model.joint_dof_count
+                kp = np.arange(dof_count, dtype=np.float32) * 10.0 + 1.0
+                actuator = Actuator(
+                    indices=wp.array(np.arange(dof_count)[::-1].copy(), dtype=wp.uint32, device="cpu"),
+                    drive=DrivePD(kp=wp.array(kp, device="cpu"), kd=wp.zeros(dof_count, device="cpu")),
+                )
+                row_of_dof = np.empty(dof_count, dtype=np.int64)
+                row_of_dof[np.arange(dof_count)[::-1]] = np.arange(dof_count)
+
+                actual = view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy()
+                assert_np_equal(actual, kp[row_of_dof[selected_dofs]])
+
+                replacement = -(np.arange(actual.size, dtype=np.float32).reshape(actual.shape) + 1.0)
+                view.set_actuator_parameter(
+                    actuator,
+                    actuator.drive,
+                    "kp",
+                    replacement,
+                    mask=wp.array([True, False, True], dtype=bool, device="cpu"),
+                )
+                updated = actuator.drive.kp.numpy()
+                expected = kp.copy()
+                expected[row_of_dof[selected_dofs[0]]] = replacement[0]
+                expected[row_of_dof[selected_dofs[2]]] = replacement[2]
+                assert_np_equal(updated, expected)
+
+    def test_sparse_world_partial_actuator_parameters(self):
+        """DOFs without an actuator read as zero and are never written through a sparse view."""
+        for layout in ("regular", "irregular"):
+            with self.subTest(layout=layout):
+                model = self._make_sparse_robot_model(layout)
+                view = ArticulationView(model, "robot_a", verbose=False)
+                selected_dofs = self._articulation_dofs(model, view.articulation_ids.numpy().reshape(-1))
+                # Actuate only the revolute DOFs of every articulation in the model (skip free roots).
+                joint_type = model.joint_type.numpy()
+                joint_qd_start = model.joint_qd_start.numpy()
+                actuated = [
+                    int(joint_qd_start[j])
+                    for j in range(model.joint_count)
+                    if joint_type[j] == newton.JointType.REVOLUTE
+                ]
+                kp = np.arange(len(actuated), dtype=np.float32) + 100.0
+                actuator = Actuator(
+                    indices=wp.array(actuated, dtype=wp.uint32, device="cpu"),
+                    drive=DrivePD(kp=wp.array(kp, device="cpu"), kd=wp.zeros(len(actuated), device="cpu")),
+                )
+                row_of_dof = {dof: row for row, dof in enumerate(actuated)}
+                expected = np.array(
+                    [[kp[row_of_dof[d]] if d in row_of_dof else 0.0 for d in world] for world in selected_dofs],
+                    dtype=np.float32,
+                )
+                assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), expected)
+
+                view.set_actuator_parameter(actuator, actuator.drive, "kp", np.full(expected.shape, -1.0, np.float32))
+                updated = actuator.drive.kp.numpy()
+                written = {row_of_dof[d] for world in selected_dofs for d in world if d in row_of_dof}
+                for row, value in enumerate(updated):
+                    self.assertEqual(value, -1.0 if row in written else kp[row])
+
+    def test_sparse_world_root_transforms_and_velocities(self):
+        """Floating-base root access through sparse views gathers and scatters the selected roots."""
+        for layout in ("regular", "irregular"):
+            with self.subTest(layout=layout):
+                model = self._make_sparse_robot_model(layout)
+                view = ArticulationView(model, "robot_a", verbose=False)
+                self.assertTrue(view.is_floating_base)
+                articulation_ids = view.articulation_ids.numpy().reshape(-1)
+                articulation_start = model.articulation_start.numpy()
+                root_joints = articulation_start[articulation_ids]
+                q_start = model.joint_q_start.numpy()[root_joints]
+                qd_start = model.joint_qd_start.numpy()[root_joints]
+
+                state = model.state()
+                q = np.arange(model.joint_coord_count, dtype=np.float32)
+                qd = np.arange(model.joint_dof_count, dtype=np.float32) + 0.5
+                state.joint_q.assign(q)
+                state.joint_qd.assign(qd)
+
+                transforms = view.get_root_transforms(state).numpy().reshape(3, 7)
+                velocities = view.get_root_velocities(state).numpy().reshape(3, 6)
+                assert_np_equal(transforms, np.stack([q[s : s + 7] for s in q_start]))
+                assert_np_equal(velocities, np.stack([qd[s : s + 6] for s in qd_start]))
+                # Repeated access reuses the cached index map.
+                assert_np_equal(view.get_root_transforms(state).numpy().reshape(3, 7), transforms)
+
+                new_transforms = np.tile(np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0], np.float32), (3, 1, 1))
+                new_velocities = np.full((3, 1, 6), -2.0, np.float32)
+                mask = wp.array([False, True, False], dtype=bool, device="cpu")
+                view.set_root_transforms(state, new_transforms, mask=mask)
+                view.set_root_velocities(state, new_velocities, mask=mask)
+                expected_q = q.copy()
+                expected_q[q_start[1] : q_start[1] + 7] = new_transforms[1, 0]
+                expected_qd = qd.copy()
+                expected_qd[qd_start[1] : qd_start[1] + 6] = new_velocities[1, 0]
+                assert_np_equal(state.joint_q.numpy(), expected_q)
+                assert_np_equal(state.joint_qd.numpy(), expected_qd)
+
     def test_unsorted_include_indices_rejected(self):
         builder = newton.ModelBuilder()
         root = builder.add_link(label="root")
