@@ -46,13 +46,12 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertIsNone(view.shape_count)
         self.assertIsNone(view.shapes_contiguous)
         self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("shape_margin", model)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.set_attribute("shape_margin", model, wp.zeros((1, 2, 1)))
-        with self.assertRaises(AttributeError) as error:
+        with self.assertRaisesRegex(AttributeError, "not_an_attribute"):
             view.get_attribute("not_an_attribute", model)
-        self.assertNotIsInstance(error.exception, ArticulationView.UnavailableError)
 
     def test_unfiltered_counts_validate_every_slot(self):
         """Count every selected articulation when validating cardinality."""
@@ -67,7 +66,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         view = ArticulationView(model, "robot_*", allow_partial_layouts=True)
         self.assertIsNone(view.joint_count)
         self.assertIsNone(view.joint_names)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("joint_type", model)
 
     def test_non_affine_origins_keep_uniform_metadata(self):
@@ -86,7 +85,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertEqual(view.joint_count, 2)
         self.assertEqual(len(view.joint_names), 2)
         self.assertIsNone(view.joints_contiguous)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("joint_type", model)
 
     def test_different_sparse_patterns_keep_uniform_metadata(self):
@@ -113,7 +112,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertEqual(view.link_count, 2)
         self.assertEqual(len(view.link_names), 2)
         self.assertIsNone(view.links_contiguous)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("body_mass", model)
 
     def test_sparse_body_and_shape_offsets_preserve_values_writes_and_gradients(self):
@@ -180,7 +179,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         view = ArticulationView(model, "robot_*", allow_partial_layouts=True)
         self.assertEqual(view.link_count, 2)
         self.assertEqual(view.shape_count, 2)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("body_mass", model)
         assert_np_equal(
             view.get_attribute("shape_margin", model).numpy(),
@@ -234,9 +233,9 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         view = ArticulationView(model, "robot_*", allow_partial_layouts=True)
         self.assertEqual(view.joint_dof_count, 4)
         self.assertEqual(view.joint_coord_count, 5)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_dof_velocities(model)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_dof_positions(model)
         self.assertIsNone(view.joint_dof_counts)
         self.assertIsNone(view.joint_coord_counts)
@@ -266,7 +265,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertEqual(view.link_count, 2)
         self.assertEqual(view.shape_count, 2)
         self.assertEqual(view.get_attribute("body_mass", model).shape, (1, 2, 2))
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("shape_margin", model)
         self.assertIsNone(view.link_shapes)
         self.assertIsNone(view.body_shapes)
@@ -306,10 +305,10 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         self.assertIsNone(view.root_joint_type)
         self.assertIsNone(view.is_fixed_base)
         self.assertIsNone(view.is_floating_base)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_root_transforms(model)
         self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.set_root_transforms(model, wp.zeros((1, 2), dtype=wp.transform))
 
     def test_fixed_root_transform_setter_keeps_public_shape(self):
@@ -404,11 +403,11 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
 
         view = ArticulationView(model, "target_*", allow_partial_layouts=True)
         self.assertEqual(view.get_dof_positions(model).shape, (1, 3, 7))
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_dof_velocities(model)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_root_transforms(model)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_root_velocities(model)
 
     def test_unequal_world_totals_do_not_replace_affine_validation(self):
@@ -517,9 +516,8 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
             add_chain(builder, f"robot_{index}", 2)
         model = builder.finalize()
         view = ArticulationView(model, "robot_*")
-        with self.assertRaisesRegex(AttributeError, "Unable to determine the layout") as error:
+        with self.assertRaisesRegex(AttributeError, "Unable to determine the layout"):
             view.get_attribute("articulation_start", model)
-        self.assertNotIsInstance(error.exception, ArticulationView.UnavailableError)
 
 
 if __name__ == "__main__":

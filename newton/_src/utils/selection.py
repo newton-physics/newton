@@ -654,6 +654,21 @@ class ArticulationView:
     construction fails when any selected data cannot share one batched layout. Set
     ``allow_partial_layouts=True`` to keep using the data that does share a layout.
 
+    With ``allow_partial_layouts=True``, public metadata is ``None`` when it cannot
+    describe every selected articulation consistently:
+
+    - A frequency count and its corresponding names and labels are ``None`` when
+      selected counts differ.
+    - ``joint_dof_counts``, ``joint_coord_counts``, and ``link_shapes`` are ``None``
+      when one of the layouts needed for that relationship is unavailable.
+    - A ``*_contiguous`` flag is ``None`` when its frequency layout is unavailable.
+    - ``root_joint_type``, ``is_fixed_base``, and ``is_floating_base`` are ``None``
+      when that root metadata differs. Non-``None`` root metadata does not guarantee
+      root access when the root coordinate or DOF layout differs.
+    - A value in ``custom_frequency_counts`` and ``custom_frequency_labels`` is
+      ``None`` when custom row counts differ. The corresponding tendon compatibility
+      aliases follow those values.
+
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
@@ -714,12 +729,9 @@ class ArticulationView:
         include_loop_closing_joints: If True, include converted loop-closing joints.
         allow_partial_layouts: If True, construct the view when only some selected
             data has a common layout. Access to data without a common layout raises
-            :class:`UnavailableError`.
+            :class:`AttributeError`.
         verbose: If True, prints selection summary.
     """
-
-    class UnavailableError(AttributeError):
-        """Raised when an operation requires data without a common layout in a partial view."""
 
     def __init__(
         self,
@@ -1228,7 +1240,7 @@ class ArticulationView:
         frequency = self.model.get_attribute_frequency(frequency_name)
 
         if layout is None and frequency in self._unavailable_reasons:
-            raise self.UnavailableError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
+            raise AttributeError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
         if layout is None and isinstance(frequency, str):
             layout = self.frequency_layouts.get(frequency)
             if layout is None:
@@ -1455,7 +1467,7 @@ class ArticulationView:
 
     def _root_layout(self, index: int) -> FrequencyLayout:
         if self._root_unavailable_reason is not None:
-            raise self.UnavailableError(f"Root access is unavailable: {self._root_unavailable_reason}")
+            raise AttributeError(f"Root access is unavailable: {self._root_unavailable_reason}")
         return self._root_layouts[index]
 
     def get_root_transforms(self, source: Model | State):
@@ -1929,7 +1941,7 @@ class ArticulationView:
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
             reason = self._unavailable_reasons[AttributeFrequency.JOINT_DOF]
-            raise self.UnavailableError(f"Actuator parameter access is unavailable: {reason}")
+            raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
         dofs_per_arti = dof_layout.selected_value_count
         dofs_per_world = dofs_per_arti * self.count_per_world
 

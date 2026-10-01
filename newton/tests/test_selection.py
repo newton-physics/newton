@@ -1713,9 +1713,9 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
         self.assertIsNone(view.custom_frequency_counts["mujoco:actuator"])
         self.assertIsNone(view.custom_frequency_labels["mujoco:actuator"])
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.get_attribute("mujoco.ctrl", control)
-        with self.assertRaises(ArticulationView.UnavailableError):
+        with self.assertRaises(AttributeError):
             view.set_attribute("mujoco.ctrl", control, wp.zeros((1, 2, 1)))
 
     def test_actuator_frequency_uses_declared_articulation_owner(self):

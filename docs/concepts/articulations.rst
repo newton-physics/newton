@@ -730,11 +730,11 @@ layouts that still match:
 
     try:
         shape_margin = view.get_attribute("shape_margin", model)
-    except newton.selection.ArticulationView.UnavailableError:
+    except AttributeError:
         shape_margin = None
 
 Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
-reads and writes raise ``ArticulationView.UnavailableError`` for an unavailable layout.
+reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
 and the matches' start indices must be uniformly strided within and between worlds.
