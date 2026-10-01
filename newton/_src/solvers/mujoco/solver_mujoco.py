@@ -6408,21 +6408,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 body_filters,
             )
         )
+        compiled_masks = None
         compiled_collision_type = None
         compiled_collision_affinity = None
         shape_color = None
         if heterogeneous_geoms:
             if self._use_mujoco_contacts and not disable_contacts:
                 compiled_masks = compile_layout_collision_masks(model, shape_layout.select(collision_slots))
-                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
-                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
-                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
-                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
             else:
                 compiled_collision_type = np.ones(model.shape_count, dtype=np.uint32)
                 compiled_collision_affinity = np.ones(model.shape_count, dtype=np.uint32)
         elif not use_preserved_collision_masks:
             compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+        if compiled_masks is not None:
             if compiled_masks.exact:
                 compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
                 compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
@@ -6447,6 +6445,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mesh_assets = {}
         shape_mesh_names = {}
 
+        def register_mesh_asset(name: str, vertices: np.ndarray, indices: np.ndarray, maxhullvert: int) -> None:
+            params = {
+                "name": name,
+                "uservert": vertices.flatten(),
+                "userface": indices.flatten(),
+                "maxhullvert": maxhullvert,
+                "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
+            }
+            spec.add_mesh(**params)
+            mesh_assets[name] = params
+
         def add_mesh_asset(shape):
             mesh_src = model.shape_source[shape]
             size = shape_size[shape]
@@ -6463,15 +6472,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         vertices, indices, maxhullvert, extent_axis
                     )
                 name = f"newton_mesh_{len(mesh_assets)}"
-                params = {
-                    "name": name,
-                    "uservert": vertices.flatten(),
-                    "userface": indices.flatten(),
-                    "maxhullvert": maxhullvert,
-                    "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
-                }
-                spec.add_mesh(**params)
-                mesh_assets[name] = params
+                register_mesh_asset(name, vertices, indices, maxhullvert)
                 mesh_export = (name, is_planar)
                 mesh_export_cache[key] = mesh_export
             name, is_planar = mesh_export
@@ -6607,15 +6608,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         compute_inertia=False,
                     )
                     mesh_name = f"newton_cone_{shape}"
-                    params = {
-                        "name": mesh_name,
-                        "uservert": mesh_src.vertices.flatten(),
-                        "userface": mesh_src.indices.flatten(),
-                        "maxhullvert": mesh_src.maxhullvert,
-                        "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
-                    }
-                    spec.add_mesh(**params)
-                    mesh_assets[mesh_name] = params
+                    register_mesh_asset(mesh_name, mesh_src.vertices, mesh_src.indices, mesh_src.maxhullvert)
                     geom_params["meshname"] = mesh_name
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     geom_params["meshname"] = add_mesh_asset(shape)
