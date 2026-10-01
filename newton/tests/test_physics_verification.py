@@ -41,6 +41,43 @@ class TestPhysicsVerification(unittest.TestCase):
     pass
 
 
+@wp.kernel
+def _record_joint_q_scalar(joint_q: wp.array[wp.float32], q_index: int, step: int, out: wp.array[wp.float32]):
+    out[step] = joint_q[q_index]
+
+
+@wp.kernel
+def _record_pendulum_angle_from_body(body_q: wp.array[wp.transform], step: int, out: wp.array[wp.float32]):
+    p = wp.transform_get_translation(body_q[0])
+    out[step] = wp.atan2(p[0], -p[1])
+
+
+@wp.kernel
+def _record_joint_coord_and_rate(
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
+    q_index: int,
+    step: int,
+    q_out: wp.array[wp.float32],
+    qd_out: wp.array[wp.float32],
+):
+    q_out[step] = joint_q[q_index]
+    qd_out[step] = joint_qd[q_index]
+
+
+@wp.kernel
+def _record_pendulum_theta_from_body(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    step: int,
+    theta_out: wp.array[wp.float32],
+    dtheta_out: wp.array[wp.float32],
+):
+    p = wp.transform_get_translation(body_q[0])
+    theta_out[step] = wp.atan2(p[0], -p[1])
+    dtheta_out[step] = body_qd[0][5]
+
+
 # ---------------------------------------------------------------------------
 # Test 1: Free Fall
 # Verify free-fall trajectory against y(t) = h0 + 0.5*g*t^2 and v(t) = g*t.
@@ -152,23 +189,30 @@ def test_pendulum_period(test, device, solver_fn, uses_generalized_coords, sim_d
     I_pivot = I_cm_zz + mass * L * L
     expected_T = 2.0 * np.pi * np.sqrt(I_pivot / (mass * abs(g) * L))
 
-    # Simulate for ~3 full periods
+    # Simulate for ~3 full periods. Record on-device so we do not sync every step.
     num_steps = int(3.5 * expected_T / sim_dt)
+    angles_d = wp.zeros(num_steps, dtype=wp.float32, device=device)
 
-    angles = []
-    for _ in range(num_steps):
+    for i in range(num_steps):
         state_0.clear_forces()
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-
         if uses_generalized_coords:
-            angles.append(float(state_0.joint_q.numpy()[qi]))
+            wp.launch(
+                _record_joint_q_scalar,
+                dim=1,
+                inputs=[state_0.joint_q, qi, i, angles_d],
+                device=device,
+            )
         else:
-            # Maximal-coordinate solvers don't update joint_q; recover angle from body position
-            bq = state_0.body_q.numpy()[0]
-            angles.append(float(np.arctan2(bq[0], -bq[1])))
+            wp.launch(
+                _record_pendulum_angle_from_body,
+                dim=1,
+                inputs=[state_0.body_q, i, angles_d],
+                device=device,
+            )
 
-    angles = np.array(angles)
+    angles = angles_d.numpy()
     times = np.arange(1, num_steps + 1) * sim_dt
 
     omega = 2.0 * np.pi / expected_T
@@ -231,37 +275,40 @@ def test_energy_conservation(test, device, solver_fn, uses_generalized_coords, s
     I_cm_zz = float(I_body[2, 2] if I_body.ndim == 2 else I_body[2])
     I_pivot = I_cm_zz + mass * L * L
 
-    def compute_ke_pe(state):
-        if uses_generalized_coords:
-            theta = float(state.joint_q.numpy()[qi])
-            theta_dot = float(state.joint_qd.numpy()[qi])
-        else:
-            bq = state.body_q.numpy()[0]
-            bqd = state.body_qd.numpy()[0]
-            theta = float(np.arctan2(bq[0], -bq[1]))
-            theta_dot = float(bqd[5])
-        ke = 0.5 * I_pivot * theta_dot**2
-        pe = mass * abs(g) * (-L * np.cos(theta))
-        return ke, pe
-
     num_steps = int(2.0 / sim_dt)
+    n_samples = num_steps + 1
+    theta_d = wp.zeros(n_samples, dtype=wp.float32, device=device)
+    dtheta_d = wp.zeros(n_samples, dtype=wp.float32, device=device)
 
-    ke0, pe0 = compute_ke_pe(state_0)
-    E_initial = ke0 + pe0
-    ke_values = [ke0]
-    pe_values = [pe0]
+    def _record(step: int):
+        if uses_generalized_coords:
+            wp.launch(
+                _record_joint_coord_and_rate,
+                dim=1,
+                inputs=[state_0.joint_q, state_0.joint_qd, qi, step, theta_d, dtheta_d],
+                device=device,
+            )
+        else:
+            wp.launch(
+                _record_pendulum_theta_from_body,
+                dim=1,
+                inputs=[state_0.body_q, state_0.body_qd, step, theta_d, dtheta_d],
+                device=device,
+            )
 
-    for _ in range(num_steps):
+    _record(0)
+    for i in range(num_steps):
         state_0.clear_forces()
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        ke, pe = compute_ke_pe(state_0)
-        ke_values.append(ke)
-        pe_values.append(pe)
+        _record(i + 1)
 
-    ke_values = np.array(ke_values)
-    pe_values = np.array(pe_values)
+    theta = theta_d.numpy()
+    dtheta = dtheta_d.numpy()
+    ke_values = 0.5 * I_pivot * dtheta**2
+    pe_values = mass * abs(g) * (-L * np.cos(theta))
     energies = ke_values + pe_values
+    E_initial = float(energies[0])
 
     # Check KE is near-zero at turning points
     min_ke = np.min(ke_values[1:])
@@ -609,82 +656,136 @@ def test_torque_free_precession(test, device, solver_fn):
 # Test 9a: Restitution
 # Verify bounce height h_rebound = e^2 * h_drop for different restitution coefficients.
 # ---------------------------------------------------------------------------
-def test_restitution(test, device, solver_fn, rebound_rtol=0.01):
+def test_restitution(
+    test,
+    device,
+    solver_fn,
+    restitution_values=(0.5, 0.8),
+    shape="sphere",
+    simulation_dts=(1e-3,),
+    contact_gaps=(0.0,),
+    rebound_rtol=None,
+):
+    """Verify rebound height across coefficients, shapes, time steps, and contact gaps."""
     # Test parameters: gravity, initial height, sphere radius, restitution values
     g = -10.0
     h_drop = 1.0
     radius = 0.05
-    restitution_values = [0.5, 0.8]
 
-    rebound_heights = {}
-    for e in restitution_values:
-        # Shape config
-        cfg = newton.ModelBuilder.ShapeConfig()
-        cfg.mu = 0.0
-        cfg.restitution = e
-        cfg.ke = 1e4
-        cfg.kd = 100.0
-        cfg.kf = 0.0
-        cfg.margin = 0.001
-        cfg.gap = 0.0
+    for sim_dt in simulation_dts:
+        for contact_gap in contact_gaps:
+            rebound_heights = {}
+            for e in restitution_values:
+                with test.subTest(shape=shape, restitution=e, dt=sim_dt, gap=contact_gap):
+                    _test_restitution_case(
+                        test,
+                        device,
+                        solver_fn,
+                        shape,
+                        e,
+                        sim_dt,
+                        contact_gap,
+                        g,
+                        h_drop,
+                        radius,
+                        rebound_heights,
+                        rebound_rtol,
+                    )
 
-        builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
-        builder.add_ground_plane(cfg=cfg)
-        b = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
+            # Cross-check ratio between restitution values.
+            if 0.5 in rebound_heights and 0.8 in rebound_heights:
+                ratio = rebound_heights[0.8] / max(rebound_heights[0.5], 1e-10)
+                expected_ratio = (0.8**2) / (0.5**2)  # = 2.56
+                ratio_rtol = 0.01 if rebound_rtol is None else rebound_rtol
+                test.assertAlmostEqual(
+                    ratio,
+                    expected_ratio,
+                    delta=ratio_rtol * expected_ratio,
+                    msg=f"Rebound ratio: got {ratio:.3f}, expected {expected_ratio:.3f}",
+                )
+
+
+def _test_restitution_case(
+    test,
+    device,
+    solver_fn,
+    shape,
+    e,
+    sim_dt,
+    contact_gap,
+    g,
+    h_drop,
+    radius,
+    rebound_heights,
+    rebound_rtol,
+):
+    # Shape config
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.mu = 0.0
+    cfg.restitution = e
+    cfg.ke = 1e4
+    cfg.kd = 100.0
+    cfg.kf = 0.0
+    cfg.margin = 0.001
+    cfg.gap = contact_gap
+
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
+    builder.add_ground_plane(cfg=cfg)
+    b = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
+    if shape == "sphere":
         builder.add_shape_sphere(b, radius=radius, cfg=cfg)
-        model = builder.finalize(device=device)
+    else:
+        # 4-corner contact manifold (radius = half-height keeps the drop height identical)
+        builder.add_shape_box(b, hx=radius, hy=radius, hz=radius, cfg=cfg)
+    model = builder.finalize(device=device)
 
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
-        solver = solver_fn(model)
-        state_0 = model.state()
-        state_1 = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    solver = solver_fn(model)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        # drop time ~ sqrt(2*h/g), run 3x to capture bounce
-        sim_dt = 1e-3
-        total_time = 3.0 * np.sqrt(2.0 * h_drop / abs(g))
-        num_steps = int(total_time / sim_dt)
-        y_positions = []
-        for _ in range(num_steps):
-            state_0.clear_forces()
-            collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, None, contacts, sim_dt)
-            state_0, state_1 = state_1, state_0
-            y_positions.append(float(state_0.body_q.numpy()[0, 1]))
+    # drop time ~ sqrt(2*h/g), run 3x to capture bounce
+    total_time = 3.0 * np.sqrt(2.0 * h_drop / abs(g))
+    num_steps = int(total_time / sim_dt)
+    y_positions = []
+    for _ in range(num_steps):
+        state_0.clear_forces()
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, None, contacts, sim_dt)
+        state_0, state_1 = state_1, state_0
+        y_positions.append(float(state_0.body_q.numpy()[0, 1]))
 
-        y_arr = np.array(y_positions)
+    y_arr = np.array(y_positions)
 
-        # Rebound height: first local min = impact, max after that = peak
-        test.assertGreater(np.min(y_arr), -0.01, f"Ground penetration detected for e={e}")
-        impact_idx = None
-        for i in range(1, len(y_arr) - 1):
-            if y_arr[i] < y_arr[i - 1] and y_arr[i] <= y_arr[i + 1]:
-                impact_idx = i
-                break
-        test.assertIsNotNone(impact_idx, f"No impact detected for e={e}")
+    # Rebound height: first near-ground sample = impact, max after that = peak.
+    # This also identifies a fully inelastic contact, which has no local minimum.
+    test.assertGreater(np.min(y_arr), -0.01, f"Ground penetration detected for e={e}")
+    impact_height = radius + 2.0 * cfg.margin + 0.5 * abs(g) * sim_dt * sim_dt + 1e-6
+    impact_idx = next((i for i, y in enumerate(y_arr) if y <= impact_height), None)
+    test.assertIsNotNone(impact_idx, f"No impact detected for e={e}")
 
-        h_rebound = np.max(y_arr[impact_idx:]) - radius
-        h_expected = e * e * h_drop
-        rebound_heights[e] = h_rebound
+    h_rebound = np.max(y_arr[impact_idx:]) - radius
+    h_expected = e * e * h_drop
+    rebound_heights[e] = h_rebound
 
-        test.assertAlmostEqual(
-            h_rebound,
-            h_expected,
-            delta=rebound_rtol * h_expected,
-            msg=f"Rebound height for e={e}: got {h_rebound:.4f}, expected {h_expected:.4f}",
-        )
-
-    # Cross-check ratio between restitution values
-    if len(rebound_heights) == 2:
-        ratio = rebound_heights[0.8] / max(rebound_heights[0.5], 1e-10)
-        expected_ratio = (0.8**2) / (0.5**2)  # = 2.56
-        test.assertAlmostEqual(
-            ratio,
-            expected_ratio,
-            delta=rebound_rtol * expected_ratio,
-            msg=f"Rebound ratio: got {ratio:.3f}, expected {expected_ratio:.3f}",
-        )
+    # The impact time is quantized to a step, so coarse trajectories carry
+    # an O(v*dt) offset independent of the coefficient. Keep e=0 strict:
+    # its only height offset should be the configured contact margin.
+    if rebound_rtol is not None:
+        tolerance = rebound_rtol * h_expected
+    else:
+        tolerance = 0.005 if e == 0.0 else 0.02 * h_expected + 5.0 * sim_dt
+    test.assertAlmostEqual(
+        h_rebound,
+        h_expected,
+        delta=tolerance,
+        msg=(
+            f"Rebound height for {shape}, e={e}, dt={sim_dt}, gap={contact_gap}: "
+            f"got {h_rebound:.4f}, expected {h_expected:.4f}"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1639,6 +1740,36 @@ for device in devices:
             solver_fn=newton.solvers.SolverKamino,
             rebound_rtol=0.03,
         )
+
+    # Full rigid restitution sweep: endpoint and intermediate coefficients,
+    # coarse and fine timesteps, and late (gap=0) and predictive contacts.
+    add_function_test(
+        TestPhysicsVerification,
+        "test_restitution_sweep_sphere_xpbd",
+        test_restitution,
+        devices=[device],
+        solver_fn=lambda model: newton.solvers.SolverXPBD(
+            model, iterations=10, angular_damping=0.0, enable_restitution=True
+        ),
+        restitution_values=(0.0, 0.25, 0.5, 0.75, 1.0),
+        simulation_dts=(1e-2, 1e-3),
+        contact_gaps=(0.0, 0.01),
+    )
+
+    # Same sweep on a 4-corner cube manifold.
+    add_function_test(
+        TestPhysicsVerification,
+        "test_restitution_sweep_box_xpbd",
+        test_restitution,
+        devices=[device],
+        solver_fn=lambda model: newton.solvers.SolverXPBD(
+            model, iterations=10, angular_damping=0.0, enable_restitution=True
+        ),
+        restitution_values=(0.0, 0.25, 0.5, 0.75, 1.0),
+        shape="box",
+        simulation_dts=(1e-2, 1e-3),
+        contact_gaps=(0.0, 0.01),
+    )
 
     if not device.is_cuda:
         add_function_test(

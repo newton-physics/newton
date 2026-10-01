@@ -109,6 +109,7 @@ def create_solve_convex_multi_contact(
     writer_func: Any,
     post_process_contact: Any,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """Create a fused MPR/GJK multi-contact solver.
 
@@ -117,6 +118,7 @@ def create_solve_convex_multi_contact(
         writer_func: Function that writes generated contacts.
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         The specialized contact solver.
@@ -126,6 +128,7 @@ def create_solve_convex_multi_contact(
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_multi_contact(
@@ -172,6 +175,19 @@ def create_solve_convex_multi_contact(
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             # Undo the inflate on the witness points so downstream consumers
             # (manifold builder, contact writer) see true-surface positions.
@@ -236,6 +252,7 @@ def create_solve_convex_single_contact(
     writer_func: Any,
     post_process_contact: Any,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """Create a fused MPR/GJK single-contact solver.
 
@@ -244,6 +261,7 @@ def create_solve_convex_single_contact(
         writer_func: Function that writes generated contacts.
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         The specialized contact solver.
@@ -253,6 +271,7 @@ def create_solve_convex_single_contact(
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_single_contact(
@@ -293,6 +312,19 @@ def create_solve_convex_single_contact(
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             half_enlarge = enlarge * 0.5
             point_a = point_a - normal * half_enlarge
