@@ -38,6 +38,53 @@ def check_aabb_overlap(
 
 
 @wp.func
+def check_aabb_overlap_moving(
+    shape1: int,
+    shape2: int,
+    box_lower: wp.array[wp.vec3],
+    box_upper: wp.array[wp.vec3],
+    cutoff1: float,
+    cutoff2: float,
+    shape_displacement: wp.array[wp.vec3],
+) -> bool:
+    """Return static or continuous overlap according to the optional sweep array."""
+    if shape_displacement.shape[0] == 0:
+        return check_aabb_overlap(
+            box_lower[shape1], box_upper[shape1], cutoff1, box_lower[shape2], box_upper[shape2], cutoff2
+        )
+
+    cutoff_combined = cutoff1 + cutoff2
+    relative_displacement = shape_displacement[shape1] - shape_displacement[shape2]
+    lower_box1 = box_lower[shape1]
+    upper_box1 = box_upper[shape1]
+    lower_box2 = box_lower[shape2]
+    upper_box2 = box_upper[shape2]
+    enter = float(0.0)
+    exit_time = float(1.0)
+    for axis in range(3):
+        lower1 = lower_box1[axis]
+        upper1 = upper_box1[axis]
+        lower2 = lower_box2[axis] - cutoff_combined
+        upper2 = upper_box2[axis] + cutoff_combined
+        delta = relative_displacement[axis]
+        if delta == 0.0:
+            if lower1 > upper2 or upper1 < lower2:
+                return False
+        else:
+            axis_enter = (lower2 - upper1) / delta
+            axis_exit = (upper2 - lower1) / delta
+            if axis_enter > axis_exit:
+                tmp = axis_enter
+                axis_enter = axis_exit
+                axis_exit = tmp
+            enter = wp.max(enter, axis_enter)
+            exit_time = wp.min(exit_time, axis_exit)
+            if enter > exit_time:
+                return False
+    return True
+
+
+@wp.func
 def binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
     while lower < upper:
         mid = (lower + upper) >> 1
@@ -126,7 +173,7 @@ def is_shape_pair_immovable_filtered(
     """Return whether a shape pair should be skipped by immovable-body filtering."""
     # Empty shape metadata is the expert-call opt-out. An empty body array,
     # however, is valid for an all-static model and must still filter the pair.
-    if include_static_kinematic_pairs or shape_body.shape[0] == 0:
+    if shape_body.shape[0] == 0:
         return False
 
     body_a = shape_body[shape_a]
@@ -135,8 +182,12 @@ def is_shape_pair_immovable_filtered(
     static_a = body_a < 0
     static_b = body_b < 0
 
+    # World-static shapes have no body identity and never generate contacts.
     if static_a and static_b:
         return True
+
+    if include_static_kinematic_pairs:
+        return False
 
     # Without body metadata we cannot distinguish dynamic from kinematic.
     if body_flags.shape[0] == 0:
@@ -152,6 +203,16 @@ def is_shape_pair_immovable_filtered(
     immovable_a = static_a or kinematic_a
     immovable_b = static_b or kinematic_b
     return immovable_a and immovable_b
+
+
+@wp.func
+def is_shape_pair_same_body_filtered(shape_a: int, shape_b: int, shape_body: wp.array[int]) -> bool:
+    """Return whether two shapes are attached to the same non-static body."""
+    if shape_body.shape[0] == 0:
+        return False
+
+    body_a = shape_body[shape_a]
+    return body_a >= 0 and body_a == shape_body[shape_b]
 
 
 @wp.func

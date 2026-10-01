@@ -61,7 +61,7 @@ one sub-solver:
 
    entry = SolverCoupled.Entry(
        name="soft",
-       solver=lambda view: SolverVBD(model=view, iterations=20),
+       solver=lambda view: SolverVBD(model=view, iterations=20, rigid_compliant_alm=True),
        bodies=soft_body_ids,
        particles=cloth_particle_ids,
        shapes=cloth_shape_ids,
@@ -295,6 +295,15 @@ The main ADMM parameters are:
 - stiffness and damping values for model-joint and body-particle attachment
   rows;
 - rigid contact matching mode, thresholds, and warm-start force scale.
+
+ADMM detects cross-entry contacts with its own collision pipeline. Set
+``Config.contact_max_triangle_pairs`` to size its triangle-pair storage and
+``Config.contact_reduction_hashtable_size_factor`` to scale its contact-reduction
+hash table independently. Both default to ``None``, preserving the collision
+pipeline defaults. When rigid contact matching is ``"latest"`` or ``"sticky"``,
+the triangle-pair capacity must be less than ``2**20``. Larger capacities are
+allowed with matching disabled. Increase the hash table size factor when
+contact reduction needs more storage while retaining contact matching.
 
 When ``gamma`` is positive, the coupler scales owned body and particle masses in
 each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and

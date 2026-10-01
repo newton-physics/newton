@@ -134,6 +134,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             radius,
             half_height,
             up_axis=newton.Axis.Z,
+            barrel_radius=geo_scale[2],
             compute_normals=False,
             compute_uvs=False,
             compute_inertia=False,

@@ -332,7 +332,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         stepping policy. The factory is called as ``solver(view)`` with the
         per-entry :class:`ModelView` and must return a configured
         :class:`SolverBase`. Bind any extra constructor arguments in the
-        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
         namespace so all entries can consume shared contact buffers.
@@ -425,7 +425,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.compaction_policy,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
+            if spec.compaction_policy in {"generic", "end"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -459,8 +459,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for full_name, spec in self.model._iter_attribute_specs():
             flag = _CORE_RESET_STATE_FLAGS.get(full_name)
             if flag is None and spec.assignment != Model.AttributeAssignment.STATE:
-                continue
-            if self._is_deprecated_namespace_alias(full_name):
                 continue
             if flag is None and spec.frequency not in _RESET_RECONCILABLE_FREQUENCIES:
                 unsupported.append((full_name, spec.frequency))
@@ -524,16 +522,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             host = self._row_worlds_from_starts(starts, count, model.world_count)
             result[item_frequency] = wp.array(host, dtype=wp.int32, device=model.device)
         return result
-
-    def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
-        """Return whether metadata names a warning-producing namespace alias."""
-        if ":" not in full_name:
-            return False
-        namespace_name, attribute_name = full_name.split(":", 1)
-        namespace = getattr(self.model, namespace_name, None)
-        if not isinstance(namespace, self.model.AttributeNamespace):
-            return False
-        return attribute_name in namespace._deprecated_aliases
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()
@@ -916,7 +904,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         body_global_to_local = {body_id: body_id for body_id in range(model.body_count)}
         view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
     def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexMaps | None) -> _EntryIndexMaps:
         """Build local/global id maps for a completed entry view."""
@@ -1446,11 +1434,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
             body_global_to_local,
             set(visible_shape_order),
         )
-        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
         articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
+
+        # The parent's CUDA FK topology contains parent-model indices and is
+        # invalid after the compact view renumbers articulations, joints, and bodies.
+        view._fk_articulation_level_start = None
+        view._fk_level_joint_start = None
+        view._fk_level_joints = None
+        view._fk_level_parent_pos = None
+        view._fk_level_capacity = 0
 
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
@@ -2173,11 +2169,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
                 global entities are reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -2783,6 +2774,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 ],
                 device=self.model.device,
             )
+            if contacts.rigid_contact_surface_velocity is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_surface_velocity_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_surface_velocity,
+                        filtered.rigid_contact_surface_velocity,
+                    ],
+                    device=self.model.device,
+                )
             if contacts.rigid_contact_stiffness is not None and filtered.rigid_contact_stiffness is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_properties_kernel,
@@ -2811,21 +2814,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-            if contacts.rigid_contact_diff_distance is not None and filtered.rigid_contact_diff_distance is not None:
+            if contacts._rigid_contact_diff_distance is not None and filtered._rigid_contact_diff_distance is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_diff_kernel,
                     dim=contacts.rigid_contact_max,
                     inputs=[
                         self._entry_rigid_contact_update[entry.name],
                         rigid_src_to_dst,
-                        contacts.rigid_contact_diff_distance,
-                        contacts.rigid_contact_diff_normal,
-                        contacts.rigid_contact_diff_point0_world,
-                        contacts.rigid_contact_diff_point1_world,
-                        filtered.rigid_contact_diff_distance,
-                        filtered.rigid_contact_diff_normal,
-                        filtered.rigid_contact_diff_point0_world,
-                        filtered.rigid_contact_diff_point1_world,
+                        contacts._rigid_contact_diff_distance,
+                        contacts._rigid_contact_diff_point0_world,
+                        contacts._rigid_contact_diff_point1_world,
+                        filtered._rigid_contact_diff_distance,
+                        filtered._rigid_contact_diff_point0_world,
+                        filtered._rigid_contact_diff_point1_world,
                     ],
                     device=self.model.device,
                 )
@@ -2881,6 +2882,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 per_contact_shape_properties=contacts.per_contact_shape_properties,
                 requested_attributes=requested,
                 contact_matching=contacts.rigid_contact_match_index is not None,
+                rigid_contact_surface_velocity=contacts.rigid_contact_surface_velocity is not None,
             )
             self._entry_contact_buffers[entry.name] = filtered
             self._entry_contact_sources[entry.name] = contacts
@@ -2934,6 +2936,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
             and (filtered.force is not None) == (contacts.force is not None)
             and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
+            and (filtered.rigid_contact_surface_velocity is None) == (contacts.rigid_contact_surface_velocity is None)
         )
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
@@ -3592,6 +3595,22 @@ def _filter_rigid_contacts_global_shape_ids_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_surface_velocity_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_surface_velocity: wp.array[wp.vec3],
+    dst_surface_velocity: wp.array[wp.vec3],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id >= 0:
+        dst_surface_velocity[dst_id] = src_surface_velocity[src_id]
+
+
+@wp.kernel(enable_backward=False)
 def _copy_filtered_rigid_contact_properties_kernel(
     update_filter: wp.array[wp.int32],
     src_to_dst: wp.array[wp.int32],
@@ -3642,11 +3661,9 @@ def _copy_filtered_rigid_contact_diff_kernel(
     update_filter: wp.array[wp.int32],
     src_to_dst: wp.array[wp.int32],
     src_distance: wp.array[wp.float32],
-    src_normal: wp.array[wp.vec3],
     src_point0_world: wp.array[wp.vec3],
     src_point1_world: wp.array[wp.vec3],
     dst_distance: wp.array[wp.float32],
-    dst_normal: wp.array[wp.vec3],
     dst_point0_world: wp.array[wp.vec3],
     dst_point1_world: wp.array[wp.vec3],
 ):
@@ -3659,7 +3676,6 @@ def _copy_filtered_rigid_contact_diff_kernel(
         return
 
     dst_distance[dst_id] = src_distance[src_id]
-    dst_normal[dst_id] = src_normal[src_id]
     dst_point0_world[dst_id] = src_point0_world[src_id]
     dst_point1_world[dst_id] = src_point1_world[src_id]
 

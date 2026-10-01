@@ -1,0 +1,83 @@
+#usda 1.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+(
+    defaultPrim = "World"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene" (
+        prepend apiSchemas = ["NewtonMPMSceneAPI"]
+    )
+    {
+    }
+
+    def Material "DefaultMaterial" (
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
+    )
+    {
+        float physics:density = 1000
+        float newton:mpm:youngsModulus = 100
+        float newton:mpm:internalFriction = 0.1
+        float newton:mpm:initialPlasticVolumeStrain = 1
+    }
+
+    def Material "MaterialA" (
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
+    )
+    {
+        float physics:density = 2000
+        float newton:mpm:youngsModulus = 200
+        float newton:mpm:internalFriction = 0.2
+        float newton:mpm:initialPlasticVolumeStrain = 0.9
+    }
+
+    def Material "MaterialB" (
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
+    )
+    {
+        float physics:density = 3000
+        float newton:mpm:youngsModulus = 300
+        float newton:mpm:internalFriction = 0.3
+        float newton:mpm:initialPlasticVolumeStrain = 0.8
+    }
+
+    def Points "Mixed" (
+        prepend apiSchemas = ["MaterialBindingAPI", "NewtonPointsDeformableSimAPI", "PhysicsDeformableBodyAPI"]
+    )
+    {
+        int64[] ids = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)]
+        vector3f[] velocities = [(0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)]
+        float[] widths = [1] (
+            interpolation = "constant"
+        )
+        rel material:binding:physics = </World/DefaultMaterial>
+        rel physics:simulationOwner = </World/PhysicsScene>
+        uniform token subsetFamily:materialBind:familyType = "nonOverlapping"
+
+        def GeomSubset "MaterialA" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "point"
+            uniform token familyName = "materialBind"
+            int[] indices = [0, 2]
+            rel material:binding:physics = </World/MaterialA>
+        }
+
+        def GeomSubset "MaterialB" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "point"
+            uniform token familyName = "materialBind"
+            int[] indices = [1]
+            rel material:binding:physics = </World/MaterialB>
+        }
+    }
+}

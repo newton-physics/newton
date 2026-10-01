@@ -124,7 +124,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self._configure_dahl_attributes()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -190,19 +190,17 @@ class Example:
 
     def _add_cantilever(self, builder, name: str, mode: str) -> tuple[list[int], tuple[int, int]]:
         start = wp.vec3(0.0, self.CASE_Y[name], 0.0)
-        points = newton.utils.create_straight_cable_points(
+        rod = newton.Rod.create_straight(
             start=start,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
-            num_segments=self.NUM_ELEMENTS,
+            segment_count=self.NUM_ELEMENTS,
+            radius=self.CABLE_RADIUS,
         )
-        quats = newton.utils.create_parallel_transport_cable_quaternions(points)
 
         joint_count_before = builder.joint_count
         rod_bodies, _ = builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.CABLE_RADIUS,
+            rod=rod,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
             bend_stiffness=self.BEND_STIFFNESS,

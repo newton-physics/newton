@@ -5,7 +5,6 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast, overload
 from urllib.parse import urlparse
 
@@ -80,7 +79,7 @@ def compute_vertex_normals(
 
     Args:
         points: Vertex positions (wp.vec3 array or Nx3 NumPy array).
-        indices: Triangle indices (flattened or Nx3). Warp arrays are expected to be flattened.
+        indices: Triangle indices (flattened or Nx3).
         normals: Optional output array to reuse (Warp or NumPy to match ``points``).
         device: Warp device to run on. NumPy inputs default to CPU.
         normalize: Whether to normalize the accumulated normals.
@@ -96,11 +95,21 @@ def compute_vertex_normals(
         if isinstance(indices, np.ndarray):
             indices_np = np.asarray(indices, dtype=np.int32)
             if indices_np.ndim == 2:
+                if indices_np.shape[1] != 3:
+                    raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
                 indices_np = indices_np.reshape(-1)
             elif indices_np.ndim != 1:
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
             indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
         indices_wp = cast(wp.array, indices_wp)
+        if not wp.types.type_is_int(indices_wp.dtype):
+            raise TypeError(f"Warp indices must use an integer scalar dtype, got {indices_wp.dtype}.")
+        if indices_wp.ndim == 2:
+            if indices_wp.shape[1] != 3:
+                raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
+            indices_wp = indices_wp.flatten()
+        elif indices_wp.ndim != 1:
+            raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
         if normals is None:
             normals_wp = wp.zeros_like(points)
         else:
@@ -108,7 +117,11 @@ def compute_vertex_normals(
             normals_wp.zero_()
         if len(indices_wp) == 0 or len(points) == 0:
             return normals_wp
-        indices_i32 = indices_wp if indices_wp.dtype == wp.int32 else indices_wp.view(dtype=wp.int32)
+        if indices_wp.dtype == wp.int32:
+            indices_i32 = indices_wp
+        else:
+            indices_i32 = wp.empty(indices_wp.shape, dtype=wp.int32, device=indices_wp.device)
+            wp.utils.array_cast(in_array=indices_wp, out_array=indices_i32)
         wp.launch(
             accumulate_vertex_normals,
             dim=len(indices_i32) // 3,
@@ -123,6 +136,8 @@ def compute_vertex_normals(
     points_np = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     indices_np = np.asarray(indices, dtype=np.int32)
     if indices_np.ndim == 2:
+        if indices_np.shape[1] != 3:
+            raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
         indices_np = indices_np.reshape(-1)
     elif indices_np.ndim != 1:
         raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
@@ -360,23 +375,7 @@ class MeshAdjacency:
             :meth:`init_vertex_adjacency` returns early when this is already ``True``.
         indices, spring_indices, tet_indices: The triangle / spring / tetrahedron topology this
             adjacency is built over, kept from the constructor for :meth:`init_vertex_adjacency`.
-
-    .. note::
-        The :attr:`edges` dict is a deprecated compatibility shim (it emits a
-        ``DeprecationWarning``); use the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
     """
-
-    @dataclass(slots=True)
-    class Edge:
-        """Legacy per-edge record: edge ``(v0, v1)`` with opposite vertices
-        ``o0``/``o1`` and adjacent triangles ``f0``/``f1`` (``-1`` if boundary)."""
-
-        v0: int
-        v1: int
-        o0: int
-        o1: int
-        f0: int
-        f1: int
 
     def __init__(
         self,
@@ -384,7 +383,6 @@ class MeshAdjacency:
         edge_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
         spring_indices: Sequence[int] | np.ndarray | None = None,
         tet_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
-        indices: Sequence[Sequence[int]] | np.ndarray | None = None,
     ):
         """Build edge adjacency from triangles and store the element topology as members.
 
@@ -400,19 +398,7 @@ class MeshAdjacency:
                 stored for :meth:`init_vertex_adjacency`.
             tet_indices: Tetrahedron vertex ids, shape ``[tet_count, 4]``; stored for
                 :meth:`init_vertex_adjacency`.
-            indices: Deprecated alias for ``tri_indices``.
         """
-        # `indices` is a deprecated alias for `tri_indices`, kept for backward compatibility.
-        if indices is not None:
-            if tri_indices is not None and not np.array_equal(_numpy_int_array(indices), _numpy_int_array(tri_indices)):
-                raise ValueError("Pass `tri_indices` or the deprecated `indices`, not both with different values.")
-            warnings.warn(
-                "MeshAdjacency `indices` argument is deprecated; use `tri_indices`.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            tri_indices = indices
-
         # Element topology kept as members (owned int32 copies, detached from any mutable input
         # list so a finalized model's adjacency can't drift if the builder is modified after
         # finalize()); init_vertex_adjacency builds the CSR from these.
@@ -442,74 +428,6 @@ class MeshAdjacency:
         self.v_adj_tets = None
         self.v_adj_tets_offsets = None
         # Set once init_vertex_adjacency has built the CSR tables; guards recomputation.
-        self.vertex_adjacency_initialized = False
-
-    @property
-    def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
-        """Deprecated legacy edge dict, rebuilt on access from ``edge_indices``.
-
-        Maps ``(min(v0, v1), max(v0, v1))`` to an :class:`Edge`. Recomputed on
-        every access and never cached; prefer the ``edge_indices`` /
-        ``edge_tri_indices`` arrays directly.
-        """
-        warnings.warn(
-            "MeshAdjacency.edges is deprecated; use the edge_indices/edge_tri_indices arrays.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_indices = _numpy_int_rows(self.edge_indices, 4)
-        edge_tri_indices = _numpy_int_rows(self.edge_tri_indices, 2)
-        return {
-            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
-                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
-            )
-            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
-        }
-
-    def add_edge(self, i0: int, i1: int, o: int, f: int) -> None:
-        """Add or update one edge (deprecated; build via ``edge_indices`` instead).
-
-        Legacy incremental API: edge ``(i0, i1)`` with opposite vertex ``o`` in triangle ``f``.
-        The first call for an edge fills ``o0``/``f0``, the second fills ``o1``/``f1``; a third
-        warns (non-manifold). Updates :attr:`edge_indices` / :attr:`edge_tri_indices` (so
-        :attr:`edges` reflects it) and invalidates the vertex-adjacency CSR. It does **not**
-        update :attr:`tri_edge_indices`, so an edge added this way will not appear in the
-        per-triangle edge map; users can reconstruct via the constructor if they need that. O(edge_count)
-        per call -- a compatibility shim, not a hot path.
-
-        Args:
-            i0: First edge endpoint.
-            i1: Second edge endpoint.
-            o: Opposite vertex in triangle ``f``.
-            f: Triangle containing this edge.
-        """
-        warnings.warn(
-            "MeshAdjacency.add_edge is deprecated; construct with edge_indices ([o0, o1, v0, v1] rows) instead. "
-            "The added edge is not reflected in tri_edge_indices.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_rows = _numpy_int_rows(self.edge_indices, 4)
-        tri_rows = _numpy_int_rows(self.edge_tri_indices, 2)
-        lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
-        match = -1
-        for e in range(edge_rows.shape[0]):
-            if (
-                min(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == lo
-                and max(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == hi
-            ):
-                match = e
-                break
-        if match == -1:
-            self.edge_indices = np.concatenate((edge_rows, np.array([[o, -1, i0, i1]], dtype=np.int32)))
-            self.edge_tri_indices = np.concatenate((tri_rows, np.array([[f, -1]], dtype=np.int32)))
-        elif int(tri_rows[match, 1]) == -1:
-            edge_rows[match, 1] = o
-            tri_rows[match, 1] = f
-            self.edge_indices, self.edge_tri_indices = edge_rows, tri_rows
-        else:
-            warnings.warn("Detected non-manifold edge", stacklevel=2)
-            return
         self.vertex_adjacency_initialized = False
 
     def to(self, device) -> MeshAdjacencyData:
@@ -1730,12 +1648,17 @@ def create_mesh_cylinder(
     up_axis: int = 1,
     segments: int = default_num_segments,
     top_radius: float | None = None,
+    barrel_radius: float = 0.0,
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create cylinder/truncated cone geometry data with optional normals/UVs."""
+    """Create cylinder, barrel cylinder, or truncated cone geometry data."""
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if barrel_radius != 0.0 and barrel_radius < half_height:
+        raise ValueError("barrel_radius must be zero or at least half_height")
+    if barrel_radius != 0.0 and top_radius is not None and top_radius != radius:
+        raise ValueError("barrel_radius cannot be combined with a different top_radius")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
     if top_radius is None:
@@ -1757,46 +1680,58 @@ def create_mesh_cylinder(
             uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
         return idx
 
-    side_radial_component = 2.0 * half_height
-    side_axial_component = radius - top_radius
-
-    # Side vertices first (contiguous layout for robust indexing).
-    side_bottom_indices = []
-    for i in range(segments):
-        theta = 2 * np.pi * i / segments
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
-
-        position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
-        position = position[[x_dir, y_dir, z_dir]]
-
-        side_normal = None
-        if compute_normals:
-            side_normal = np.array(
-                [
-                    side_radial_component * cos_theta,
-                    side_axial_component,
-                    side_radial_component * sin_theta,
-                ],
-                dtype=np.float32,
-            )
-            normal_length = np.linalg.norm(side_normal)
-            if normal_length > 0.0:
-                side_normal = side_normal / normal_length
-            side_normal = side_normal[[x_dir, y_dir, z_dir]]
-
-        side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
-        side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
-
-    side_top_indices = []
+    side_ring_indices = []
     side_apex_index: int | None = None
-    if top_radius > 0.0:
+
+    if barrel_radius > 0.0:
+        profile_segments = max(2, segments // 2)
+        end_offset = np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+        for j in range(profile_segments + 1):
+            v = j / profile_segments
+            axial_position = -half_height + 2.0 * half_height * v
+            profile_offset = np.sqrt(max(barrel_radius * barrel_radius - axial_position * axial_position, 0.0))
+            offset_sum = profile_offset + end_offset
+            ring_radius = radius
+            if offset_sum > 0.0:
+                ring_radius += (half_height * half_height - axial_position * axial_position) / offset_sum
+
+            ring_indices = []
+            for i in range(segments):
+                theta = 2.0 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+                position = np.array(
+                    [ring_radius * cos_theta, axial_position, ring_radius * sin_theta], dtype=np.float32
+                )
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            profile_offset * cos_theta / barrel_radius,
+                            axial_position / barrel_radius,
+                            profile_offset * sin_theta / barrel_radius,
+                        ],
+                        dtype=np.float32,
+                    )[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), v) if compute_uvs else None
+                ring_indices.append(add_vertex(position, side_normal, side_uv))
+            side_ring_indices.append(ring_indices)
+
+    else:
+        side_radial_component = 2.0 * half_height
+        side_axial_component = radius - top_radius
+
+        # Side vertices first (contiguous layout for robust indexing).
+        side_bottom_indices = []
         for i in range(segments):
             theta = 2 * np.pi * i / segments
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
 
-            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
             position = position[[x_dir, y_dir, z_dir]]
 
             side_normal = None
@@ -1814,14 +1749,42 @@ def create_mesh_cylinder(
                     side_normal = side_normal / normal_length
                 side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
-            side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
-            side_top_indices.append(add_vertex(position, side_normal, side_uv))
-    else:
-        apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        apex_normal = None
-        if compute_normals:
-            apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
+            side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
+            side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
+
+        side_top_indices = []
+        if top_radius > 0.0:
+            for i in range(segments):
+                theta = 2 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+
+                position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            side_radial_component * cos_theta,
+                            side_axial_component,
+                            side_radial_component * sin_theta,
+                        ],
+                        dtype=np.float32,
+                    )
+                    normal_length = np.linalg.norm(side_normal)
+                    if normal_length > 0.0:
+                        side_normal = side_normal / normal_length
+                    side_normal = side_normal[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
+                side_top_indices.append(add_vertex(position, side_normal, side_uv))
+        else:
+            apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            apex_normal = None
+            if compute_normals:
+                apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
 
     # Cap vertices after side vertices (also contiguous per cap).
     cap_center_bottom_idx: int | None = None
@@ -1884,17 +1847,28 @@ def create_mesh_cylinder(
             indices.extend([cap_center_top_idx, i1, i0])
 
     # Side faces
-    for i in range(segments):
-        bottom_i = side_bottom_indices[i]
-        bottom_next = side_bottom_indices[(i + 1) % segments]
+    if barrel_radius > 0.0:
+        for ring_index in range(len(side_ring_indices) - 1):
+            bottom_ring = side_ring_indices[ring_index]
+            top_ring = side_ring_indices[ring_index + 1]
+            for i in range(segments):
+                bottom_i = bottom_ring[i]
+                bottom_next = bottom_ring[(i + 1) % segments]
+                top_i = top_ring[i]
+                top_next = top_ring[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+    else:
+        for i in range(segments):
+            bottom_i = side_bottom_indices[i]
+            bottom_next = side_bottom_indices[(i + 1) % segments]
 
-        if top_radius > 0.0:
-            top_i = side_top_indices[i]
-            top_next = side_top_indices[(i + 1) % segments]
-            indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
-        else:
-            assert side_apex_index is not None
-            indices.extend([side_apex_index, bottom_next, bottom_i])
+            if top_radius > 0.0:
+                top_i = side_top_indices[i]
+                top_next = side_top_indices[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+            else:
+                assert side_apex_index is not None
+                indices.extend([side_apex_index, bottom_next, bottom_i])
 
     return (
         np.asarray(positions, dtype=np.float32),
@@ -2237,7 +2211,7 @@ def validate_triangle_mesh(
     construction and is built by every builder path that accepts a
     triangle mesh, so going through ``add_cloth_mesh`` /
     ``add_soft_mesh`` already covers it. Standalone callers who need a
-    non-manifold check should construct ``MeshAdjacency(indices)``
+    non-manifold check should construct ``MeshAdjacency(tri_indices)``
     themselves. Each detected problem is reported via
     :func:`warnings.warn`.
 

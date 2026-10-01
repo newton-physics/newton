@@ -90,8 +90,8 @@ class Example:
     # Self-contact (true radius, hard-history). Radius is kept below half the
     # segment length so rest-state neighbours do not overlap; the gap catches
     # approaching strands before they cross.
-    CONTACT_STIFFNESS = 5.0e4
-    CONTACT_DAMPING = 0.0
+    CONTACT_STIFFNESS = 3.0e5
+    CONTACT_DAMPING = 2.5e1
     CONTACT_TOPOLOGICAL_FILTER_SPAN = 2
 
     FPS = 60
@@ -134,10 +134,9 @@ class Example:
             kd=self.CONTACT_DAMPING,
             gap=self.contact_gap,
         )
+        rod = newton.Rod(points, radius=self.cable_radius)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=None,
-            radius=self.cable_radius,
+            rod=rod,
             cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
@@ -170,7 +169,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_contact_hard=True,
+            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )
@@ -198,11 +197,10 @@ class Example:
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
-            if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
-                self.viewer.camera.fov = 35.0
+        self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
+            self.viewer.camera.fov = 35.0
 
         self.graph = None
         self.capture()
