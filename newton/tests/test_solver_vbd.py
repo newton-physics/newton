@@ -39,6 +39,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _evaluate_rigid_soft_contact_force_norm,
     _joint_angular_rho_seed,
+    accumulate_body_body_contacts_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     compute_rigid_contact_forces,
@@ -355,6 +356,7 @@ def _eval_compliant_sliding_contact_metric_kernel(
             body_q,
             body_q_prev,
             body_com,
+            wp.vec3(0.0),
             wp.vec3(0.0),
             wp.vec3(0.0),
             wp.vec3(0.0),
@@ -904,6 +906,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.0),
         wp.vec3(0.0),
+        wp.vec3(0.0),
         contact_normal[sample],
         0.06,
         100.0,
@@ -937,6 +940,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         rigid_body_com,
         wp.vec3(0.2, -0.1, 0.05),
         wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.0),
         wp.vec3(0.0),
         wp.vec3(0.0),
         contact_normal[sample],
@@ -1693,12 +1697,14 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 zeros3,
                 zeros3,
                 zeros3,
+                zeros3,
                 normal,
                 margin,
                 margin,
                 shape_body,
                 body_q,
                 body_q_prev,
+                0.01,
                 contact_mu,
                 zeros3,
                 0.0,
@@ -2680,6 +2686,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
         shape1 = wp.ones(4, dtype=int, device=device)
         point0 = wp.zeros(4, dtype=wp.vec3, device=device)
         point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        surface_velocity = wp.zeros(4, dtype=wp.vec3, device=device)
         offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
         offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
@@ -2720,6 +2727,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
                 shape1,
                 point0,
                 point1,
+                surface_velocity,
                 offset0,
                 offset1,
                 normal,
@@ -3375,7 +3383,7 @@ def _rigid_reset_state_and_history(test, device):
         solver.reset(None)
     with test.assertRaisesRegex(TypeError, "dtype bool"):
         solver.reset(state, world_mask=wp.array([1, 0, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
+    with test.assertRaisesRegex(ValueError, "length 1 must equal model.world_count \\+ 1"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -3431,8 +3439,7 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
-        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array([False, False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta
@@ -4864,7 +4871,28 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
 
 
 class TestSolverVBD(unittest.TestCase):
-    pass
+    def test_contact_kernel_modules_follow_deterministic_mode(self):
+        """Apply VBD deterministic options to rigid contact kernels."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        newton.solvers.SolverVBD(
+            model,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN,
+            rigid_compliant_alm=True,
+        )
+
+        kernels = (
+            accumulate_body_body_contacts_per_body,
+            compute_rigid_contact_forces,
+            update_duals_body_body_contacts,
+        )
+        for kernel in kernels:
+            options = wp.get_module_options(module=kernel.module)
+            self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
+            self.assertFalse(options["enable_backward"])
 
 
 add_function_test(

@@ -113,6 +113,7 @@ from .kernels import (
     update_shape_mappings_kernel,
     update_site_properties_kernel,
     update_solver_options_kernel,
+    update_tendon_limit_gains_kernel,
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
@@ -2601,6 +2602,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_attribute_name="mjc:solreflimit",
             )
         )
+        for name in ("tendon_limit_ke", "tendon_limit_kd"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name, frequency="mujoco:tendon", dtype=wp.float32, default=0.0, namespace="mujoco"
+                )
+            )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_solref_limit_mode",
+                frequency="mujoco:tendon",
+                dtype=wp.int32,
+                # Reuse the joint-limit authoring modes for tendon gain provenance.
+                default=SOLREF_MODE_RAW,
+                namespace="mujoco",
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solimp_limit",
@@ -2970,6 +2987,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "tendon_actuator_force_limited",
             "tendon_actuator_force_range",
             "tendon_solref_limit",
+            "tendon_limit_ke",
+            "tendon_limit_kd",
+            "tendon_solref_limit_mode",
             "tendon_solimp_limit",
             "tendon_solref_friction",
             "tendon_solimp_friction",
@@ -4257,11 +4277,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 global world ``-1`` and is a no-op because MuJoCo does not
                 support global dynamic objects. If ``None``, all worlds are
                 reset.
-
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
@@ -4898,6 +4913,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # factors; ``jnt_solimp`` was already written by
                 # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
+                self._update_tendon_limit_gains()
             # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
             self._notify_connect_constraints_changed(
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
@@ -4927,6 +4943,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         # ``jnt_solimp`` was already written by
                         # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
+                        self._update_tendon_limit_gains()
                     # MuJoCo constant recomputation overwrites per-world CONNECT anchors, so restore them last.
                     self._notify_connect_constraints_changed(
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
@@ -6491,6 +6508,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         uservert=mesh_src.vertices.flatten(),
                         userface=mesh_src.indices.flatten(),
                         maxhullvert=mesh_src.maxhullvert,
+                        # Newton supplies body inertia, so MuJoCo need not compute volume inertia.
+                        inertia=mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
                     )
                     geom_params["meshname"] = name
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
@@ -6538,6 +6557,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         uservert=vertices.flatten(),
                         userface=indices.flatten(),
                         maxhullvert=maxhullvert,
+                        # Newton supplies body inertia, so MuJoCo need not compute volume inertia.
+                        inertia=mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
                     )
                     geom_params["meshname"] = name
                 geom_params["pos"] = tf.p
@@ -9307,6 +9328,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
 
+    def _update_tendon_limit_gains(self):
+        """Apply force gains using tendon inverse inertia refreshed by ``set_const_0``."""
+        if self.mjc_tendon_to_newton_tendon is None or self.mj_model.ntendon == 0:
+            return
+        if self.use_mujoco_cpu:
+            self.mjw_model.tendon_invweight0.assign(self.mj_model.tendon_invweight0.reshape(1, -1))
+        attrs = self.model.mujoco
+        wp.launch(
+            update_tendon_limit_gains_kernel,
+            dim=self.mjc_tendon_to_newton_tendon.shape,
+            inputs=[
+                self.mjc_tendon_to_newton_tendon,
+                attrs.tendon_solref_limit_mode,
+                attrs.tendon_limit_ke,
+                attrs.tendon_limit_kd,
+                attrs.tendon_solref_limit,
+                attrs.tendon_range,
+                self.mjw_model.tendon_invweight0,
+                self.mjw_model.tendon_solimp_lim,
+            ],
+            outputs=[self.mjw_model.tendon_solref_lim, self.mjw_model.tendon_range],
+            device=self.model.device,
+        )
+        self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
+        self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
+
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
 
@@ -9575,6 +9622,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+
+        if self.use_mujoco_cpu:
+            self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
+            self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
+            self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
+            self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
 
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.

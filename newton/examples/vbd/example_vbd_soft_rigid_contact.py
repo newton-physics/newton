@@ -327,8 +327,7 @@ class Example:
             self.viewer.renderer.draw_wireframe = True
         if hasattr(self.viewer, "_paused"):
             self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
+        self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
 
     def simulate(self):
         dz = 0.0

@@ -410,7 +410,7 @@ apply the appropriate rotation transforms:
 
 The up axis controls geometry conventions but does not constrain an explicit
 gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
-up axis. Passing a scalar gravity value is deprecated.
+up axis.
 
 Color Space Handling
 --------------------

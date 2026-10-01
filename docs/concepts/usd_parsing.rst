@@ -565,6 +565,8 @@ On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the followi
      - ``limit_kd``
      - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
 
+On ``SphericalJoint`` prims, only ``newton:armature``, ``newton:damping``, and ``newton:friction`` are resolved; each applies to all three rotational DOFs.
+
 Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
 
 **MuJoCo Attribute Remapping Examples:**
@@ -581,6 +583,9 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:armature``
      - ``armature``
      - Direct mapping
+   * - ``mjc:actuatorfrcrange:min``, ``mjc:actuatorfrcrange:max``
+     - ``effort_limit``
+     - Revolute and prismatic joints: larger magnitude of the range. Ignored when ``mjc:actuatorfrclimited`` is ``"false"``, or ``"auto"`` with an empty range. A smaller drive ``maxForce`` takes precedence.
    * - ``mjc:margin``
      - ``margin``
      - Direct mapping (identity under MuJoCo 3.9+). Pass ``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_usd` for the pre-3.9 ``margin = mjc:margin - mjc:gap`` translation.
