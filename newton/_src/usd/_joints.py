@@ -158,12 +158,12 @@ def parse_joint(
         joint_params["friction"] = dof.friction
         joint_params["damping"] = dof.damping
         joint_params["velocity_limit"] = dof.velocity_limit
+        joint_params["effort_limit"] = dof.effort_limit
         if dof.has_drive:
             joint_params["target_vel"] = dof.target_vel
             joint_params["target_pos"] = dof.target_pos
             joint_params["target_ke"] = dof.target_ke
             joint_params["target_kd"] = dof.target_kd
-            joint_params["effort_limit"] = dof.effort_limit
         joint_params["actuator_mode"] = dof.actuator_mode
 
         # Initial joint state, applied after creation (already in Newton units)
@@ -175,6 +175,12 @@ def parse_joint(
         else:
             joint_index = builder.add_joint_prismatic(**joint_params)
     elif key == UsdPhysics.ObjectType.SphericalJoint:
+        joint_params["armature"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        )
+        joint_params["friction"] = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+        )
         _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
         joint_params["damping"] = joint_damping
         joint_index = builder.add_joint_ball(**joint_params)
@@ -481,10 +487,10 @@ def parse_joint(
                     print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = vel  # D6 velocities are already in correct units
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
-                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+                    print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} ({'deg/s' if is_rot else 'm/s'})")
 
     return joint_index
 
@@ -686,7 +692,7 @@ def parse_merged_joints(
             damping=dof.damping,
             armature=dof.armature,
             friction=dof.friction,
-            effort_limit=dof.effort_limit,
+            effort_limit=dof.effort_limit if dof.effort_limit is not None else np.inf,
             velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
             actuator_mode=dof.actuator_mode,
         )
