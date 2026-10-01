@@ -33,7 +33,7 @@ _CONFIG_DEPRECATION_MSG = (
     "The alias will be removed in a future release."
 )
 _TILED_CAMERA_DEPRECATION_MSG = (
-    "SensorTiledCamera is deprecated as of Newton 1.6 and will be removed in a future release; "
+    "SensorTiledCamera is deprecated as of Newton 1.7 and will be removed in a future release; "
     "use newton.sensors.SensorCamera instead."
 )
 
@@ -49,7 +49,7 @@ _DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    .. deprecated:: 1.6
+    .. deprecated:: 1.7
         Use :class:`~newton.sensors.SensorCamera` instead. ``SensorTiledCamera``
         will be removed in a future release.
 

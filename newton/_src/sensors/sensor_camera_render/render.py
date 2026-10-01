@@ -63,9 +63,9 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         out_hdr_color: wp.array[wp.vec3f],
     ):
         if wp.static(state.render_color):
-            out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
+            out_color[out_index] = wp.static(wp.uint32(clear_data.clear_color))
         if wp.static(state.render_albedo):
-            out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+            out_albedo[out_index] = wp.static(wp.uint32(clear_data.clear_albedo))
         if wp.static(state.render_hdr_color):
             out_hdr_color[out_index] = wp.vec3f(0.0)
         if wp.static(state.render_depth):
@@ -79,7 +79,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 wp.static(clear_data.clear_normal[2]),
             )
         if wp.static(state.render_shape_index):
-            out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
+            out_shape_index[out_index] = wp.static(wp.uint32(clear_data.clear_shape_index))
 
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(

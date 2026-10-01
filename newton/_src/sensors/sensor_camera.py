@@ -30,21 +30,6 @@ if TYPE_CHECKING:
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 
-def _resolve_fisheye_image_size(
-    axis: str,
-    image_size: float | None,
-    nominal_size: float | None,
-    default_size: int,
-) -> float:
-    if image_size is not None and nominal_size is not None and image_size != nominal_size:
-        raise ValueError(f"image_{axis} and nominal_{axis} must match when both are provided.")
-    if image_size is not None:
-        return float(image_size)
-    if nominal_size is not None:
-        return float(nominal_size)
-    return float(default_size)
-
-
 def _validate_camera_ray_output(
     width: int,
     height: int,
@@ -159,35 +144,110 @@ class SensorCamera:
         return self._render_context.model.device
 
     def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
-        """Create an output image array with shape ``(view_count, height, width)``."""
+        """Create a zeroed output image array on the model device.
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+            dtype: Warp element type for the array (e.g. ``wp.uint32``,
+                ``wp.float32``, ``wp.vec3f``).
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)`` and dtype
+            *dtype*, on the model device.
+        """
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
     def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA color output array (packed ``uint32``), shape ``(view_count, height, width)``."""
+        """Create an RGBA color output array (packed ``uint32``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
+        """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
     def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a depth output array [m], shape ``(view_count, height, width)``."""
+        """Create a ray-distance depth output array [m].
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
+        """
         return self.create_image_output(view_count, width, height, wp.float32)
 
     def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a forward-depth output array [m], shape ``(view_count, height, width)``."""
+        """Create a forward (planar) depth output array [m].
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
+        """
         return self.create_depth_image_output(view_count, width, height)
 
     def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create a shape-index output array, shape ``(view_count, height, width)``."""
+        """Create a shape-index output array.
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
+        """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
     def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a world-space surface-normal output array (``vec3f``), shape ``(view_count, height, width)``."""
+        """Create a world-space surface-normal output array (``vec3f``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
+        """
         return self.create_image_output(view_count, width, height, wp.vec3f)
 
     def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA albedo output array (packed ``uint32``), shape ``(view_count, height, width)``."""
+        """Create an RGBA albedo output array (packed ``uint32``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
+        """
         return self.create_image_output(view_count, width, height, wp.uint32)
 
     def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a linear HDR color output array, shape ``(view_count, height, width)``."""
+        """Create a linear HDR color output array (``vec3f``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
+        """
         return self.create_image_output(view_count, width, height, wp.vec3f)
 
     @staticmethod
@@ -355,6 +415,41 @@ class SensorCamera:
         variants are represented by leaving unused coefficients at zero. Pixels
         whose inverse cannot be verified within the solver tolerance receive a
         zero direction.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            fx: Horizontal focal length [px].
+            fy: Vertical focal length [px].
+            cx: Principal point x-coordinate [px].
+            cy: Principal point y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *height*.
+            k1: First numerator radial distortion coefficient.
+            k2: Second numerator radial distortion coefficient.
+            k3: Third numerator radial distortion coefficient.
+            k4: First denominator radial distortion coefficient.
+            k5: Second denominator radial distortion coefficient.
+            k6: Third denominator radial distortion coefficient.
+            p1: First tangential distortion coefficient.
+            p2: Second tangential distortion coefficient.
+            s1: First thin-prism distortion coefficient.
+            s2: Second thin-prism distortion coefficient.
+            s3: Third thin-prism distortion coefficient.
+            s4: Fourth thin-prism distortion coefficient.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of
+                ``vec3f``. If ``None``, a new one is allocated.
+            device: Device for the ray bundle. Defaults to the current Warp
+                device.
+
+        Returns:
+            Ray origins (``[..., 0]``) and directions (``[..., 1]``), shape
+            ``(height, width, 2)`` of ``vec3f``.
+
+        Raises:
+            ValueError: If any focal length or calibration image dimension is
+                non-positive, or if any calibration value is non-finite.
         """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
@@ -490,8 +585,6 @@ class SensorCamera:
         *,
         image_width: float | None = None,
         image_height: float | None = None,
-        nominal_width: float | None = None,
-        nominal_height: float | None = None,
         k0: float = 0.0,
         k1: float = 1.0,
         k2: float = 0.0,
@@ -512,14 +605,10 @@ class SensorCamera:
             height: Output image height [px].
             optical_center_x: Optical center x-coordinate [px].
             optical_center_y: Optical center y-coordinate [px].
-            image_width: Calibration image width [px]. If ``None``, uses
-                *nominal_width*, then *width*.
-            image_height: Calibration image height [px]. If ``None``, uses
-                *nominal_height*, then *height*.
-            nominal_width: Alias for *image_width* using F-theta terminology. If
-                both are given they must match.
-            nominal_height: Alias for *image_height* using F-theta terminology.
-                If both are given they must match.
+            image_width: Calibration image width [px] (the F-theta nominal
+                width). If ``None``, uses *width*.
+            image_height: Calibration image height [px] (the F-theta nominal
+                height). If ``None``, uses *height*.
             k0: Constant F-theta polynomial coefficient [px].
             k1: Linear F-theta polynomial coefficient [px/rad].
             k2: Quadratic F-theta polynomial coefficient [px/rad^2].
@@ -539,8 +628,8 @@ class SensorCamera:
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
-        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
-        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
+        image_width = float(width) if image_width is None else float(image_width)
+        image_height = float(height) if image_height is None else float(image_height)
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_fisheye_ftheta_kernel,
@@ -574,8 +663,6 @@ class SensorCamera:
         *,
         image_width: float | None = None,
         image_height: float | None = None,
-        nominal_width: float | None = None,
-        nominal_height: float | None = None,
         k0: float = 1.0,
         k1: float = 0.0,
         k2: float = 0.0,
@@ -595,14 +682,9 @@ class SensorCamera:
             height: Output image height [px].
             optical_center_x: Optical center x-coordinate [px].
             optical_center_y: Optical center y-coordinate [px].
-            image_width: Calibration image width [px]. If ``None``, uses
-                *nominal_width*, then *width*.
+            image_width: Calibration image width [px]. If ``None``, uses *width*.
             image_height: Calibration image height [px]. If ``None``, uses
-                *nominal_height*, then *height*.
-            nominal_width: Alias for *image_width*. If both are given they must
-                match.
-            nominal_height: Alias for *image_height*. If both are given they
-                must match.
+                *height*.
             k0: First Kannala-Brandt polynomial coefficient [px/rad].
             k1: Second Kannala-Brandt polynomial coefficient [px/rad^3].
             k2: Third Kannala-Brandt polynomial coefficient [px/rad^5].
@@ -621,8 +703,8 @@ class SensorCamera:
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
-        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
-        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
+        image_width = float(width) if image_width is None else float(image_width)
+        image_height = float(height) if image_height is None else float(image_height)
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_fisheye_kannala_brandt_kernel,

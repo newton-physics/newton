@@ -366,6 +366,14 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
             "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
+            # SensorCamera benchmarks stay out of the PR gate: the class is new in
+            # this PR, so it cannot be imported on the base commit for comparison.
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCamera.time_render_depth_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
+            "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:

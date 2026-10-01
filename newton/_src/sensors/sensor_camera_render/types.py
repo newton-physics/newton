@@ -78,7 +78,13 @@ class RenderConfig:
     """Projection mode for texture-mapped shapes without UVs."""
 
     enable_shadows: bool = False
-    """Enable shadow rays for directional lights."""
+    """Enable shadow rays for directional lights.
+
+    Shadows are only rendered when a light also casts them (e.g. a light created
+    via :meth:`~newton.sensors.SensorCamera.create_default_light` with
+    ``enable_shadows=True``); with no shadow-casting light this setting has no
+    effect.
+    """
 
     enable_ambient_lighting: bool = True
     """Enable ambient lighting for the scene."""
