@@ -908,8 +908,13 @@ def _compute_generic_convex_pair_stats(
     broad_phase_mode: str,
     shape_pairs_filtered: wp.array[wp.vec2i] | None,
     candidate_pair_work_estimate: int,
+    shape_pairs_host: np.ndarray | None = None,
 ) -> tuple[bool, int]:
-    """Determine whether generic convex pairs exist and estimate their work."""
+    """Determine whether generic convex pairs exist and estimate their work.
+
+    ``shape_pairs_host`` is an optional ``(N, 2)`` host copy of
+    ``shape_pairs_filtered`` that spares another device-to-host read.
+    """
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
         return True, candidate_pair_work_estimate
@@ -918,7 +923,10 @@ def _compute_generic_convex_pair_stats(
     if broad_phase_mode == "explicit":
         if shape_pairs_filtered is None:
             return True, candidate_pair_work_estimate
-        explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
+        if shape_pairs_host is not None:
+            explicit_pairs = shape_pairs_host
+        else:
+            explicit_pairs = shape_pairs_filtered.numpy().reshape(-1, 2)
         if len(explicit_pairs) == 0:
             return False, 0
         pair_types = shape_types[explicit_pairs]
@@ -1619,21 +1627,35 @@ class CollisionPipeline:
             # Keep mesh and heightfield flags independent: heightfield-only scenes
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
+            has_heightfields = model.heightfield_count > 0
             use_lean_gjk_mpr = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
             max_mesh_mesh_pairs = self.shape_pairs_max
             max_mesh_plane_pairs = self.shape_pairs_max
+            # Host copy of the explicit pair list, read at most once during setup.
+            explicit_pairs_host = None
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
                 colliding_shape_types = shape_types[colliding_mask]
+                # Only shapes that can reach the narrow phase enable its mesh and
+                # heightfield stages: the explicit broad phase emits only listed
+                # pairs, and NXN/SAP only pair shapes that collide with shapes.
+                stage_mask = colliding_mask
+                if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
+                    explicit_pairs_host = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                    paired = np.zeros(len(shape_types), dtype=bool)
+                    pair_shapes = explicit_pairs_host.ravel()
+                    paired[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
+                    stage_mask = colliding_mask & paired
                 mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
                 heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
                 plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
                 planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
-                has_meshes = bool(np.any(mesh_mask))
+                has_meshes = bool(np.any(mesh_mask & stage_mask))
+                has_heightfields = bool(np.any(heightfield_mask & stage_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
@@ -1643,7 +1665,7 @@ class CollisionPipeline:
                     shape_sdf_index = model._shape_sdf_index.numpy()
                     shape_edge_range = model.shape_edge_range.numpy()
                     planar_sdf_mask = colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
-                    has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
+                    has_planar_sdf_shapes = bool(np.any(planar_sdf_mask & stage_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
                     mesh_sdf_pair_mask |= planar_sdf_mask
                     mesh_sdf_shapes = colliding_mask & (
@@ -1679,7 +1701,7 @@ class CollisionPipeline:
                         max_mesh_mesh_pairs = 0
                         max_mesh_plane_pairs = 0
                     else:
-                        explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                        explicit_pairs = explicit_pairs_host
                         shape_a = explicit_pairs[:, 0]
                         shape_b = explicit_pairs[:, 1]
                         box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
@@ -1729,6 +1751,7 @@ class CollisionPipeline:
                 broad_phase_mode=self.broad_phase_mode,
                 shape_pairs_filtered=self.shape_pairs_filtered,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
+                shape_pairs_host=explicit_pairs_host,
             )
             split_pair_count_threshold = (
                 _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
@@ -1764,7 +1787,7 @@ class CollisionPipeline:
                 shape_voxel_resolution=model._shape_voxel_resolution,
                 hydroelastic_sdf=hydroelastic_sdf,
                 has_meshes=has_meshes,
-                has_heightfields=model.heightfield_count > 0,
+                has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,

@@ -2492,6 +2492,48 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                 self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 0)
                 self.assertEqual(pipeline.narrow_phase.has_generic_convex_pairs, geometry != "heightfield")
 
+    def test_stages_skip_shapes_outside_every_contact_pair(self):
+        """Skip mesh and heightfield stages for shapes that can never reach the narrow phase."""
+        heightfield = newton.Heightfield(
+            data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=0.0, max_z=0.0
+        )
+        cases = (
+            # A colliding mesh filtered against the only shape it could touch is in no contact pair.
+            ("filtered_mesh", "explicit"),
+            # A heightfield without shape collision is in no contact pair in any broad phase.
+            ("visual_heightfield", "explicit"),
+            ("visual_heightfield", "nxn"),
+            ("visual_heightfield", "sap"),
+        )
+        for scene, broad_phase in cases:
+            with self.subTest(scene=scene, broad_phase=broad_phase):
+                builder = newton.ModelBuilder()
+                builder.add_ground_plane()
+                box_body = builder.add_body(xform=wp.transform(wp.vec3(3.0, 0.0, 0.09)))
+                builder.add_shape_box(box_body, hx=0.1, hy=0.1, hz=0.1)
+                if scene == "filtered_mesh":
+                    mesh_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0)))
+                    mesh = builder.add_shape_mesh(mesh_body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+                    builder.add_shape_collision_filter_pair(mesh, 0)
+                    builder.add_shape_collision_filter_pair(mesh, 1)
+                else:
+                    builder.add_shape_heightfield(
+                        heightfield=heightfield, cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
+                    )
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.shape_contact_pair_count, 1)
+
+                pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+                narrow_phase = pipeline.narrow_phase
+                self.assertFalse(narrow_phase.has_meshes)
+                self.assertFalse(narrow_phase.has_heightfields)
+                self.assertIsNone(narrow_phase.mesh_triangle_contacts_kernel)
+                self.assertIsNone(narrow_phase.triangle_pairs)
+
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_absent_texture_sdfs_skip_shape_iteration(self):
         """Skip per-shape texture classification when no texture SDF storage exists."""
 
