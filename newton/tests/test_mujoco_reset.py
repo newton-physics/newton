@@ -91,17 +91,15 @@ class TestMuJoCoReset(unittest.TestCase):
             self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
             self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
 
-    def test_reset_deprecates_local_only_mask(self):
-        """Preserve local-only mask behavior through the deprecation period."""
+    def test_reset_rejects_local_only_mask(self):
+        """Reject masks without the final global slot."""
         self._poison()
         mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
-        with self.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             self.solver.reset(self.state_out, world_mask=mask)
 
         for name, buf in self._cleared_buffers().items():
-            values = buf.numpy()
-            self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
-            self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
+            self.assertTrue(np.all(buf.numpy() == 7.0), f"{name} changed by a rejected mask")
 
     def test_native_cpu_reset_honors_template_world_mask(self):
         """Reset native MuJoCo buffers only when local world 0 is selected."""

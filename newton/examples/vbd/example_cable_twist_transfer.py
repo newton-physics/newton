@@ -95,9 +95,9 @@ class Example:
 
         for label, points in path_builders:
             points_np = self._points_array(points)
+            rod = newton.Rod(points, radius=self.CABLE_RADIUS)
             bodies, joints = builder.add_rod(
-                positions=points,
-                radius=self.CABLE_RADIUS,
+                rod=rod,
                 stretch_stiffness=self.STRETCH_STIFFNESS,
                 bend_stiffness=self.BEND_STIFFNESS,
                 bend_damping=self.BEND_DAMPING,

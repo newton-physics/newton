@@ -674,6 +674,124 @@ class Utils:
             camera_index=camera_index,
         )
 
+    def compute_camera_rays_pinhole_opencv(
+        self,
+        width: int,
+        height: int,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        *,
+        image_width: float | None = None,
+        image_height: float | None = None,
+        k1: float = 0.0,
+        k2: float = 0.0,
+        k3: float = 0.0,
+        k4: float = 0.0,
+        k5: float = 0.0,
+        k6: float = 0.0,
+        p1: float = 0.0,
+        p2: float = 0.0,
+        s1: float = 0.0,
+        s2: float = 0.0,
+        s3: float = 0.0,
+        s4: float = 0.0,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for OpenCV pinhole cameras.
+
+        Inverts OpenCV's rational radial, tangential, and thin-prism distortion
+        model with damped Newton iteration. The four- and five-coefficient
+        variants are represented by leaving unused coefficients at zero. The
+        forward distortion mapping must be invertible over the calibrated image
+        domain. Pixels whose inverse cannot be verified within the solver
+        tolerance receive a zero direction.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            fx: Horizontal focal length [px].
+            fy: Vertical focal length [px].
+            cx: Principal point x-coordinate [px].
+            cy: Principal point y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *height*.
+            k1: First numerator radial distortion coefficient.
+            k2: Second numerator radial distortion coefficient.
+            k3: Third numerator radial distortion coefficient.
+            k4: First denominator radial distortion coefficient.
+            k5: Second denominator radial distortion coefficient.
+            k6: Third denominator radial distortion coefficient.
+            p1: First tangential distortion coefficient.
+            p2: Second tangential distortion coefficient.
+            s1: First thin-prism distortion coefficient.
+            s2: Second thin-prism distortion coefficient.
+            s3: Third thin-prism distortion coefficient.
+            s4: Fourth thin-prism distortion coefficient.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* to write. Ignored when
+                *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(1, height, width, 2)`` and dtype ``vec3f``.
+
+        Raises:
+            ValueError: If any calibration value is non-finite, or if focal
+                lengths or calibration image dimensions are non-positive.
+        """
+        image_width = width if image_width is None else image_width
+        image_height = height if image_height is None else image_height
+        if not (math.isfinite(fx) and math.isfinite(fy) and fx > 0.0 and fy > 0.0):
+            raise ValueError("fx and fy must be finite and positive.")
+        if not (
+            math.isfinite(image_width) and math.isfinite(image_height) and image_width > 0.0 and image_height > 0.0
+        ):
+            raise ValueError("image_width and image_height must be finite and positive.")
+        if not all(math.isfinite(value) for value in (cx, cy, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4)):
+            raise ValueError("cx, cy, and distortion coefficients must be finite.")
+        out_rays, camera_index = camera_utils._validate_camera_ray_output(
+            width, height, 1, out_rays, camera_index, self.__render_context.device
+        )
+
+        wp.launch(
+            kernel=camera_utils.compute_camera_rays_pinhole_opencv_kernel,
+            dim=(height, width),
+            inputs=[
+                width,
+                height,
+                image_width,
+                image_height,
+                fx,
+                fy,
+                cx,
+                cy,
+                k1,
+                k2,
+                k3,
+                k4,
+                k5,
+                k6,
+                p1,
+                p2,
+                s1,
+                s2,
+                s3,
+                s4,
+                camera_index,
+                out_rays,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return out_rays
+
     def compute_camera_rays_fisheye_opencv(
         self,
         width: int,
