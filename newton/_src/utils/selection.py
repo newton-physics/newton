@@ -376,6 +376,17 @@ class FrequencyLayout:
         else:
             return len(self.indices)
 
+    def is_packed(self, world_count: int, count_per_world: int) -> bool:
+        """Return whether selected rows form one contiguous range across all view axes."""
+        if not self.is_contiguous:
+            return False
+        count = self.selected_value_count
+        if count == 0:
+            return True
+        if count_per_world > 1 and self.stride_within_worlds != count:
+            return False
+        return world_count <= 1 or self.stride_between_worlds == count_per_world * count
+
     def __str__(self):
         indices = self.indices if self.indices is not None else self.slice
         return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
@@ -685,7 +696,9 @@ class ArticulationView:
       selected counts differ.
     - ``joint_dof_counts``, ``joint_coord_counts``, and ``link_shapes`` are ``None``
       when one of the layouts needed for that relationship is unavailable.
-    - A ``*_contiguous`` flag is ``None`` when its frequency layout is unavailable.
+    - A ``*_contiguous`` flag is ``None`` when its frequency layout is unavailable;
+      otherwise it reports whether the selected rows form one contiguous range across
+      all selected articulations and worlds.
     - ``root_joint_type``, ``is_fixed_base``, and ``is_floating_base`` are ``None``
       when that root metadata differs. Non-``None`` root metadata does not guarantee
       root access when the root coordinate or DOF layout differs.
@@ -1179,7 +1192,7 @@ class ArticulationView:
 
         def is_contiguous(frequency):
             layout = self.frequency_layouts.get(frequency)
-            return layout.is_contiguous if layout is not None else None
+            return layout.is_packed(self.world_count, self.count_per_world) if layout is not None else None
 
         self.joints_contiguous: bool | None = is_contiguous(AttributeFrequency.JOINT)
         self.joint_dofs_contiguous: bool | None = is_contiguous(AttributeFrequency.JOINT_DOF)

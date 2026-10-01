@@ -160,6 +160,41 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         tape.backward(loss)
         assert_np_equal(model.body_mass.grad.numpy(), np.array([1, 1, 0, 1, 1], dtype=np.float32))
 
+    def test_contiguous_flags_include_inter_articulation_gaps(self):
+        """Report locally contiguous blocks as non-contiguous when physical gaps separate them."""
+        builder = newton.ModelBuilder()
+        a_root = builder.add_link(label="a/root")
+        a_tip = builder.add_link(label="a/tip")
+        unrelated = builder.add_link(label="unrelated")
+        b_root = builder.add_link(label="b/root")
+        b_tip = builder.add_link(label="b/tip")
+        for body in (a_root, a_tip, unrelated, b_root, b_tip):
+            builder.add_shape_sphere(body, radius=0.1)
+
+        a_j0 = builder.add_joint_fixed(-1, a_root)
+        a_j1 = builder.add_joint_revolute(a_root, a_tip)
+        builder.add_joint_revolute(-1, unrelated)
+        b_j0 = builder.add_joint_fixed(-1, b_root)
+        b_j1 = builder.add_joint_revolute(b_root, b_tip)
+        builder.add_articulation([a_j0, a_j1], label="robot_a")
+        builder.add_articulation([b_j0, b_j1], label="robot_b")
+        model = builder.finalize(device="cpu")
+        view = ArticulationView(model, "robot_*")
+
+        self.assertFalse(view.joints_contiguous)
+        self.assertFalse(view.joint_dofs_contiguous)
+        self.assertFalse(view.joint_coords_contiguous)
+        self.assertFalse(view.links_contiguous)
+        self.assertFalse(view.shapes_contiguous)
+        for values in (
+            view.get_attribute("joint_type", model),
+            view.get_dof_positions(model),
+            view.get_dof_velocities(model),
+            view.get_attribute("body_mass", model),
+            view.get_attribute("shape_margin", model),
+        ):
+            self.assertFalse(values.is_contiguous)
+
     def test_large_body_gap_keeps_independent_shape_layout(self):
         """Keep shape access when a large body gap changes but shape ownership matches."""
         builder = newton.ModelBuilder()
