@@ -4,7 +4,6 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
-import warnings
 from typing import ClassVar
 from unittest import mock
 
@@ -458,15 +457,6 @@ class TestModelView(unittest.TestCase):
         self.assertIs(view.body_inv_mass, new_mass)
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
-
-    def test_override_accepts_set_subclass_parent(self):
-        """Set overrides should accept a native set when the parent uses a set subclass."""
-        view = ModelView(self.model, "test")
-        filters = set(self.model.shape_collision_filter_pairs)
-
-        view.shape_collision_filter_pairs = filters
-
-        self.assertIs(view.shape_collision_filter_pairs, filters)
 
     def test_count_override_slices_frequency_arrays(self):
         """Frequency-matched arrays should follow view-local counts."""
@@ -927,15 +917,10 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 for name, expected in parent_before.items():
                     np.testing.assert_array_equal(getattr(parent, name).numpy(), expected)
 
-        legacy_mask = wp.array((True, False), dtype=wp.bool, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            coupled.reset(parent, world_mask=legacy_mask, flags=0)
-        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-        self.assertEqual(len(deprecations), 1)
-        forwarded_mask = entry.solver.reset_calls[-1][1]
-        self.assertIsNot(forwarded_mask, legacy_mask)
-        np.testing.assert_array_equal(forwarded_mask.numpy(), (True, False, False))
+        reset_call_count = len(entry.solver.reset_calls)
+        with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
+            coupled.reset(parent, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device), flags=0)
+        self.assertEqual(len(entry.solver.reset_calls), reset_call_count)
 
         model = newton.ModelBuilder().finalize(device="cpu")
         with self.assertRaises(ValueError):
@@ -1121,6 +1106,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 model=self.model,
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
+
+    def test_entry_contact_buffer_detects_surface_velocity_layout_change(self):
+        """Recreate filtered contacts when surface-velocity allocation changes."""
+        contacts = newton.Contacts(1, 0, device="cpu")
+        filtered = newton.Contacts(1, 0, device="cpu", rigid_contact_surface_velocity=True)
+
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(filtered, contacts))
+        self.assertFalse(SolverCoupled._entry_contact_buffer_matches(contacts, filtered))
 
     def test_entry_contacts_preserves_contact_matching_mode(self):
         """Preserve matching mode metadata when coupled entry buffers are reused."""
@@ -1429,6 +1422,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
+        self.assertIsNotNone(model._fk_articulation_level_start)
+        self.assertGreater(model._fk_level_capacity, 0)
+        self.assertIsNone(view._fk_articulation_level_start)
+        self.assertIsNone(view._fk_level_joint_start)
+        self.assertIsNone(view._fk_level_joints)
+        self.assertIsNone(view._fk_level_parent_pos)
+        self.assertEqual(view._fk_level_capacity, 0)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))

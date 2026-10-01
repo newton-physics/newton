@@ -8,7 +8,7 @@ from typing import Any
 
 import warp as wp
 
-from .base import Clamping
+from .base import ClampingBase
 
 
 @wp.func
@@ -36,7 +36,7 @@ def _box_clamp_kernel(
     dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
 
 
-class ClampingMaxEffort(Clamping):
+class ClampingMaxEffort(ClampingBase):
     """Symmetric clamp on actuator output effort.
 
     Clamps the actuator output to ``[-max_effort, +max_effort]``.

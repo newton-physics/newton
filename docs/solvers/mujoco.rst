@@ -74,6 +74,37 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+Joint reference values (``ref``)
+--------------------------------
+
+MuJoCo scalar joints (hinge and slide) may carry a reference value
+(MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
+authored body poses correspond to ``qpos = ref``, and MuJoCo interprets
+limits, position-actuator controls, and keyframes as absolute ``qpos``
+values. Newton has no reference concept — its scalar joint coordinates
+are relative to the authored pose — so the two conventions are reconciled
+at the solver boundary:
+
+* In Newton, ``joint_q``, joint limits
+  (``joint_limit_lower`` / ``joint_limit_upper``), and position targets
+  (``Control.joint_target_q``) are relative to the authored pose. The MJCF
+  importer and MuJoCo-converter USD importer shift authored joint ranges by
+  ``-ref`` accordingly. ``joint_qd`` is unaffected because ``ref`` changes
+  position coordinates only.
+* MuJoCo-side quantities keep MuJoCo's absolute convention: the solver
+  adds ``ref`` back when it writes ``qpos``, ``jnt_range``, and
+  position-actuator ``ctrl``, so the compiled MuJoCo model and its
+  runtime observables (``qpos``, sensors) match the authored MJCF and
+  native MuJoCo exactly.
+* Attributes in the ``mujoco.*`` custom-attribute namespace (for example
+  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
+  data and remain in MuJoCo's absolute units.
+
+Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
+``qpos0``, ``jnt_range``, and position controls with the new reference.
+Native MuJoCo attributes remain absolute and are not shifted.
+
 
 Geometry types
 --------------
@@ -119,7 +150,14 @@ Geometry types
        meshes are convex-hulled by MuJoCo's compiler (not by Newton),
        which changes the collision boundary. The mesh source's
        ``maxhullvert`` is forwarded.
-   * - :attr:`~newton.GeoType.CONE`, :attr:`~newton.GeoType.GAUSSIAN`
+   * - :attr:`~newton.GeoType.CONE`
+     - ``mjGEOM_MESH``
+     - MuJoCo has no cone primitive, so Newton tessellates the cone into a
+       32-segment mesh at conversion time. Collision uses that convex
+       polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
+       after construction raises ``ValueError``; recreate the solver to resize
+       the cone.
+   * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
 
@@ -355,8 +393,7 @@ Equality constraints
 --------------------
 
 Use :class:`~newton.solvers.SolverMuJoCo.EqType` for MuJoCo equality
-constraint types. The top-level :class:`newton.EqType` alias is deprecated
-in Newton 1.4.
+constraint types.
 
 Each row's ``data[...]`` reference below points into MuJoCo's
 `equality.data <https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality>`_
@@ -381,10 +418,11 @@ array; slot layout depends on the constraint type.
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
      - ``mjEQ_JOINT``
-     - Added via :meth:`~newton.ModelBuilder.add_constraint_mimic`. Maps
-       ``coef0`` / ``coef1`` to polynomial coefficients. Only
-       :attr:`~newton.JointType.REVOLUTE` and
-       :attr:`~newton.JointType.PRISMATIC` joints are supported.
+     - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
+       offset / multiplier in :attr:`~newton.Model.joint_mimic_coeffs` to
+       polynomial coefficients. Revolute, prismatic, and D6 joints are
+       supported. Multi-axis D6 relationships produce one equality per
+       matching pair of scalar axes.
 
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them through the MuJoCo
@@ -458,6 +496,30 @@ on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
+[N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
+with ``tendon_solref_limit_mode = 0``, then notify
+:attr:`~newton.ModelFlags.TENDON_PROPERTIES`. For angular tendon coordinates,
+the corresponding units are [N m/rad] and [N m s/rad]. The solver converts
+these gains to ``solreflimit`` using tendon inverse inertia and impedance,
+and refreshes the conversion after inertia changes, as it does for joint limits.
+MuJoCo impedance and timestep clamping still affect transient response.
+
+``tendon_solref_limit_mode`` follows the joint-limit authoring convention:
+0 selects Newton force gains, 1 preserves authored MuJoCo parameters, and 2
+uses MuJoCo's implicit default. Tendons default to mode 1 and report their
+equivalent force gains after solver initialization. In force-space mode,
+zero stiffness disables the limit without changing the authored ``tendon_range``.
+Limit damping is independent of passive ``tendon_damping``. Tendon limits must
+already be enabled in the imported model.
+
+.. code-block:: python
+
+    model.mujoco.tendon_limit_ke.fill_(100.0)
+    model.mujoco.tendon_limit_kd.fill_(20.0)
+    model.mujoco.tendon_solref_limit_mode.zero_()  # Newton force-space mode
+    solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
 
 
 .. _mujoco-collision-pipeline:
@@ -610,7 +672,7 @@ all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic constraints cannot have
+Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
 raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.
