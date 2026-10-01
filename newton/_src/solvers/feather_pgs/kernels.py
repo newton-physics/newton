@@ -32,10 +32,9 @@ PGS_CONSTRAINT_TYPE_CONTACT = 0
 PGS_CONSTRAINT_TYPE_JOINT_TARGET = 1
 PGS_CONSTRAINT_TYPE_FRICTION = 2
 PGS_CONSTRAINT_TYPE_JOINT_LIMIT = 3
-# Joint velocity-limit row. Mirrors the PhysX per-DOF velocity clamp (see
-# ``notes/investigations/velocity-spike/physx-deep-dive.md`` §4, math
-# appendix). Finite limits create two unilateral rows every step: one lower
-# bound row and one upper bound row. No Baumgarte / ERP bias.
+# Joint velocity-limit row. Mirrors the PhysX per-DOF velocity clamp
+# ``|qd| <= joint_velocity_limit``. Finite limits create two unilateral rows every
+# step: one lower bound row and one upper bound row. No Baumgarte / ERP bias.
 PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT = 4
 # Mimic (joint coupling) row: the bilateral equality
 # ``q_follower - coef1 * q_leader - coef0 = 0`` between two 1-DoF joints of the
@@ -3513,7 +3512,7 @@ def build_joint_limit_rows_for_size(
 # ``PxArticulationMimicJoint`` (``qA + gearRatio*qB + offset = 0`` with
 # ``gearRatio = -coef1``, ``offset = -coef0``): a joint-space row with two
 # Jacobian entries, an unbounded multiplier, and standard Baumgarte drift
-# correction. See ``reports/vishal/fpgs_mimic_design.md`` in the parent repo.
+# correction.
 #
 # ``coef0``/``coef1``/``enabled`` are read from the model arrays at row-build
 # time, so runtime mutation (NotifyFlags.CONSTRAINT_PROPERTIES) takes effect
@@ -3628,9 +3627,8 @@ def populate_mimic_J_for_size(
 # =============================================================================
 # Three bilateral rows per loop closure enforcing point coincidence of the loop
 # joint's parent/child anchors — the FeatherPGS realization of MJCF ``connect``
-# equalities (design: ``reports/vishal/fpgs_connect_design.md`` in the parent
-# repo). The Jacobian per axis is the anchor-point Jacobian difference of the
-# two bodies, built with the same ancestor walk contact rows use.
+# equalities. The Jacobian per axis is the anchor-point Jacobian difference of
+# the two bodies, built with the same ancestor walk contact rows use.
 
 
 @wp.kernel
@@ -3830,8 +3828,7 @@ def populate_connect_J_for_size(
 # Y'_i = Y_i - Y_B S^-1 (J_B Y_i), which makes J_B Y'_i ~ 0 — sweep impulses
 # then preserve the closures exactly, and the corrected row diagonals fall out
 # of the unchanged diag_from_JY pass. The predictor velocity is projected once
-# (J_B v + b_B -> 0) to replace the eliminated rows' Baumgarte work. See
-# reports/vishal/robotiq/fpgs_preelimination_design.md (skild-IL-solver).
+# (J_B v + b_B -> 0) to replace the eliminated rows' Baumgarte work.
 
 PREELIM_MAX_ROWS = 8
 """Per-articulation capacity of the pre-eliminated bilateral block (the
@@ -4085,9 +4082,9 @@ def preelim_project_velocity_for_size(
 # =============================================================================
 # Joint Velocity-Limit Constraint Kernels
 # =============================================================================
-# These kernels mirror the PhysX per-DOF velocity-limit formulation documented
-# in ``notes/investigations/velocity-spike/physx-deep-dive.md`` §4 and the math
-# appendix. They reuse the same allocation / populate shape as the
+# These kernels mirror the PhysX per-DOF velocity-limit formulation (a box
+# ``-joint_velocity_limit <= qd <= joint_velocity_limit`` per DOF, solved as two
+# unilateral rows without position bias). They reuse the same allocation / populate shape as the
 # joint-position-limit kernels above, but finite velocity limits allocate both
 # sides of the bilateral velocity box rather than waiting for a violation.
 
@@ -12386,7 +12383,7 @@ def pgs_ncp_residuals_diagnostic_velocity(
 # recorded as -1 like the world and never counts as a conflict.
 #
 # Edge coloring needs at least max-degree colors and first-fit uses up to
-# 2*degree-1. A dense raw-mesh pile (P12: 60 GraspNet meshes, ~7000 contact
+# 2*degree-1. A dense raw-mesh pile (60 GraspNet meshes, ~7000 contact
 # units on 61 bodies) puts ~230 units on a body, so 256 colors left a quarter of
 # the units in the serial tail; 512 leaves under 2%. Small scenes are unaffected:
 # the solve kernels stop at the last non-empty color.

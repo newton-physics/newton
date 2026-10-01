@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for FeatherPGS positional friction anchors (``friction_anchor_beta``)."""
 
 import unittest

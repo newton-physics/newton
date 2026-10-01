@@ -25,8 +25,8 @@ after the throughput measurement, with warm starts independently controlled by
 names and copies. Native patch radix sort is measured separately with CUDA
 events because it is absent from Warp's kernel activity list. Event spans include
 any stream gaps within the native call; neither measure is host wall-clock cost.
-``--tiles 13 --worlds 1`` is a synthetic 169-shape stress case, not the 175-hull
-Robotiq asset or evidence of that gripper's performance.
+``--tiles 13 --worlds 1`` is a synthetic 169-shape stress case, not a decomposed
+gripper asset or evidence of any gripper's performance.
 """
 
 import argparse
