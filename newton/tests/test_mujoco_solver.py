@@ -11210,10 +11210,33 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
         np.testing.assert_allclose(angular_1, [0.3, 1.0, 0.0], atol=0.05)
 
 
-class TestActuatorLengthRangeRuntime(unittest.TestCase):
-    """Verify per-world actuator lengthrange updates after runtime gear changes."""
+class TestActuatorLengthRange(unittest.TestCase):
+    """Verify that actuator length ranges keep MuJoCo's compiled values."""
 
-    MJCF = """<?xml version="1.0" ?>
+    MUSCLE_PRM = "0.75 1.05 -1 200 0.5 1.6 1.5 1.3 1.2 0"
+    MUSCLE_MJCF = f"""<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0" limited="true" range="-1 1"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+                <site name="s1" pos="0.3 0 0.05"/>
+            </body>
+            <site name="s0" pos="0 0 1.2"/>
+        </worldbody>
+        <tendon>
+            <spatial name="t1"><site site="s0"/><site site="s1"/></spatial>
+        </tendon>
+        <actuator>
+            <general name="joint_muscle" joint="j1" gaintype="muscle" biastype="muscle" dyntype="muscle"
+                     gainprm="{MUSCLE_PRM}" biasprm="{MUSCLE_PRM}"/>
+            <general name="tendon_muscle" tendon="t1" gaintype="muscle" biastype="muscle" dyntype="muscle"
+                     gainprm="{MUSCLE_PRM}" biasprm="{MUSCLE_PRM}"/>
+        </actuator>
+    </mujoco>
+    """
+
+    MOTOR_MJCF = """<?xml version="1.0" ?>
     <mujoco>
         <worldbody>
             <body>
@@ -11223,34 +11246,98 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
         </worldbody>
         <actuator>
             <motor name="motor1" joint="j1" gear="2"/>
+            <general name="authored" joint="j1" lengthrange="-0.3 0.4"/>
         </actuator>
     </mujoco>
     """
 
-    @classmethod
-    def setUpClass(cls):
+    @staticmethod
+    def _build(mjcf: str, world_count: int = 2) -> newton.Model:
         robot_builder = newton.ModelBuilder()
-        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf, ctrl_direct=True)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(robot_builder, 2)
-        cls.model = builder.finalize()
-        cls.solver = SolverMuJoCo(cls.model)
+        builder.replicate(robot_builder, world_count)
+        return builder.finalize()
 
-    def test_lengthrange_updates_with_gear(self):
-        lr0 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
-        jnt_range = self.solver.mjw_model.jnt_range.numpy()[:, 0]
-        np.testing.assert_allclose(lr0, jnt_range * 2.0, atol=1e-5)
+    def test_muscle_lengthrange_matches_compiler(self):
+        """Keep compiled joint and tendon muscle length ranges through model notifications."""
+        import mujoco
 
-        gear = self.model.mujoco.actuator_gear.numpy()
-        gear[0, 0] = 3.0
-        gear[1, 0] = 4.0
-        self.model.mujoco.actuator_gear.assign(gear)
-        self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        expected = mujoco.MjModel.from_xml_string(self.MUSCLE_MJCF).actuator_lengthrange
+        self.assertTrue(np.all(expected[:, 0] < expected[:, 1]))
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                # The MuJoCo CPU backend supports a single world.
+                model = self._build(self.MUSCLE_MJCF, world_count=1 if use_mujoco_cpu else 2)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                for flags in (None, ModelFlags.ALL):
+                    if flags is not None:
+                        solver.notify_model_changed(flags)
+                    np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected, rtol=1e-6)
+                    for world_lengthrange in solver.mjw_model.actuator_lengthrange.numpy():
+                        np.testing.assert_allclose(world_lengthrange, expected, rtol=1e-5)
 
-        lr1 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
-        np.testing.assert_allclose(lr1[0], jnt_range[0] * 3.0, atol=1e-5)
-        np.testing.assert_allclose(lr1[1], jnt_range[1] * 4.0, atol=1e-5)
+    def test_muscle_forces_match_cpu_backend(self):
+        """Produce the same joint and tendon muscle forces on MuJoCo Warp as on MuJoCo CPU."""
+        model = self._build(self.MUSCLE_MJCF, world_count=1)
+        forces = {}
+        for use_mujoco_cpu in (True, False):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            control.mujoco.ctrl.fill_(1.0)
+            for _ in range(5):
+                solver.step(state_0, state_1, control, None, 0.002)
+                state_0, state_1 = state_1, state_0
+            forces[use_mujoco_cpu] = (
+                solver.mj_data.actuator_force.copy() if use_mujoco_cpu else solver.mjw_data.actuator_force.numpy()[0]
+            )
+        self.assertTrue(np.all(np.abs(forces[True]) > 0.1))
+        np.testing.assert_allclose(forces[False], forces[True], rtol=1e-4)
+
+    def test_runtime_updates_preserve_lengthrange(self):
+        """Forward authored ranges and keep compiled ranges after runtime gear changes."""
+        expected = [[0.0, 0.0], [-0.3, 0.4]]
+        for use_mujoco_cpu in (True, False):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = self._build(self.MOTOR_MJCF, world_count=1 if use_mujoco_cpu else 2)
+                np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy()[:2], expected)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, expected, rtol=1e-6)
+
+                gear = model.mujoco.actuator_gear.numpy()
+                gear[:, 0] = 3.0
+                model.mujoco.actuator_gear.assign(gear)
+                solver.notify_model_changed(
+                    ModelFlags.ACTUATOR_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.TENDON_PROPERTIES
+                )
+
+                np.testing.assert_allclose(solver.mjw_model.actuator_gear.numpy()[..., 0], 3.0)
+                for world_lengthrange in solver.mjw_model.actuator_lengthrange.numpy():
+                    np.testing.assert_allclose(world_lengthrange, expected, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_authored_lengthrange(self):
+        """Forward an authored USD mjc:lengthRange to MuJoCo."""
+        from pxr import Sdf, Vt
+
+        def set_actuator_attrs(act):
+            # A non-default gear keeps the actuator CTRL_DIRECT.
+            act.CreateAttribute("mjc:gear", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([2.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )
+            act.CreateAttribute("mjc:lengthRange:min", Sdf.ValueTypeNames.Double, True).Set(-0.3)
+            act.CreateAttribute("mjc:lengthRange:max", Sdf.ValueTypeNames.Double, True).Set(0.4)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(_create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs))
+        model = builder.finalize()
+        np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy(), [[-0.3, 0.4]])
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_lengthrange, [[-0.3, 0.4]], rtol=1e-6)
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
