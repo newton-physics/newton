@@ -9440,8 +9440,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[self.mjw_model.tendon_solref_lim, self.mjw_model.tendon_range],
             device=self.model.device,
         )
-        self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
-        self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
+        if self.use_mujoco_cpu:
+            self.mj_model.tendon_solref_lim[:] = self.mjw_model.tendon_solref_lim.numpy()[0]
+            self.mj_model.tendon_range[:] = self.mjw_model.tendon_range.numpy()[0]
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.

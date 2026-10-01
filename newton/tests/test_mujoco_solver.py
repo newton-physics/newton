@@ -12305,6 +12305,13 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 model = self._build_tendon_limit_model(mass)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True)
                 attrs = model.mujoco
+
+                def tendon_parameter(name, solver=solver):
+                    """Read runtime parameters from the active backend."""
+                    if solver.use_mujoco_cpu:
+                        return getattr(solver.mj_model, name)
+                    return getattr(solver.mjw_model, name).numpy()[0]
+
                 np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
                 attrs.tendon_limit_ke.fill_(100.0)
                 attrs.tendon_limit_kd.fill_(20.0)
@@ -12331,7 +12338,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 attrs.tendon_limit_kd.zero_()
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
                 self.assertAlmostEqual(float(step_at_equilibrium()), 0.0, delta=1.0e-7)
-                self.assertEqual(float(solver.mj_model.tendon_solref_lim[0, 1]), 0.0)
+                self.assertEqual(float(tendon_parameter("tendon_solref_lim")[0, 1]), 0.0)
 
                 attrs.tendon_limit_ke.zero_()
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
@@ -12340,12 +12347,12 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
                 attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_RAW)
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
-                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [-100.0, -20.0])
-                np.testing.assert_allclose(solver.mj_model.tendon_range[0], [-0.1, 0.1])
+                np.testing.assert_allclose(tendon_parameter("tendon_solref_lim")[0], [-100.0, -20.0])
+                np.testing.assert_allclose(tendon_parameter("tendon_range")[0], [-0.1, 0.1])
 
                 attrs.tendon_solref_limit_mode.fill_(SOLREF_MODE_MJCF_DEFAULT)
                 solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
-                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], [0.02, 1.0])
+                np.testing.assert_allclose(tendon_parameter("tendon_solref_lim")[0], [0.02, 1.0])
                 np.testing.assert_allclose(attrs.tendon_solref_limit.numpy()[0], [-100.0, -20.0])
 
     def test_tendon_limit_force_gains_select_worlds(self):
@@ -12374,6 +12381,66 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertTrue(np.isposinf(ranges[0, 0, 1]))
         np.testing.assert_allclose(ranges[1, 0], [-0.1, 0.1])
 
+    def test_tendon_limit_updates_are_cuda_graph_capture_safe(self):
+        """Replay per-world tendon gains, modes, and ranges through model notifications."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+
+        for flags in (ModelFlags.TENDON_PROPERTIES, ModelFlags.BODY_INERTIAL_PROPERTIES, ModelFlags.ALL):
+            with self.subTest(flags=flags), wp.ScopedDevice(device):
+                model = self._build_tendon_limit_model(worlds=2)
+                model.body_mass.assign(np.array([1.0, 3.0], dtype=np.float32))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+                attrs = model.mujoco
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.notify_model_changed(flags)
+
+                cases = (
+                    ([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE], [100.0, 240.0], [20.0, 60.0]),
+                    ([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE], [0.0, 180.0], [0.0, 0.0]),
+                    ([SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT], [0.0, 0.0], [0.0, 0.0]),
+                    ([SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE], [60.0, 350.0], [15.0, 70.0]),
+                )
+                for replay, (modes, ke, kd) in enumerate(cases, start=1):
+                    with self.subTest(replay=replay):
+                        authored_range = replay * np.array([[-0.2, 0.3], [-0.4, 0.5]], dtype=np.float32)
+                        raw_solref = np.array([[-120.0, -12.0], [-300.0, -30.0]], dtype=np.float32)
+                        attrs.tendon_solref_limit_mode.assign(np.array(modes, dtype=np.int32))
+                        attrs.tendon_limit_ke.assign(np.array(ke, dtype=np.float32))
+                        attrs.tendon_limit_kd.assign(np.array(kd, dtype=np.float32))
+                        attrs.tendon_solref_limit.assign(raw_solref)
+                        attrs.tendon_range.assign(authored_range)
+                        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+                            model.body_mass.assign(replay * np.array([2.0, 5.0], dtype=np.float32))
+                        wp.capture_launch(capture.graph)
+
+                        solref = solver.mjw_model.tendon_solref_lim.numpy()[:, 0]
+                        ranges = solver.mjw_model.tendon_range.numpy()[:, 0]
+                        invweight = solver.mjw_model.tendon_invweight0.numpy()[:, 0]
+                        dmax = solver.mjw_model.tendon_solimp_lim.numpy()[:, 0, 1]
+                        for world in range(2):
+                            expected_range = authored_range[world]
+                            if modes[world] == SOLREF_MODE_RAW:
+                                expected_solref = raw_solref[world]
+                            elif modes[world] == SOLREF_MODE_MJCF_DEFAULT:
+                                expected_solref = DEFAULT_LIMIT_SOLREF
+                            elif ke[world] == 0.0:
+                                expected_range = [-np.inf, np.inf]
+                                expected_solref = raw_solref[world]
+                            else:
+                                factor = invweight[world] * (1.0 - dmax[world])
+                                expected_solref = (
+                                    _expected_positive_limit_solref(ke[world], kd[world], factor)
+                                    if kd[world] > 0.0
+                                    else [-ke[world] * factor, 0.0]
+                                )
+                            np.testing.assert_allclose(solref[world], expected_solref, rtol=1.0e-5)
+                            np.testing.assert_allclose(ranges[world], expected_range)
+                        np.testing.assert_array_equal(attrs.tendon_range.numpy(), authored_range)
+
     def test_tendon_limit_force_gains_degenerate_scaling(self):
         """Preserve damped and undamped tendon gains when inverse-inertia scaling degenerates."""
         for use_cpu, boundary, kd in itertools.product((False, True), ("zero_invweight", "unit_dmax"), (0.0, 20.0)):
@@ -12392,7 +12459,8 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                     model.mujoco.tendon_solimp_limit.assign(np.array([[0.95, 1.0, 0.001, 0.5, 2.0]], dtype=np.float32))
                     solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)
                 expected = _expected_positive_limit_solref(100.0, kd, 1.0) if kd else [-100.0, 0.0]
-                np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], expected, rtol=1.0e-5)
+                if use_cpu:
+                    np.testing.assert_allclose(solver.mj_model.tendon_solref_lim[0], expected, rtol=1.0e-5)
                 np.testing.assert_allclose(solver.mjw_model.tendon_solref_lim.numpy()[0, 0], expected, rtol=1.0e-5)
 
     def _build_pendulum_model(

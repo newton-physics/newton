@@ -246,10 +246,11 @@ values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
 ``JOINT_DOF_PROPERTIES`` outside capture after reassigning raw values to
 check them.
 
-On the MuJoCo Warp backend, runtime joint-limit updates are stored in
-``solver.mjw_model.jnt_solref`` per world. The host template's
-``solver.mj_model.jnt_solref`` is not updated; inspect the Warp array for
-current values.
+On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
+stored in ``solver.mjw_model.jnt_solref``, ``tendon_solref_lim``, and
+``tendon_range`` per world. The corresponding arrays in the host template
+``solver.mj_model`` are not updated; inspect the Warp arrays for current
+values. The MuJoCo CPU backend keeps the host arrays synchronized.
 
 .. note::
 
