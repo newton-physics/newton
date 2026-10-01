@@ -155,19 +155,13 @@ jobs:
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
-      - name: Compute Warp kernel cache key
-        id: warp-cache-key
-        run: echo "key=warp-kernels-bench-gpu-${{ hashFiles('asv.conf.json', 'uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}" >> "$GITHUB_OUTPUT"
-
-      # PR runs use pull_request_target and can only read the cache; the
-      # nightly dispatch on main fills it. The fill starts empty so each
-      # entry holds only the kernels of its commit instead of accumulating.
+      # PR runs (pull_request_target) can only read the cache; the nightly
+      # dispatch on main saves it.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'workflow_dispatch'
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: ${{ steps.warp-cache-key.outputs.key }}
+          key: warp-kernels-bench-gpu-${{ hashFiles('asv.conf.json', 'uv.lock', 'newton/**/*.py', 'asv/**/*.py') }}
           restore-keys: |
             warp-kernels-bench-gpu-
 
@@ -176,14 +170,6 @@ jobs:
         env:
           NEWTON_ASV_PR_GATE: "1"
         run: uv run --no-project asv/run_pr_benchmarks.py --quick ${{ github.sha }}
-
-      # Save even if a benchmark failed, since most kernels still compiled.
-      - name: Save Warp kernel cache
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
-        with:
-          path: /actions-runner/.cache/warp
-          key: ${{ steps.warp-cache-key.outputs.key }}
 
       - name: Run Benchmarks
         if: github.event_name != 'workflow_dispatch'
