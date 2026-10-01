@@ -281,6 +281,8 @@ def main(argv=None):
         parser.error("--parallel-timeout must be greater than 0")
     if args.max_tasks_per_child is not None and args.max_tasks_per_child < 1:
         parser.error("--max-tasks-per-child must be at least 1")
+    if args.max_tasks_per_child is not None and sys.version_info < (3, 11) and not args.disable_concurrent_futures:
+        parser.error("--max-tasks-per-child requires Python 3.11+ or --disable-concurrent-futures")
     if args.deprecation_allowlist and not args.strict_warnings:
         parser.error("--deprecation-allowlist requires --strict-warnings")
     try:
@@ -369,7 +371,8 @@ def main(argv=None):
                     ) as pool:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
                         try:
-                            results = pool.map_async(test_manager.run_tests, test_suites).get(
+                            # One suite per task so maxtasksperchild counts suites.
+                            results = pool.map_async(test_manager.run_tests, test_suites, chunksize=1).get(
                                 timeout=args.parallel_timeout
                             )
                         except multiprocessing.TimeoutError:
