@@ -40,6 +40,15 @@ def _should_skip_member(
     if skip:
         return True
 
+    # Public nested-class aliases must not create duplicate Sphinx entries.
+    if what == "class" and isinstance(obj, type):
+        current_class = app.env.current_document.autodoc_class
+        qualified_name = getattr(obj, "__qualname__", "")
+        if current_class and "." in qualified_name:
+            defining_class, _, member_name = qualified_name.rpartition(".")
+            if name == member_name and current_class != defining_class:
+                return True
+
     # Keep dunder methods that are explicitly requested elsewhere.
     if name.startswith("__") and name.endswith("__"):
         return None  # keep default behaviour

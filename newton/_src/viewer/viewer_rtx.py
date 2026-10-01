@@ -1436,6 +1436,9 @@ void main() {
             if self._phase == self._PHASE_RENDER:
                 self._mesh_prim_paths[name] = self._replace_runtime_prim(self._get_path(name))
         elif name in self._mesh_prim_paths:
+            if hidden:
+                self._pending_mesh_visibility[name] = False
+                return
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -1459,7 +1462,7 @@ void main() {
             if dynamic:
                 face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
                 self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
-            self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
+            self._pending_mesh_visibility[name] = len(pts) > 0
 
     @override
     def log_instances(
