@@ -494,6 +494,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         geom_a = newton_shape_to_mjc_geom[shape_a]
         geom_b = newton_shape_to_mjc_geom[shape_b]
+        if geom_a < 0 or geom_b < 0:
+            tid_to_cid[tid] = -1
+            return
 
         body_a = shape_body[shape_a]
         body_b = shape_body[shape_b]
