@@ -241,6 +241,21 @@ for device in devices:
         solver_fn=newton.solvers.SolverFeatherstone,
     )
 
+    if device.is_cuda:
+        # FeatherPGS (CUDA only) publishes the same COM-referenced incoming joint wrench.
+        for name, test_fn in (
+            ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
+            ("test_parent_force_centrifugal", test_parent_force_centrifugal),
+            ("test_apply_body_f", test_apply_body_f),
+        ):
+            add_function_test(
+                TestParentForce,
+                f"{name}_feather_pgs",
+                test_fn,
+                devices=[device],
+                solver_fn=newton.solvers.SolverFeatherPGS,
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
