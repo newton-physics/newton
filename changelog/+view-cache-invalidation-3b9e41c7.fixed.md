@@ -1,0 +1,1 @@
+Fix ``ArticulationView`` getters and setters that kept reading and writing a replaced ``Model``, ``State`` or ``Control`` array, or a replaced gradient, after the source attribute was reassigned. Cached view arrays are now rebuilt when the source array or its gradient changes, and the view no longer keeps its states, controls or actuators alive.

@@ -14,7 +14,7 @@ import newton
 import newton.examples
 from newton.actuators import Actuator, DrivePD
 from newton.selection import ArticulationView
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
 def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
@@ -146,8 +146,8 @@ class TestSelectionCacheLifetime(unittest.TestCase):
                 self.assertIsNone(source_ref())
 
     @staticmethod
-    def make_view(layout, requires_grad=False):
-        """Build CPU selections with regular, indexed, or irregular world layouts."""
+    def make_view(layout, requires_grad=False, device="cpu"):
+        """Build selections with regular, indexed, or irregular world layouts."""
         robot = newton.ModelBuilder()
         parent = robot.add_link(label="robot/root")
         joints = [robot.add_joint_free(child=parent, label="robot/root_joint")]
@@ -163,18 +163,125 @@ class TestSelectionCacheLifetime(unittest.TestCase):
         worlds = (robot, other, robot, other, other, robot) if layout == "sparse" else (robot, robot)
         for world in worlds:
             scene.add_world(world)
-        model = scene.finalize(device="cpu", requires_grad=requires_grad)
+        model = scene.finalize(device=device, requires_grad=requires_grad)
         selected = ["root_joint", "joint_0", "joint_2"] if layout == "indexed" else None
         return model, ArticulationView(model, "robot", include_joints=selected, verbose=False)
 
     @staticmethod
     def make_actuator(model, value):
-        """Build a CPU actuator covering every model DOF."""
+        """Build an actuator covering every model DOF on the model's device."""
         count = model.joint_dof_count
+        device = model.device
         return Actuator(
-            indices=wp.array(np.arange(count), dtype=wp.uint32, device="cpu"),
-            drive=DrivePD(kp=wp.full(count, value, device="cpu"), kd=wp.zeros(count, device="cpu")),
+            indices=wp.array(np.arange(count), dtype=wp.uint32, device=device),
+            drive=DrivePD(kp=wp.full(count, value, device=device), kd=wp.zeros(count, device=device)),
         )
+
+
+def test_view_holds_sources_and_actuators_weakly(test, device):
+    """Release states, controls, and actuators that are dropped while their view stays alive."""
+    for layout in ("dense", "sparse"):
+        with test.subTest(layout=layout):
+            model, view = TestSelectionCacheLifetime.make_view(layout, device=device)
+            state, control = model.state(), model.control()
+            actuator = TestSelectionCacheLifetime.make_actuator(model, 3.0)
+            view.get_dof_positions(state)
+            view.get_dof_forces(control)
+            view.get_actuator_parameter(actuator, actuator.drive, "kp")
+            refs = {
+                name: weakref.ref(obj) for name, obj in (("state", state), ("control", control), ("actuator", actuator))
+            }
+            del state, control, actuator
+            gc.collect()
+
+            for name, ref in refs.items():
+                test.assertIsNone(ref(), f"{name} retained by a live view ({layout})")
+            model.joint_q.fill_(2.0)
+            positions = view.get_dof_positions(model).numpy()
+            assert_np_equal(positions, np.full(positions.shape, 2.0))
+
+
+def test_returned_array_survives_allocation_reuse(test, device):
+    """Keep returned arrays and their gradients valid after their allocations would otherwise be reused."""
+    for layout, requires_grad in (("dense", False), ("dense", True), ("indexed", False), ("sparse", False)):
+        with test.subTest(layout=layout, requires_grad=requires_grad):
+            model, view = TestSelectionCacheLifetime.make_view(layout, requires_grad=requires_grad, device=device)
+            model.joint_q.fill_(5.0)
+            source_ref = weakref.ref(model.joint_q)
+            model_ref, view_ref = weakref.ref(model), weakref.ref(view)
+            buffer = view.get_dof_positions(model)
+            if requires_grad:
+                model.joint_q.grad.fill_(7.0)
+                gradient = view.get_dof_positions(model).grad
+            byte_count = model.joint_q.capacity
+            del model, view
+            gc.collect()
+
+            test.assertIsNone(view_ref())
+            test.assertIsNone(model_ref())
+            # reuse any freed allocation of the same size, so a dangling view would read 123
+            churn = [wp.full(byte_count // 4, 123.0, dtype=float, device=device) for _ in range(64)]
+            assert_np_equal(buffer.numpy(), np.full(buffer.shape, 5.0))
+            if requires_grad:
+                assert_np_equal(gradient.numpy(), np.full(gradient.shape, 7.0))
+                del gradient
+            if layout == "dense":
+                test.assertIsNotNone(source_ref(), "returned zero-copy array does not keep its source alive")
+            del buffer, churn
+            gc.collect()
+            test.assertIsNone(source_ref())
+
+
+def test_getters_follow_replaced_source_arrays(test, device):
+    """Read and write the current source arrays after they are replaced."""
+    for layout in ("dense", "indexed", "sparse"):
+        with test.subTest(layout=layout):
+            model, view = TestSelectionCacheLifetime.make_view(layout, device=device)
+            state, control = model.state(), model.control()
+            first = view.get_dof_positions(state).numpy()
+            view.get_root_transforms(state)
+            view.get_dof_forces(control)
+            old_q, old_f = state.joint_q, control.joint_f
+            old_q_values, old_f_values = old_q.numpy().copy(), old_f.numpy().copy()
+
+            state.joint_q = wp.full(old_q.shape, 4.0, dtype=old_q.dtype, device=device)
+            control.joint_f = wp.full(old_f.shape, 6.0, dtype=old_f.dtype, device=device)
+            q = view.get_dof_positions(state)
+            assert_np_equal(q.numpy(), np.full(first.shape, 4.0))
+            root = view.get_root_transforms(state).numpy()
+            assert_np_equal(root, np.full(root.shape, 4.0))
+            forces = view.get_dof_forces(control).numpy()
+            assert_np_equal(forces, np.full(forces.shape, 6.0))
+
+            view.set_dof_positions(state, np.full(q.shape, 9.0, dtype=np.float32))
+            view.set_dof_forces(control, np.full(forces.shape, 8.0, dtype=np.float32))
+            assert_np_equal(view.get_dof_positions(state).numpy(), np.full(q.shape, 9.0))
+            assert_np_equal(view.get_dof_forces(control).numpy(), np.full(forces.shape, 8.0))
+            # unselected coordinates (indexed joints, unselected worlds) keep the replacement's value
+            test.assertEqual(set(np.unique(state.joint_q.numpy())), {9.0} if layout == "dense" else {4.0, 9.0})
+            assert_np_equal(old_q.numpy(), old_q_values)
+            assert_np_equal(old_f.numpy(), old_f_values)
+
+
+def test_getters_follow_replaced_gradient(test, device):
+    """Bind the current gradient after a source array's gradient is replaced."""
+    model, view = TestSelectionCacheLifetime.make_view("dense", requires_grad=True, device=device)
+    old_grad = model.joint_q.grad
+    test.assertEqual(view.get_dof_positions(model).grad.ptr, old_grad.ptr)
+
+    model.joint_q.grad = wp.full_like(model.joint_q, 3.0)
+    gradient = view.get_dof_positions(model).grad
+    test.assertEqual(gradient.ptr, model.joint_q.grad.ptr)
+    assert_np_equal(gradient.numpy(), np.full(gradient.shape, 3.0))
+
+
+for _test in (
+    test_view_holds_sources_and_actuators_weakly,
+    test_returned_array_survives_allocation_reuse,
+    test_getters_follow_replaced_source_arrays,
+    test_getters_follow_replaced_gradient,
+):
+    add_function_test(TestSelectionCacheLifetime, _test.__name__, _test, devices=get_test_devices())
 
 
 class TestSelection(unittest.TestCase):
