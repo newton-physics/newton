@@ -1882,9 +1882,10 @@ class ModelBuilder:
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
         Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
-        USD cable imports record one entry per simulation prim, even when it contains
-        several curves.
-        See :ref:`deformable-objects` for builder-time identity updates.
+        USD cable imports record one entry per simulation prim, except that curves
+        welded into a graph share one entry for the complete graph. A prim containing
+        several disconnected curves also has one entry. See :ref:`deformable-objects`
+        for graph labels and builder-time identity updates.
 
         .. experimental::
 
@@ -7097,9 +7098,9 @@ class ModelBuilder:
             if new_joints:
                 remapped_joint_range = (new_joints[0], new_joints[-1] + 1)
             else:
-                # A welded-graph curve owns no tree joints. Unwrapped single segments
-                # can also have empty joint ranges. Shift each boundary by the count of
-                # earlier retained joints, using their sorted order to avoid a full scan.
+                # Unwrapped single segments have empty joint ranges. Shift each boundary
+                # by the count of earlier retained joints, using their sorted order to
+                # avoid a full scan.
                 new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 

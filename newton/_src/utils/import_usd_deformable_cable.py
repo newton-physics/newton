@@ -909,17 +909,16 @@ def _deformable_prepare_cable_topology(
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
-        # The graph spans several welded curves. Record a deformable object for each
-        # curve below, rather than one for the whole component.
+        # Record the whole graph through the native path; source-curve lookup stays
+        # in the per-prim import maps below.
         rod = Rod(node_positions, edges=edges, radius=radius)
-        with builder._suppress_curve_object_recording():
-            body_ids, graph_joint_ids = builder.add_rod(
-                rod=rod,
-                cfg=cfg,
-                label=cid,
-                wrap_in_articulation=True,
-                body_frame_origin="com",
-            )
+        body_ids, graph_joint_ids = builder.add_rod(
+            rod=rod,
+            cfg=cfg,
+            label=cid,
+            wrap_in_articulation=True,
+            body_frame_origin="com",
+        )
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
         for body, edge_radius in zip(body_ids, edge_radii, strict=True):
@@ -986,13 +985,6 @@ def _deformable_prepare_cable_topology(
                 "graph_component": cid,
             }
             key_bodies = per_prim_bodies.get(key, [])
-            if key_bodies:
-                # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
-                # A welded curve owns no individual tree joints (they live in the shared graph
-                # articulation, found via articulation_label), so its joint range is empty.
-                builder._record_curve_deformable_object(
-                    key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
-                )
             segment_count = n if rec.closed else n - 1
             run = _CableMassRun(
                 curve_index=0,

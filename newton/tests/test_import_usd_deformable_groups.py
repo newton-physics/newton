@@ -133,10 +133,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.body_count, 4)
 
-    def test_welded_graph_empty_joint_ranges_survive_collapse(self):
-        """A welded-graph curve records an empty joint range at its insertion boundary; when
-        an earlier fixed joint is collapsed away, that boundary must shift with the retained
-        joints instead of pointing past the final joint array."""
+    def test_welded_graph_ranges_survive_collapse_and_replication(self):
+        """Preserve whole-graph ranges through collapse and both world-cloning paths."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
@@ -162,17 +160,36 @@ class TestUSDDeformableGroups(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, collapse_fixed_joints=True, return_deformable_results=True)
 
-        for path in ("/World/Trunk", "/World/Branch"):
-            self.assertEqual(result["path_cable_map"][path][1], [])
-            j0, j1 = group_range(builder, "cable", path, "joint")
-            self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
-            self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
-        model = builder.finalize()
-        self.assertCountEqual(builder.curve_label, ["/World/Trunk", "/World/Branch"])
-        for path in builder.curve_label:
-            j0, j1 = group_range(builder, "cable", path, "joint")
-            self.assertEqual(j0, j1)
-            self.assertLessEqual(j1, model.joint_count)
+        graph_label = result["path_cable_attrs"]["/World/Branch"]["graph_component"]
+        self.assertEqual(builder.curve_label, [graph_label])
+        self.assertEqual(
+            result["path_cable_map"],
+            {"/World/Branch": ([1, 2], []), "/World/Trunk": ([3, 4, 5], [])},
+        )
+        self.assertEqual(group_range(builder, "cable", graph_label, "body"), (1, 6))
+        self.assertEqual(group_range(builder, "cable", graph_label, "joint"), (0, 5))
+        self.assertEqual(builder.joint_type, [newton.JointType.FREE, *[newton.JointType.ROD] * 4])
+
+        for replicate in (False, True):
+            with self.subTest(replicate=replicate):
+                scene = newton.ModelBuilder()
+                prefixes = ["env_0", "env_1"]
+                if replicate:
+                    scene.replicate(builder, 2, label_prefixes=prefixes)
+                else:
+                    for prefix in prefixes:
+                        scene.add_world(builder, label_prefix=prefix)
+                self.assertEqual(scene.curve_world, [0, 1])
+                self.assertEqual(scene.curve_label, [f"{prefix}/{graph_label}" for prefix in prefixes])
+                for world, label in enumerate(scene.curve_label):
+                    self.assertEqual(
+                        group_range(scene, "cable", label, "body", world=world), (6 * world + 1, 6 * world + 6)
+                    )
+                    self.assertEqual(
+                        group_range(scene, "cable", label, "joint", world=world), (5 * world, 5 * world + 5)
+                    )
+                model = scene.finalize(device="cpu")
+                self.assertEqual((model.body_count, model.joint_count, model.world_count), (12, 10, 2))
 
     def test_native_and_usd_cables_record_generated_roots(self):
         """Record every component's root while keeping returned rod joints unchanged."""
@@ -204,6 +221,54 @@ class TestUSDDeformableGroups(unittest.TestCase):
                         self.assertEqual(group_range(source, "cable", "/World/Cables", kind), (0, 3 * curve_count))
                 model = builder.finalize(device="cpu")
                 self.assertEqual((model.body_count, model.joint_count), (3 * curve_count, 3 * curve_count))
+
+    def test_welded_graph_records_one_object_like_native_rod(self):
+        """Record the complete welded graph while preserving each source curve's import map."""
+        stage = _deformable_stage()
+        _add_cable_curve(stage, "/World/Trunk", _CABLE_PTS)
+        _add_cable_curve(stage, "/World/Branch", [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)])
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/Branch",
+            src1="/World/Trunk",
+            type0="point",
+            type1="point",
+            indices0=[0],
+            indices1=[1],
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        graph_label = result["path_cable_attrs"]["/World/Branch"]["graph_component"]
+        self.assertEqual(result["path_cable_attrs"]["/World/Trunk"]["graph_component"], graph_label)
+        self.assertEqual(builder.curve_label, [graph_label])
+        self.assertEqual(builder.curve_world, [-1])
+        self.assertEqual(
+            result["path_cable_map"],
+            {"/World/Branch": ([0, 1], []), "/World/Trunk": ([2, 3, 4], [])},
+        )
+
+        # Match the importer's branch-first edge order so both build the same joint tree.
+        native = newton.ModelBuilder()
+        bodies, joints = native.add_rod(
+            rod=newton.Rod(
+                [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0), _CABLE_PTS[0], *_CABLE_PTS[2:]],
+                edges=[(0, 1), (1, 2), (3, 0), (0, 4), (4, 5)],
+                radius=0.02,
+            ),
+            label=graph_label,
+            body_frame_origin="com",
+        )
+        self.assertEqual((bodies, joints), ([0, 1, 2, 3, 4], [1, 2, 3, 4]))
+        for source in (native, builder):
+            self.assertEqual(source.curve_label, [graph_label])
+            for kind in ("body", "joint"):
+                self.assertEqual(group_range(source, "cable", graph_label, kind), (0, 5))
+        for field in ("joint_type", "joint_parent", "joint_child"):
+            self.assertEqual(getattr(builder, field), getattr(native, field))
+        self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+        model = builder.finalize(device="cpu")
+        self.assertEqual((model.body_count, model.joint_count), (5, 5))
 
     def test_skipped_curves_do_not_add_joint_records(self):
         """Skip invalid curves without losing the valid curve's root or adding empty objects."""
