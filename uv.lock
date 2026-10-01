@@ -3857,7 +3857,7 @@ requires-dist = [
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.1.1" },
     { name = "viser", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
-    { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", git = "https://github.com/NVIDIA/warp-nn.git?rev=d9334ff1b00cb429e8336bb373bdfa1a948f8d49" },
+    { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", specifier = "==0.4.0" },
 ]
 provides-extras = ["sim", "onnx", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
 
@@ -7360,10 +7360,13 @@ wheels = [
 
 [[package]]
 name = "warp-nn"
-version = "0.3.1"
-source = { git = "https://github.com/NVIDIA/warp-nn.git?rev=d9334ff1b00cb429e8336bb373bdfa1a948f8d49#d9334ff1b00cb429e8336bb373bdfa1a948f8d49" }
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "warp-lang" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/23/0542aa05e7eff5c27832fdcf8e066384083de2760f3035ef7553f29d10a0/warp_nn-0.4.0-py3-none-any.whl", hash = "sha256:5182cb9c7088a3846c067d609adb544033d27683497d9a618cb7168d06450ba3", size = 194967, upload-time = "2026-10-01T13:41:31.974Z" },
 ]
 
 [package.optional-dependencies]
