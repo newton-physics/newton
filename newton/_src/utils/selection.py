@@ -2039,9 +2039,18 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        if actuator not in self._actuator_dof_mapping_cache:
-            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
-        return self._actuator_dof_mapping_cache[actuator]
+        mapping = self._actuator_dof_mapping_cache.get(actuator)
+        if mapping is None:
+            if self.device.is_cuda and wp.get_stream(self.device).is_capturing:
+                raise RuntimeError(
+                    "The view's DOF mapping for this actuator is built on first access with a host "
+                    "readback, which cannot run inside CUDA graph capture. Call "
+                    "get_actuator_parameter() or set_actuator_parameter() for this actuator once "
+                    "before capturing."
+                )
+            mapping = self._create_actuator_dof_mapping(actuator)
+            self._actuator_dof_mapping_cache[actuator] = mapping
+        return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
@@ -2050,6 +2059,10 @@ class ArticulationView:
         The mapping is built once per actuator by absolute model DOF identity, so it holds for
         any layout: sparse world selections, irregular per-world rows, and actuators that do not
         own an equal block of entries per selected world.
+
+        This preparation step reads ``actuator.indices`` back to the host and runs once per
+        actuator; the result is cached on the view, so later accesses only launch the
+        gather/scatter kernels.
 
         Note:
             Assumes SISO actuators (one DOF per actuator).
@@ -2078,6 +2091,11 @@ class ArticulationView:
         per DOF, one row per world).  DOFs that are not driven by
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
+        indices back to the host. Make that first call before CUDA graph capture; later calls
+        launch only device kernels and can be captured.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2124,6 +2142,11 @@ class ArticulationView:
         *values* must cover all DOFs in the view (one column per DOF, one row
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
+
+        The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
+        actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
+        indices back to the host. Make that first call before CUDA graph capture; later calls
+        launch only device kernels and can be captured.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
