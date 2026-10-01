@@ -4,6 +4,7 @@
 """Native deformable recording without a dependency on selection views or USD."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -240,6 +241,41 @@ class TestDeformableObjects(unittest.TestCase):
                         self.assertEqual(builder.curve_label, [])
                         self.assertEqual(_ranges(builder, "curve", "body"), [])
                         self.assertEqual(_ranges(builder, "curve", "joint"), [])
+
+    def test_curve_removal_warning_leaves_collapse_complete(self):
+        """Finish collapse even when a removed-curve warning is treated as an exception."""
+        for warnings_as_errors in (False, True):
+            with self.subTest(warnings_as_errors=warnings_as_errors):
+                builder = newton.ModelBuilder()
+                for label in ("anchored_0", "anchored_1"):
+                    bodies, joints = builder.add_rod(
+                        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
+                        label=label,
+                        wrap_in_articulation=False,
+                        body_frame_origin="com",
+                    )
+                    anchor = builder.add_joint_fixed(-1, bodies[0], label=f"{label}_anchor")
+                    builder.add_articulation([*joints, anchor])
+                _add_curve(builder, label="free_cable")
+
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("error" if warnings_as_errors else "always", UserWarning)
+                    if warnings_as_errors:
+                        with self.assertRaisesRegex(UserWarning, "Deformable curve 'anchored_0' is unavailable"):
+                            builder.collapse_fixed_joints()
+                    else:
+                        builder.collapse_fixed_joints()
+                        self.assertEqual(len(caught), 2)
+                        for warning, label in zip(caught, ("anchored_0", "anchored_1"), strict=True):
+                            self.assertIn(label, str(warning.message))
+
+                self.assertEqual((builder.body_count, builder.joint_count), (5, 5))
+                self.assertEqual(builder.joint_parent, [-1, -1, -1, 2, 3])
+                self.assertEqual(builder.joint_child, [0, 1, 2, 3, 4])
+                self.assertEqual((builder.curve_label, builder.curve_world), (["free_cable"], [-1]))
+                model = builder.finalize(device="cpu")
+                self.assertEqual((model.body_count, model.joint_count, model.articulation_count), (5, 5, 3))
+                np.testing.assert_array_equal(model.joint_child.numpy(), [0, 1, 2, 3, 4])
 
     def test_empty_curve_joint_ranges_follow_retained_joints(self):
         """Remap empty curve ranges before, between, and after retained joints in each world."""

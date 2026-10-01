@@ -6621,6 +6621,7 @@ class ModelBuilder:
             record is retained only if all of its segment bodies and joints survive.
             Otherwise the incomplete record is omitted with a warning. Pass the relevant
             fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
 
@@ -7065,6 +7066,7 @@ class ModelBuilder:
         # every one of its simulation bodies and joints survived collapse; exposing a partial
         # range would misrepresent the original curve topology.
         curve_records = []
+        incomplete_curve_labels = []
         for label, world, body_start, body_end, joint_start, joint_end in zip(
             self.curve_label,
             self.curve_world,
@@ -7086,13 +7088,7 @@ class ModelBuilder:
                 not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
             )
             if not old_bodies or not bodies_complete or not joints_complete:
-                warnings.warn(
-                    f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                    "of its segment bodies or joints were removed; pass the relevant fixed joint through "
-                    "joints_to_keep to preserve the complete deformable object.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                incomplete_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7436,6 +7432,16 @@ class ModelBuilder:
                 self.joint_children[p] = [(c, i)]
             else:
                 self.joint_children[p].append((c, i))
+
+        # Warning filters may raise, so finish rebuilding all references before emitting these.
+        for label in incomplete_curve_labels:
+            warnings.warn(
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
+                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                "joints_to_keep to preserve the complete deformable object.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         return {
             "body_remap": body_remap,
