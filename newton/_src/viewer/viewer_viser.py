@@ -2317,7 +2317,12 @@ class ViewerViser(ViewerBase):
         positions = xforms_np[:, :3].astype(np.float32)
         quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
-        if existing is not None and shape_batch is not None:
+        if (
+            existing is not None
+            and shape_batch is not None
+            and not self.model_changed
+            and existing["count"] == num_instances
+        ):
             batched_scales = existing["scales"]
         else:
             scales_np = to_numpy(scales) if scales is not None else None

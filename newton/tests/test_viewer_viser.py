@@ -141,6 +141,26 @@ class TestViewerViserInteraction(unittest.TestCase):
                 expected = (model.shape_color.numpy() * 255).astype(np.uint8)
                 np.testing.assert_array_equal(handles[0].batched_colors, expected)
 
+    def test_visible_worlds_rebuild_instance_scales(self):
+        """Resize real Viser batches when narrowing and restoring visible worlds."""
+        world = newton.ModelBuilder()
+        body = world.add_body()
+        world.add_shape_box(body, hx=0.2, hy=0.3, hz=0.4)
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 3)
+        model = builder.finalize(device="cpu")
+        self.viewer.set_model(model)
+        state = model.state()
+        self.viewer.log_state(state)
+        for worlds, count in (([0], 1), (None, 3), ([1, 2], 2), ([0, 2], 2)):
+            with self.subTest(worlds=worlds):
+                self.viewer.set_visible_worlds(worlds)
+                self.viewer.log_state(state)
+                handles = [h for h in self.viewer._scene_handles.values() if hasattr(h, "batched_scales")]
+                self.assertEqual(len(handles), 1)
+                self.assertEqual(handles[0].batched_positions.shape, (count, 3))
+                np.testing.assert_allclose(handles[0].batched_scales, np.ones((count, 3)))
+
     def test_clear_releases_hidden_mesh_assets(self):
         """Release cached model geometry after clearing the scene for an example switch."""
         model = self.make_model()
