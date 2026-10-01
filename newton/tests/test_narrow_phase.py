@@ -17,8 +17,10 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import sys
 import typing
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -31,6 +33,7 @@ from newton._src.geometry.narrow_phase import (
     NarrowPhase,
     _append_pair_compacted,
     _append_work_index_compacted,
+    verify_narrow_phase_buffers,
 )
 from newton._src.geometry.types import GeoType
 
@@ -84,6 +87,42 @@ class TestCompactedAppend(unittest.TestCase):
                 pairs = pairs[np.argsort(pairs[:, 0])]
                 np.testing.assert_array_equal(pairs[:, 0], expected)
                 np.testing.assert_array_equal(pairs[:, 1], -expected)
+
+
+class TestNarrowPhaseBufferWarnings(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_hashtable_load_warning(self):
+        """Report the load threshold correctly when either percentage product exceeds int32."""
+        # Capture CPU printf to avoid CUDA printf buffering differences across drivers.
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        cases = [
+            (4_887_460, 33_554_432, False),  # Capacity * 80 exceeds int32.
+            (22_000_000, 24_000_000, True),  # Active count * 100 exceeds int32.
+            (26_843_545, 33_554_432, False),  # Just below 80%; both products exceed int32.
+            (26_843_546, 33_554_432, True),  # Just above 80%.
+            (79, 100, False),
+            (80, 100, True),  # Preserve the inclusive threshold.
+            (0, 0, False),  # Disabled reduction table.
+        ]
+        for active, capacity, expected_warning in cases:
+            with self.subTest(active=active, capacity=capacity):
+                counter = wp.array([active], dtype=int, device=device)
+                # The verifier only reads active_slots[capacity]. A broadcast view
+                # exercises realistic capacities without allocating a large table.
+                active_slots = wp.array(ptr=counter.ptr, dtype=int, shape=(capacity + 1,), strides=(0,), device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction hashtable fill ratio" in output, expected_warning, output)
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -327,7 +366,7 @@ class _NarrowPhaseSetupMixin:
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution
         )
 
-    def _run_narrow_phase(self, geom_list, pairs):
+    def _run_narrow_phase(self, geom_list, pairs, **launch_kwargs):
         """Run narrow phase on given geometry and pairs.
 
         Args:
@@ -382,6 +421,7 @@ class _NarrowPhaseSetupMixin:
             contact_penetration=contact_penetration,
             contact_count=contact_count,
             contact_tangent=contact_tangent,
+            **launch_kwargs,
         )
 
         count = contact_count.numpy()[0]
@@ -397,6 +437,85 @@ class _NarrowPhaseSetupMixin:
 
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
+
+    def test_launch_forwards_convex_support_metadata(self):
+        """Forward cooked convex support metadata through the standard launch path."""
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=1,
+            max_triangle_pairs=1,
+            reduce_contacts=False,
+            has_meshes=False,
+        )
+        shape_support_data = wp.full(2, (-1, -1, -1, 0), dtype=wp.vec4i)
+        support_lut = wp.zeros(1, dtype=wp.int32)
+        support_vertex_offsets = wp.zeros(1, dtype=wp.int32)
+        support_neighbors = wp.zeros(1, dtype=wp.int32)
+
+        with mock.patch.object(
+            self.narrow_phase,
+            "launch_custom_write",
+            wraps=self.narrow_phase.launch_custom_write,
+        ) as launch_custom_write:
+            self._run_narrow_phase(
+                [
+                    {"type": GeoType.SPHERE, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+                    {"type": GeoType.SPHERE, "transform": ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+                ],
+                [(0, 1)],
+                shape_support_data=shape_support_data,
+                support_lut=support_lut,
+                support_vertex_offsets=support_vertex_offsets,
+                support_neighbors=support_neighbors,
+            )
+
+        forwarded = launch_custom_write.call_args.kwargs
+        self.assertIs(forwarded["shape_support_data"], shape_support_data)
+        self.assertIs(forwarded["support_lut"], support_lut)
+        self.assertIs(forwarded["support_vertex_offsets"], support_vertex_offsets)
+        self.assertIs(forwarded["support_neighbors"], support_neighbors)
+
+    def test_deterministic_compact_contact_sort(self):
+        """Sort deterministic primitive contacts with compact keys."""
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=False,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(4, dtype=wp.vec3),
+        )
+        geom_list = [
+            {"type": GeoType.SPHERE, "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([10.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+            {"type": GeoType.SPHERE, "transform": ([10.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])},
+        ]
+
+        count, pairs, *_ = self._run_narrow_phase(geom_list, [(2, 3), (0, 1)])
+
+        self.assertEqual(self.narrow_phase._contact_sorter._key_bit_count, 7)
+        self.assertEqual(count, 2)
+        self.assertTrue(np.array_equal(pairs, np.array(((0, 1), (2, 3)), dtype=np.int32)))
+
+    def test_deterministic_complex_contact_sort_keeps_full_sub_key(self):
+        """Retain full deterministic sub-keys for complex contacts."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=2,
+            max_triangle_pairs=8,
+            reduce_contacts=False,
+            has_meshes=True,
+            deterministic=True,
+            contact_max=20,
+            verify_buffers=False,
+            shape_aabb_lower=wp.zeros(4, dtype=wp.vec3),
+            shape_aabb_upper=wp.ones(4, dtype=wp.vec3),
+        )
+
+        self.assertEqual(narrow_phase._contact_sort_sub_key_bits, 23)
+        self.assertEqual(narrow_phase._contact_sorter._key_bit_count, 27)
 
     def test_launch_without_shape_edge_range(self):
         geom_list = [
@@ -2272,6 +2391,42 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         self.assertEqual(lean_support.split_gjk_work_items.shape[0], 4096)
         self.assertEqual(lean_support.split_manifold_work_items.shape[0], 4096)
 
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_convex_launch_uses_one_warp_blocks(self):
+        """Launch each split-convex work block with exactly one CUDA warp."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+
+        self.assertEqual(narrow_phase.split_convex_block_dim, 32)
+        self.assertEqual(
+            narrow_phase.split_convex_total_num_threads,
+            narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
+        )
+
+    @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
+    def test_split_convex_launch_uses_full_blocks_without_support_acceleration(self):
+        """Launch split-convex work with the full block when support acceleration is off."""
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            split_gjk_mpr=True,
+            convex_support_acceleration=False,
+            device="cuda:0",
+        )
+
+        self.assertEqual(narrow_phase.split_convex_block_dim, 128)
+        self.assertEqual(narrow_phase.split_convex_block_dim, narrow_phase.block_dim)
+        self.assertEqual(
+            narrow_phase.split_convex_total_num_threads,
+            narrow_phase.split_convex_block_dim * narrow_phase.num_tile_blocks,
+        )
+
     def test_broad_phase_buffer_overflow(self):
         """Test that broad phase buffer overflow produces a warning and no crash."""
         # 4 overlapping spheres -> 3 adjacent pairs, but broad phase buffer has capacity 1
@@ -2694,6 +2849,18 @@ class TestMeshNonUniformScaling(_NarrowPhaseSetupMixin, unittest.TestCase):
     def test_uniform_scale_sanity(self):
         """Sanity: uniform mesh scale (1, 1, 1) must produce contacts (regression baseline)."""
         self._assert_sphere_above_quad_contacts((1.0, 1.0, 1.0), (0.0, 0.0), "uniform 1x1x1")
+
+    def test_sphere_on_coplanar_triangle_seam_has_single_contact(self):
+        """Merge duplicate triangle contacts for a sphere on a coplanar seam."""
+        count, normals, penetrations = self._run_mesh_vs_sphere(
+            (1.0, 1.0, 1.0),
+            (0.0, 0.0, 0.25),
+            sphere_radius=0.3,
+        )
+
+        self.assertEqual(count, 1)
+        np.testing.assert_allclose(normals[0], [0.0, 0.0, 1.0], atol=1.0e-6)
+        self.assertAlmostEqual(float(penetrations[0]), -0.05, delta=1.0e-6)
 
     def test_uniform_large_scale(self):
         """Uniform scale (10, 10, 10) - sphere over the (now 10x10) quad."""
