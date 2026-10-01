@@ -2416,6 +2416,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_value_transformer=make_usd_has_range_transformer("mjc:actRange"),
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_lengthrange",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="lengthrange",
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_range_transformer("mjc:lengthRange"),
+            )
+        )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -3503,6 +3516,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
         )
+        lengthrange_arr = (
+            mujoco_attrs.actuator_lengthrange.numpy() if hasattr(mujoco_attrs, "actuator_lengthrange") else None
+        )
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_target_mode path
             if ctrl_source_arr is not None:
@@ -3664,6 +3680,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 general_args["actrange"] = tuple(actrange_arr[mujoco_act_idx])
             if actlimited_arr is not None:
                 general_args["actlimited"] = int(actlimited_arr[mujoco_act_idx])
+            if lengthrange_arr is not None:
+                # MuJoCo keeps a valid authored range and only computes (0, 0) ranges for muscles.
+                general_args["lengthrange"] = tuple(lengthrange_arr[mujoco_act_idx])
             if hasattr(mujoco_attrs, "actuator_actearly"):
                 actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
                 general_args["actearly"] = bool(actearly)
@@ -4826,7 +4845,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _notify_model_changed(self, flags: ModelFlags | int) -> None:
         need_const_fixed = False
         need_const_0 = False
-        need_length_range = False
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_cone_shape_scales()
@@ -4854,7 +4872,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # ``mujoco.solreflimit`` values after the user reassigns them.
             self._raw_solreflimit_validated = False
             need_const_0 = True
-            need_length_range = True
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
             self._update_site_properties()
@@ -4869,11 +4886,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
             need_const_0 = True
-            need_length_range = True
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             self._update_actuator_properties()
             need_const_0 = True
-            need_length_range = True
 
         has_any_connect = self.has_connect_constraints or self.has_jnt_connect_constraints
         update_connect_constraint_anchor_rel_xform_at_ref_pose = has_any_connect and bool(
@@ -4910,7 +4925,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if flags & ModelFlags.ACTUATOR_PROPERTIES:
                 self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
-            if need_length_range or need_const_fixed or need_const_0:
+            if need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
                 # ``mj_setConst`` refreshes the derived ``dof_invweight0``
@@ -4928,16 +4943,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         else:
             if (
-                need_length_range
-                or need_const_fixed
+                need_const_fixed
                 or need_const_0
                 or need_solref_update
                 or update_connect_constraint_anchor_rel_xform_at_ref_pose
                 or update_connect_constraint_anchors
             ):
                 with wp.ScopedDevice(self.model.device):
-                    if need_length_range:
-                        self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
+                    # Keep the compiled actuator_lengthrange: MuJoCo computes it by simulation at compile
+                    # time, and mujoco_warp.set_length_range() would overwrite muscle ranges with limits * gear.
                     if need_const_fixed:
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
