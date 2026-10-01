@@ -2041,7 +2041,10 @@ class ArticulationView:
     def _get_actuator_dof_mapping(self, actuator: Actuator):
         mapping = self._actuator_dof_mapping_cache.get(actuator)
         if mapping is None:
-            if self.device.is_cuda and wp.get_stream(self.device).is_capturing:
+            # ``self.device`` may be a device alias string (e.g. ``"cuda:0"``) on view-like callers
+            # that borrow these methods, so resolve it before querying the device.
+            device = wp.get_device(self.device)
+            if device.is_cuda and wp.get_stream(device).is_capturing:
                 raise RuntimeError(
                     "The view's DOF mapping for this actuator is built on first access with a host "
                     "readback, which cannot run inside CUDA graph capture. Call "
@@ -2071,18 +2074,19 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
+        device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
         dofs_per_world = dof_layout.selected_value_count * self.count_per_world
 
         if dofs_per_world == 0:
-            return wp.empty(0, dtype=int, device=self.device)
+            return wp.empty(0, dtype=int, device=device)
 
         selected_model_dofs = dof_layout.get_absolute_indices(self.world_count, self.count_per_world).reshape(-1)
         actuator_dofs = actuator.indices.numpy().astype(np.int64)
         lookup_size = int(max(selected_model_dofs.max(initial=-1), actuator_dofs.max(initial=-1))) + 1
         actuator_by_dof = np.full(lookup_size, -1, dtype=np.int64)
         actuator_by_dof[actuator_dofs] = np.arange(len(actuator_dofs), dtype=np.int64)
-        return wp.array(actuator_by_dof[selected_model_dofs], dtype=int, device=self.device)
+        return wp.array(actuator_by_dof[selected_model_dofs], dtype=int, device=device)
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -2095,7 +2099,8 @@ class ArticulationView:
         The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
         actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
         indices back to the host. Make that first call before CUDA graph capture; later calls
-        launch only device kernels and can be captured.
+        launch only device kernels and can be captured. A first call inside capture raises
+        :class:`RuntimeError` for every view layout.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2146,7 +2151,8 @@ class ArticulationView:
         The first :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for an
         actuator builds and caches the view's DOF mapping for it, which reads the actuator's DOF
         indices back to the host. Make that first call before CUDA graph capture; later calls
-        launch only device kernels and can be captured.
+        launch only device kernels and can be captured. A first call inside capture raises
+        :class:`RuntimeError` for every view layout.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which

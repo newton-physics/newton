@@ -12,6 +12,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils.selection import FrequencyLayout
 from newton.actuators import Actuator, DrivePD
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_cuda_test_devices, get_test_devices
@@ -1906,6 +1907,87 @@ def test_actuator_parameters_capture_after_warmup(test, device):
             assert_np_equal(gathered.numpy(), expected_kp[row_of_dof[selected_dofs]])
 
 
+class _BorrowedActuatorView:
+    """A model-free view that borrows ``ArticulationView``'s actuator-parameter methods.
+
+    Downstream callers that build actuators without a :class:`~newton.Model` (for example IsaacLab's
+    PhysX-family actuator adapters) provide only the placement attributes those methods read, and
+    store ``device`` as the alias string they were given rather than a :class:`warp.Device`.
+    """
+
+    def __init__(self, world_count: int, dof_count: int, device: str):
+        self.world_count = world_count
+        self.count_per_world = 1
+        self.device = device
+        self.full_mask = wp.ones(world_count, dtype=wp.bool, device=device)
+        self._actuator_dof_mapping_cache = {}
+        self.frequency_layouts = {
+            newton.Model.AttributeFrequency.JOINT_DOF: FrequencyLayout(
+                offset=0,
+                stride_between_worlds=dof_count,
+                stride_within_worlds=dof_count,
+                value_count=dof_count,
+                indices=list(range(dof_count)),
+                device=device,
+            )
+        }
+
+    get_actuator_parameter = ArticulationView.get_actuator_parameter
+    set_actuator_parameter = ArticulationView.set_actuator_parameter
+    _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping
+    _create_actuator_dof_mapping = ArticulationView._create_actuator_dof_mapping
+    _resolve_world_mask = ArticulationView._resolve_world_mask
+
+
+def test_borrowed_view_with_device_alias(test, device):
+    """Borrowed actuator-parameter methods accept a view whose ``device`` is an alias string.
+
+    Covers eager get/set and, on CUDA, the cold-capture rejection plus warm-up, capture and replay.
+    """
+    alias = wp.get_device(device).alias
+    test.assertIsInstance(alias, str)
+    view = _BorrowedActuatorView(world_count=2, dof_count=3, device=alias)
+    kp = np.arange(1.0, 7.0, dtype=np.float32)
+    actuator = Actuator(
+        indices=wp.array(np.arange(6), dtype=wp.uint32, device=alias),
+        drive=DrivePD(kp=wp.array(kp, device=alias), kd=wp.zeros(6, device=alias)),
+    )
+
+    if wp.get_device(alias).is_cuda:
+        if not wp.is_mempool_enabled(alias):
+            test.skipTest("CUDA graph capture of allocations requires the mempool")
+        with test.assertRaisesRegex(RuntimeError, "before capturing"):
+            with wp.ScopedCapture(alias):
+                view.get_actuator_parameter(actuator, actuator.drive, "kp")
+
+    assert_np_equal(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), kp.reshape(2, 3))
+    view.set_actuator_parameter(
+        actuator,
+        actuator.drive,
+        "kp",
+        np.array([[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]], np.float32),
+        mask=wp.array([False, True], dtype=bool, device=alias),
+    )
+    expected = np.array([1.0, 2.0, 3.0, -4.0, -5.0, -6.0], np.float32)
+    assert_np_equal(actuator.drive.kp.numpy(), expected)
+
+    if not wp.get_device(alias).is_cuda:
+        return
+    # The eager calls above warmed the mapping, so the same accesses capture and replay.
+    gathered = wp.zeros((2, 3), dtype=float, device=alias)
+    values = wp.zeros((2, 3), dtype=float, device=alias)
+    mask = wp.array([True, False], dtype=bool, device=alias)
+    with mock.patch.object(wp.array, "numpy", side_effect=AssertionError("host readback during capture")):
+        with wp.ScopedCapture(alias) as capture:
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
+            wp.copy(gathered, view.get_actuator_parameter(actuator, actuator.drive, "kp"))
+    values.assign(np.array([[10.0, 20.0, 30.0], [0.0, 0.0, 0.0]], np.float32))
+    wp.capture_launch(capture.graph)
+    expected[:3] = (10.0, 20.0, 30.0)
+    assert_np_equal(actuator.drive.kp.numpy(), expected)
+    assert_np_equal(gathered.numpy(), expected.reshape(2, 3))
+
+
 class TestSelectionActuatorMapping(unittest.TestCase):
     pass
 
@@ -1922,6 +2004,7 @@ for _name, _func, _func_devices in (
     ("test_sparse_world_partial_actuator_parameters", test_sparse_world_partial_actuator_parameters, _devices),
     ("test_sparse_world_root_transforms_and_velocities", test_sparse_world_root_transforms_and_velocities, _devices),
     ("test_actuator_mapping_built_once_and_cached", test_actuator_mapping_built_once_and_cached, _devices),
+    ("test_borrowed_view_with_device_alias", test_borrowed_view_with_device_alias, _devices),
     ("test_actuator_parameters_capture_after_warmup", test_actuator_parameters_capture_after_warmup, _cuda_devices),
 ):
     add_function_test(TestSelectionActuatorMapping, _name, _func, devices=_func_devices)
