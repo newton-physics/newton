@@ -11,6 +11,7 @@ import sys
 import warnings
 from collections.abc import Iterable
 from contextlib import contextmanager
+from dataclasses import fields
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,7 @@ from .constants import (
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
+from .geometry import build_shape_layout, compile_layout_collision_masks, supports_missing_meshes
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -109,7 +111,6 @@ from .kernels import (
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
-    update_shape_mappings_kernel,
     update_site_properties_kernel,
     update_solver_options_kernel,
     update_tendon_limit_gains_kernel,
@@ -268,8 +269,8 @@ def _mujoco_warp_deterministic_max_records(mj_model: MjModel, mjw_data: MjWarpDa
     return max(1, constraint_records, hessian_records, tendon_records)
 
 
-def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float]]:
-    return id(mesh), tuple(float(s) for s in scale)
+def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float], int]:
+    return hash(mesh), tuple(float(s) for s in scale), mesh.maxhullvert
 
 
 def _mujoco_mesh_vertices_are_planar(
@@ -3817,7 +3818,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo.
-            disable_sensors: If True, disable sensor computation in MuJoCo. On the MuJoCo Warp backend, :meth:`step` raises ``ValueError`` if the output state requests ``body_qdd`` or ``body_parent_f``, which MuJoCo computes inside the sensor stage.
+            disable_sensors: If True, disable sensor computation in MuJoCo. ``body_qdd`` and ``body_parent_f`` are still computed on the MuJoCo Warp backend when the output state requests them.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -3901,9 +3902,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
-        # Template-relative for per-world sites and absolute for global sites.
-        self._mjc_site_shape_index: wp.array[wp.int32] | None = None
-        self._mjc_site_is_global: wp.array[bool] | None = None
+        self._mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
@@ -3991,12 +3990,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32."""
 
         # --- Helper arrays for actuator types ---
-
-        # --- Internal state for mapping creation ---
-        self._shapes_per_world: int = 0
-        """Number of shapes per world (for computing Newton shape indices from template)."""
-        self._first_env_shape_base: int = 0
-        """Base shape index for the first environment."""
 
         # --- Internal state for connect constraint anchor computation ---
         self.has_connect_constraints: bool = False
@@ -4103,8 +4096,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
 
-        self._cone_shape_indices = np.empty(0, dtype=np.int32)
-        self._cone_shape_scale_snapshot = np.empty((0, 3), dtype=np.float32)
+        self._compiled_mesh_shape_indices = np.empty(0, dtype=np.int32)
+        self._compiled_mesh_shape_scales = np.empty((0, 3), dtype=np.float32)
 
         # Track changes to generic gains separately from their numerical
         # values. Imported MJCF defaults may use any builder configuration, so
@@ -4222,7 +4215,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in)
         else:
-            self._validate_rne_postconstraint(state_out)
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -4491,27 +4483,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _validate_rne_postconstraint(self, state_out: State):
-        """Reject state fields whose post-constraint RNE stage is disabled."""
-        if self.mj_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_SENSOR and (
-            state_out.body_qdd is not None or state_out.body_parent_f is not None
-        ):
-            raise ValueError(
-                "disable_sensors=True is incompatible with requested body_qdd or body_parent_f state attributes."
-            )
-
     def _enable_rne_postconstraint(self, state_out: State):
         """Request computation of RNE forces if required for state fields."""
         rne_postconstraint_fields = {"body_qdd", "body_parent_f"}
         # TODO: handle use_mujoco_cpu
         m = self.mjw_model
-        if m.sensor_rne_postconstraint:
+        if m.opt.run_rne_postconstraint:
             return
         if any(getattr(state_out, field) is not None for field in rne_postconstraint_fields):
-            # required for cfrc_ext, cfrc_int, cacc
+            # Required for cacc and cfrc_int. Unlike sensor_rne_postconstraint,
+            # this option also runs when sensors are disabled.
             if wp.config.log_level <= wp.LOG_DEBUG:
-                print("Setting model.sensor_rne_postconstraint True")
-            m.sensor_rne_postconstraint = True
+                print("Setting model.opt.run_rne_postconstraint True")
+            m.opt.run_rne_postconstraint = True
 
     def _invalidate_contact_fast_path(self):
         """Force the next contact conversion to take the full path.
@@ -4829,7 +4813,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         need_length_range = False
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            self._validate_cone_shape_scales()
+            self._validate_compiled_mesh_scales()
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
@@ -4963,20 +4947,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # invalidate sleeping islands, so explicitly wake them.
                 self._wake_sleeping_worlds()
 
-    def _validate_cone_shape_scales(self) -> None:
-        """Reject resizing cones whose MuJoCo meshes were compiled at construction."""
-        if self._cone_shape_indices.size == 0:
+    def _validate_compiled_mesh_scales(self) -> None:
+        """Reject resizing mesh assets, including tessellated cones, without recompiling."""
+        if not self._compiled_mesh_shape_indices.size:
             return
 
-        current_scales = self.model.shape_scale.numpy()[self._cone_shape_indices]
-        changed = np.any(current_scales != self._cone_shape_scale_snapshot, axis=1)
+        current = self.model.shape_scale.numpy()[self._compiled_mesh_shape_indices]
+        changed = np.any(current != self._compiled_mesh_shape_scales, axis=1)
         if np.any(changed):
-            changed_labels = [self.model.shape_label[i] for i in self._cone_shape_indices[changed][:5]]
+            changed_labels = [self.model.shape_label[i] for i in self._compiled_mesh_shape_indices[changed][:5]]
             if np.count_nonzero(changed) > len(changed_labels):
                 changed_labels.append("...")
             raise ValueError(
-                "SolverMuJoCo does not support changing shape_scale for cone shapes after construction because "
-                f"their meshes are already compiled. Recreate the solver after resizing. Shapes: {changed_labels}."
+                "SolverMuJoCo does not support changing shape_scale for mesh or cone shapes after construction. "
+                f"Recreate the solver after resizing. Shapes: {changed_labels}."
             )
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
@@ -5603,6 +5587,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mj_contact.geom,
                 mj_contact.efc_address,
                 mj_contact.worldid,
+                mj_contact.adhesion,
                 mj_data.efc.force,
                 self.mjw_model.geom_bodyid,
                 mj_data.xpos,
@@ -6141,9 +6126,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=np.int32,
         )
 
-        # get the shapes for the first environment
-        first_env_shapes = np.where(shape_world == first_world)[0]
-
         # Classify joints outside articulations as standalone roots or loop closures.
         joints_unassigned = selected_joints[joint_articulation[selected_joints] == -1]
         joints_articulated = selected_joints[joint_articulation[selected_joints] >= 0]
@@ -6250,57 +6232,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._total_loop_joint_coords = loop_coord_count
             self._total_loop_joint_dofs = loop_dof_count
 
-        # find graph coloring of collision filter pairs
-        # filter out shapes that are not colliding with anything
-        colliding_shapes = selected_shapes[shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES != 0]
-
-        # number of shapes we are instantiating in MuJoCo (which will be replicated for the number of envs)
-        colliding_shapes_per_world = len(colliding_shapes)
-
-        # filter out non-colliding bodies using excludes
-        body_filters = self._find_body_collision_filter_pairs(
-            model,
-            selected_bodies,
-            colliding_shapes,
-        )
-
-        # Reuse the original masks only when all shapes came from the same
-        # add_mjcf() call and the masks already enforce every Newton filter.
-        # Otherwise generate new masks from Newton's final allowed shape pairs.
-        use_preserved_collision_masks = (
-            shape_mjc_contype is not None
-            and shape_mjc_conaffinity is not None
-            and shape_mjc_collision_mask_domain is not None
-            and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
-            and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
-            and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
-            and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
-            and self._preserved_masks_cover_collision_filters(
-                model,
-                colliding_shapes,
-                shape_mjc_contype,
-                shape_mjc_conaffinity,
-                body_filters,
-            )
-        )
-        compiled_collision_type = None
-        compiled_collision_affinity = None
-        shape_color = None
-        if not use_preserved_collision_masks:
-            compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
-            if compiled_masks.exact:
-                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
-                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
-                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
-                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
-            else:
-                shape_color = self._color_collision_shapes(
-                    model,
-                    colliding_shapes,
-                    visualize_graph=False,
-                    shape_labels=model.shape_label,
-                )
-
         selected_shapes_set = set(selected_shapes)
         mujoco_attrs = getattr(model, "mujoco", None)
 
@@ -6401,11 +6332,179 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         actuator_required_shapes.add(site_shape_by_label[label])
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
-        mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
+        shape_layout = None
+        shape_world_mapping = {}
+        export_body_shapes = model.body_shapes
+        heterogeneous_geoms = False
+        padded_shapes = False
+        if separate_worlds and model.world_count > 1:
+            shape_layout = build_shape_layout(
+                model,
+                skip_visual_only_geoms=skip_visual_only_geoms,
+                include_sites=include_sites,
+                required_shapes=required_shapes,
+            )
+            selected_shapes = shape_layout.representative_shapes
+            padded_shapes = shape_layout.has_missing_shapes
+            heterogeneous_geoms = padded_shapes
+            if not padded_shapes:
+                mesh_columns = np.isin(shape_type[selected_shapes], (GeoType.MESH, GeoType.CONVEX_MESH))
+                for shapes in shape_layout.world_shapes[:, mesh_columns].T:
+                    source = model.shape_source[shapes[0]]
+                    if all(model.shape_source[shape] is source for shape in shapes) and np.all(
+                        shape_size[shapes] == shape_size[shapes[0]]
+                    ):
+                        continue
+                    keys = {_mesh_scale_key(model.shape_source[shape], shape_size[shape]) for shape in shapes}
+                    if len(keys) > 1:
+                        heterogeneous_geoms = True
+                        break
+            if heterogeneous_geoms and self.use_mujoco_cpu:
+                raise ValueError("Per-world mesh assets with separate_worlds=True require use_mujoco_cpu=False.")
+            if padded_shapes and pair_count:
+                raise ValueError("Differing mesh counts with explicit MuJoCo contact pairs are not supported.")
+            selected_shapes_set = set(selected_shapes)
+            shape_world_mapping = dict(zip(selected_shapes, shape_layout.world_shapes.T, strict=True))
+            export_body_shapes = {}
+            for shape, body in zip(selected_shapes, shape_layout.body_indices, strict=True):
+                export_body_shapes.setdefault(int(body), []).append(int(shape))
+
+        # find graph coloring of collision filter pairs
+        # filter out shapes that are not colliding with anything
+        collision_slots = np.flatnonzero(shape_flags[selected_shapes] & ShapeFlags.COLLIDE_SHAPES)
+        colliding_shapes = selected_shapes[collision_slots]
+
+        # number of shapes we are instantiating in MuJoCo (which will be replicated for the number of envs)
+        colliding_shapes_per_world = len(colliding_shapes)
+
+        # filter out non-colliding bodies using excludes
+        body_filters = (
+            []
+            if heterogeneous_geoms
+            else self._find_body_collision_filter_pairs(
+                model,
+                selected_bodies,
+                colliding_shapes,
+            )
+        )
+
+        # Reuse the original masks only when all shapes came from the same
+        # add_mjcf() call and the masks already enforce every Newton filter.
+        # Otherwise generate new masks from Newton's final allowed shape pairs.
+        use_preserved_collision_masks = (
+            not heterogeneous_geoms
+            and shape_mjc_contype is not None
+            and shape_mjc_conaffinity is not None
+            and shape_mjc_collision_mask_domain is not None
+            and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
+            and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
+            and self._preserved_masks_cover_collision_filters(
+                model,
+                colliding_shapes,
+                shape_mjc_contype,
+                shape_mjc_conaffinity,
+                body_filters,
+            )
+        )
+        compiled_collision_type = None
+        compiled_collision_affinity = None
+        shape_color = None
+        if heterogeneous_geoms:
+            if self._use_mujoco_contacts and not disable_contacts:
+                compiled_masks = compile_layout_collision_masks(model, shape_layout.select(collision_slots))
+                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
+                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
+            else:
+                compiled_collision_type = np.ones(model.shape_count, dtype=np.uint32)
+                compiled_collision_affinity = np.ones(model.shape_count, dtype=np.uint32)
+        elif not use_preserved_collision_masks:
+            compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+            if compiled_masks.exact:
+                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
+                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
+            else:
+                shape_color = self._color_collision_shapes(
+                    model,
+                    colliding_shapes,
+                    visualize_graph=False,
+                    shape_labels=model.shape_label,
+                )
+
+        if padded_shapes and self._use_mujoco_contacts and not disable_contacts and not supports_missing_meshes():
+            raise ValueError(
+                "Native contacts with absent mesh slots require the MuJoCo Warp broadphase fix "
+                "google-deepmind/mujoco_warp#1689 (not included in the 3.14.0 release). "
+                "Use a build containing that fix, or set use_mujoco_contacts=False."
+            )
+
+        mesh_export_cache = {}
+        mesh_assets = {}
+        shape_mesh_names = {}
+
+        def add_mesh_asset(shape):
+            mesh_src = model.shape_source[shape]
+            size = shape_size[shape]
+            key = _mesh_scale_key(mesh_src, size)
+            mesh_export = mesh_export_cache.get(key)
+            if mesh_export is None:
+                vertices = mesh_src.vertices * size
+                indices = mesh_src.indices.flatten()
+                maxhullvert = mesh_src.maxhullvert
+                extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
+                is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)
+                if is_planar:
+                    vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
+                        vertices, indices, maxhullvert, extent_axis
+                    )
+                name = f"newton_mesh_{len(mesh_assets)}"
+                params = {
+                    "name": name,
+                    "uservert": vertices.flatten(),
+                    "userface": indices.flatten(),
+                    "maxhullvert": maxhullvert,
+                    "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
+                }
+                spec.add_mesh(**params)
+                mesh_assets[name] = params
+                mesh_export = (name, is_planar)
+                mesh_export_cache[key] = mesh_export
+            name, is_planar = mesh_export
+            uses_mujoco_contacts = (
+                bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+                and (
+                    (
+                        use_preserved_collision_masks
+                        and bool(int(shape_mjc_contype[shape]) | int(shape_mjc_conaffinity[shape]))
+                    )
+                    or (not use_preserved_collision_masks and int(shape_collision_group[shape]) != 0)
+                )
+            ) or shape in mujoco_pair_contact_shapes
+            if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
+                raise ValueError(
+                    f"MuJoCo contact generation does not support planar mesh collider "
+                    f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
+                    "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                )
+            shape_mesh_names[shape] = name
+            return name
+
+        if heterogeneous_geoms:
+            for shape in np.unique(shape_layout.world_shapes[shape_layout.world_shapes >= 0]):
+                if (
+                    shape_type[shape] in (GeoType.MESH, GeoType.CONVEX_MESH)
+                    and not shape_flags[shape] & ShapeFlags.SITE
+                ):
+                    add_mesh_asset(int(shape))
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
-            shapes = model.body_shapes.get(newton_body_id)
+            shapes = export_body_shapes.get(newton_body_id)
             if not shapes:
                 return
             for shape in shapes:
@@ -6507,64 +6606,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         compute_uvs=False,
                         compute_inertia=False,
                     )
-                    spec.add_mesh(
-                        name=name,
-                        uservert=mesh_src.vertices.flatten(),
-                        userface=mesh_src.indices.flatten(),
-                        maxhullvert=mesh_src.maxhullvert,
-                        # Newton supplies body inertia, so MuJoCo need not compute volume inertia.
-                        inertia=mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
-                    )
-                    geom_params["meshname"] = name
+                    mesh_name = f"newton_cone_{shape}"
+                    params = {
+                        "name": mesh_name,
+                        "uservert": mesh_src.vertices.flatten(),
+                        "userface": mesh_src.indices.flatten(),
+                        "maxhullvert": mesh_src.maxhullvert,
+                        "inertia": mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
+                    }
+                    spec.add_mesh(**params)
+                    mesh_assets[mesh_name] = params
+                    geom_params["meshname"] = mesh_name
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
-                    mesh_src = model.shape_source[shape]
-                    size = shape_size[shape]
-                    key = _mesh_scale_key(mesh_src, size)
-                    mesh_export = mesh_export_cache.get(key)
-                    if mesh_export is None:
-                        vertices = mesh_src.vertices * size
-                        indices = mesh_src.indices.flatten()
-                        maxhullvert = mesh_src.maxhullvert
-                        extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
-                        is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)
-                        if is_planar:
-                            # MuJoCo compiles every mesh geom through its convex-hull path,
-                            # which rejects lower-dimensional vertex clouds. When Newton
-                            # supplies contacts, the MuJoCo mesh only needs to compile and
-                            # keep a stable geom id, so add a tiny referenced off-plane
-                            # vertex to the exported asset.
-                            vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
-                                vertices, indices, maxhullvert, extent_axis
-                            )
-                        mesh_export = (vertices, indices, maxhullvert, is_planar)
-                        mesh_export_cache[key] = mesh_export
-
-                    vertices, indices, maxhullvert, is_planar = mesh_export
-                    uses_mujoco_contacts = (
-                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
-                        and (
-                            (
-                                use_preserved_collision_masks
-                                and bool(int(shape_mjc_contype[shape]) | int(shape_mjc_conaffinity[shape]))
-                            )
-                            or (not use_preserved_collision_masks and int(shape_collision_group[shape]) != 0)
-                        )
-                    ) or shape in mujoco_pair_contact_shapes
-                    if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
-                        raise ValueError(
-                            f"MuJoCo contact generation does not support planar mesh collider "
-                            f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
-                            "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
-                        )
-                    spec.add_mesh(
-                        name=name,
-                        uservert=vertices.flatten(),
-                        userface=indices.flatten(),
-                        maxhullvert=maxhullvert,
-                        # Newton supplies body inertia, so MuJoCo need not compute volume inertia.
-                        inertia=mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL,
-                    )
-                    geom_params["meshname"] = name
+                    geom_params["meshname"] = add_mesh_asset(shape)
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
@@ -6589,12 +6643,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 elif use_preserved_collision_masks:
                     geom_params["contype"] = mujoco_mask_to_signed(int(shape_mjc_contype[shape]))
                     geom_params["conaffinity"] = mujoco_mask_to_signed(int(shape_mjc_conaffinity[shape]))
-                elif shape_collision_group[shape] == 0:
-                    geom_params["contype"] = 0
-                    geom_params["conaffinity"] = 0
                 elif compiled_collision_type is not None and compiled_collision_affinity is not None:
                     geom_params["contype"] = mujoco_mask_to_signed(int(compiled_collision_type[shape]))
                     geom_params["conaffinity"] = mujoco_mask_to_signed(int(compiled_collision_affinity[shape]))
+                elif shape_collision_group[shape] == 0:
+                    geom_params["contype"] = 0
+                    geom_params["conaffinity"] = 0
                 else:
                     color = shape_color[shape]
                     contype, conaffinity = self._collision_color_masks(int(color))
@@ -7717,68 +7771,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # --- Create unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
 
-            # Build geom -> shape mapping
-            # geom_to_shape_idx maps from MuJoCo geom index to absolute Newton shape index.
-            # Convert non-static shapes to template-relative indices for the kernel.
-            geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
+            def entity_shape_mapping(index_to_shape, count):
+                mapping = np.full((nworld, count), -1, dtype=np.int32)
+                for index, shape in index_to_shape.items():
+                    if shape_layout is None:
+                        mapping[:, index] = shape
+                    else:
+                        mapping[:, index] = shape_world_mapping[shape]
+                return mapping
 
-            # Find the minimum shape index for the first non-static group to use as the base
-            first_env_shape_base = int(np.min(first_env_shapes)) if len(first_env_shapes) > 0 else 0
+            geom_shape_mapping = entity_shape_mapping(geom_to_shape_idx, self.mj_model.ngeom)
+            self.mjc_geom_to_newton_shape = wp.array(geom_shape_mapping, dtype=wp.int32)
+            self._mjc_site_to_newton_shape = wp.array(
+                entity_shape_mapping(site_to_shape_idx, self.mj_model.nsite), dtype=wp.int32
+            )
+            if heterogeneous_geoms:
+                self._initialize_mesh_assets(spec, mesh_assets, shape_mesh_names, geom_shape_mapping)
 
-            # Store for lazy inverse creation
-            self._shapes_per_world = len(first_env_shapes)
-            self._first_env_shape_base = first_env_shape_base
-
-            # Per-geom static mask (True if static, False otherwise)
-            geom_is_static_np = np.zeros((self.mj_model.ngeom,), dtype=bool)
-
-            for geom_idx, abs_shape_idx in geom_to_shape_idx.items():
-                if shape_world[abs_shape_idx] < 0:
-                    # Static shape - use absolute index and mark mask
-                    geom_to_shape_idx_np[geom_idx] = abs_shape_idx
-                    geom_is_static_np[geom_idx] = True
-                else:
-                    # Non-static shape - convert to template-relative offset from first env base
-                    geom_to_shape_idx_np[geom_idx] = abs_shape_idx - first_env_shape_base
-
-            geom_to_shape_idx_wp = wp.array(geom_to_shape_idx_np, dtype=wp.int32)
-            geom_is_static_wp = wp.array(geom_is_static_np, dtype=bool)
-
-            # Create mjc_geom_to_newton_shape: MuJoCo[world, geom] -> Newton shape
-            self.mjc_geom_to_newton_shape = wp.full((nworld, self.mj_model.ngeom), -1, dtype=wp.int32)
-
-            if self.mjw_model.geom_pos.size:
-                wp.launch(
-                    update_shape_mappings_kernel,
-                    dim=(nworld, self.mj_model.ngeom),
-                    inputs=[
-                        geom_to_shape_idx_wp,
-                        geom_is_static_wp,
-                        self._shapes_per_world,
-                        first_env_shape_base,
-                    ],
-                    outputs=[
-                        self.mjc_geom_to_newton_shape,
-                    ],
-                    device=model.device,
-                )
-
-            converted_shapes = np.unique(self.mjc_geom_to_newton_shape.numpy())
-            converted_shapes = converted_shapes[converted_shapes >= 0]
-            self._cone_shape_indices = converted_shapes[shape_type[converted_shapes] == GeoType.CONE]
-            self._cone_shape_scale_snapshot = np.array(model.shape_scale.numpy()[self._cone_shape_indices], copy=True)
-
-            site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
-            site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
-            for site_idx, abs_shape_idx in site_to_shape_idx.items():
-                if shape_world[abs_shape_idx] < 0:
-                    site_to_shape_idx_np[site_idx] = abs_shape_idx
-                    site_is_global_np[site_idx] = True
-                else:
-                    site_to_shape_idx_np[site_idx] = abs_shape_idx - first_env_shape_base
-
-            self._mjc_site_shape_index = wp.array(site_to_shape_idx_np, dtype=wp.int32)
-            self._mjc_site_is_global = wp.array(site_is_global_np, dtype=bool)
+            converted_shapes = np.unique(geom_shape_mapping[geom_shape_mapping >= 0])
+            compiled_types = (
+                (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.CONE) if heterogeneous_geoms else (GeoType.CONE,)
+            )
+            self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
+            self._compiled_mesh_shape_scales = model.shape_scale.numpy()[self._compiled_mesh_shape_indices].copy()
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
             # body_mapping is {newton_body_id: mjc_body_id}, we need to invert it
@@ -8162,6 +8177,69 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         initial_jacobian = self.mj_data.efc_J.reshape((-1, self.mj_model.nv))[: self.mj_data.nefc]
         return int(np.count_nonzero(initial_jacobian))
 
+    def _initialize_mesh_assets(self, spec, assets, shape_mesh_names, geom_shapes):
+        """Install complete mesh collision data and per-world compiled bounds."""
+        if not shape_mesh_names:
+            return
+        mujoco = self._mujoco
+        source = self.mj_model
+        source_geoms = {
+            int(mesh): geom
+            for geom, mesh in enumerate(source.geom_dataid)
+            if source.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH
+        }
+        if len(source_geoms) != source.nmesh:
+            # MuJoCo omits hull graphs and polygons for unreferenced assets.
+            catalog = mujoco.MjSpec()
+            for mesh in spec.meshes:
+                catalog.add_mesh(**assets[mesh.name])
+                catalog.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_MESH, meshname=mesh.name)
+            source = catalog.compile()
+            source_geoms = {int(mesh): geom for geom, mesh in enumerate(source.geom_dataid)}
+            for field in fields(self.mjw_model):
+                if field.name.startswith(("mesh_", "nmesh")) or field.name == "npolygonmax":
+                    value = getattr(source, field.name)
+                    current = getattr(self.mjw_model, field.name)
+                    if isinstance(current, wp.array):
+                        value = wp.array(value, dtype=current.dtype, device=self.model.device)
+                    setattr(self.mjw_model, field.name, value)
+
+        mesh_ids = {name: mujoco.mj_name2id(source, mujoco.mjtObj.mjOBJ_MESH, name) for name in assets}
+        # Both compiles retain registration order, including meshes used by cones.
+        for name, mesh_id in mesh_ids.items():
+            if mesh_id != mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_MESH, name):
+                raise RuntimeError("MuJoCo mesh asset ordering changed during catalog compilation.")
+        dataid = np.tile(self.mj_model.geom_dataid, (geom_shapes.shape[0], 1))
+        size = np.tile(self.mj_model.geom_size, (geom_shapes.shape[0], 1, 1))
+        aabb = np.tile(self.mj_model.geom_aabb.reshape(-1, 2, 3), (geom_shapes.shape[0], 1, 1, 1))
+        rbound = np.tile(self.mj_model.geom_rbound, (geom_shapes.shape[0], 1))
+        # The final entry maps absent shapes (-1) to no mesh.
+        shape_mesh_ids = np.full(self.model.shape_count + 1, -1, dtype=np.int32)
+        for shape, name in shape_mesh_names.items():
+            shape_mesh_ids[shape] = mesh_ids[name]
+        mapped_mesh_ids = shape_mesh_ids[geom_shapes]
+        mesh_mask = mapped_mesh_ids >= 0
+        mesh_geoms = np.asarray([source_geoms[mesh] for mesh in range(source.nmesh)])
+        source_geom = mesh_geoms[mapped_mesh_ids[mesh_mask]]
+        dataid[mesh_mask] = mapped_mesh_ids[mesh_mask]
+        size[mesh_mask] = source.geom_size[source_geom]
+        aabb[mesh_mask] = source.geom_aabb[source_geom].reshape(-1, 2, 3)
+        rbound[mesh_mask] = source.geom_rbound[source_geom]
+
+        missing = geom_shapes < 0
+        dataid[missing] = -1
+        size[missing] = 0.0
+        aabb[missing] = 0.0
+        rbound[missing] = 0.0
+        if np.all(dataid == dataid[:1]):
+            dataid = dataid[:1]
+        if np.all(aabb == aabb[:1]):
+            aabb = aabb[:1]
+        self.mjw_model.geom_dataid = wp.array(dataid, dtype=wp.int32, device=self.model.device)
+        self.mjw_model.geom_size = wp.array(size, dtype=wp.vec3, device=self.model.device)
+        self.mjw_model.geom_aabb = wp.array(aabb, dtype=wp.vec3, device=self.model.device)
+        self.mjw_model.geom_rbound = wp.array(rbound, dtype=float, device=self.model.device)
+
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
@@ -8269,6 +8347,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         }
 
         def tile(x: wp.array):
+            if x.shape[0] == nworld:
+                return x
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
             new_shape[0] = nworld
@@ -9102,10 +9182,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.model.shape_transform,
                 self.model.shape_scale,
-                self._mjc_site_shape_index,
-                self._mjc_site_is_global,
-                self._shapes_per_world,
-                self._first_env_shape_base,
+                self._mjc_site_to_newton_shape,
             ],
             outputs=[
                 self.mjw_model.site_pos,
@@ -9674,7 +9751,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         MuJoCo's separate_worlds mode creates identical copies of a single MuJoCo model
         for each Newton world. This requires:
-        1. All worlds have the same number of bodies, joints, shapes, and equality constraints
+        1. All worlds have the same number of bodies, joints, and equality constraints
         2. Entity types match across corresponding entities in each world
         3. Corresponding joints have the same linear/angular DOF counts in each world
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
@@ -9696,7 +9773,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
-        shape_world = model.shape_world.numpy()
         # finalize() materializes this as an empty array at zero rows; guard on the count anyway
         # so models assembled without the standard pipeline still work.
         eq_constraint_world = (
@@ -9743,12 +9819,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)
-        non_global_shapes = shape_world[shape_world >= 0]
 
         for entity_name, world_arr in [
             ("bodies", body_world),
             ("joints", joint_world),
-            ("shapes", non_global_shapes),
             ("equality constraints", eq_constraint_world),
             ("mimic constraints", mimic_world),
         ]:
@@ -9799,6 +9873,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"but other worlds have {dims[1:].tolist()}."
                 )
 
+            bodies_per_world = model.body_count // world_count
+            for name in ("joint_parent", "joint_child"):
+                bodies = getattr(model, name).numpy().reshape(world_count, joints_per_world)
+                local_bodies = np.where(bodies >= 0, bodies % bodies_per_world, -1)
+                mismatch = local_bodies != local_bodies[0]
+                if np.any(mismatch):
+                    world, joint = np.argwhere(mismatch)[0]
+                    raise ValueError(
+                        f"SolverMuJoCo requires matching {name}: world {world}, joint {joint} "
+                        f"references body {local_bodies[world, joint]}, expected {local_bodies[0, joint]}."
+                    )
+
             joint_mimic_joint = model.joint_mimic_joint.numpy().reshape(world_count, joints_per_world)
             world_joint_offsets = np.arange(world_count, dtype=np.int32)[:, None] * joints_per_world
             normalized_mimic_joint = np.where(joint_mimic_joint >= 0, joint_mimic_joint - world_joint_offsets, -1)
@@ -9810,24 +9896,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "SolverMuJoCo requires homogeneous worlds. "
                     f"Mimic reference mismatch at joint position {joint}: world 0 references "
                     f"{references[0]}, but other worlds reference {references[1:].tolist()}."
-                )
-
-        # Only check non-global shapes
-        shapes_per_world = len(non_global_shapes) // world_count if world_count > 0 else 0
-        if shapes_per_world > 0:
-            shape_type = model.shape_type.numpy()
-            # Get shape types for non-global shapes only
-            non_global_shape_types = shape_type[shape_world >= 0]
-            shape_types_2d = non_global_shape_types.reshape(world_count, shapes_per_world)
-            # Vectorized mismatch check
-            mismatches = shape_types_2d != shape_types_2d[0]
-            if np.any(mismatches):
-                s = np.argmax(np.any(mismatches, axis=0))
-                types = shape_types_2d[:, s]
-                raise ValueError(
-                    f"SolverMuJoCo requires homogeneous worlds. "
-                    f"Shape types mismatch at position {s}: world 0 has type {types[0]}, "
-                    f"but other worlds have types {types[1:].tolist()}."
                 )
 
         constraints_per_world = (model.mujoco.equality_constraint_count // world_count) if world_count > 0 else 0

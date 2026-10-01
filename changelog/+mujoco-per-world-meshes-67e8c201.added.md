@@ -1,0 +1,1 @@
+Support different mesh assets and convex-hull counts across compatible worlds in `SolverMuJoCo`, with both native MuJoCo Warp and Newton-generated contacts. Native contacts with absent mesh slots require the MuJoCo Warp broadphase fix [google-deepmind/mujoco_warp#1689](https://github.com/google-deepmind/mujoco_warp/pull/1689).
