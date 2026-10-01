@@ -1175,6 +1175,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             | ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES
+            | ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES

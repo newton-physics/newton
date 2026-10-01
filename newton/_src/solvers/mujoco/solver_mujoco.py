@@ -4138,6 +4138,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_ref_body_qd: wp.array[wp.spatial_vector] | None = None
         self._notify_qpos_saved: wp.array2d[float] | None = None
         self._notify_physical_meaninertia: wp.array[float] | None = None
+        self._notify_body_flags: wp.array[wp.int32] | None = None
+        self._notify_joint_armature: wp.array[float] | None = None
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
@@ -4218,8 +4220,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_rigid_contact_max: int | None = None
 
         # One-shot dedup for ``_update_solref_from_invweight0``'s authored
-        # ``mujoco.solreflimit`` domain validator. Re-armed by
-        # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)`` on both backends.
+        # ``mujoco.solreflimit`` domain validator. Joint force notifications
+        # (including the legacy broad DOF flag) re-arm it on both backends.
         self._raw_solreflimit_validated: bool = False
 
         self._cone_shape_indices = np.empty(0, dtype=np.int32)
@@ -4923,7 +4925,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_force = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
         update_friction_damping = update_force or bool(flags & ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
         update_inertia = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES))
-        update_configuration = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_PROPERTIES))
+        update_configuration = bool(
+            flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES)
+        )
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._validate_cone_shape_scales()
@@ -4940,7 +4944,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_const_0 = True
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
+        if flags & ModelFlags.BODY_PROPERTIES:
+            wp.copy(self._notify_body_flags, self.model.body_flags)
         if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
+            wp.copy(self._notify_joint_armature, self.model.joint_armature)
             self._update_body_properties()
             self._invalidate_contact_fast_path()
             need_const_0 = True
@@ -4974,7 +4981,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         has_any_connect = self.has_connect_constraints or self.has_jnt_connect_constraints
         update_connect_constraint_anchor_rel_xform_at_ref_pose = has_any_connect and bool(
-            flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES)
+            flags & ModelFlags.JOINT_PROPERTIES or update_configuration
         )
         update_connect_constraint_anchors = self.has_connect_constraints and bool(
             flags & ModelFlags.CONSTRAINT_PROPERTIES
@@ -4992,9 +4999,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._sync_mjw_inertias_to_mjc_cpu()
             if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            if update_force:
-                self.mj_model.actuator_gainprm[:] = self.mjw_model.actuator_gainprm.numpy()[0]
-                self.mj_model.actuator_biasprm[:] = self.mjw_model.actuator_biasprm.numpy()[0]
+            if update_force and self.mjc_actuator_ctrl_source is not None:
+                # Direct actuators may retain unresolved dampratio values in MJWarp.
+                # Only joint-target rows are owned by the DOF force notification.
+                joint_target = self.mjc_actuator_ctrl_source.numpy() == 0
+                self.mj_model.actuator_gainprm[joint_target] = self.mjw_model.actuator_gainprm.numpy()[0, joint_target]
+                self.mj_model.actuator_biasprm[joint_target] = self.mjw_model.actuator_biasprm.numpy()[0, joint_target]
             if update_friction_damping:
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
                 self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
@@ -8346,6 +8356,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _allocate_notify_model_changed_scratch(self) -> None:
         """Allocate reusable scratch for graph-capturable model updates."""
+        # Constant refreshes must use published properties, not pending model edits.
+        self._notify_body_flags = wp.clone(self.model.body_flags)
+        self._notify_joint_armature = wp.clone(self.model.joint_armature)
         if not self.use_mujoco_cpu:
             self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
             self._notify_physical_meaninertia = wp.empty_like(self.mjw_model.stat.meaninertia)
@@ -8534,7 +8547,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wp.copy(self.mjw_model.stat.meaninertia, self._notify_physical_meaninertia)
             return
 
-        has_kinematic_bodies = bool(np.any((self.model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0))
+        has_kinematic_bodies = bool(np.any((self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0))
         if not has_kinematic_bodies:
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
             return
@@ -8556,7 +8569,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Update body-property dependent MuJoCo DOF parameters.
 
         This currently applies kinematic body flags by rewriting MuJoCo
-        ``dof_armature`` from Newton ``body_flags`` and ``joint_armature``.
+        ``dof_armature`` from the last published ``body_flags`` and ``joint_armature``.
         """
         if self.model.joint_dof_count == 0:
             return
@@ -8572,8 +8585,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_dof_to_newton_dof,
                 self.newton_dof_to_body,
-                self.model.body_flags,
-                self.model.joint_armature,
+                self._notify_body_flags,
+                self._notify_joint_armature,
                 KINEMATIC_ARMATURE,
                 apply_kinematic_armature,
             ],

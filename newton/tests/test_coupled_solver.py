@@ -1467,6 +1467,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.joint_armature.numpy(), 3.0)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
         np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 

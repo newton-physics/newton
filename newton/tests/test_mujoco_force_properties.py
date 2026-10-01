@@ -4,6 +4,7 @@
 """Tests for narrow MuJoCo force-DOF property updates."""
 
 import unittest
+import warnings
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ import warp as wp
 
 import newton
 from newton import ModelFlags
+from newton._src.solvers.mujoco.constants import SOLREF_MODE_RAW
 from newton.solvers import SolverMuJoCo
 
 
@@ -57,6 +59,84 @@ def _make_model(
 
 
 class TestMuJoCoForceProperties(unittest.TestCase):
+    def test_force_update_preserves_direct_actuator_damping(self):
+        """Update joint targets without overwriting resolved direct-actuator damping."""
+        mjcf = """
+        <mujoco>
+          <worldbody><body>
+            <joint name="hinge" type="hinge"/>
+            <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+          </body></worldbody>
+          <actuator><position joint="hinge" kp="100" dampratio="1"/></actuator>
+        </mujoco>
+        """
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, ctrl_direct=True)
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_revolute(-1, body, target_ke=2.0, target_kd=0.3)
+                builder.add_articulation([joint])
+                model = builder.finalize(device="cpu")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                direct = solver.mjc_actuator_ctrl_source.numpy() == 1
+                target = ~direct
+                self.assertTrue(np.any(direct) and np.any(target))
+                before = (
+                    solver.mj_model.actuator_biasprm.copy()
+                    if cpu
+                    else solver.mjw_model.actuator_biasprm.numpy()[0].copy()
+                )
+                self.assertTrue(np.all(before[direct, 2] < 0))
+                model.joint_target_ke.fill_(5.0)
+                model.joint_target_kd.fill_(0.7)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                after = solver.mj_model.actuator_biasprm if cpu else solver.mjw_model.actuator_biasprm.numpy()[0]
+                np.testing.assert_array_equal(after[direct], before[direct])
+                self.assertFalse(np.array_equal(after[target], before[target]))
+
+    def test_joint_transform_update_preserves_pending_dof_properties(self):
+        """Keep transform notifications cheap and leave pending DOF edits unpublished."""
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                model = _make_model(worlds=1)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                before = {name: getattr(solver.mjw_model, name).numpy().copy() for name in ("dof_armature", "qpos0")}
+                body_pos = solver.mjw_model.body_pos.numpy().copy()
+                model.joint_armature.fill_(7.0)
+                model.mujoco.dof_ref.fill_(0.2)
+                transforms = model.joint_X_p.numpy()
+                transforms[0, 0] += 0.1
+                model.joint_X_p.assign(transforms)
+                with patch.object(
+                    solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
+                ):
+                    solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                for name, values in before.items():
+                    np.testing.assert_array_equal(getattr(solver.mjw_model, name).numpy(), values)
+                self.assertFalse(np.array_equal(solver.mjw_model.body_pos.numpy(), body_pos))
+
+    def test_constant_refresh_preserves_pending_armature(self):
+        """Refresh constants without publishing an unnotified armature edit."""
+        for cpu in (True, False):
+            for kinematic in (False, True):
+                with self.subTest(cpu=cpu, kinematic=kinematic):
+                    model = _make_model(worlds=1)
+                    if kinematic:
+                        model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC))
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                    armature = solver.mjw_model.dof_armature.numpy().copy()
+                    meaninertia = (
+                        float(solver.mj_model.stat.meaninertia)
+                        if cpu
+                        else solver.mjw_model.stat.meaninertia.numpy().copy()
+                    )
+                    model.joint_armature.fill_(7.0)
+                    solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                    np.testing.assert_array_equal(solver.mjw_model.dof_armature.numpy(), armature)
+                    actual = solver.mj_model.stat.meaninertia if cpu else solver.mjw_model.stat.meaninertia.numpy()
+                    np.testing.assert_allclose(actual, meaninertia)
+
     def _cuda_device(self):
         """Skip capture tests when no CUDA device with a mempool is available."""
         if wp.get_cuda_device_count() == 0:
@@ -65,6 +145,41 @@ class TestMuJoCoForceProperties(unittest.TestCase):
         if not wp.is_mempool_enabled(device):
             self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
         return device
+
+    def test_captured_reference_updates_preserve_pending_armature(self):
+        """Replay reference updates without publishing pending inertial or force edits."""
+        device = self._cuda_device()
+        model = _make_model(device=device)
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        armature = solver.mjw_model.dof_armature.numpy().copy()
+        damping = solver.mjw_model.dof_damping.numpy().copy()
+        model.joint_armature.fill_(7.0)
+        model.joint_damping.fill_(9.0)
+        with wp.ScopedCapture(device=device) as capture:
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES)
+        for ref in (0.2, 0.4):
+            model.mujoco.dof_ref.fill_(ref)
+            model.mujoco.dof_springref.fill_(ref + 0.1)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(solver.mjw_model.qpos0.numpy(), ref)
+            np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy(), ref + 0.1)
+            np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[..., 0], ref - 1.0)
+            np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[..., 1], ref + 1.0)
+            np.testing.assert_array_equal(solver.mjw_model.dof_armature.numpy(), armature)
+            np.testing.assert_array_equal(solver.mjw_model.dof_damping.numpy(), damping)
+
+        with (
+            patch.object(
+                solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
+            ),
+            patch.object(
+                solver._mujoco_warp, "set_length_range", side_effect=AssertionError("recomputed length range")
+            ),
+            wp.ScopedCapture(device=device) as transforms,
+        ):
+            solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+        wp.capture_launch(transforms.graph)
+        np.testing.assert_array_equal(solver.mjw_model.dof_armature.numpy(), armature)
 
     def test_eager_updates_preserve_armature_and_optional_parameters(self):
         """Publish force fields on both backends without modifying kinematic armature."""
@@ -111,6 +226,48 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                             np.testing.assert_allclose(
                                 getattr(solver.mj_model, name), values[0], rtol=1.0e-5, err_msg=name
                             )
+
+    def test_force_flags_rearm_raw_limit_validation(self):
+        """Validate raw limits for force updates while leaving friction-only updates independent."""
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                model = _make_model(worlds=1)
+                model.mujoco.solreflimit_mode.fill_(SOLREF_MODE_RAW)
+                model.mujoco.solreflimit.fill_(wp.vec2(0.02, 1.0))
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                initial_solref = solver.mjw_model.jnt_solref.numpy().copy()
+                model.mujoco.solreflimit.fill_(wp.vec2(-1.0, 1.0))
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
+                self.assertFalse(any("invalid components" in str(w.message) for w in caught))
+                np.testing.assert_array_equal(solver.mjw_model.jnt_solref.numpy(), initial_solref)
+                for flags in (
+                    ModelFlags.JOINT_DOF_FORCE_PROPERTIES,
+                    ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES,
+                ):
+                    with self.subTest(flags=flags), self.assertWarnsRegex(UserWarning, "invalid components"):
+                        solver.notify_model_changed(flags)
+
+    def test_captured_force_validation_remains_pending_after_friction_update(self):
+        """Defer force-limit validation through capture and friction-only updates until an eager force update."""
+        device = self._cuda_device()
+        model = _make_model(device=device)
+        model.mujoco.solreflimit_mode.fill_(SOLREF_MODE_RAW)
+        model.mujoco.solreflimit.fill_(wp.vec2(0.02, 1.0))
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        model.mujoco.solreflimit.fill_(wp.vec2(-1.0, 1.0))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with wp.ScopedCapture(device=device) as capture:
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            wp.capture_launch(capture.graph)
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_FRICTION_DAMPING_PROPERTIES)
+        self.assertFalse(any("invalid components" in str(w.message) for w in caught))
+        self.assertFalse(solver._raw_solreflimit_validated)
+        with self.assertWarnsRegex(UserWarning, "invalid components"):
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        self.assertTrue(solver._raw_solreflimit_validated)
 
     def test_model_without_dofs(self):
         """Accept force updates for a fixed-joint model without DOFs."""
@@ -330,7 +487,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 np.testing.assert_allclose(solver.mjw_model.qpos0.numpy(), 0.0)
                 weight = solver.mj_model.dof_invweight0 if cpu else solver.mjw_model.dof_invweight0.numpy()
                 self.assertFalse(np.allclose(weight, initial_weight))
-                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.qpos0.numpy(), 0.2)
                 np.testing.assert_allclose(solver.mjw_model.qpos_spring.numpy(), 0.3)
                 np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[..., 0], -0.8)
@@ -342,7 +499,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     ModelFlags.ALL,
                     ModelFlags.JOINT_DOF_FORCE_PROPERTIES
                     | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-                    | ModelFlags.JOINT_PROPERTIES,
+                    | ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES,
                 ):
                     model.joint_armature.fill_(2.0)
                     model.mujoco.dof_ref.fill_(0.4)

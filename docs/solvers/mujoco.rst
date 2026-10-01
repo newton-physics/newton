@@ -101,7 +101,7 @@ at the solver boundary:
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
-:attr:`~newton.ModelFlags.JOINT_PROPERTIES` or the broad
+:attr:`~newton.ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES` or the broad
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
@@ -240,12 +240,13 @@ authored native value such as ``solreflimit="0 0"`` or USD
 ``mjc:solreflimit = [0, 0]``.
 
 Authored raw ``solreflimit`` values are validated during solver construction
-and eager :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on
-both backends. CUDA graph capture skips this host validation and leaves it
+and eager :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` or
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on both backends. CUDA graph capture skips this host validation and leaves it
 pending until the next eager solref update. Graph replay does not validate
 values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
-``JOINT_DOF_PROPERTIES`` outside capture after reassigning raw values to
-check them.
+either force-update flag outside capture after reassigning raw values to
+check them. Friction/damping-only notifications do not validate joint-limit
+parameters or consume pending validation.
 
 On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
 stored in ``solver.mjw_model.jnt_solref``, ``tendon_solref_lim``, and
@@ -1036,8 +1037,10 @@ update; combining flags publishes the shared fields only once.
 Use :attr:`~newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES` for
 :attr:`~newton.Model.joint_armature` changes. Reference-pose changes, including
 MuJoCo ``dof_ref`` and ``dof_springref``, use
-:attr:`~newton.ModelFlags.JOINT_PROPERTIES`. These paths recompute constants;
-configuration updates also shift limit ranges to the new reference. Combine
+:attr:`~newton.ModelFlags.JOINT_DOF_REFERENCE_PROPERTIES`. These paths recompute constants;
+reference updates also shift limit ranges to the new reference.
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` only publishes joint transforms and
+axes, without recomputing constants or applying pending reference edits. Combine
 flags with ``|`` when several categories change. The existing
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` flag retains its integer value
 and full-update behavior, including force, armature, and reference properties.

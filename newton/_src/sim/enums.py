@@ -11,13 +11,19 @@ class ModelFlags(IntEnum):
     These flags are used with :meth:`~newton.solvers.SolverBase.notify_model_changed`
     to specify which properties have changed, allowing the solver to efficiently
     update only the necessary components.
+
+    Categories overlap semantically, but each flag has its own bit. The broad
+    :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
+    updates. :attr:`JOINT_DOF_FORCE_PROPERTIES` includes
+    :attr:`JOINT_DOF_FRICTION_DAMPING_PROPERTIES`. Testing a broad bit alone
+    does not detect a narrower notification.
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis, and reference poses (including MuJoCo dof_ref and dof_springref)."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Retains the full joint DOF update, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -47,7 +53,10 @@ class ModelFlags(IntEnum):
     """Indicates joint inertial property updates: joint_armature."""
 
     JOINT_DOF_FRICTION_DAMPING_PROPERTIES = 1 << 11
-    """Indicates joint_friction, joint_damping, and associated solver parameter updates (MuJoCo solreffriction and solimpfriction). Excludes target gains, passive stiffness, limits, armature, and reference poses."""
+    """Indicates joint_friction, joint_damping, and associated solver parameter updates. Excludes target gains, passive stiffness, limits, armature, and reference poses."""
+
+    JOINT_DOF_REFERENCE_PROPERTIES = 1 << 12
+    """Indicates joint reference-pose and spring-reference updates. Excludes joint transforms, force parameters, and armature."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -62,6 +71,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_FORCE_PROPERTIES
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_DOF_FRICTION_DAMPING_PROPERTIES
+        | JOINT_DOF_REFERENCE_PROPERTIES
     )
     """Indicates all property updates."""
 
