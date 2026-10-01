@@ -331,12 +331,13 @@ mass with it.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
-``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
-``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
-ranges. Without the flag the return shape carries no deformable entries. The corresponding
-``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses`` values with their
-resolved element type under ``simulation``; a legacy untyped mass entry is also marked
-``legacy_implicit_type``.
+``path_cable_map`` holds each cable's body and rod-joint indices. Generated root joints
+are excluded. Welded curves return empty joint lists; see :ref:`deformable-objects-welded-usd-graphs`.
+``path_cloth_map`` / ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
+ranges. Without the flag the return shape carries no deformable entries.
+The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and ``thicknesses``
+values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
+marked ``legacy_implicit_type``.
 
 On the finalized
 :class:`~newton.Model`, select deformable objects by label pattern with
@@ -366,9 +367,8 @@ deformable object record is omitted with a warning; pass the relevant joint thro
 See :ref:`deformable-selection` for the shared contract, including when to copy getter results.
 
 Imported deformables also populate the experimental builder identity lists
-described in :ref:`deformable-objects`. Cloth and volume imports use the same
-recording as native builder calls. Cables retain one record per USD simulation
-prim, including prims with several curves and curves welded into a shared graph.
+described in :ref:`deformable-objects`. These lists are separate from the
+import result mappings above.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -434,6 +434,8 @@ authored during their deprecation windows; a cloth entry also keeps moduli its i
 cannot express. This lets another solver rebuild the supported state without re-parsing the stage.
 A cable entry carries a ``graph_component`` identifier only when the curve was welded into a rod
 graph; curves of one graph share it, and independent or fallback cables have no such key.
+It is also the label of the complete graph in ``ModelBuilder.curve_label``;
+see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
 
 .. note::
 

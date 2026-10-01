@@ -14,6 +14,12 @@ newton.selection
    :nosignatures:
 
    ArticulationView
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+   :template: class.rst
+
    DeformableCurveView
    DeformableSurfaceView
    DeformableVolumeView

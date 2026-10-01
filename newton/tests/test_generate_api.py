@@ -89,6 +89,31 @@ class TestGenerateApiCopyright(unittest.TestCase):
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiClassTemplates(unittest.TestCase):
+    def test_deformable_views_use_inherited_member_template(self):
+        """Select the inherited-member template without changing articulation docs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page("newton.selection", api_toctree_modules=set())
+
+            page = (output_dir / "newton_selection.rst").read_text(encoding="utf-8")
+
+        summaries = page.split(".. autosummary::")[1:]
+        self.assertEqual(len(summaries), 2)
+        self.assertIn("   ArticulationView\n", summaries[0])
+        self.assertNotIn(":template:", summaries[0])
+        self.assertIn("   :template: class.rst\n", summaries[1])
+        for name in ("DeformableCurveView", "DeformableSurfaceView", "DeformableVolumeView"):
+            with self.subTest(view=name):
+                self.assertIn(f"   {name}\n", summaries[1])
+                self.assertEqual(page.count(f"   {name}\n"), 1)
+
+
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
     @staticmethod
     def _make_module_with_deprecated_symbols(mod_name: str) -> ModuleType:
