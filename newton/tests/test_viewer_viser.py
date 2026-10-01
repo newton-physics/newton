@@ -333,6 +333,21 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.viewer.apply_forces(state)
                 np.testing.assert_array_equal(state.body_f.numpy(), 0.0)
 
+    def test_example_callbacks_run_once_per_frame(self):
+        """Run example callbacks once per rendered frame, including paused frames."""
+        calls = []
+        self.viewer.register_ui_callback(lambda ui: calls.append(self.viewer.time))
+        for paused in (False, True):
+            with self.subTest(paused=paused):
+                self.update_gui(self.viewer._simulation_gui_handles["pause"], paused)
+                self.wait_for(lambda expected=paused: self.viewer.is_paused() == expected)
+                calls.clear()
+                for frame in range(3):
+                    self.viewer.should_step()
+                    self.viewer.begin_frame(frame / 60.0)
+                    self.viewer.end_frame()
+                self.assertEqual(len(calls), 3)
+
     def test_example_hold_and_replacement(self):
         """Drive press-and-hold controls and discard events for replaced widgets."""
         state = {"label": "Forward", "active": False, "disabled": False}
@@ -343,19 +358,24 @@ class TestViewerViserInteraction(unittest.TestCase):
             state["active"] = ui.is_item_active()
             ui.end_disabled()
 
+        def render_gui():
+            self.viewer.should_step()
+            self.viewer.begin_frame(0.0)
+            self.viewer.end_frame()
+
         self.viewer.register_ui_callback(gui)
-        self.viewer.should_step()
+        render_gui()
         handle = self.viewer._example_gui_handles[(0, 0)][1]
         self.send("GuiButtonHoldMessage", uuid=handle._impl.uuid, frequency=30.0)
         self.wait_for(lambda: bool(self.viewer._example_gui_held))
-        self.viewer.should_step()
+        render_gui()
         self.assertTrue(state["active"])
         state["label"] = "Backward"
-        self.viewer.should_step()
+        render_gui()
         self.assertFalse(state["active"])
         self.viewer._interaction_events.put(("example_gui", (0, 0), handle, True))
         self.viewer._interaction_events.put(("example_hold", (0, 0), handle, 0, time.monotonic()))
-        self.viewer.should_step()
+        render_gui()
         self.assertFalse(state["active"])
         self.assertFalse(self.viewer._example_gui_pending)
         replacement = self.viewer._example_gui_handles[(0, 0)][1]
@@ -363,7 +383,7 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.wait_for(lambda: bool(self.viewer._example_gui_held))
         self.socket.close()
         self.wait_for(lambda: not self.viewer._example_gui_held)
-        self.viewer.should_step()
+        render_gui()
         self.assertFalse(state["active"])
 
     def test_picking_does_not_cross_simulation_layers(self):

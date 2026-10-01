@@ -2636,7 +2636,6 @@ class ViewerViser(ViewerBase):
             bool: Whether the simulation should advance.
         """
         self._process_interaction_events()
-        self._update_example_gui()
         self._sync_gui_controls()
         if not self._paused:
             self._step_requested = False
