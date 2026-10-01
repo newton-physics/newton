@@ -477,8 +477,12 @@ def solve_sparse_mass_matrix(
     indices: _SparseMassMatrixIndices,
     Linv_group: wp.array2d[float],
     tau: wp.array[float],
+    articulation_active: wp.array[int],
     scratch: wp.array2d[float],
     qdd: wp.array[float],
 ):
     """Apply physical H inverse as P.T Linv.T Linv P; launch 32 threads/group."""
+    # Each group is one warp, so skipping a sleeping articulation is warp-uniform.
+    if articulation_active[group_to_art[wp.tid() // 32]] == 0:
+        return
     _solve_native(wp.tid(), group_to_art, articulation_dof_start, indices, Linv_group, tau, scratch, qdd)

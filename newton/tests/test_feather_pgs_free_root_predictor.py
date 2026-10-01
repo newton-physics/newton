@@ -316,6 +316,7 @@ class TestFeatherPgsFreeRootPredictor(unittest.TestCase):
                 wp.zeros_like(state.joint_qd),  # joint_qdd = 0
                 DT,
                 0.0,
+                wp.ones(model.joint_count, dtype=wp.int32, device=device),
             ],
             outputs=[q_new, qd_new],
             device=device,
@@ -386,7 +387,14 @@ class TestFeatherPgsFreeRootPredictor(unittest.TestCase):
             wp.launch(
                 apply_free_root_transport_to_predictor,
                 dim=1,
-                inputs=[root_indices, qd_starts, kinematic_mask, qd_predictor, DT],
+                inputs=[
+                    root_indices,
+                    qd_starts,
+                    kinematic_mask,
+                    qd_predictor,
+                    DT,
+                    wp.ones(1, dtype=wp.int32, device=device),
+                ],
                 outputs=[v_hat],
                 device=device,
             )
@@ -402,7 +410,13 @@ class TestFeatherPgsFreeRootPredictor(unittest.TestCase):
             wp.launch(
                 remove_free_root_transport_from_qdd,
                 dim=1,
-                inputs=[root_indices, qd_starts, kinematic_mask, qd_conversion],
+                inputs=[
+                    root_indices,
+                    qd_starts,
+                    kinematic_mask,
+                    qd_conversion,
+                    wp.ones(1, dtype=wp.int32, device=device),
+                ],
                 outputs=[qdd],
                 device=device,
             )

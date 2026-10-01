@@ -179,7 +179,15 @@ class TestSparseMassMatrix(unittest.TestCase):
                     wp.launch(
                         solve_sparse_mass_matrix,
                         dim=64,
-                        inputs=[inputs[0], inputs[3], inputs[-1], inverse, wp.array(tau, device="cpu"), scratch],
+                        inputs=[
+                            inputs[0],
+                            inputs[3],
+                            inputs[-1],
+                            inverse,
+                            wp.array(tau, device="cpu"),
+                            wp.ones(2, dtype=int, device="cpu"),
+                            scratch,
+                        ],
                         outputs=[qdd],
                         device="cpu",
                         block_dim=128,
@@ -226,7 +234,15 @@ class TestSparseMassMatrix(unittest.TestCase):
         wp.launch(
             solve_sparse_mass_matrix,
             dim=64,
-            inputs=[inputs[0], inputs[3], inputs[-1], inverse, wp.array(tau, device=device), scratch],
+            inputs=[
+                inputs[0],
+                inputs[3],
+                inputs[-1],
+                inverse,
+                wp.array(tau, device=device),
+                wp.ones(2, dtype=int, device=device),
+                scratch,
+            ],
             outputs=[qdd],
             device=device,
             block_dim=128,

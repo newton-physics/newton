@@ -566,7 +566,12 @@ class TestFeatherPGSResponseDiagonal(unittest.TestCase):
         wp.launch(
             selected_kernel,
             dim=1,
-            inputs=[wp.array((0,), dtype=wp.int32, device=device), *common, 1],
+            inputs=[
+                wp.array((0,), dtype=wp.int32, device=device),
+                *common,
+                1,
+                wp.ones(1, dtype=wp.int32, device=device),
+            ],
             outputs=[body_ft, selected_tau],
             device=device,
         )
@@ -596,6 +601,7 @@ class TestFeatherPGSResponseDiagonal(unittest.TestCase):
                 body_com,
                 origin,
                 1,
+                wp.ones(1, dtype=wp.int32, device=device),
             ],
             outputs=[direct_tau],
             device=device,

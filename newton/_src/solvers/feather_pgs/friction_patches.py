@@ -479,6 +479,8 @@ def _list_flood_pairs(
     count: wp.array[int],
     keys: wp.array[wp.int64],
     min_contacts: int,
+    frozen_bodies: wp.array[int],
+    frame: _PatchFrame,
     pair_list: wp.array[int],
     pair_count: wp.array[int],
 ):
@@ -491,6 +493,9 @@ def _list_flood_pairs(
     if key == wp.int64(0x7FFFFFFFFFFFFFFF):
         return
     if start + min_contacts >= end or keys[start + min_contacts] != key:
+        return
+    # Frozen pairs carry their history in ``_build`` and flood there only if the carry fails.
+    if _pair_frozen(frozen_bodies, frame, start):
         return
     index = wp.atomic_add(pair_count, 0, 1)
     if index < pair_list.shape[0]:
@@ -566,6 +571,7 @@ def _build(
     previous_q: wp.array[wp.transform],
     shape_transform: wp.array[wp.transform],
     shape_radius: wp.array[float],
+    frozen_bodies: wp.array[int],
     frame: _PatchFrame,
     prev: _PatchFrame,
     patches: FrictionPatches,
@@ -609,12 +615,14 @@ def _build(
             prev.members[prev_anchor_stop] = p
             prev_anchor_stop += 1
         prev_stop += 1
+    if _carry_frozen_pair(q, frozen_bodies, frame, prev, start, stop, prev_start, prev_stop):
+        return
 
     member_stop = start
     remaining = stop - start
     # Pairs with more than _FLOOD_MIN_CONTACTS contacts were grown by _flood_regions.
     pair_flooded = int(0)
-    if flooded != 0 and remaining > _FLOOD_MIN_CONTACTS:
+    if flooded != 0 and remaining > _FLOOD_MIN_CONTACTS and not _pair_frozen(frozen_bodies, frame, start):
         pair_flooded = 1
     for index in range(start, stop):
         seed = frame.indices[index]
@@ -938,6 +946,58 @@ def _build(
             patches.phi[c] = wp.vec2(wp.dot(t0, error), wp.dot(t1, error))
 
 
+@wp.func
+def _pair_frozen(frozen_bodies: wp.array[int], frame: _PatchFrame, start: int):
+    """Whether either body of the sorted pair starting at ``start`` is frozen."""
+    if frozen_bodies.shape[0] == 0:
+        return False
+    a = frame.body_a[frame.indices[start]]
+    b = frame.body_b[frame.indices[start]]
+    return (a >= 0 and frozen_bodies[a] != 0) or (b >= 0 and frozen_bodies[b] != 0)
+
+
+@wp.func
+def _carry_frozen_pair(
+    q: wp.array[wp.transform],
+    frozen_bodies: wp.array[int],
+    frame: _PatchFrame,
+    prev: _PatchFrame,
+    start: int,
+    stop: int,
+    prev_start: int,
+    prev_stop: int,
+):
+    """Carry a frozen pair's history unchanged; its poses and contacts repeat and it has no rows."""
+    if prev_stop - prev_start != stop - start or not _pair_frozen(frozen_bodies, frame, start):
+        return False
+    a = frame.body_a[frame.indices[start]]
+    for k in range(stop - start):
+        c = frame.indices[start + k]
+        p = prev.indices[prev_start + k]
+        if frame.shape_a[c] != prev.shape_a[p] or frame.shape_b[c] != prev.shape_b[p]:
+            return False
+    for k in range(stop - start):
+        c = frame.indices[start + k]
+        p = prev.indices[prev_start + k]
+        frame.source[c] = p
+        frame.valid[c] = prev.valid[p]
+        frame.displacement[c] = prev.displacement[p]
+        frame.tangent_impulse[c] = prev.tangent_impulse[p]
+        frame.anchor_a[c] = prev.anchor_a[p]
+        frame.anchor_b[c] = prev.anchor_b[p]
+        if prev.valid[p] != 0:
+            frame.surface_a[c] = prev.surface_a[p]
+            frame.surface_b[c] = prev.surface_b[p]
+            normal = prev.normal[p]
+            if a >= 0:
+                normal = wp.transform_vector(q[a], normal)
+            frame.normal[c] = normal
+        for j in range(stop - start):
+            if prev.indices[prev_start + j] == prev.owner[p]:
+                frame.owner[c] = frame.indices[start + j]
+    return True
+
+
 @wp.kernel(enable_backward=False)
 def _store_history(
     q: wp.array[wp.transform],
@@ -1031,6 +1091,7 @@ class _FrictionPatchState:
         self._flood_pair_list = wp.zeros(pair_capacity, dtype=int, device=device)
         self._flood_pair_count = wp.zeros(1, dtype=int, device=device)
         self._flood_tiles = min(pair_capacity, 1024)
+        self._no_frozen_bodies = wp.zeros(0, dtype=int, device=device)
 
     def update_geometry(self, model):
         """Refresh scales and retire affected history after explicit geometry edits."""
@@ -1132,6 +1193,7 @@ class _FrictionPatchState:
         articulation_pair_gap_gate=0.0,
         friction_gap=float("inf"),
         friction_articulation_pairs_only=False,
+        frozen_bodies=None,
     ):
         wp.launch(
             _prepare,
@@ -1176,6 +1238,8 @@ class _FrictionPatchState:
                     contacts.rigid_contact_count,
                     self.current.keys,
                     _FLOOD_MIN_CONTACTS,
+                    frozen_bodies if frozen_bodies is not None else self._no_frozen_bodies,
+                    self.current,
                     self._flood_pair_list,
                     self._flood_pair_count,
                 ],
@@ -1207,6 +1271,7 @@ class _FrictionPatchState:
                 self.previous_q,
                 model.shape_transform,
                 model.shape_collision_radius,
+                frozen_bodies if frozen_bodies is not None else self._no_frozen_bodies,
                 self.current,
                 self.previous,
                 self.view,
