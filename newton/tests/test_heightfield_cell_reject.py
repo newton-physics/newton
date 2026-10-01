@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.utils.heightfield import (
     HeightfieldData,
     _heightfield_cell_below_query,
@@ -143,7 +144,7 @@ def _model(
     return builder.finalize(device=device)
 
 
-def _collide(model, *, legacy=False, speculative=False, midphase=None):
+def _collide(model, *, legacy=False, speculative=False, packed=None, midphase=None):
     pipeline = newton.CollisionPipeline(
         model,
         reduce_contacts=False,
@@ -153,6 +154,10 @@ def _collide(model, *, legacy=False, speculative=False, midphase=None):
     )
     if legacy:
         midphase = _unculled_heightfield_midphase
+    if packed is not None:
+        pipeline.narrow_phase._heightfield_packed_pairs = packed
+    if midphase is not None:
+        pipeline.narrow_phase._heightfield_packed_pairs = False
     contacts = pipeline.contacts()
     state = model.state()
     if speculative:
@@ -191,6 +196,20 @@ def _assert_geometry_equal(test, before, after):
         test.assertLess(float(np.max(np.min(error, axis=1))), 1.0)
 
 
+def test_capability_selection(test, device):
+    """Pack only heightfield-only scenes and retain the mixed-mesh route."""
+    for meshes, heightfields, expected in ((False, True, True), (True, True, False), (False, False, False)):
+        narrow = NarrowPhase(
+            max_candidate_pairs=4,
+            max_triangle_pairs=16,
+            device=device,
+            has_meshes=meshes,
+            has_heightfields=heightfields,
+            reduce_contacts=False,
+        )
+        test.assertEqual(narrow._heightfield_packed_pairs, expected)
+
+
 def test_remove_separated_triangle_work(test, device):
     """Reject airborne cells even while the terrain broad-phase AABB overlaps."""
     model = _model(device=device)
@@ -210,6 +229,47 @@ def test_upstream_default_call_contract(test, device):
     test.assertGreater(int(reference.narrow_phase.triangle_pairs_count.numpy()[0]), 0)
     test.assertEqual(int(default.narrow_phase.triangle_pairs_count.numpy()[0]), 0)
     test.assertEqual(len(geometry[0]), 0)
+
+
+def test_packed_and_tiled_rejection(test, device):
+    """Use identical cell rejection and contact geometry in both launch routes."""
+    for z in (0.2, 0.02):
+        with test.subTest(z=z):
+            model = _model(device=device, z=z)
+            packed, a = _collide(model, packed=True)
+            tiled, b = _collide(model, packed=False)
+            test.assertEqual(
+                int(packed.narrow_phase.triangle_pairs_count.numpy()[0]),
+                int(tiled.narrow_phase.triangle_pairs_count.numpy()[0]),
+            )
+            if z == 0.2:
+                test.assertEqual(int(tiled.narrow_phase.triangle_pairs_count.numpy()[0]), 0)
+                test.assertEqual(len(a[0]), 0)
+                test.assertEqual(len(b[0]), 0)
+            else:
+                test.assertGreater(len(a[0]), 0)
+                _assert_geometry_equal(test, a, b)
+
+
+def test_mixed_mesh_route(test, device):
+    """Select the tiled route in a real mixed scene without changing terrain results."""
+    for z in (0.2, 0.02):
+        with test.subTest(z=z):
+            packed, a = _collide(_model(device=device, z=z))
+            mixed, b = _collide(_model(device=device, z=z, mixed_mesh=True))
+            test.assertTrue(packed.narrow_phase._heightfield_packed_pairs)
+            test.assertFalse(mixed.narrow_phase._heightfield_packed_pairs)
+            test.assertEqual(
+                int(packed.narrow_phase.triangle_pairs_count.numpy()[0]),
+                int(mixed.narrow_phase.triangle_pairs_count.numpy()[0]),
+            )
+            if z == 0.2:
+                test.assertEqual(int(mixed.narrow_phase.triangle_pairs_count.numpy()[0]), 0)
+                test.assertEqual(len(a[0]), 0)
+                test.assertEqual(len(b[0]), 0)
+            else:
+                test.assertGreater(len(a[0]), 0)
+                _assert_geometry_equal(test, a, b)
 
 
 def test_near_below_transformed_and_scaled(test, device):
@@ -301,12 +361,14 @@ def test_large_vertical_plane(test, device):
     before, a = _collide(model, legacy=True)
     test.assertGreater(int(before.narrow_phase.triangle_pairs_count.numpy()[0]), 0)
     test.assertGreater(len(a[0]), 0)
-    after, b = _collide(model)
-    test.assertEqual(
-        int(before.narrow_phase.triangle_pairs_count.numpy()[0]),
-        int(after.narrow_phase.triangle_pairs_count.numpy()[0]),
-    )
-    _assert_geometry_equal(test, a, b)
+    for packed in (True, False):
+        with test.subTest(packed=packed):
+            after, b = _collide(model, packed=packed)
+            test.assertEqual(
+                int(before.narrow_phase.triangle_pairs_count.numpy()[0]),
+                int(after.narrow_phase.triangle_pairs_count.numpy()[0]),
+            )
+            _assert_geometry_equal(test, a, b)
 
 
 def test_current_height_updates(test, device):
@@ -382,8 +444,11 @@ class TestHeightfieldCellReject(unittest.TestCase):
 
 devices = get_test_devices()
 for _test in (
+    test_capability_selection,
     test_remove_separated_triangle_work,
     test_upstream_default_call_contract,
+    test_packed_and_tiled_rejection,
+    test_mixed_mesh_route,
     test_near_below_transformed_and_scaled,
     test_primitive_contact_geometry,
     test_speculative_search_gap,
