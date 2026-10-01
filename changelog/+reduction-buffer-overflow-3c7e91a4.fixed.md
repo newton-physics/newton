@@ -1,0 +1,1 @@
+Report contact candidates dropped because the global contact-reduction buffer was full: `CollisionPipeline` buffer verification now prints a warning, and the contact stream records the loss for solvers instead of dropping the contacts silently.

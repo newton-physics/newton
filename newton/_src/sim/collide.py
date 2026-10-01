@@ -318,6 +318,16 @@ def eval_rigid_contact_surface_velocities(
 
 
 @wp.kernel(enable_backward=False)
+def _record_reduction_overflow(
+    insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Copy the reducer's loss counters into the contact stream's overflow flag."""
+    overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
+
+
+@wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
     shape_transform: wp.array[wp.transform],
@@ -2525,6 +2535,17 @@ class CollisionPipeline:
             device=self.device,
             **narrow_phase_extension_kwargs,
         )
+
+        # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
+        reducer = self.narrow_phase.global_contact_reducer
+        if reducer is not None:
+            wp.launch(
+                _record_reduction_overflow,
+                dim=1,
+                inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
+                device=self.device,
+                record_tape=False,
+            )
 
         # Match contacts against previous frame before sorting.
         if self._contact_matcher is not None:
