@@ -3308,6 +3308,7 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
+            ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
@@ -3328,7 +3329,6 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                ctrlrange_is_derived = False
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
                     # Add ref back so the derived ctrlrange matches native MuJoCo.
@@ -3437,7 +3437,7 @@ def parse_mjcf(
                 context={"actuator_name": act_name},
             )
             if (
-                actuator_type == "position"
+                actuator_type in {"position", "velocity", "intvelocity"}
                 and target_joint_name in mjcf_slide_joint_names
                 and not ctrlrange_is_derived
                 and "mujoco:actuator_ctrlrange" in parsed_attrs

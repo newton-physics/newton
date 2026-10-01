@@ -1253,6 +1253,38 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
             [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.2, 0.2], [-0.2, 0.2]],
         )
 
+    def test_explicit_slide_velocity_ctrlrange_scales(self):
+        """Scale slide velocity limits without changing angular controls."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body>
+                        <joint name="hinge" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <velocity name="linear_velocity" joint="slide" ctrlrange="-0.2 0.2"/>
+                <intvelocity name="linear_integrated" joint="slide" ctrlrange="-0.3 0.3"/>
+                <velocity name="angular_velocity" joint="hinge" ctrlrange="-0.2 0.2"/>
+                <intvelocity name="angular_integrated" joint="hinge" ctrlrange="-0.3 0.3"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, scale=2.0)
+        model = builder.finalize(device="cpu")
+        expected = [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.3, 0.3]]
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), expected)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        actuator_mapping = solver.mjc_actuator_to_newton_actuator_idx.numpy()
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, np.asarray(expected)[actuator_mapping])
+
     def test_slide_intvelocity_actrange_scales(self):
         """Preserve integrated velocity activation limits in slide units."""
         mjcf = """
@@ -1309,6 +1341,40 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         np.testing.assert_allclose(solver.mj_model.actuator_actrange, [[-0.6, 1.0]])
         np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, [1])
+
+    def test_intvelocity_bias_and_integrator_match_native_mujoco(self):
+        """Keep velocity damping and activation dynamics through export."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint name="slide" type="slide"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <intvelocity name="kv" joint="slide" kp="20" kv="3"/>
+                <intvelocity name="ratio" joint="slide" kp="20" dampratio="0.5"/>
+                <intvelocity name="default" joint="slide" kp="20"/>
+            </actuator>
+        </mujoco>
+        """
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_allclose(
+            model.mujoco.actuator_biasprm.numpy()[:, :3], [[0, -20, -3], [0, -20, 0.5], [0, -20, 0]]
+        )
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1, 1])
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
+        np.testing.assert_array_equal(solver.mj_model.actuator_actearly, native_model.actuator_actearly)
+        np.testing.assert_array_equal(solver.mj_model.actuator_dyntype, native_model.actuator_dyntype)
 
     def test_slide_range_and_ref_scale_together(self):
         """Scale slide range and reference while retaining angular ranges."""
