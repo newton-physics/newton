@@ -3390,6 +3390,22 @@ def parse_mjcf(
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                actrange_is_derived = False
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
+                    if lower < upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["actlimited"] = "true"
+                        actrange_is_derived = True
 
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -3430,6 +3446,7 @@ def parse_mjcf(
             if (
                 actuator_type == "intvelocity"
                 and target_joint_name in mjcf_slide_joint_names
+                and not actrange_is_derived
                 and "mujoco:actuator_actrange" in parsed_attrs
             ):
                 parsed_attrs["mujoco:actuator_actrange"] *= scale
