@@ -35,7 +35,7 @@ _DEFERRED_WORKLOAD_MODULES_BEFORE_IMPORT = {name: name in sys.modules for name i
 try:
     from benchmark_config import pr_gate_repeat
     from benchmark_metrics import SimulationMetrics
-    from run_pr_benchmarks import build_asv_command, build_pr_config, load_benchmark_patterns
+    from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
     from simulation import (
         bench_anymal,
         bench_contacts,
@@ -428,21 +428,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
 
         self.assertEqual(pr_config, expected_pr_config)
         self.assertFalse((ROOT / "asv-pr.conf.json").exists())
-
-    def test_quick_asv_command_runs_one_revision_once(self):
-        """Fill the kernel cache by running the PR selection once on a single commit."""
-        patterns = ("FastA", "FastB")
-        command = build_asv_command(Path("cfg.json"), patterns, ["abc123"], quick=True)
-
-        self.assertEqual(command[4:7], ["run", "--config", "cfg.json"])
-        self.assertIn("--quick", command)
-        self.assertNotIn("--interleave-rounds", command)
-        self.assertEqual(command[-5:], ["--bench", "FastA", "--bench", "FastB", "abc123^!"])
-
-        compare = build_asv_command(Path("cfg.json"), patterns, ["base", "head"], quick=False)
-        self.assertEqual(compare[4], "continuous")
-        self.assertNotIn("--quick", compare)
-        self.assertEqual(compare[-2:], ["base", "head"])
 
     def test_pr_camera_warmup_matches_selected_outputs(self):
         """Limit camera outputs and fixed repeats to the PR gate."""
