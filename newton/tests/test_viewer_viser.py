@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -287,6 +288,20 @@ class TestViewerViserInteraction(unittest.TestCase):
         np.testing.assert_array_equal(cloud.colors, (204, 51, 26))
         self.viewer.clear_model()
         self.assertFalse(self.viewer._scene_handles)
+
+    def test_line_width_updates_without_deprecated_api(self):
+        """Update real line geometry and screen thickness without deprecation warnings."""
+        starts = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+        ends = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            self.viewer.log_lines("line", starts, ends, (1.0, 0.0, 0.0), width=0.01)
+            handle = self.viewer._scene_handles["line"]
+            self.viewer.log_lines("line", starts, ends * 2.0, (0.0, 1.0, 0.0), width=0.02)
+            self.assertIs(self.viewer._scene_handles["line"], handle)
+            self.assertEqual(handle.thickness, 2.0)
+            self.assertEqual(handle.thickness_units, "screen")
+            np.testing.assert_array_equal(handle.points, np.stack((starts, ends * 2.0), axis=1))
 
     def test_scalar_plot_real_protocol(self):
         """Send only committed finite samples to Viser's real plot serializer."""

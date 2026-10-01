@@ -591,7 +591,7 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
 .. code-block:: bash
 
-    pip install viser==1.1.1
+    pip install 'viser>=1.1.1'
 
 **Usage**:
 

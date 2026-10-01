@@ -3486,6 +3486,7 @@ dev = [
     { name = "trimesh" },
     { name = "usd-core", marker = "(python_full_version < '3.14' and platform_machine != 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine == 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "usd-exchange", marker = "(python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (platform_machine != 'aarch64' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "viser" },
     { name = "warp-nn", extra = ["onnx"] },
 ]
 docs = [
@@ -3730,8 +3731,9 @@ requires-dist = [
     { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
     { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5,<26.9" },
     { name = "usd-exchange", marker = "python_full_version < '3.14' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.3.0,<4" },
-    { name = "viser", marker = "extra == 'docs'", specifier = "==1.1.1" },
-    { name = "viser", marker = "extra == 'notebook'", specifier = "==1.1.1" },
+    { name = "viser", marker = "extra == 'dev'", specifier = ">=1.1.1" },
+    { name = "viser", marker = "extra == 'docs'", specifier = ">=1.1.1" },
+    { name = "viser", marker = "extra == 'notebook'", specifier = ">=1.1.1" },
     { name = "warp-lang", specifier = ">=1.17.0", index = "https://pypi.nvidia.com/" },
     { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", git = "https://github.com/NVIDIA/warp-nn.git?rev=d9334ff1b00cb429e8336bb373bdfa1a948f8d49" },
 ]

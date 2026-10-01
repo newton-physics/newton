@@ -406,7 +406,7 @@ class ViewerViser(ViewerBase):
                 cls._viser_module = viser
             except ImportError as e:
                 raise ImportError(
-                    "viser package is required for ViewerViser. Install with: pip install viser==1.1.1"
+                    "viser package is required for ViewerViser. Install with: pip install 'viser>=1.1.1'"
                 ) from e
         return cls._viser_module
 
@@ -2891,7 +2891,7 @@ class ViewerViser(ViewerBase):
                 try:
                     handle.points = line_points
                     handle.colors = color_rgb
-                    handle.line_width = line_width
+                    handle.thickness = line_width
                     return
                 except Exception:
                     remove_existing_line()
@@ -2906,7 +2906,8 @@ class ViewerViser(ViewerBase):
             name=scene_name,
             points=line_points,
             colors=color_rgb,
-            line_width=line_width,
+            thickness=line_width,
+            thickness_units="screen",
         )
         self._scene_handles[name] = handle
         self._line_segment_counts[name] = num_lines
