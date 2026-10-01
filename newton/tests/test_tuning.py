@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the newton.tuning contracts."""
+"""Tests for the tuning contracts."""
 
 from __future__ import annotations
 
@@ -13,15 +13,11 @@ import unittest
 
 import numpy as np
 
-from newton.tuning import (
-    SCHEMA_VERSION,
-    STATUS_OK,
-    CableCalibrationResult,
-    CableDataSource,
-    CableEvidenceBundle,
-    CableRecording,
-    MaterializedTrajectorySource,
-)
+from newton._src.tuning.data_source import CableDataSource
+from newton._src.tuning.evidence import CableEvidenceBundle, CableRecording
+from newton._src.tuning.result import STATUS_OK, CableCalibrationResult
+from newton._src.tuning.schema import SCHEMA_VERSION
+from newton._src.tuning.trajectory import MaterializedTrajectorySource
 
 # Quaternions are (qx, qy, qz, qw). A turn by angle a about z is (0, 0, sin(a/2), cos(a/2)).
 IDENTITY = (0.0, 0.0, 0.0, 1.0)
