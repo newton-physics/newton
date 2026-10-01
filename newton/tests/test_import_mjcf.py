@@ -114,6 +114,23 @@ class TestImportMjcfBasic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inertia must satisfy"):
             newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
 
+    def test_compiler_accepts_boundary_valid_inertia(self):
+        """Float32 storage must not reject a valid triangle boundary."""
+        mjcf = """
+<mujoco>
+    <worldbody><body name="body"><joint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+    </body></worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            [0.1, 0.2, 0.3],
+            rtol=1e-6,
+        )
+
     def test_compiler_inertia_guards_preserve_existing_bodies(self):
         """Guard only imported bodies and update their inverse properties."""
         mjcf = """
