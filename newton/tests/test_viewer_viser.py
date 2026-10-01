@@ -257,13 +257,24 @@ class TestViewerViserInteraction(unittest.TestCase):
         image[..., 3] = 64
         self.viewer.log_image("alpha", image)
         self.server.flush()
-        self.wait_for(
-            lambda: any(m["type"] == "GuiImageMessage" and m["props"]["_format"] == "png" for m in self.messages)
-        )
-        message = next(
-            m for m in reversed(self.messages) if m["type"] == "GuiImageMessage" and m["props"]["_format"] == "png"
-        )
-        decoded = np.asarray(Image.open(io.BytesIO(message["props"]["_data"])))
+        image_uuid = self.viewer._image_handle._impl.uuid
+
+        def received_image():
+            # Viser may send the widget before the encoded image prop update.
+            props = {}
+            for message in tuple(self.messages):
+                if message.get("uuid") != image_uuid:
+                    continue
+                if message["type"] == "GuiImageMessage":
+                    props.update(message["props"])
+                elif message["type"] == "GuiUpdateMessage":
+                    props.update(message["updates"])
+            return props
+
+        self.wait_for(lambda: received_image().get("_data") is not None)
+        props = received_image()
+        self.assertEqual(props["_format"], "png")
+        decoded = np.asarray(Image.open(io.BytesIO(props["_data"])))
         self.assertEqual(decoded.shape, (8, 16, 4))
         np.testing.assert_array_equal(decoded[:, :8], image[0])
         np.testing.assert_array_equal(decoded[:, 8:], image[1])
