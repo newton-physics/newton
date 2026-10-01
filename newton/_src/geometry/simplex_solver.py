@@ -151,7 +151,9 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         normal = wp.cross(u, w)
 
         t = wp.length_sq(normal)
-        degenerate = t < EPSILON
+        # Squared area has units of length^4; use a scale-relative squared-sine
+        # test to retain small, well-shaped faces and reject zero-length edges.
+        degenerate = t <= EPSILON * wp.length_sq(u) * wp.length_sq(w)
         # Guard division by zero in degenerate cases
         denom = t
         if degenerate:
