@@ -83,8 +83,8 @@ def _parse_colliders(
         "boundingcube": "bounding_box",
         "meshsimplification": "quadratic",
     }
-    # mapping from remeshing method to a list of shape indices
-    remeshing_queue = {}
+    # Group colliders with the same approximation settings.
+    remeshing_queue: dict[tuple[str, tuple[tuple[str, Any], ...]], list[int]] = {}
     # Approximated colliders whose prim is viewport geometry, and which therefore keep
     # their authored topology as a visual shape. See the approximation pass below.
     approximated_viewport_shapes: set[int] = set()
@@ -384,9 +384,14 @@ def _parse_colliders(
                                             f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
                                         )
                                 else:
-                                    if remeshing_method not in remeshing_queue:
-                                        remeshing_queue[remeshing_method] = []
-                                    remeshing_queue[remeshing_method].append(shape_id)
+                                    remeshing_kwargs = ()
+                                    if remeshing_method == "coacd" and usd.has_applied_api_schema(
+                                        prim, "PhysxConvexDecompositionCollisionAPI"
+                                    ):
+                                        remeshing_kwargs = _physx_convex_decomposition_kwargs(prim, R)
+                                    remeshing_queue.setdefault((remeshing_method, remeshing_kwargs), []).append(
+                                        shape_id
+                                    )
                                     if splits_off_visual_copy:
                                         approximated_viewport_shapes.add(shape_id)
 
@@ -439,15 +444,29 @@ def _parse_colliders(
     # collider display policy that governs pure colliders does not apply to a prim
     # that is also render geometry. ``approximate_meshes`` copies shapes carrying
     # VISIBLE, so mark these before handing them over.
-    for remeshing_method, shape_ids in remeshing_queue.items():
+    for (remeshing_method, remeshing_kwargs), shape_ids in remeshing_queue.items():
         drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
         for shape_id in drawn:
             builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
         if drawn:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True)
+            builder.approximate_meshes(
+                method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True, **dict(remeshing_kwargs)
+            )
         # Colliders that are not render geometry keep no visual: there is nothing
         # authored to preserve. If one is on screen it is because the collider
         # display policy put it there, and what it should show is the collider.
         rest = [s for s in shape_ids if s not in set(drawn)]
         if rest:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=rest, keep_visual_shapes=False)
+            builder.approximate_meshes(
+                method=remeshing_method, shape_indices=rest, keep_visual_shapes=False, **dict(remeshing_kwargs)
+            )
+
+
+def _physx_convex_decomposition_kwargs(prim: Usd.Prim, resolver: SchemaResolverManager) -> tuple[tuple[str, Any], ...]:
+    """Map PhysX decomposition limits onto CoACD's merge and decimation settings."""
+    max_hulls = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="convex_decomposition_max_hulls")
+    hull_vertices = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="convex_decomposition_max_vertices")
+    if max_hulls is None or hull_vertices is None:
+        return ()
+    # CoACD applies each limit only when the corresponding postprocessing is enabled.
+    return (("max_convex_hull", max_hulls), ("merge", True), ("decimate", True), ("max_ch_vertex", hull_vertices))

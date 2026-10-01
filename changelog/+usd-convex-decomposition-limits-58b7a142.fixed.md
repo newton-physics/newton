@@ -1,0 +1,1 @@
+Honor PhysX USD convex-decomposition hull-count and per-hull vertex limits, including the hull budget across disconnected mesh components. With SchemaResolverPhysx enabled, prims with PhysxConvexDecompositionCollisionAPI now use its limits (default 32 hulls and 64 vertices per hull); raise these limits to retain finer collision geometry.
