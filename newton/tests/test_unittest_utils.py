@@ -3,14 +3,24 @@
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 import warnings
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
-from newton.tests.thirdparty.unittest_parallel import ParallelTextTestResult, _enable_strict_warnings
+from newton.tests.thirdparty.unittest_parallel import (
+    ParallelTextTestResult,
+    _enable_strict_warnings,
+    _iter_class_suites,
+    _select_shard,
+)
+from newton.tests.thirdparty.unittest_parallel import main as unittest_parallel_main
 
 NewtonTestCase = unittest_utils.NewtonTestCase
 
@@ -445,6 +455,136 @@ class TestSkippedTestCleanup(unittest.TestCase):
                 self.assertEqual(self._gc_calls(resultclass, ManyExecuted), 3)
             with self.subTest(resultclass=resultclass.__name__, device="cuda"):
                 self.assertEqual(self._gc_calls(resultclass, ManyExecuted, cuda_devices=("cuda:0",)), 17)
+
+
+class TestShardSelection(unittest.TestCase):
+    _CLASS_COUNT = 5
+
+    @classmethod
+    def _class_suite_ids(cls, suites):
+        return [tuple(test.id() for test in suite) for suite in suites]
+
+    def _discover_class_suites(self):
+        loader = unittest.TestLoader()
+        cases = [
+            type(f"ShardFixture{i}", (unittest.TestCase,), {"test_a": lambda self: None, "test_b": lambda self: None})
+            for i in range(self._CLASS_COUNT)
+        ]
+        return list(_iter_class_suites(unittest.TestSuite(loader.loadTestsFromTestCase(case) for case in cases)))
+
+    def test_shards_partition_suites_deterministically(self):
+        """Split class suites into disjoint, complete, repeatable shards."""
+        suites = self._discover_class_suites()
+        all_ids = self._class_suite_ids(suites)
+
+        for shard_count in (1, 2, 3, self._CLASS_COUNT, self._CLASS_COUNT + 2):
+            with self.subTest(shard_count=shard_count):
+                shards = [
+                    self._class_suite_ids(_select_shard(suites, shard_count, index)) for index in range(shard_count)
+                ]
+                selected = [suite for shard in shards for suite in shard]
+                self.assertEqual(len(selected), len(set(selected)))
+                self.assertEqual(set(selected), set(all_ids))
+                for index, shard in enumerate(shards):
+                    # Each shard keeps discovery order.
+                    self.assertEqual(shard, sorted(shard, key=all_ids.index))
+                    rediscovered = self._class_suite_ids(
+                        _select_shard(self._discover_class_suites(), shard_count, index)
+                    )
+                    self.assertEqual(rediscovered, shard)
+
+    def test_invalid_shard_arguments_are_usage_errors(self):
+        """Reject a non-positive shard count and an out-of-range shard index."""
+        cases = (
+            (["--shard-count", "0"], "--shard-count must be greater than 0"),
+            (["--shard-count", "-1"], "--shard-count must be greater than 0"),
+            (["--shard-count", "2", "--shard-index", "2"], "--shard-index must be in the range"),
+            (["--shard-count", "2", "--shard-index", "-1"], "--shard-index must be in the range"),
+            (["--shard-index", "1"], "--shard-index must be in the range"),
+        )
+        for argv, message in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as context:
+                    unittest_parallel_main(argv)
+                self.assertEqual(context.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
+
+    def test_runner_runs_only_the_selected_shard(self):
+        """Run exactly the selected shard's tests, and report empty shards, in parallel and serial-fallback modes."""
+        fixture = textwrap.dedent(
+            """
+            import unittest
+
+            """
+        ) + "".join(
+            textwrap.dedent(
+                f"""
+                class TestShardRunnerFixture{i}(unittest.TestCase):
+                    def test_case(self):
+                        pass
+
+                """
+            )
+            for i in range(self._CLASS_COUNT)
+        )
+
+        def run_runner(temp_dir, report_name, *extra_args):
+            report_path = os.path.join(temp_dir, report_name)
+            command = [
+                sys.executable,
+                "-m",
+                "newton.tests",
+                "--start-directory",
+                os.path.join(temp_dir, "fixture"),
+                "--pattern",
+                "test_shard_runner_fixture.py",
+                "--maxjobs",
+                "1",
+                "--no-cache-clear",
+                "--junit-report-xml",
+                report_path,
+                *extra_args,
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, msg=f"{command}\n{result.stdout}\n{result.stderr}")
+            root = ET.parse(report_path).getroot()
+            classes = {case.get("classname") for case in root.iter("testcase")}
+            self.assertEqual(int(root.get("tests")), len(list(root.iter("testcase"))))
+            return classes
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.makedirs(os.path.join(temp_dir, "fixture"))
+            with open(os.path.join(temp_dir, "fixture", "test_shard_runner_fixture.py"), "w", encoding="utf-8") as f:
+                f.write(fixture)
+
+            all_classes = run_runner(temp_dir, "all.xml")
+            self.assertEqual(len(all_classes), self._CLASS_COUNT)
+
+            for mode_args in ((), ("--serial-fallback",)):
+                with self.subTest(mode=mode_args or "parallel"):
+                    shards = [
+                        run_runner(
+                            temp_dir, f"shard{index}.xml", "--shard-count", "2", "--shard-index", str(index), *mode_args
+                        )
+                        for index in range(2)
+                    ]
+                    self.assertFalse(shards[0] & shards[1])
+                    self.assertEqual(shards[0] | shards[1], all_classes)
+                    self.assertEqual(len(shards[0]), 3)
+
+                    # More shards than suites leaves the last shard empty; it still writes an empty report.
+                    empty_shard = run_runner(
+                        temp_dir,
+                        "empty.xml",
+                        "--shard-count",
+                        str(self._CLASS_COUNT + 1),
+                        "--shard-index",
+                        str(self._CLASS_COUNT),
+                        *mode_args,
+                    )
+                    self.assertEqual(empty_shard, set())
+                    os.remove(os.path.join(temp_dir, "empty.xml"))
 
 
 if __name__ == "__main__":
